@@ -1,8 +1,8 @@
 import { create } from 'zustand'
 import { subscribeWithSelector } from 'zustand/middleware'
 
-export type SidebarItem = 'library' | 'browser' | 'design' | 'monitor' | 'queue' | 'history'
-export type WorkspaceView = 'library' | 'preview' | 'browser' | 'scad' | 'monitor' | 'queue' | 'history'
+export type SidebarItem = 'library' | 'browser' | 'design' | 'signs' | 'monitor' | 'queue' | 'history'
+export type WorkspaceView = 'library' | 'preview' | 'browser' | 'scad' | 'signs' | 'monitor' | 'queue' | 'history'
 
 export interface UiState {
   sidebarItem: SidebarItem
@@ -20,6 +20,7 @@ export function mapActiveViewToSidebarItem(activeView: WorkspaceView): SidebarIt
   if (activeView === 'library') return 'library'
   if (activeView === 'browser') return 'browser'
   if (activeView === 'scad') return 'design'
+  if (activeView === 'signs') return 'signs'
   if (activeView === 'monitor') return 'monitor'
   if (activeView === 'queue') return 'queue'
   if (activeView === 'history') return 'history'
@@ -30,6 +31,7 @@ export function mapSidebarItemToActiveView(sidebarItem: SidebarItem): WorkspaceV
   if (sidebarItem === 'library') return 'library'
   if (sidebarItem === 'browser') return 'browser'
   if (sidebarItem === 'design') return 'scad'
+  if (sidebarItem === 'signs') return 'signs'
   if (sidebarItem === 'monitor') return 'monitor'
   if (sidebarItem === 'queue') return 'queue'
   if (sidebarItem === 'history') return 'history'

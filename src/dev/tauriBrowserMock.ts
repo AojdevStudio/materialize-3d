@@ -4,6 +4,7 @@ import type { PrinterSnapshot } from '../stores/printer'
 import type { WorkspaceSnapshot } from '../stores/workspace'
 import type { PrinterConfig } from '../stores/printerConfigs'
 import type { ProactiveNotificationPayload } from '../agent/notifications'
+import type { SignRevision } from '../types/signs'
 
 interface MockAppStateSnapshot {
   printer: PrinterSnapshot
@@ -93,6 +94,99 @@ function sampleModel(url: string) {
     images: ['https://makerworld.com/image.jpg'],
     files: [{ name: 'headphone-hook.3mf', fileType: '3MF', downloadUrl: null }],
   }
+}
+
+// One verified sign revision so the Signs view renders in a plain browser.
+const MOCK_SIGN_PACKAGE_SHA = 'abc123f09e2d7b41c8a5e6f2d3b4c5a6e7f8091a2b3c4d5e6f708192a3b4c4e7'
+let mockSign: SignRevision = {
+  id: '6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b',
+  lineage_id: '0a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d',
+  number: 1,
+  parent_id: null,
+  title: 'Back Shortly',
+  spec: {
+    schema_version: 1,
+    title: 'Back Shortly',
+    width_mm: 150,
+    height_mm: 210,
+    thickness_mm: 2.6,
+    base: { name: 'white', hex: '#FFFFFF' },
+    inks: [
+      { name: 'navy', hex: '#1F3A5F' },
+      { name: 'teal', hex: '#1A9E96' },
+    ],
+    elements: [],
+  },
+  spec_sha256: '5e'.repeat(32),
+  build_key: 'b4'.repeat(32),
+  requested_by: 'agent',
+  build: {
+    status: 'verified',
+    artifacts: {
+      revision_dir: '/mock/signs/rev1',
+      package_path: '/mock/signs/rev1/sign.3mf',
+      package_sha256: MOCK_SIGN_PACKAGE_SHA,
+      preview_path: '/mock/signs/rev1/preview.png',
+      slice_dir: '/mock/signs/rev1/slice',
+      gcode_sha256: '7f3a91c2e4d5b6a7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d0d1b',
+      slicer: { name: 'Bambu Studio', version: '02.08.02.61', profile_version: '02.00.00.52' },
+      effective_settings: {
+        printer_settings_id: 'Bambu Lab P2S 0.4 nozzle',
+        print_settings_id: '0.20mm Standard @BBL P2S',
+        filament_settings_id: ['Bambu PLA Basic @BBL P2S', 'Bambu PLA Basic @BBL P2S', 'Bambu PLA Basic @BBL P2S'],
+        filament_colour: ['#FFFFFF', '#1F3A5F', '#1A9E96'],
+        nozzle_diameter: ['0.4', '0.4', '0.4'],
+        printable_area: ['0x0', '256x0', '256x256', '0x256'],
+        layer_height: '0.2',
+        enable_prime_tower: true,
+        start_gcode_matches_preset: true,
+        start_gcode_in_gcode_header: true,
+      },
+      checks: [
+        ...['base', 'navy', 'teal'].flatMap((body) =>
+          ['closed_manifold', 'non_degenerate', 'outward_orientation'].map((name) => ({
+            id: `geometry.${name}.${body}`,
+            passed: true,
+            detail: 'ok',
+          })),
+        ),
+        { id: 'geometry.bounds.sign', passed: true, detail: '150.00 x 210.00 x 2.60 mm' },
+        { id: 'slice.slice_succeeded', passed: true, detail: 'exit 0, return_code 0, 1 plate(s)' },
+        { id: 'slice.no_warnings', passed: true, detail: 'no plate warnings' },
+        { id: 'slice.placement_preserved', passed: true, detail: 'max deviation 0.48 mm of 1.00 mm' },
+        { id: 'handoff.settings_match_slice', passed: true, detail: 'package settings and colors match the verified slice' },
+      ],
+    },
+  },
+  approval: { status: 'pending' },
+  print_validation: { status: 'not_tested' },
+  created_at: '2026-09-25T14:10:00Z',
+  updated_at: '2026-09-25T14:12:00Z',
+}
+
+/** Draws a stand-in finished face and returns PNG bytes, like `sign_preview`. */
+async function mockSignPreview(): Promise<ArrayBuffer> {
+  const canvas = new OffscreenCanvas(600, 840)
+  const context = canvas.getContext('2d')
+  if (!context) throw new Error('mock preview: no 2d context')
+  context.fillStyle = '#FFFFFF'
+  context.fillRect(0, 0, 600, 840)
+  context.fillStyle = '#1A9E96'
+  context.fillRect(80, 360, 440, 10)
+  context.fillStyle = '#1F3A5F'
+  context.font = '900 52px sans-serif'
+  context.textAlign = 'center'
+  context.fillText('BACK SHORTLY', 300, 320)
+  context.fillRect(80, 600, 440, 136)
+  context.fillStyle = '#FFFFFF'
+  context.fillText('THANK YOU', 300, 690)
+  return (await canvas.convertToBlob({ type: 'image/png' })).arrayBuffer()
+}
+
+async function updateMockSign(next: Partial<SignRevision>): Promise<SignRevision> {
+  mockSign = { ...mockSign, ...next, updated_at: new Date().toISOString() }
+  await emit('signs:changed', mockSign.id)
+  return structuredClone(mockSign)
 }
 
 async function emitWorkspace() {
@@ -510,6 +604,50 @@ export function installTauriBrowserMock() {
       Object.assign(mockSettingsStore, args.settings)
       await emit('settings:changed', structuredClone(mockSettingsStore))
       return undefined
+    }
+
+    if (cmd === 'sign_list' || cmd === 'sign_lineage') {
+      return [structuredClone(mockSign)]
+    }
+
+    if (cmd === 'sign_get') {
+      return structuredClone(mockSign)
+    }
+
+    if (cmd === 'sign_preview') {
+      return mockSignPreview()
+    }
+
+    if (cmd === 'sign_approve') {
+      const args = payload as { id: string; packageSha256: string }
+      if (args.packageSha256 !== MOCK_SIGN_PACKAGE_SHA) {
+        throw `package hash mismatch: expected ${args.packageSha256}, found ${MOCK_SIGN_PACKAGE_SHA}`
+      }
+      return updateMockSign({ approval: { status: 'approved', package_sha256: MOCK_SIGN_PACKAGE_SHA, at: new Date().toISOString() } })
+    }
+
+    if (cmd === 'sign_export') {
+      return (payload as { destination: string }).destination
+    }
+
+    if (cmd === 'sign_record_print') {
+      const args = payload as { passed: boolean; note: string }
+      const at = new Date().toISOString()
+      return updateMockSign({
+        print_validation: args.passed ? { status: 'passed', at, note: args.note } : { status: 'failed', at, note: args.note },
+      })
+    }
+
+    if (cmd === 'read_text_file') {
+      return JSON.stringify(mockSign.spec)
+    }
+
+    if (cmd === 'sign_build') {
+      return { revision: structuredClone(mockSign), reused: true }
+    }
+
+    if (cmd === 'sign_cancel') {
+      return false
     }
 
     throw new Error(`Unhandled mock IPC command: ${cmd}`)

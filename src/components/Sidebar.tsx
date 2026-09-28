@@ -12,6 +12,7 @@ export const NAV_ITEMS: NavItem[] = [
   { key: 'library', label: 'Library', icon: '📁' },
   { key: 'browser', label: 'MakerWorld', icon: '🌐' },
   { key: 'design', label: 'Design', icon: '✏' },
+  { key: 'signs', label: 'Signs', icon: '🪧' },
   { key: 'monitor', label: 'Print Monitor', icon: '🖨' },
   { key: 'queue', label: 'Print Queue', icon: '📋' },
   { key: 'history', label: 'History', icon: '📜' },
@@ -21,6 +22,7 @@ const CONTEXT_TITLES: Record<ActiveView, string> = {
   library: 'Library',
   browser: 'MakerWorld',
   design: 'Design',
+  signs: 'Signs',
   monitor: 'Print Monitor',
   queue: 'Print Queue',
   history: 'Print History',
@@ -38,7 +40,7 @@ interface SidebarProps {
 export function Sidebar({ activeView, onNavigate }: SidebarProps) {
   return (
     <nav className="sidebar" aria-label="Primary">
-      {NAV_ITEMS.slice(0, 4).map((item) => (
+      {NAV_ITEMS.slice(0, 5).map((item) => (
         <button
           key={item.key}
           type="button"
@@ -55,7 +57,7 @@ export function Sidebar({ activeView, onNavigate }: SidebarProps) {
 
       <div className="sidebar-spacer" />
 
-      {NAV_ITEMS.slice(4).map((item) => (
+      {NAV_ITEMS.slice(5).map((item) => (
         <button
           key={item.key}
           type="button"

@@ -1,0 +1,358 @@
+/* Signs review view. Plain rules and tables on the app's dark tokens; no cards,
+   no pills, no animation. */
+
+.view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text-primary);
+  background: var(--bg-deep);
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 40px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.crumbs {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.crumbLink {
+  border: 0;
+  padding: 0;
+  background: none;
+  color: var(--text-secondary);
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.crumbLink:hover {
+  color: var(--text-primary);
+}
+
+.grow {
+  flex: 1;
+}
+
+.buildLine {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 16px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.steps {
+  display: flex;
+  gap: 14px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.stepDone {
+  color: var(--accent-green);
+}
+
+.stepPending {
+  color: var(--text-tertiary);
+}
+
+.btn {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 5px 10px;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.btn:hover:not(:disabled) {
+  border-color: var(--text-secondary);
+}
+
+.btn:disabled {
+  cursor: not-allowed;
+  color: var(--text-tertiary);
+}
+
+.primary {
+  background: var(--accent-orange);
+  border-color: var(--accent-orange);
+  color: var(--text-inverse);
+  font-weight: 600;
+}
+
+.primary:disabled {
+  background: transparent;
+  border-color: var(--border);
+}
+
+.small {
+  padding: 1px 6px;
+  font-size: 11px;
+}
+
+.ok {
+  color: var(--accent-green);
+  font-weight: 600;
+}
+
+.bad {
+  color: var(--accent-red);
+  font-weight: 600;
+}
+
+.muted {
+  color: var(--text-secondary);
+}
+
+.dim {
+  color: var(--text-tertiary);
+}
+
+.mono {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 12px;
+}
+
+/* Revision rows: a grid of buttons so the whole row is one click target. */
+.rows {
+  display: flex;
+  flex-direction: column;
+}
+
+.rowHead,
+.row {
+  display: grid;
+  grid-template-columns: var(--sign-row-columns);
+  gap: 8px;
+  align-items: baseline;
+  padding: 5px 12px;
+  text-align: left;
+}
+
+.rowHead {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border);
+}
+
+.row {
+  width: 100%;
+  border: 0;
+  border-bottom: 1px solid var(--border-subtle);
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.row:hover {
+  background: var(--bg-hover);
+}
+
+.rowCurrent {
+  background: var(--bg-elevated);
+  box-shadow: inset 2px 0 0 var(--accent-orange);
+}
+
+.ellipsis {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.empty {
+  padding: 16px;
+  color: var(--text-secondary);
+}
+
+.recent {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+/* Detail: preview on the left, review facts and actions on the right. */
+.split {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(280px, 38%) minmax(0, 1fr);
+}
+
+.left {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-right: 1px solid var(--border);
+}
+
+.lineage {
+  max-height: 168px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.preview {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 20px;
+  background: var(--bg-surface);
+}
+
+.previewImg {
+  display: block;
+  max-width: 100%;
+  max-height: calc(100% - 30px);
+  object-fit: contain;
+}
+
+.right {
+  min-height: 0;
+  overflow: auto;
+  padding: 14px 16px 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.title {
+  margin: 0 0 8px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.sectionTitle {
+  margin: 14px 0 4px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.table th,
+.table td {
+  padding: 5px 8px 5px 0;
+  border-bottom: 1px solid var(--border-subtle);
+  text-align: left;
+  vertical-align: top;
+}
+
+.table td:last-child {
+  overflow-wrap: anywhere;
+}
+
+.table tr:last-child th,
+.table tr:last-child td {
+  border-bottom: 0;
+}
+
+.facts th {
+  width: 132px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.checks {
+  font-size: 12px;
+}
+
+.checks thead th {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border);
+}
+
+.checks th:nth-child(1) {
+  width: 44px;
+}
+
+.checks th:nth-child(2) {
+  width: 72px;
+}
+
+.checks th:nth-child(3) {
+  width: 30%;
+}
+
+.swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin-right: 6px;
+  border: 1px solid var(--border);
+  vertical-align: -1px;
+}
+
+.hash {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.actions {
+  position: sticky;
+  bottom: 0;
+  margin-top: 12px;
+  padding: 12px 0;
+  border-top: 1px solid var(--border);
+  background: var(--bg-deep);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.actionRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.noteInput {
+  flex: 1;
+  min-width: 160px;
+  max-width: 320px;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-size: 12px;
+}

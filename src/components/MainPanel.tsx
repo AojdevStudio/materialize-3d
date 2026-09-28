@@ -5,12 +5,13 @@ import { ModelViewer } from './ModelViewer'
 import { PrintMonitor } from './PrintMonitor'
 import { PrintHistory } from './PrintHistory'
 import { ModelLibrary } from './ModelLibrary'
+import { SignsView } from './signs/SignsView'
 import { useWorkspaceStore } from '../stores/workspace'
 import type { WorkspaceView } from '../stores/ui'
 
 const DesignTab = lazy(() => import('./DesignTab'))
 
-export type MainTabKey = 'library' | 'preview' | 'browser' | 'scad' | 'monitor' | 'history'
+export type MainTabKey = 'library' | 'preview' | 'signs' | 'browser' | 'scad' | 'monitor' | 'history'
 
 export interface MainTab {
   key: MainTabKey
@@ -20,6 +21,7 @@ export interface MainTab {
 export const MAIN_TABS: MainTab[] = [
   { key: 'library', label: 'Model Library' },
   { key: 'preview', label: '3D Preview' },
+  { key: 'signs', label: 'Signs' },
   { key: 'browser', label: 'MakerWorld' },
   { key: 'scad', label: 'OpenSCAD' },
   { key: 'monitor', label: 'Print Monitor' },
@@ -30,6 +32,7 @@ export function getDefaultTabForView(view: WorkspaceView): MainTabKey {
   if (view === 'library') return 'library'
   if (view === 'browser') return 'browser'
   if (view === 'scad') return 'scad'
+  if (view === 'signs') return 'signs'
   if (view === 'monitor') return 'monitor'
   if (view === 'history') return 'history'
   return 'preview'
@@ -55,7 +58,7 @@ export function MainPanel() {
     }
   }, [activeTab])
 
-  const isFullBleed = activeTab === 'browser' || activeTab === 'preview' || activeTab === 'library' || activeTab === 'scad'
+  const isFullBleed = activeTab === 'browser' || activeTab === 'preview' || activeTab === 'library' || activeTab === 'scad' || activeTab === 'signs'
 
   return (
     <section className="main-panel" aria-label="Workspace">
@@ -85,6 +88,8 @@ export function MainPanel() {
           <Suspense fallback={null}>
             <DesignTab />
           </Suspense>
+        ) : activeTab === 'signs' ? (
+          <SignsView />
         ) : activeTab === 'monitor' ? (
           <PrintMonitor />
         ) : activeTab === 'history' ? (

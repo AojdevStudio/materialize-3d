@@ -45,6 +45,8 @@ jobs:
         run: bun run test
       - name: Frontend build
         run: bun run build
+      - name: The frontend build carries no verification override
+        run: "! grep -rl __M3D_E2E_DIALOGS__ dist"
       - name: Slicer package tests
         working-directory: packages/bambu-slicer
         run: bun test
@@ -100,6 +102,18 @@ jobs:
         run: cargo test --lib --locked fabrication::build -- --ignored --nocapture --test-threads=1
       - name: Build the desktop app (release profile)
         run: bun tauri build --bundles app
+      - name: The release app carries no verification harness or dialog override
+        run: |
+          app="${CARGO_TARGET_DIR:-src-tauri/target}/release/bundle/macos/Materialize 3D.app"
+          test -x "$app/Contents/MacOS/materialize-3d"
+          if strings "$app/Contents/MacOS/materialize-3d" | grep -E "M3D_E2E_(TOKEN|PORT|DATA_DIR)"; then
+            echo "release binary contains the e2e harness" >&2
+            exit 1
+          fi
+          if grep -rl __M3D_E2E_DIALOGS__ dist; then
+            echo "release frontend contains the scripted dialog override" >&2
+            exit 1
+          fi
 
   site:
     name: Landing site

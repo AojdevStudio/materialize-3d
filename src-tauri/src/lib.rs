@@ -2,6 +2,8 @@ mod commands;
 mod credentials;
 mod database;
 pub mod fabrication;
+#[cfg(feature = "e2e")]
+mod e2e;
 mod sign_commands;
 mod makerworld;
 mod oauth_callback;
@@ -128,6 +130,9 @@ pub fn run() {
                 .path()
                 .app_data_dir()
                 .map_err(|e| format!("failed to resolve app data dir: {e}"))?;
+            // Verification runs keep their state out of the person's real app data.
+            #[cfg(feature = "e2e")]
+            let app_data_dir = std::env::var_os("M3D_E2E_DATA_DIR").map(std::path::PathBuf::from).unwrap_or(app_data_dir);
             let db_path = app_data_dir.join("materialize.db");
 
             let app_state = app.state::<Arc<AppState>>();
@@ -148,6 +153,10 @@ pub fn run() {
                 .path()
                 .app_cache_dir()
                 .map_err(|e| format!("failed to resolve app cache dir: {e}"))?;
+            #[cfg(feature = "e2e")]
+            let app_cache_dir = std::env::var_os("M3D_E2E_DATA_DIR")
+                .map(|dir| std::path::PathBuf::from(dir).join("cache"))
+                .unwrap_or(app_cache_dir);
             let workspace = fabrication::build::Workspace::new(&app_data_dir, &app_cache_dir);
             let cleanup = fabrication::build::reconcile_startup(&app_state, &workspace)
                 .map_err(|e| format!("sign build reconcile failed: {e}"))?;
@@ -156,6 +165,8 @@ pub fn run() {
                 cleanup.interrupted,
                 cleanup.removed_dirs
             );
+            #[cfg(feature = "e2e")]
+            e2e::start(app.handle())?;
             app.manage(sign_commands::SignService::new(workspace));
 
             // Scan library filesystem for existing metadata.json files
@@ -226,9 +237,12 @@ pub fn run() {
                 }
             }
 
+            // The docked inspector shrinks the page; verification runs keep it closed.
             #[cfg(debug_assertions)]
-            if let Some(window) = app.get_webview_window("main") {
-                window.open_devtools();
+            if std::env::var_os("M3D_E2E_PORT").is_none() {
+                if let Some(window) = app.get_webview_window("main") {
+                    window.open_devtools();
+                }
             }
             Ok(())
         })

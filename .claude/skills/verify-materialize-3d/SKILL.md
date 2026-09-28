@@ -60,7 +60,7 @@ $S/wd.ts end
 Stable handles, in order of preference:
 
 - `data-testid` attributes, such as `onboarding-wizard`, `btn-get-started`, `design-tab`, and `render-status`.
-- `aria-label` values, for example the sidebar buttons `Library`, `MakerWorld`, `Design`, `Print Monitor`, `Print Queue`, and `History`, plus the toolbar buttons `Settings` and `printer connection status`.
+- `aria-label` values, for example the sidebar buttons `Library`, `MakerWorld`, `Design`, `Signs`, `Print Monitor`, `Print Queue`, and `History`, plus the toolbar buttons `Settings` and `printer connection status`.
 - Role and label XPath for controls without testids, such as the Settings selects.
 
 The feature files list the exact handles.
