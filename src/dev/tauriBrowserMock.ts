@@ -63,6 +63,8 @@ const mockState: MockAppStateSnapshot = {
     wifiSignal: null,
     amsState: [],
     lastError: null,
+    cameraState: { status: 'unavailable', url: null, diagnostic: null },
+    printerIp: null,
   },
   workspace: {
     activeModel: null,

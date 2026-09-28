@@ -1,9 +1,11 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "makerworld-remote",
-  "description": "Allow the embedded MakerWorld child webview to report extracted page metadata back through the Tauri IPC bridge.",
+  "description": "The remote MakerWorld webview may only report the page it shows and the result of an import. It cannot call any other app command.",
   "local": false,
-  "webviews": ["makerworld"],
+  "webviews": [
+    "makerworld"
+  ],
   "remote": {
     "urls": [
       "https://makerworld.com/*",
@@ -11,6 +13,7 @@
     ]
   },
   "permissions": [
-    "core:default"
+    "allow-report-makerworld-page",
+    "allow-report-makerworld-import-attempt"
   ]
 }

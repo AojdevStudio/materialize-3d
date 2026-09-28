@@ -29,7 +29,7 @@ export const setScadParametersTool: AgentTool<typeof Parameters> = {
     console.debug('agent:tool-call', 'set_scad_parameters', params)
 
     try {
-      const { loadedFile, parameters: currentParams } = useOpenScadStore.getState()
+      const { loadedFile } = useOpenScadStore.getState()
 
       if (!loadedFile) {
         return {
