@@ -27,9 +27,9 @@ export const release: Release = {
   docsUrl: "https://github.com/AojdevStudio/materialize-3d#readme",
   dmgUrl:
     "https://github.com/AojdevStudio/materialize-3d/releases/download/v0.1.0/Materialize-3D-0.1.0-macos-arm64.dmg",
-  sha256: "pending",
-  signed: false,
-  notarized: false,
+  sha256: "b5d2f1cf52a97143c66af969f90b71c2eaddb4cc5d3ecc333d440fad2d10cb8d",
+  signed: true,
+  notarized: true,
   testedMacOS: "macOS 26.7",
   architecture: "Apple Silicon",
   bambuStudio: {
