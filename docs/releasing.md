@@ -38,7 +38,7 @@ Releases are built on an Apple Silicon Mac by `scripts/release/build-macos.sh`, 
 
 ## Verify the installed release
 
-`scripts/release/verify-installed-macos.sh` installs the built DMG into `/Applications` on an Apple Silicon Mac and checks it the way a new user meets it: Gatekeeper and the staple, the signature and the exact bundle contents, the schema 3 migration, MCP off without the setting, the app's own keychain round trip across a relaunch, and a sign built and approved over MCP with a seeded token. It takes the DMG and a checkout that holds `docs/acceptance/` and the schema 3 fixture.
+`scripts/release/verify-installed-macos.sh` installs the built DMG into `/Applications` on an Apple Silicon Mac and checks it the way a new user meets it: Gatekeeper and the staple, the signature and the exact bundle contents, the schema 3 migration, MCP off without the setting, the app's own keychain round trip across a relaunch, the MCP endpoint's 401 without a valid token, and a sign built over MCP with a seeded token that stays pending, because the endpoint refuses to approve and approval stays with a person in the app. Each of these fails the run when it does not hold. It takes the DMG and a checkout that holds `docs/acceptance/` and the schema 3 fixture.
 
 ```bash
 scripts/release/verify-installed-macos.sh dist-release/Materialize-3D-0.1.0-macos-arm64.dmg .
@@ -46,7 +46,7 @@ scripts/release/verify-installed-macos.sh dist-release/Materialize-3D-0.1.0-maco
 
 It runs unattended, so it is safe over SSH. The body does not run in the calling shell: keychain unlock state belongs to a security session and the app runs in the logged-in user's desktop session, so the script bootstraps the body as a transient LaunchAgent in `gui/<uid>`, waits up to 15 minutes, streams the job log, and exits with the job's status. Someone must be logged in at the console; with no desktop session the script says so and stops instead of waiting.
 
-Secrets stay out of `ps`. The throwaway keychain password is random per run, every `security` subcommand that takes a password is fed to `security -i` on stdin, and the MCP token reaches curl through a mode-600 header file. The run fails if securityd recorded a keychain prompt or if any Terminal process appeared while it ran, and fails rather than waiting when the app, the MCP endpoint, or the job itself does not arrive in time.
+Secrets stay out of `ps`. The throwaway keychain password is random per run, every `security` subcommand that takes a password is fed to `security -i` on stdin, and the MCP token reaches curl through a mode-600 header file. The run fails if securityd recorded a keychain prompt or if a new Terminal.app process appeared while it ran, and fails rather than waiting when the app, the MCP endpoint, or the job itself does not arrive in time.
 
 Everything it touches is undone on exit: the DMG is detached, the app is quit, the throwaway keychains are deleted, and the real default keychain and search list are put back. The run directory, its evidence, and the job log are under `~/m3d-verify/release-verify-<timestamp>/`.
 

@@ -345,10 +345,23 @@ log "no e2e harness strings in the binary"
 xattr -d com.apple.quarantine "$APP"
 
 log "== existing data from schema 3 migrates on first launch"
+db_state() {
+  printf 'version %s, history %s, printers %s, settings %s' \
+    "$(sqlite3 "$DATA/materialize.db" 'pragma user_version')" \
+    "$(sqlite3 "$DATA/materialize.db" 'select count(*) from print_history')" \
+    "$(sqlite3 "$DATA/materialize.db" 'select count(*) from printer_configs')" \
+    "$(sqlite3 "$DATA/materialize.db" 'select count(*) from settings')"
+}
+WANT_VERSION="$(sed -n 's/.*pub const SCHEMA_VERSION: i32 = \([0-9][0-9]*\);.*/\1/p' "$SRC/src-tauri/src/database.rs")"
+[[ -n "$WANT_VERSION" ]] || { log "FAIL no SCHEMA_VERSION in $SRC/src-tauri/src/database.rs"; exit 1; }
 sqlite3 "$DATA/materialize.db" < "$SRC/src-tauri/tests/fixtures/db/main-schema-v3.sql"
-log "seeded: version $(sqlite3 "$DATA/materialize.db" 'pragma user_version'), history $(sqlite3 "$DATA/materialize.db" 'select count(*) from print_history'), printers $(sqlite3 "$DATA/materialize.db" 'select count(*) from printer_configs'), settings $(sqlite3 "$DATA/materialize.db" 'select count(*) from settings')"
+seeded="$(db_state)"
+log "seeded: $seeded"
 launch; quit
-log "after launch: version $(sqlite3 "$DATA/materialize.db" 'pragma user_version'), history $(sqlite3 "$DATA/materialize.db" 'select count(*) from print_history'), printers $(sqlite3 "$DATA/materialize.db" 'select count(*) from printer_configs'), settings $(sqlite3 "$DATA/materialize.db" 'select count(*) from settings')"
+after="$(db_state)"
+log "after launch: $after"
+[[ "$after" == "version $WANT_VERSION, ${seeded#version * }" ]] \
+  || { log "FAIL migration: expected version $WANT_VERSION with the seeded rows (${seeded#version * }), got $after"; exit 1; }
 
 log "== MCP stays off without the setting"
 launch
@@ -386,7 +399,10 @@ launch
 for _ in $(seq 1 30); do lsof -nP -iTCP:45373 -sTCP:LISTEN >/dev/null 2>&1 && break; sleep 0.5; done
 URL=http://127.0.0.1:45373/mcp
 # "wrong" is a literal, not a credential; only the real token needs the file.
-log "no token -> $(curl -s -o /dev/null -w '%{http_code}' -H 'content-type: application/json' -d '{}' "$URL"); wrong token -> $(curl -s -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer wrong' -H 'content-type: application/json' -d '{}' "$URL")"
+no_token="$(curl -s -o /dev/null -w '%{http_code}' -H 'content-type: application/json' -d '{}' "$URL")"
+wrong_token="$(curl -s -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer wrong' -H 'content-type: application/json' -d '{}' "$URL")"
+log "no token -> $no_token; wrong token -> $wrong_token"
+[[ "$no_token" == 401 && "$wrong_token" == 401 ]] || { log "FAIL the MCP endpoint must answer 401 without a valid token"; exit 1; }
 SESSION=""
 # curl reads every header from this mode-600 file, so the token never reaches argv.
 headers() {
@@ -408,20 +424,35 @@ rpc '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"
 SESSION=$(grep -i '^mcp-session-id:' "$RUN/h" | awk '{print $2}' | tr -d '\r')
 headers
 rpc '{"jsonrpc":"2.0","method":"notifications/initialized"}' >/dev/null || true
-log "tools: $(rpc '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' | python3 -c 'import json,sys; print(sorted(t["name"] for t in json.load(sys.stdin)["result"]["tools"]))')"
+tools="$(rpc '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' | python3 -c 'import json,sys; print(" ".join(sorted(t["name"] for t in json.load(sys.stdin)["result"]["tools"])))')"
+log "tools: $tools"
+for t in $tools; do
+  case "$t" in *approve*|*export*|*print_result*|*record_print*) log "FAIL MCP exposes $t; approval, export, and print results stay with a person"; exit 1 ;; esac
+done
+[[ " $tools " == *" build_sign "* ]] || { log "FAIL MCP does not expose build_sign"; exit 1; }
 SPEC=$(python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1]))))' "$SRC/docs/acceptance/p2s-test-sign.json")
 START=$(date +%s)
 rpc "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"build_sign\",\"arguments\":{\"spec\":$SPEC}}}" > "$RUN/evidence/build_sign.json"
 log "build took $(( $(date +%s) - START )) s"
 unattended "build_sign"
-python3 - "$RUN/evidence/build_sign.json" <<'PY' | tee -a "$RUN/evidence/actions.log"
+build_ok=0
+python3 - "$RUN/evidence/build_sign.json" <<'PY' | tee -a "$RUN/evidence/actions.log" || build_ok=$?
 import json,sys
 r=json.load(open(sys.argv[1]))["result"]; o=json.loads(r["content"][0]["text"]); s=o["revision"]
 print(f"  isError={r.get('isError')} r{s['number']} build={s['build']} checks={s['checks_passed']}/{s['checks_total']} approval={s['approval']} print={s['print_validation']} requested_by={s['requested_by']}")
 print(f"  package_sha256={s['package_sha256']}")
+if r.get("isError") or s["build"] != "verified" or s["approval"] != "pending" or s["checks_passed"] != s["checks_total"]:
+    sys.exit(1)
 PY
-log "approve over MCP -> $(rpc '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"approve_sign","arguments":{}}}' | head -c 140)"
-log "db: $(sqlite3 "$DATA/materialize.db" "select number, build_status, approval_status, print_status, requested_by from sign_revisions")"
+[[ "$build_ok" == 0 ]] || { log "FAIL build_sign did not return a verified revision awaiting approval"; exit 1; }
+# Approval stays with a person in the app: the endpoint must refuse to approve.
+refusal="$(rpc '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"approve_sign","arguments":{}}}')"
+log "approve over MCP -> $(printf '%s' "$refusal" | head -c 140)"
+printf '%s' "$refusal" | python3 -c 'import json,sys; sys.exit(0 if "error" in json.load(sys.stdin) else 1)' \
+  || { log "FAIL the MCP endpoint accepted an approval"; exit 1; }
+row="$(sqlite3 "$DATA/materialize.db" "select number, build_status, approval_status, print_status, requested_by from sign_revisions")"
+log "db: $row"
+[[ "$row" == "1|verified|pending|not_tested|external_mcp" ]] || { log "FAIL the stored revision is not a verified build awaiting a person's approval"; exit 1; }
 REV=$(python3 -c 'import json,sys; print(json.loads(json.load(open(sys.argv[1]))["result"]["content"][0]["text"])["revision"]["revision_id"])' "$RUN/evidence/build_sign.json")
 cp "$DATA/signs/$REV/preview.png" "$RUN/evidence/p2s-test-sign-preview.png" 2>/dev/null || true
 quit
