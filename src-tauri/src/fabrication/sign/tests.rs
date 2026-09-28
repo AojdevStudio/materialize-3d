@@ -60,6 +60,16 @@ fn fixture_geometry_passes_every_check() {
 }
 
 #[test]
+fn the_acceptance_sign_passes_every_geometry_check() {
+    let spec = ValidSignSpec::from_json(include_str!("../../../../docs/acceptance/p2s-test-sign.json")).expect("valid spec");
+    let geometry = build_geometry(&spec).expect("geometry");
+    assert_eq!(failed(&check_geometry(&geometry)), Vec::<String>::new());
+    if let Some(out) = std::env::var_os("ACCEPTANCE_PREVIEW_OUT") {
+        std::fs::write(out, render_preview(&geometry, 10.0).expect("preview")).expect("write preview");
+    }
+}
+
+#[test]
 fn rejects_unknown_field() {
     let err = fixture_with(|v| v["colour"] = json!("red")).unwrap_err();
     assert!(matches!(err, SpecError::Json(_)), "{err}");
