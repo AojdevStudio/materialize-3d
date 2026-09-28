@@ -4,6 +4,7 @@ import { usePrinterStore, type ConnectionState } from '../stores/printer'
 import { usePrinterConfigStore } from '../stores/printerConfigs'
 import { PrinterSelector } from './PrinterSelector'
 import { SettingsPanel } from './SettingsPanel'
+import { useUiStore } from '../stores/ui'
 
 /** States where a connection attempt is already in progress */
 const BUSY_STATES: readonly ConnectionState[] = ['discovering', 'reconnecting'] as const
@@ -24,7 +25,8 @@ export function Toolbar() {
   const configs = usePrinterConfigStore((s) => s.configs) ?? []
   const selectedPrinterId = usePrinterConfigStore((s) => s.selectedPrinterId) ?? null
   const [selectorOpen, setSelectorOpen] = useState(false)
-  const [settingsOpen, setSettingsOpen] = useState(false)
+  const settingsOpen = useUiStore((s) => s.settingsOpen)
+  const setSettingsOpen = useUiStore((s) => s.setSettingsOpen)
   const settingsButtonRef = useRef<HTMLButtonElement>(null)
 
   // Resolve display name: active config name → printer store name → fallback
@@ -36,20 +38,20 @@ export function Toolbar() {
   const toggleSelector = useCallback(() => {
     setSelectorOpen((prev) => !prev)
     setSettingsOpen(false)
-  }, [])
+  }, [setSettingsOpen])
 
   const closeSelector = useCallback(() => {
     setSelectorOpen(false)
   }, [])
 
   const toggleSettings = useCallback(() => {
-    setSettingsOpen((prev) => !prev)
+    setSettingsOpen(!useUiStore.getState().settingsOpen)
     setSelectorOpen(false)
-  }, [])
+  }, [setSettingsOpen])
 
   const closeSettings = useCallback(() => {
     setSettingsOpen(false)
-  }, [])
+  }, [setSettingsOpen])
 
   // Error recovery: show when connection is failed AND there's an error message
   const showError =

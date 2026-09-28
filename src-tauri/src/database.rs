@@ -70,7 +70,7 @@ pub fn init_db(db_path: &Path) -> Result<Connection, String> {
 }
 
 /// Schema version after every migration has run.
-pub const SCHEMA_VERSION: i32 = 4;
+pub const SCHEMA_VERSION: i32 = 5;
 
 /// Run all pending migrations based on `PRAGMA user_version`.
 fn run_migrations(conn: &Connection) -> Result<(), String> {
@@ -160,9 +160,18 @@ fn run_migrations(conn: &Connection) -> Result<(), String> {
         log::info!("database: applying migration 004 — create sign_revisions table");
         conn.execute_batch(crate::fabrication::revisions::MIGRATION_004)
             .map_err(|e| format!("migration 004 failed: {e}"))?;
-        conn.pragma_update(None, "user_version", SCHEMA_VERSION)
+        conn.pragma_update(None, "user_version", 4)
             .map_err(|e| format!("failed to set user_version to 4: {e}"))?;
         log::info!("database: migration 004 applied — schema version now 4");
+    }
+
+    if version < 5 {
+        log::info!("database: applying migration 005 — create agent conversation tables");
+        conn.execute_batch(crate::agent::store::MIGRATION_005)
+            .map_err(|e| format!("migration 005 failed: {e}"))?;
+        conn.pragma_update(None, "user_version", SCHEMA_VERSION)
+            .map_err(|e| format!("failed to set user_version to 5: {e}"))?;
+        log::info!("database: migration 005 applied — schema version now 5");
     }
 
     Ok(())

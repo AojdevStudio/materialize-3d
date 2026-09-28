@@ -1,12 +1,13 @@
 mod commands;
 mod credentials;
 mod database;
+pub mod actions;
+pub mod agent;
 pub mod fabrication;
 #[cfg(feature = "e2e")]
 mod e2e;
 mod sign_commands;
 mod makerworld;
-mod oauth_callback;
 pub mod openscad;
 pub mod platform;
 mod print_queue;
@@ -28,14 +29,13 @@ use commands::{
     list_profiles, makerworld_back, makerworld_forward, makerworld_reload, navigate_makerworld,
     pause_print, probe_camera, read_model_file, read_text_file, remove_from_queue,
     report_makerworld_import_attempt, report_makerworld_page, resume_print, search_makerworld,
-    set_active_view, set_default_printer, slice_model, start_oauth_callback, start_print,
-    stop_oauth_callback, store_credential, switch_printer, sync_makerworld_webview,
-    oauth_token_exchange, update_printer_config, update_settings, write_text_file,
+    set_active_view, set_default_printer, slice_model, start_print,
+    store_credential, switch_printer, sync_makerworld_webview,
+    update_printer_config, update_settings, write_text_file,
     get_library_models, search_library_models, delete_library_model, open_library_model,
     openscad_check_installed, openscad_extract_params, openscad_render,
 };
 use makerworld::MakerWorldService;
-use oauth_callback::OAuthCallbackState;
 use openscad::OpenScadService;
 use printer::PrinterService;
 use slicer::SlicerService;
@@ -60,7 +60,7 @@ pub fn run() {
         .manage(MakerWorldService::default())
         .manage(SlicerService::default())
         .manage(OpenScadService::default())
-        .manage(OAuthCallbackState::default())
+        .manage(agent::commands::AgentTurns::default())
         .invoke_handler(tauri::generate_handler![
             get_app_state,
             set_active_view,
@@ -98,6 +98,14 @@ pub fn run() {
             sign_commands::sign_approve,
             sign_commands::sign_export,
             sign_commands::sign_record_print,
+            agent::commands::agent_status,
+            agent::commands::agent_set_api_key,
+            agent::commands::agent_clear_api_key,
+            agent::commands::agent_set_model,
+            agent::commands::agent_history,
+            agent::commands::agent_new_conversation,
+            agent::commands::agent_send,
+            agent::commands::agent_cancel,
             delete_print_history_item,
             get_library_models,
             search_library_models,
@@ -111,9 +119,6 @@ pub fn run() {
             get_credential,
             delete_credential,
             has_credential,
-            start_oauth_callback,
-            stop_oauth_callback,
-            oauth_token_exchange,
             add_printer_config,
             update_printer_config,
             delete_printer_config,
@@ -165,9 +170,16 @@ pub fn run() {
                 cleanup.interrupted,
                 cleanup.removed_dirs
             );
+
+            // An agent tool call that was running when the app stopped is
+            // shown as interrupted and never re-run.
+            let interrupted_calls = agent::store::with_conn(&app_state, |conn| agent::store::reconcile_interrupted(conn))
+                .map_err(|e| format!("agent tool call reconcile failed: {e}"))?;
+            log::info!("setup: agent reconciled ({interrupted_calls} interrupted tool calls)");
             #[cfg(feature = "e2e")]
             e2e::start(app.handle())?;
-            app.manage(sign_commands::SignService::new(workspace));
+            app.manage(actions::Actions::new(app.handle().clone(), app_state.inner().clone(), workspace));
+            app.manage(sign_commands::GuiBuilds::default());
 
             // Scan library filesystem for existing metadata.json files
             let library_root = app_data_dir.join("library").join("makerworld");

@@ -1,10 +1,11 @@
+import type { Channel } from '@tauri-apps/api/core'
 import { emit } from '@tauri-apps/api/event'
 import { mockIPC, mockWindows } from '@tauri-apps/api/mocks'
 import type { PrinterSnapshot } from '../stores/printer'
 import type { WorkspaceSnapshot } from '../stores/workspace'
 import type { PrinterConfig } from '../stores/printerConfigs'
-import type { ProactiveNotificationPayload } from '../agent/notifications'
 import type { SignRevision } from '../types/signs'
+import type { AgentEvent, AgentStatus, BuildStep, HistoryEntry, Provider } from '../types/agent'
 
 interface MockAppStateSnapshot {
   printer: PrinterSnapshot
@@ -14,8 +15,6 @@ interface MockAppStateSnapshot {
 
 // In-memory credential store for browser mock (replaces the OS credential store)
 const mockCredentialStore = new Map<string, string>()
-// Track active OAuth callback port for mock
-let mockOAuthCallbackPort: number | null = null
 // In-memory print queue for browser mock
 interface MockQueuedJob {
   id: string
@@ -414,48 +413,10 @@ export function installTauriBrowserMock() {
       return false
     }
 
-    // ── Credential / OAuth mock handlers (T02) ──
+    // ── Agent mock handlers: a scripted Rust agent ──
 
-    if (cmd === 'get_credential') {
-      const args = payload as { key: string }
-      return mockCredentialStore.get(args.key) ?? null
-    }
-
-    if (cmd === 'store_credential') {
-      const args = payload as { key: string; value: string }
-      mockCredentialStore.set(args.key, args.value)
-      return undefined
-    }
-
-    if (cmd === 'delete_credential') {
-      const args = payload as { key: string }
-      const existed = mockCredentialStore.has(args.key)
-      mockCredentialStore.delete(args.key)
-      return existed
-    }
-
-    if (cmd === 'has_credential') {
-      const args = payload as { key: string }
-      return mockCredentialStore.has(args.key)
-    }
-
-    if (cmd === 'start_oauth_callback') {
-      const args = payload as { port: number }
-      mockOAuthCallbackPort = args.port
-      // Simulate callback event after a short delay (browser dev mode)
-      setTimeout(async () => {
-        await emit('oauth:callback', {
-          code: 'mock_auth_code_' + mockOAuthCallbackPort,
-          state: 'mock_state',
-        })
-      }, 100)
-      return undefined
-    }
-
-    if (cmd === 'stop_oauth_callback') {
-      mockOAuthCallbackPort = null
-      return undefined
-    }
+    const agentResult = handleAgentCommand(cmd, payload)
+    if (agentResult !== NOT_AGENT) return agentResult
 
     // ── Printer config mock handlers (T03) ──
 
@@ -654,15 +615,131 @@ export function installTauriBrowserMock() {
   }, { shouldMockEvents: true })
 }
 
-/**
- * Emit a synthetic `proactive:notification` event for browser-mode testing.
- * Dispatches the same Tauri event shape the Rust backend would emit.
- *
- * Usage (browser console):
- *   emitProactiveNotification({ event_type: 'print_complete', model_name: 'Test Cube', printer_name: 'P2S' })
- */
-export async function emitProactiveNotification(
-  payload: ProactiveNotificationPayload
-): Promise<void> {
-  await emit('proactive:notification', payload)
+// ── Scripted agent ──
+//
+// Mirrors the Rust agent's commands closely enough for `bun run dev` in a
+// browser: a prompt about the printer runs printer_status; anything else runs a
+// build_sign turn with one step every STEP_MS. Clear the key in Settings to see
+// the missing-key error.
+
+const NOT_AGENT = Symbol('not an agent command')
+const STEP_MS = 1500
+const BUILD_STEPS: BuildStep[] = ['spec_validated', 'geometry_built', 'package_written', 'sliced', 'verified']
+
+const mockAgent = {
+  status: { provider: 'anthropic', model: 'claude-sonnet-5', hasApiKey: true } as AgentStatus,
+  keys: new Set<Provider>(['anthropic']),
+  conversationId: 'mock-conversation-1',
+  conversationCount: 1,
+  history: [] as HistoryEntry[],
+  cancelled: new Set<string>(),
+  revision: 1,
+}
+
+const agentStatus = (): AgentStatus => ({ ...mockAgent.status, hasApiKey: mockAgent.keys.has(mockAgent.status.provider) })
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
+function handleAgentCommand(cmd: string, payload: unknown): unknown {
+  const args = (payload ?? {}) as Record<string, unknown>
+  switch (cmd) {
+    case 'agent_status':
+      return agentStatus()
+    case 'agent_set_api_key':
+      mockAgent.keys.add(args.provider as Provider)
+      return agentStatus()
+    case 'agent_clear_api_key':
+      mockAgent.keys.delete(args.provider as Provider)
+      return agentStatus()
+    case 'agent_set_model':
+      mockAgent.status = { ...mockAgent.status, provider: args.provider as Provider, model: args.model as string }
+      return agentStatus()
+    case 'agent_history':
+      return { conversationId: mockAgent.conversationId, entries: structuredClone(mockAgent.history) }
+    case 'agent_new_conversation':
+      mockAgent.conversationCount += 1
+      mockAgent.conversationId = `mock-conversation-${mockAgent.conversationCount}`
+      mockAgent.history = []
+      return { conversationId: mockAgent.conversationId }
+    case 'agent_cancel':
+      mockAgent.cancelled.add(args.turnId as string)
+      return true
+    case 'agent_send':
+      return runMockTurn(args.turnId as string, args.text as string, args.onEvent as Channel<AgentEvent>)
+    default:
+      return NOT_AGENT
+  }
+}
+
+// Replays a turn with the AgentEvent protocol from src/types/agent.ts, which
+// mirrors src-tauri/src/agent/protocol.rs. Update this when either changes.
+async function runMockTurn(turnId: string, text: string, channel: Channel<AgentEvent>): Promise<void> {
+  const send = (event: AgentEvent) => channel.onmessage(event)
+  const now = () => new Date().toISOString()
+  const cancelled = () => mockAgent.cancelled.has(turnId)
+  const say = async (reply: string) => {
+    for (const word of reply.split(/(?<= )/)) {
+      send({ type: 'textDelta', text: word })
+      await sleep(30)
+    }
+    mockAgent.history.push({ role: 'assistant', id: crypto.randomUUID(), text: reply, createdAt: now() })
+  }
+
+  mockAgent.history.push({ role: 'user', id: crypto.randomUUID(), text, createdAt: now() })
+  send({ type: 'turnStarted', conversationId: mockAgent.conversationId, turnId })
+  await sleep(300)
+
+  const status = agentStatus()
+  if (!status.hasApiKey) {
+    const name = status.provider === 'anthropic' ? 'Anthropic' : 'OpenAI'
+    send({ type: 'error', kind: 'missingApiKey', message: `${name} API key is missing. The request was not sent.` })
+    return
+  }
+
+  if (/printer|status/i.test(text)) {
+    const callId = crypto.randomUUID()
+    send({ type: 'toolCall', callId, name: 'printer_status', args: {} })
+    await sleep(600)
+    const output = { connection: mockState.printer.connectionState, name: mockState.printer.name }
+    send({ type: 'toolResult', callId, ok: true, output })
+    mockAgent.history.push({ role: 'tool', callId, name: 'printer_status', args: {}, status: 'completed', output, createdAt: now() })
+    await say(mockState.printer.isConnected ? 'The printer is connected and idle.' : 'The printer is not connected right now.')
+    send({ type: 'turnFinished' })
+    return
+  }
+
+  await say('Building a 150 x 210 x 2.6 mm sign: white PLA Basic base, navy and teal inlays.')
+  const callId = crypto.randomUUID()
+  const buildArgs = { title: 'Back Shortly door sign', width_mm: 150, height_mm: 210 }
+  send({ type: 'toolCall', callId, name: 'build_sign', args: buildArgs })
+  const record = (status: 'completed' | 'cancelled', output: unknown) =>
+    mockAgent.history.push({ role: 'tool', callId, name: 'build_sign', args: buildArgs, status, output, createdAt: now() })
+
+  for (const step of BUILD_STEPS) {
+    await sleep(STEP_MS)
+    if (cancelled()) {
+      record('cancelled', null)
+      send({ type: 'turnCancelled' })
+      return
+    }
+    send({ type: 'toolProgress', callId, step })
+  }
+
+  mockAgent.revision += 1
+  const sign = {
+    revision_id: `mock-rev-${mockAgent.revision}`,
+    number: mockAgent.revision,
+    title: buildArgs.title,
+    build: 'verified',
+    checks_passed: 9,
+    checks_total: 9,
+    failed_checks: [],
+    package_sha256: 'abc123f09d1e7b55c0a4e2f6781d3b9ac0ffee12de45f67a89b0c1d2e3f4c4e7',
+    approval: 'pending',
+    reused: false,
+  }
+  send({ type: 'toolResult', callId, ok: true, output: sign })
+  record('completed', sign)
+  await say(`Revision r${sign.number} passed all checks. Review and approve it in the Signs view.`)
+  send({ type: 'turnFinished' })
 }

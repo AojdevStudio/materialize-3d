@@ -31,24 +31,6 @@ vi.mock('@tauri-apps/api/core', () => ({
   invoke: invokeMock,
 }))
 
-// Mock pi SDK modules (transitively imported by context.ts)
-vi.mock('@mariozechner/pi-ai', () => ({
-  getModel: vi.fn(),
-}))
-
-vi.mock('@mariozechner/pi-web-ui', () => ({
-  defaultConvertToLlm: vi.fn((messages: unknown[]) => messages),
-  AppStorage: vi.fn(),
-  IndexedDBStorageBackend: vi.fn(),
-  SettingsStore: vi.fn(() => ({ getConfig: vi.fn() })),
-  ProviderKeysStore: vi.fn(() => ({ getConfig: vi.fn(), get: vi.fn() })),
-  SessionsStore: Object.assign(vi.fn(() => ({ getConfig: vi.fn() })), {
-    getMetadataConfig: vi.fn(),
-  }),
-  CustomProvidersStore: vi.fn(() => ({ getConfig: vi.fn() })),
-  setAppStorage: vi.fn(),
-}))
-
 function emitEvent<T>(name: string, payload: T) {
   const handler = eventHandlers.get(name)
   if (!handler) {
@@ -315,98 +297,5 @@ describe('openscad store', () => {
     expect(state.lastError).not.toBeNull()
     expect(state.lastError!.line).toBe(5)
     expect(state.lastError!.message).toContain('syntax error')
-  })
-})
-
-// ─── Agent Context Tests ──────────────────────────────────────────────────────
-
-describe('openscad agent context', () => {
-  beforeEach(async () => {
-    const { useOpenScadStore, OPENSCAD_DEFAULT_STATE } = await import(
-      '../stores/openscadStore'
-    )
-    useOpenScadStore.setState(OPENSCAD_DEFAULT_STATE)
-
-    // Reset other stores that buildDynamicContext reads
-    const { usePrinterStore, PRINTER_DEFAULT_STATE } = await import('../stores/printer')
-    const { useWorkspaceStore, WORKSPACE_DEFAULT_STATE } = await import('../stores/workspace')
-    usePrinterStore.setState(PRINTER_DEFAULT_STATE)
-    useWorkspaceStore.setState(WORKSPACE_DEFAULT_STATE)
-  })
-
-  it('shows "(no design loaded)" when no file loaded', async () => {
-    const { buildOpenScadSection } = await import('../agent/context')
-
-    const section = buildOpenScadSection()
-    expect(section).toContain('## OpenSCAD Design')
-    expect(section).toContain('(no design loaded)')
-    expect(section).not.toContain('File:')
-  })
-
-  it('shows file, params, and render status when file loaded', async () => {
-    const { useOpenScadStore } = await import('../stores/openscadStore')
-    const { buildOpenScadSection } = await import('../agent/context')
-
-    useOpenScadStore.setState({
-      loadedFile: '/tmp/box.scad',
-      parameters: [
-        makeParam({ name: 'width', initial: 20, min: 5, max: 50, step: 1, group: 'Dimensions' }),
-        makeParam({ name: 'label', type: 'string', initial: 'hello', min: null, max: null, step: null, group: null }),
-      ],
-      renderStatus: 'idle',
-      lastStlPath: '/tmp/box.stl',
-      lastError: null,
-    })
-
-    const section = buildOpenScadSection()
-    expect(section).toContain('File: /tmp/box.scad')
-    expect(section).toContain('Render Status: idle')
-    expect(section).toContain('Last STL: /tmp/box.stl')
-    expect(section).toContain('### Parameters')
-    expect(section).toContain('- width: 20 [5..50] step 1 [Dimensions]')
-    expect(section).toContain('- label: hello')
-  })
-
-  it('shows error when lastError is set', async () => {
-    const { useOpenScadStore } = await import('../stores/openscadStore')
-    const { buildOpenScadSection } = await import('../agent/context')
-
-    useOpenScadStore.setState({
-      loadedFile: '/tmp/error.scad',
-      parameters: [],
-      renderStatus: 'error',
-      lastStlPath: null,
-      lastError: { line: 7, message: 'syntax error', fullStderr: '' },
-    })
-
-    const section = buildOpenScadSection()
-    expect(section).toContain('Error (line 7): syntax error')
-    expect(section).toContain('Render Status: error')
-  })
-
-  it('openscad section appears in buildDynamicContext output', async () => {
-    const { useOpenScadStore } = await import('../stores/openscadStore')
-    const { buildDynamicContext } = await import('../agent/context')
-
-    useOpenScadStore.setState({
-      loadedFile: '/tmp/gear.scad',
-      parameters: [makeParam({ name: 'teeth', initial: 24 })],
-      renderStatus: 'idle',
-      lastStlPath: null,
-      lastError: null,
-    })
-
-    const ctx = buildDynamicContext()
-    expect(ctx).toContain('## OpenSCAD Design')
-    expect(ctx).toContain('File: /tmp/gear.scad')
-    expect(ctx).toContain('- teeth:')
-  })
-
-  it('openscad section with no file in buildDynamicContext', async () => {
-    const { buildDynamicContext } = await import('../agent/context')
-
-    const ctx = buildDynamicContext()
-    expect(ctx).toContain('## OpenSCAD Design')
-    expect(ctx).toContain('(no design loaded)')
   })
 })

@@ -7,13 +7,17 @@ export type WorkspaceView = 'library' | 'preview' | 'browser' | 'scad' | 'signs'
 export interface UiState {
   sidebarItem: SidebarItem
   chatOpen: boolean
+  /** The toolbar's Settings panel; the chat opens it to ask for an API key. */
+  settingsOpen: boolean
   setSidebarItem: (sidebarItem: SidebarItem) => void
   setChatOpen: (chatOpen: boolean) => void
+  setSettingsOpen: (settingsOpen: boolean) => void
 }
 
 export const UI_DEFAULT_STATE = {
   sidebarItem: 'library' as SidebarItem,
   chatOpen: true,
+  settingsOpen: false,
 }
 
 export function mapActiveViewToSidebarItem(activeView: WorkspaceView): SidebarItem {
@@ -43,6 +47,7 @@ export const useUiStore = create<UiState>()(
     ...UI_DEFAULT_STATE,
     setSidebarItem: (sidebarItem) => set({ sidebarItem }),
     setChatOpen: (chatOpen) => set({ chatOpen }),
+    setSettingsOpen: (settingsOpen) => set({ settingsOpen }),
   })),
 )
 

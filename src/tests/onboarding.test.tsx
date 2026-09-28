@@ -20,57 +20,21 @@ vi.mock('@tauri-apps/plugin-opener', () => ({
   openUrl: vi.fn(),
 }))
 
-vi.mock('@mariozechner/pi-ai/oauth', () => ({
-  getOAuthProvider: vi.fn(() => null),
-  registerOAuthProvider: vi.fn(),
-  refreshAnthropicToken: vi.fn(),
-  refreshOpenAICodexToken: vi.fn(),
-  resetOAuthProviders: vi.fn(),
-}))
-
-// Mock pi-web-ui (needed by ChatPanel in AppLayout)
-vi.mock('@mariozechner/pi-web-ui', () => {
-  function MockChatPanel() {
-    const el = document.createElement('div')
-    el.setAttribute('data-testid', 'pi-chat-panel')
-    ;(el as any).setAgent = vi.fn()
-    return el
-  }
-  return {
-    ChatPanel: MockChatPanel,
-    ApiKeyPromptDialog: { prompt: vi.fn().mockResolvedValue(true) },
-    defaultConvertToLlm: vi.fn((m: unknown[]) => m),
-    AppStorage: vi.fn(),
-    IndexedDBStorageBackend: vi.fn(),
-    SettingsStore: vi.fn(() => ({ getConfig: vi.fn(), setBackend: vi.fn() })),
-    ProviderKeysStore: vi.fn(() => ({ getConfig: vi.fn(), setBackend: vi.fn(), get: vi.fn() })),
-    SessionsStore: Object.assign(vi.fn(() => ({ getConfig: vi.fn(), setBackend: vi.fn() })), {
-      getMetadataConfig: vi.fn(),
-    }),
-    CustomProvidersStore: vi.fn(() => ({ getConfig: vi.fn(), setBackend: vi.fn() })),
-    setAppStorage: vi.fn(),
-  }
-})
-
-vi.mock('@mariozechner/pi-ai', () => ({
-  getModel: vi.fn(() => ({ id: 'test', provider: 'test', api: 'messages' })),
-  getProviders: vi.fn(() => ['anthropic', 'openai']),
-  getModels: vi.fn(() => [
-    { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4', provider: 'anthropic', api: 'messages' },
-  ]),
-}))
-
 // ── Imports after mocks ──
 import OnboardingWizard, { useOnboardingStore } from '../components/OnboardingWizard'
 import App from '../App'
+import { useAgentStore } from '../stores/agent'
 
 // ── Helpers ──
 
-/** Default invoke mock: no credentials, basic printer status */
+/** Default invoke mock: agent without a key, basic printer status */
 function setupDefaultMocks() {
+  let agent = { provider: 'anthropic', model: 'claude-sonnet-5', hasApiKey: false }
   invokeMock.mockImplementation(async (cmd: string, payload?: any) => {
-    if (cmd === 'has_credential') return false
-    if (cmd === 'get_credential') return null
+    if (cmd === 'agent_status') return agent
+    if (cmd === 'agent_set_model') return (agent = { ...agent, provider: payload.provider, model: payload.model, hasApiKey: false })
+    if (cmd === 'agent_set_api_key') return (agent = { ...agent, hasApiKey: true })
+    if (cmd === 'agent_history') return { conversationId: 'c1', entries: [] }
     if (cmd === 'get_settings') return {} // No onboarding.completed
     if (cmd === 'get_app_state') {
       return {
@@ -126,6 +90,7 @@ describe('OnboardingWizard', () => {
     setupDefaultMocks()
     // Reset wizard step to 0
     useOnboardingStore.getState().reset()
+    useAgentStore.setState({ status: null })
   })
 
   afterEach(() => {
@@ -152,15 +117,21 @@ describe('OnboardingWizard', () => {
     })
   })
 
-  it('LLM Provider step shows Anthropic and OpenAI cards', async () => {
+  it('LLM step stores the chosen provider and API key on Continue', async () => {
     const onComplete = vi.fn()
     useOnboardingStore.getState().setStep(1)
     render(<OnboardingWizard onComplete={onComplete} />)
 
-    await waitFor(() => {
-      expect(screen.getByTestId('provider-card-anthropic')).toBeDefined()
-      expect(screen.getByTestId('provider-card-openai-codex')).toBeDefined()
-    })
+    expect(screen.getByTestId('provider-anthropic')).toBeDefined()
+    fireEvent.click(screen.getByTestId('provider-openai'))
+    const input = screen.getByTestId('input-api-key') as HTMLInputElement
+    expect(input.type).toBe('password')
+    fireEvent.change(input, { target: { value: 'sk-test' } })
+    fireEvent.click(screen.getByTestId('btn-llm-continue'))
+
+    await waitFor(() => expect(screen.getByTestId('step-bambu')).toBeDefined())
+    expect(invokeMock).toHaveBeenCalledWith('agent_set_model', { provider: 'openai', model: 'gpt-5.5' })
+    expect(invokeMock).toHaveBeenCalledWith('agent_set_api_key', { provider: 'openai', apiKey: 'sk-test' })
   })
 
   it('"Skip" on LLM step advances to Bambu step', async () => {
@@ -216,8 +187,7 @@ describe('OnboardingWizard', () => {
     })
 
     const summary = screen.getByTestId('setup-summary')
-    expect(summary.textContent).toContain('Anthropic')
-    expect(summary.textContent).toContain('OpenAI')
+    expect(summary.textContent).toContain('AI provider: Not configured')
     expect(summary.textContent).toContain('Bambu Printer')
   })
 

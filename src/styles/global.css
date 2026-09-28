@@ -1,5 +1,5 @@
-/* Cascade layer ordering: our base & app styles always win over pi-chat resets */
-@layer base, pi-chat, app;
+/* Cascade layer ordering: app styles win over base */
+@layer base, app;
 
 @import './tokens.css';
 @import './fonts.css';
@@ -564,6 +564,32 @@ button {
 
 .settings-field select:disabled {
   opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.settings-field input {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 6px;
+  font-size: 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-deep);
+  color: var(--text-primary);
+}
+
+.settings-field button {
+  padding: 3px 8px;
+  font-size: 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: none;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.settings-field button:disabled {
+  color: var(--text-tertiary);
   cursor: not-allowed;
 }
 
@@ -1177,35 +1203,6 @@ button {
   flex-shrink: 0;
   overflow: hidden;
 }
-
-.chat-header {
-  height: var(--main-tab-height);
-  border-bottom: 1px solid var(--border);
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 0 14px;
-  flex-shrink: 0;
-}
-
-.chat-title {
-  margin: 0;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text-secondary);
-}
-
-.provider-badge {
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 9px;
-  letter-spacing: 0.3px;
-  padding: 2px 6px;
-  border-radius: 3px;
-  color: var(--accent-orange);
-  background: var(--accent-orange-dim);
-}
-
-/* Chat body/input replaced by pi-web-ui ChatPanel Lit component — styles removed */
 
 .status-bar {
   height: var(--status-bar-height);
