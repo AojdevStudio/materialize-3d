@@ -335,7 +335,6 @@ mod tests {
     use super::*;
     use crate::fabrication::bambu::{BambuVersion, ResolvedPreset};
     use std::cell::Cell;
-    use std::os::unix::fs::PermissionsExt;
     use std::time::Instant;
 
     fn preset(dir: &Path, name: &str) -> ResolvedPreset {
@@ -348,13 +347,12 @@ mod tests {
     }
 
     fn fixture(dir: &Path, script: &str) -> (BambuStudio, ResolvedPresets, PathBuf) {
-        let exe = dir.join("fake-bambu");
-        fs::write(&exe, format!("#!/bin/sh\n{script}\n")).expect("script");
-        fs::set_permissions(&exe, fs::Permissions::from_mode(0o755)).expect("chmod");
+        // `/bin/sh <input> <args…>` runs the input as the fake slicer. Executing a
+        // script written moments ago races other test threads' forks (ETXTBSY).
         let input = dir.join("input.3mf");
-        fs::write(&input, b"project").expect("input");
+        fs::write(&input, format!("{script}\n")).expect("input");
         let studio = BambuStudio {
-            exe,
+            exe: PathBuf::from("/bin/sh"),
             profiles_dir: dir.to_path_buf(),
             version: BambuVersion("02.08.02.61".into()),
         };

@@ -1,9 +1,10 @@
 mod commands;
 mod credentials;
 mod database;
+pub mod fabrication;
+mod sign_commands;
 mod makerworld;
 mod oauth_callback;
-pub mod fabrication;
 pub mod openscad;
 pub mod platform;
 mod print_queue;
@@ -86,6 +87,15 @@ pub fn run() {
             get_queue,
             remove_from_queue,
             get_print_history,
+            sign_commands::sign_build,
+            sign_commands::sign_cancel,
+            sign_commands::sign_list,
+            sign_commands::sign_lineage,
+            sign_commands::sign_get,
+            sign_commands::sign_preview,
+            sign_commands::sign_approve,
+            sign_commands::sign_export,
+            sign_commands::sign_record_print,
             delete_print_history_item,
             get_library_models,
             search_library_models,
@@ -131,6 +141,23 @@ pub fn run() {
                 *db_guard = Some(conn);
             }
             log::info!("setup: SQLite database initialized at {}", db_path.display());
+
+            // A build that was running when the app stopped can never finish;
+            // record it as failed and drop its partial directory.
+            let app_cache_dir = app
+                .path()
+                .app_cache_dir()
+                .map_err(|e| format!("failed to resolve app cache dir: {e}"))?;
+            let workspace = fabrication::build::Workspace::new(&app_data_dir, &app_cache_dir);
+            let interrupted = fabrication::build::with_db(&app_state, |conn| {
+                fabrication::revisions::reconcile_interrupted(conn)
+            })
+            .map_err(|e| format!("sign revision reconcile failed: {e}"))?;
+            let partials = workspace
+                .remove_partials()
+                .map_err(|e| format!("failed to clean partial sign builds: {e}"))?;
+            log::info!("setup: signs reconciled ({interrupted} interrupted builds, {partials} partial dirs removed)");
+            app.manage(sign_commands::SignService::new(workspace));
 
             // Scan library filesystem for existing metadata.json files
             let library_root = app_data_dir.join("library").join("makerworld");

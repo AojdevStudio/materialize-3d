@@ -38,8 +38,13 @@ uuid = { version = "1", features = ["v4"] }
 tauri-plugin-notification = "2"
 tauri-plugin-dialog = "2.6.0"
 
-# fabrication::bambu
+# fabrication
+earcutr = "0.5"
+i_overlay = "9"
 sha2 = "0.10"
+tiny-skia = "0.12"
+ttf-parser = "0.25"
+usvg = { version = "0.48", default-features = false }
 
 # OS-native credential store: Keychain (macOS), Credential Manager (Windows),
 # Secret Service (Linux).
