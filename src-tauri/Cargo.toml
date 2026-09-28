@@ -11,7 +11,10 @@ name = "materialize_3d_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
-tauri-build = { version = "2", features = [] }
+# Tauri crates stay on one release line. The 2.12 runtime crates fall inside
+# tauri 2.11's version ranges but do not compile against it, so every crate of
+# the line is bounded here; patch releases within the line still update.
+tauri-build = { version = "~2.6.3", features = [] }
 
 [features]
 # Verification harness for driving the app on macOS; never enabled in release builds.
@@ -21,7 +24,12 @@ e2e = ["dep:objc2", "dep:objc2-web-kit", "dep:objc2-app-kit", "dep:objc2-foundat
 log = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tauri = { version = "2", features = ["devtools", "unstable"] }
+tauri = { version = "~2.11.6", features = ["devtools", "unstable"] }
+tauri-runtime = "~2.11.3"
+tauri-runtime-wry = "~2.11.4"
+tauri-utils = "~2.9.3"
+tauri-macros = "~2.6.3"
+tauri-codegen = "~2.6.3"
 tauri-plugin-log = "2"
 tauri-plugin-opener = "2"
 rumqttc = { version = "0.24", features = ["use-rustls"] }
@@ -41,7 +49,7 @@ native-tls = "0.2"
 rusqlite = { version = "0.32", features = ["bundled"] }
 uuid = { version = "1", features = ["v4"] }
 tauri-plugin-notification = "2"
-tauri-plugin-dialog = "2.6.0"
+tauri-plugin-dialog = "~2.6.0"
 
 # fabrication
 earcutr = "0.5"
@@ -66,7 +74,7 @@ subtle = "2"
 [dev-dependencies]
 jsonschema = { version = "0.33", default-features = false }
 rig = { version = "=0.42.0", features = ["test-utils"] }
-tauri = { version = "2", features = ["test"] }
+tauri = { version = "~2.11.6", features = ["test"] }
 
 # OS-native credential store: Keychain (macOS), Credential Manager (Windows),
 # Secret Service (Linux).
