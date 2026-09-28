@@ -1,0 +1,8 @@
+{
+  "type": "filament",
+  "name": "Base Filament",
+  "from": "system",
+  "instantiation": "false",
+  "filament_id": "GFTEST",
+  "filament_type": ["PLA"]
+}

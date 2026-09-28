@@ -1,0 +1,11 @@
+{
+  "type": "machine",
+  "name": "Test Printer 0.6 nozzle",
+  "from": "system",
+  "instantiation": "true",
+  "inherits": "Base Machine",
+  "include": ["Start A", "Start B"],
+  "printer_variant": "0.6",
+  "nozzle_diameter": ["0.6"],
+  "retraction_length": ["1.4", "1.4", "1.4"]
+}

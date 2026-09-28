@@ -1,0 +1,6 @@
+{
+  "name": "Start B",
+  "instantiation": "false",
+  "machine_start_gcode": "START B\n\"quoted\"",
+  "include_order": "B"
+}

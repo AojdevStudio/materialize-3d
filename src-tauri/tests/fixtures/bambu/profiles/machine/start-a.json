@@ -1,0 +1,9 @@
+{
+  "name": "Start A",
+  "instantiation": "false",
+  "machine_start_gcode": "START A",
+  "include_order": "A",
+  "different_length_vector": ["1", "1", "1"],
+  "equal_vector": ["1"],
+  "suppressed_key": "default"
+}
