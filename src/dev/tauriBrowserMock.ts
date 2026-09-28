@@ -671,6 +671,8 @@ function handleAgentCommand(cmd: string, payload: unknown): unknown {
   }
 }
 
+// Replays a turn with the AgentEvent protocol from src/types/agent.ts, which
+// mirrors src-tauri/src/agent/protocol.rs. Update this when either changes.
 async function runMockTurn(turnId: string, text: string, channel: Channel<AgentEvent>): Promise<void> {
   const send = (event: AgentEvent) => channel.onmessage(event)
   const now = () => new Date().toISOString()

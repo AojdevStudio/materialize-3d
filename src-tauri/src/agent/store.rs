@@ -95,7 +95,9 @@ const INTERRUPTED_NOTE: &str =
 /// A tool call still `started` is recorded as interrupted and never re-run,
 /// and a turn whose transcript still holds only the person's message gets a
 /// note, so the model does not read the request as untouched work and quietly
-/// redo it. Returns the number of interrupted tool calls.
+/// redo it. A transcript that no longer parses (a write cut short by the very
+/// crash this recovers from) is treated the same way instead of blocking
+/// launch. Returns the number of interrupted tool calls.
 pub fn reconcile_interrupted(conn: &Connection) -> Result<usize> {
     let calls = conn.execute(
         "UPDATE agent_tool_calls SET status = 'interrupted', finished_at = ?1,
@@ -107,7 +109,14 @@ pub fn reconcile_interrupted(conn: &Connection) -> Result<usize> {
     let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?)))?;
     for row in rows {
         let (id, text, transcript) = row?;
-        if serde_json::from_str::<Vec<Message>>(&transcript)? == [Message::user(text.as_str())] {
+        let unfinished = match serde_json::from_str::<Vec<Message>>(&transcript) {
+            Ok(messages) => messages == [Message::user(text.as_str())],
+            Err(err) => {
+                log::warn!("agent message {id}: unreadable transcript treated as unfinished: {err}");
+                true
+            }
+        };
+        if unfinished {
             set_transcript(conn, &id, &[Message::user(format!("{text}\n\n{INTERRUPTED_NOTE}"))])?;
         }
     }
@@ -354,6 +363,22 @@ mod tests {
 
         reconcile_interrupted(&conn).expect("second reconcile");
         assert_eq!(model_history(&conn, &conversation).expect("history"), history, "reconcile is idempotent");
+    }
+
+    #[test]
+    fn an_unreadable_transcript_does_not_block_launch_and_is_marked_unfinished() {
+        let (_dir, conn) = db();
+        let conversation = current_conversation(&conn).expect("conversation");
+        insert_user_message(&conn, &conversation, "t1", "make a sign").expect("user");
+        conn.execute("UPDATE agent_messages SET rig_json = '[{\"role\":\"us' WHERE turn_id = 't1'", [])
+            .expect("truncate transcript");
+
+        reconcile_interrupted(&conn).expect("reconcile survives a transcript cut short by a crash");
+        assert_eq!(
+            model_history(&conn, &conversation).expect("history"),
+            vec![Message::user(format!("make a sign\n\n{INTERRUPTED_NOTE}"))],
+            "the unreadable turn is treated as unfinished"
+        );
     }
 
     #[test]
