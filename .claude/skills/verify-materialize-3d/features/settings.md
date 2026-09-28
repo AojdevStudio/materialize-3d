@@ -22,7 +22,7 @@ Preconditions:
 
 - Onboarding completed per the baseline in README.md.
 
-- **Open (observed 2026-09-25).** Run `$S/wd.ts click "button[aria-label=Settings]"`, `$S/wd.ts wait "[role=dialog][aria-label=Settings]"`, and `$S/wd.ts wait "[data-testid=slicer-ok]" 20000`. Sections Defaults, Agent, Notifications, Connection, and Slicer appear, and the slicer line reads "OrcaSlicer ✓".
+- **Open (observed 2026-09-25).** Run `$S/wd.ts click "button[aria-label=Settings]"`, `$S/wd.ts wait "[role=dialog][aria-label=Settings]"`, and `$S/wd.ts wait "[data-testid=bambu-studio-section]" 20000`. Sections Bambu Studio, Defaults, Agent, Notifications, Connection, and External agents appear. The Bambu Studio section shows the detected version and path, or setup steps when no validated copy is found.
 - **Change quality (observed 2026-09-25).** Run `$S/wd.ts click 'xpath=//div[@role="dialog"]//label[contains(., "Quality")]//option[@value="0.16"]'` and `$S/wd.ts attr 'xpath=//div[@role="dialog"]//label[contains(., "Quality")]//select' value`. It prints `0.16`.
 - **Side effect (observed 2026-09-25).** Read `select key, value from settings` from `DB`. It contains `default.quality = 0.16`.
 - **Persistence.** Run `$S/wd.ts end`, `$S/wd.ts session`, reopen Settings, then run the same `attr` command. It still prints `0.16`.
@@ -32,8 +32,7 @@ Preconditions:
 
 ## Gotchas
 
-- Selects stay disabled until the profile list loads. Wait for `slicer-ok` before clicking options.
+- Selects stay disabled until the profile list loads. Wait until the Quality select is enabled (`$S/wd.ts wait "[role=dialog] select:not([disabled])"`) before clicking options.
 - The select text renders light-on-light and is barely readable in screenshots. Prove values with `attr ... value` and the DB, not pixels.
 - The stored default filament `PLA Basic` is not one of the options, so a fresh run displays `Bambu PETG Basic`, the first option, without writing it.
-- `OrcaSlicer ✓` is shown even when OrcaSlicer is not installed, as on the Linux host. It proves nothing about slicing.
 - Settings has no printer section. Printers live in the toolbar popover, see [printers](./printers.md).

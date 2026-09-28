@@ -10,6 +10,7 @@ pub mod fabrication;
 mod e2e;
 mod mcp;
 mod sign_commands;
+mod studio_commands;
 mod makerworld;
 pub mod openscad;
 pub mod platform;
@@ -135,6 +136,9 @@ pub fn run() {
             switch_printer,
             get_settings,
             update_settings,
+            studio_commands::bambu_studio_status,
+            studio_commands::choose_bambu_studio,
+            studio_commands::clear_bambu_studio,
         ])
         .setup(|app| {
             // Initialize SQLite database

@@ -29,7 +29,6 @@ This directory is the maintained source for verifying Materialize 3D's user-faci
 
 - `openscad` is not installed. Design renders end in `Error`, see [design](./design-openscad.md).
 - Bambu Studio 02.08.02.61 is at `<path to the Bambu Studio 02.08.02.61 AppRun>`. Sign builds need `BAMBU_STUDIO_CLI` pointed at it before `up`, see [signs](./signs.md).
-- OrcaSlicer is not installed at any path the app checks. Settings still shows `OrcaSlicer ✓`, because the check reads static profiles.
 - The test P2S printer sits on a separate VLAN. Treat printer connection as unreachable unless you have confirmed the route.
 
 ## Feature entry contract

@@ -578,7 +578,15 @@ button {
   color: var(--text-primary);
 }
 
-.settings-field button {
+.settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.settings-field button,
+.settings-actions button {
   padding: 3px 8px;
   font-size: 12px;
   border: 1px solid var(--border);
@@ -588,7 +596,8 @@ button {
   cursor: pointer;
 }
 
-.settings-field button:disabled {
+.settings-field button:disabled,
+.settings-actions button:disabled {
   color: var(--text-tertiary);
   cursor: not-allowed;
 }
@@ -668,11 +677,6 @@ button {
   font-size: 12px;
   color: var(--accent-green);
   font-weight: 500;
-}
-
-.settings-slicer-checking {
-  font-size: 12px;
-  color: var(--text-tertiary);
 }
 
 .main-layout {

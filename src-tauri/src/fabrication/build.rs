@@ -20,6 +20,7 @@ use super::revisions::{
     Sha256Hex, SignRevision, SlicerIdentity,
 };
 use super::sign::{self, GeometryCheck, SignError, ValidSignSpec, P2S_PROJECT_SETTINGS_TEMPLATE};
+use super::studio_choice;
 use crate::state::AppState;
 
 /// Bump when geometry or packaging output changes for the same spec, so a
@@ -126,6 +127,15 @@ pub struct BuildOutcome {
 pub enum BuildError {
     #[error(transparent)]
     Spec(#[from] sign::SpecError),
+    /// Bambu Studio is missing or not a validated version. The message is what
+    /// a person in the Signs view and the in-app agent read, so it ends with
+    /// what to do next.
+    #[error(
+        "{0}. Download Bambu Studio {} from {}, then choose it in Settings > Bambu Studio.",
+        bambu::VALIDATED_VERSIONS.join(" or "),
+        bambu::DOWNLOAD_URL
+    )]
+    Studio(BambuError),
     #[error("slicer unavailable: {0}")]
     Slicer(BambuError),
     #[error("build cancelled")]
@@ -196,7 +206,8 @@ pub fn build_sign(
     let spec_sha256 = Sha256Hex::try_from(sign::spec_hash(&spec))?;
     progress(BuildStep::SpecValidated);
 
-    let studio = BambuStudio::locate().map_err(BuildError::Slicer)?;
+    let chosen = studio_choice::chosen(state).map_err(BuildError::Failed)?;
+    let studio = BambuStudio::locate(chosen.as_deref()).map_err(BuildError::Studio)?;
     let template: Value = serde_json::from_str(P2S_PROJECT_SETTINGS_TEMPLATE)
         .map_err(|e| BuildError::Failed(format!("project settings template: {e}")))?;
     let presets = bambu::resolve_presets(&studio, &template_selection(&template)?, &workspace.preset_cache)
@@ -593,6 +604,28 @@ mod tests {
             .expect("human approves");
         assert!(matches!(approved.approval, Approval::Approved { .. }));
         println!("revision {} package {}", first.revision.id, artifacts.package_sha256);
+    }
+
+    #[test]
+    fn a_missing_bambu_studio_tells_the_person_to_choose_one_in_settings() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = app_state(dir.path());
+        let workspace = Workspace::new(&dir.path().join("data"), &dir.path().join("cache"));
+        let gone = dir.path().join("BambuStudio-02.08.02.61/BambuStudio.app");
+        {
+            let guard = state.db.lock().expect("db lock");
+            let conn = guard.as_ref().expect("db");
+            crate::database::upsert_setting(conn, "bambu_studio.path", gone.to_str().expect("utf-8")).expect("store choice");
+        }
+
+        let request = BuildRequest { spec: fixture(), lineage_id: None, actor: Actor::Human };
+        let err = build_sign(&state, &workspace, request, &|_| {}, &|| false)
+            .expect_err("build fails without Bambu Studio (BAMBU_STUDIO_CLI, if set, overrides the stored choice)");
+        let message = err.to_string();
+        assert!(message.contains(&gone.display().to_string()), "{message}");
+        assert!(message.contains("choose it in Settings > Bambu Studio"), "{message}");
+        assert!(message.contains(bambu::DOWNLOAD_URL), "{message}");
+        assert!(revisions_of(&state).is_empty(), "no revision is recorded");
     }
 
     fn revisions_of(state: &AppState) -> Vec<SignRevision> {
