@@ -14,7 +14,7 @@ tauri-build = { version = "2", features = [] }
 
 [features]
 # Verification harness for driving the app on macOS; never enabled in release builds.
-e2e = ["dep:axum", "dep:objc2", "dep:objc2-web-kit", "dep:objc2-app-kit", "dep:objc2-foundation", "dep:block2"]
+e2e = ["dep:objc2", "dep:objc2-web-kit", "dep:objc2-app-kit", "dep:objc2-foundation", "dep:block2"]
 
 [dependencies]
 log = "0.4"
@@ -49,8 +49,8 @@ sha2 = "0.10"
 tiny-skia = "0.12"
 ttf-parser = "0.25"
 usvg = { version = "0.48", default-features = false }
-# e2e harness
-axum = { version = "0.8", optional = true }
+# local HTTP servers: the MCP endpoint and the e2e harness
+axum = "0.8"
 
 # in-app agent
 futures = "0.3"
@@ -58,9 +58,14 @@ rig = "=0.42.0"
 schemars = "1"
 tokio-util = { version = "0.7", features = ["rt"] }
 
+# mcp
+rmcp = { version = "=3.4.1", features = ["server", "macros", "transport-streamable-http-server", "schemars"] }
+subtle = "2"
+
 [dev-dependencies]
 jsonschema = { version = "0.33", default-features = false }
 rig = { version = "=0.42.0", features = ["test-utils"] }
+tauri = { version = "2", features = ["test"] }
 
 # OS-native credential store: Keychain (macOS), Credential Manager (Windows),
 # Secret Service (Linux).
@@ -77,3 +82,4 @@ keyring = { version = "3", features = ["windows-native"] }
 
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
 keyring = { version = "3", features = ["linux-native"] }
+

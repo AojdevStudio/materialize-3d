@@ -2,10 +2,13 @@ mod commands;
 mod credentials;
 mod database;
 pub mod actions;
+#[cfg(test)]
+mod caller_identity_tests;
 pub mod agent;
 pub mod fabrication;
 #[cfg(feature = "e2e")]
 mod e2e;
+mod mcp;
 mod sign_commands;
 mod makerworld;
 pub mod openscad;
@@ -89,6 +92,10 @@ pub fn run() {
             get_queue,
             remove_from_queue,
             get_print_history,
+            mcp::mcp_status,
+            mcp::mcp_set_enabled,
+            mcp::mcp_token,
+            mcp::mcp_rotate_token,
             sign_commands::sign_build,
             sign_commands::sign_cancel,
             sign_commands::sign_list,
@@ -180,6 +187,18 @@ pub fn run() {
             e2e::start(app.handle())?;
             app.manage(actions::Actions::new(app.handle().clone(), app_state.inner().clone(), workspace));
             app.manage(sign_commands::GuiBuilds::default());
+            app.manage(mcp::McpServer::default());
+            {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let server = handle.state::<mcp::McpServer>();
+                    let actions = handle.state::<actions::Actions>().inner().clone();
+                    let state = handle.state::<Arc<AppState>>();
+                    if let Err(err) = mcp::start_if_enabled(&server, actions, &state, mcp::token).await {
+                        log::error!("mcp: failed to start at launch: {err}");
+                    }
+                });
+            }
 
             // Scan library filesystem for existing metadata.json files
             let library_root = app_data_dir.join("library").join("makerworld");

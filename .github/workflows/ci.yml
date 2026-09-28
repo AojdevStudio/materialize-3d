@@ -62,6 +62,12 @@ jobs:
       - name: Sign fabrication with real Bambu Studio (input immutability, multicolor, placement, revision integrity)
         working-directory: src-tauri
         run: cargo test --lib --locked fabrication::build -- --ignored --nocapture --test-threads=1
+      - name: Caller identity, approval enforcement, app ACL, and MCP boundary
+        working-directory: src-tauri
+        run: >
+          cargo test --lib --locked -- --include-ignored --test-threads=1
+          caller_identity_tests acl_tests mcp::tests fabrication::revisions
+          agent::tests::the_model_is_offered_exactly_the_registry_and_no_approval_tool
 
   macos:
     name: macOS desktop build gate
@@ -100,6 +106,12 @@ jobs:
       - name: Sign fabrication with real Bambu Studio (input immutability, multicolor, placement, revision integrity)
         working-directory: src-tauri
         run: cargo test --lib --locked fabrication::build -- --ignored --nocapture --test-threads=1
+      - name: Caller identity, approval enforcement, app ACL, and MCP boundary
+        working-directory: src-tauri
+        run: >
+          cargo test --lib --locked -- --include-ignored --test-threads=1
+          caller_identity_tests acl_tests mcp::tests fabrication::revisions
+          agent::tests::the_model_is_offered_exactly_the_registry_and_no_approval_tool
       - name: Build the desktop app (release profile)
         run: bun tauri build --bundles app
       - name: The release app carries no verification harness or dialog override

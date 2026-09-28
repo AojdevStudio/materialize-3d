@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { useSettingsStore } from '../stores/settings'
 import { PROVIDERS, PROVIDER_LABELS, PROVIDER_MODELS, modelLabel, useAgentStore } from '../stores/agent'
 import type { Provider } from '../types/agent'
+import { McpSection } from './McpSection'
 
 interface ProfileList {
   qualities: string[]
@@ -187,6 +188,8 @@ export function SettingsPanel({
           <span>Auto-connect on launch</span>
         </label>
       </div>
+
+      <McpSection active={isOpen} />
 
       {/* Slicer Diagnostic Section */}
       <div className="settings-section">
