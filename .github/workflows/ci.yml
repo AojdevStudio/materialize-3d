@@ -1,0 +1,81 @@
+# Required gates for every PR. Both jobs run on GitHub-hosted runners, so a
+# pull request, including one from a fork, never executes on a machine we own.
+# Each job installs its own toolchain.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    name: Linux build and checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Tauri system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev
+      - uses: actions/setup-node@v6.2.0
+        with:
+          node-version: "24"
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.7"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: Install JavaScript dependencies (frozen lockfile)
+        run: bun install --frozen-lockfile
+      - name: Typecheck
+        run: bunx tsc --noEmit
+      - name: Frontend tests
+        run: bun run test
+      - name: Frontend build
+        run: bun run build
+      - name: Slicer package tests
+        working-directory: packages/bambu-slicer
+        run: bun test
+      - name: Rust tests
+        working-directory: src-tauri
+        run: cargo test --lib --locked
+
+  macos:
+    name: macOS desktop build gate
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.7"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: Install JavaScript dependencies (frozen lockfile)
+        run: bun install --frozen-lockfile
+      - name: Typecheck
+        run: bunx tsc --noEmit
+      - name: Frontend tests
+        run: bun run test
+      - name: Slicer package tests
+        working-directory: packages/bambu-slicer
+        run: bun test
+      - name: Rust tests
+        working-directory: src-tauri
+        run: cargo test --lib --locked
+      - name: Build the desktop app (release profile)
+        run: bun tauri build --bundles app

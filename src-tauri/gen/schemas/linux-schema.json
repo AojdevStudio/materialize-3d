@@ -345,6 +345,630 @@
       "description": "Permission identifier",
       "oneOf": [
         {
+          "description": "Enables the add_printer_config command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-add-printer-config",
+          "markdownDescription": "Enables the add_printer_config command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the add_to_queue command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-add-to-queue",
+          "markdownDescription": "Enables the add_to_queue command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the connect_printer command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-connect-printer",
+          "markdownDescription": "Enables the connect_printer command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the connect_printer_by_config command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-connect-printer-by-config",
+          "markdownDescription": "Enables the connect_printer_by_config command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the delete_credential command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-delete-credential",
+          "markdownDescription": "Enables the delete_credential command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the delete_library_model command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-delete-library-model",
+          "markdownDescription": "Enables the delete_library_model command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the delete_print_history_item command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-delete-print-history-item",
+          "markdownDescription": "Enables the delete_print_history_item command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the delete_printer_config command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-delete-printer-config",
+          "markdownDescription": "Enables the delete_printer_config command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the disconnect_printer command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-disconnect-printer",
+          "markdownDescription": "Enables the disconnect_printer command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the download_model command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-download-model",
+          "markdownDescription": "Enables the download_model command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_app_state command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-app-state",
+          "markdownDescription": "Enables the get_app_state command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_credential command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-credential",
+          "markdownDescription": "Enables the get_credential command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_designs_dir command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-designs-dir",
+          "markdownDescription": "Enables the get_designs_dir command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_library_models command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-library-models",
+          "markdownDescription": "Enables the get_library_models command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_print_history command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-print-history",
+          "markdownDescription": "Enables the get_print_history command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_printer_configs command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-printer-configs",
+          "markdownDescription": "Enables the get_printer_configs command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_printer_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-printer-status",
+          "markdownDescription": "Enables the get_printer_status command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_queue command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-queue",
+          "markdownDescription": "Enables the get_queue command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_settings command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-settings",
+          "markdownDescription": "Enables the get_settings command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the has_credential command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-has-credential",
+          "markdownDescription": "Enables the has_credential command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the list_profiles command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-list-profiles",
+          "markdownDescription": "Enables the list_profiles command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the makerworld_back command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-makerworld-back",
+          "markdownDescription": "Enables the makerworld_back command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the makerworld_forward command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-makerworld-forward",
+          "markdownDescription": "Enables the makerworld_forward command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the makerworld_reload command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-makerworld-reload",
+          "markdownDescription": "Enables the makerworld_reload command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the navigate_makerworld command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-navigate-makerworld",
+          "markdownDescription": "Enables the navigate_makerworld command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the oauth_token_exchange command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-oauth-token-exchange",
+          "markdownDescription": "Enables the oauth_token_exchange command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the open_library_model command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-open-library-model",
+          "markdownDescription": "Enables the open_library_model command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the openscad_check_installed command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-openscad-check-installed",
+          "markdownDescription": "Enables the openscad_check_installed command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the openscad_extract_params command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-openscad-extract-params",
+          "markdownDescription": "Enables the openscad_extract_params command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the openscad_render command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-openscad-render",
+          "markdownDescription": "Enables the openscad_render command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the pause_print command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-pause-print",
+          "markdownDescription": "Enables the pause_print command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the probe_camera command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-probe-camera",
+          "markdownDescription": "Enables the probe_camera command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the read_model_file command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-read-model-file",
+          "markdownDescription": "Enables the read_model_file command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the read_text_file command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-read-text-file",
+          "markdownDescription": "Enables the read_text_file command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the remove_from_queue command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-remove-from-queue",
+          "markdownDescription": "Enables the remove_from_queue command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the report_makerworld_import_attempt command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-report-makerworld-import-attempt",
+          "markdownDescription": "Enables the report_makerworld_import_attempt command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the report_makerworld_page command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-report-makerworld-page",
+          "markdownDescription": "Enables the report_makerworld_page command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the resume_print command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-resume-print",
+          "markdownDescription": "Enables the resume_print command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the search_library_models command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-search-library-models",
+          "markdownDescription": "Enables the search_library_models command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the search_makerworld command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-search-makerworld",
+          "markdownDescription": "Enables the search_makerworld command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the set_active_view command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-active-view",
+          "markdownDescription": "Enables the set_active_view command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the set_default_printer command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-default-printer",
+          "markdownDescription": "Enables the set_default_printer command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the slice_model command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-slice-model",
+          "markdownDescription": "Enables the slice_model command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the start_oauth_callback command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-start-oauth-callback",
+          "markdownDescription": "Enables the start_oauth_callback command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the start_print command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-start-print",
+          "markdownDescription": "Enables the start_print command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the stop_oauth_callback command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-stop-oauth-callback",
+          "markdownDescription": "Enables the stop_oauth_callback command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the store_credential command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-store-credential",
+          "markdownDescription": "Enables the store_credential command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the switch_printer command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-switch-printer",
+          "markdownDescription": "Enables the switch_printer command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the sync_makerworld_webview command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-sync-makerworld-webview",
+          "markdownDescription": "Enables the sync_makerworld_webview command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the update_printer_config command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-update-printer-config",
+          "markdownDescription": "Enables the update_printer_config command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the update_settings command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-update-settings",
+          "markdownDescription": "Enables the update_settings command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the write_text_file command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-write-text-file",
+          "markdownDescription": "Enables the write_text_file command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the add_printer_config command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-add-printer-config",
+          "markdownDescription": "Denies the add_printer_config command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the add_to_queue command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-add-to-queue",
+          "markdownDescription": "Denies the add_to_queue command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the connect_printer command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-connect-printer",
+          "markdownDescription": "Denies the connect_printer command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the connect_printer_by_config command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-connect-printer-by-config",
+          "markdownDescription": "Denies the connect_printer_by_config command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the delete_credential command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-delete-credential",
+          "markdownDescription": "Denies the delete_credential command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the delete_library_model command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-delete-library-model",
+          "markdownDescription": "Denies the delete_library_model command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the delete_print_history_item command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-delete-print-history-item",
+          "markdownDescription": "Denies the delete_print_history_item command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the delete_printer_config command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-delete-printer-config",
+          "markdownDescription": "Denies the delete_printer_config command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the disconnect_printer command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-disconnect-printer",
+          "markdownDescription": "Denies the disconnect_printer command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the download_model command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-download-model",
+          "markdownDescription": "Denies the download_model command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_app_state command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-app-state",
+          "markdownDescription": "Denies the get_app_state command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_credential command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-credential",
+          "markdownDescription": "Denies the get_credential command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_designs_dir command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-designs-dir",
+          "markdownDescription": "Denies the get_designs_dir command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_library_models command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-library-models",
+          "markdownDescription": "Denies the get_library_models command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_print_history command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-print-history",
+          "markdownDescription": "Denies the get_print_history command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_printer_configs command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-printer-configs",
+          "markdownDescription": "Denies the get_printer_configs command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_printer_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-printer-status",
+          "markdownDescription": "Denies the get_printer_status command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_queue command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-queue",
+          "markdownDescription": "Denies the get_queue command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_settings command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-settings",
+          "markdownDescription": "Denies the get_settings command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the has_credential command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-has-credential",
+          "markdownDescription": "Denies the has_credential command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the list_profiles command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-list-profiles",
+          "markdownDescription": "Denies the list_profiles command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the makerworld_back command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-makerworld-back",
+          "markdownDescription": "Denies the makerworld_back command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the makerworld_forward command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-makerworld-forward",
+          "markdownDescription": "Denies the makerworld_forward command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the makerworld_reload command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-makerworld-reload",
+          "markdownDescription": "Denies the makerworld_reload command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the navigate_makerworld command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-navigate-makerworld",
+          "markdownDescription": "Denies the navigate_makerworld command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the oauth_token_exchange command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-oauth-token-exchange",
+          "markdownDescription": "Denies the oauth_token_exchange command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the open_library_model command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-open-library-model",
+          "markdownDescription": "Denies the open_library_model command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the openscad_check_installed command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-openscad-check-installed",
+          "markdownDescription": "Denies the openscad_check_installed command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the openscad_extract_params command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-openscad-extract-params",
+          "markdownDescription": "Denies the openscad_extract_params command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the openscad_render command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-openscad-render",
+          "markdownDescription": "Denies the openscad_render command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the pause_print command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-pause-print",
+          "markdownDescription": "Denies the pause_print command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the probe_camera command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-probe-camera",
+          "markdownDescription": "Denies the probe_camera command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the read_model_file command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-read-model-file",
+          "markdownDescription": "Denies the read_model_file command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the read_text_file command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-read-text-file",
+          "markdownDescription": "Denies the read_text_file command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the remove_from_queue command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-remove-from-queue",
+          "markdownDescription": "Denies the remove_from_queue command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the report_makerworld_import_attempt command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-report-makerworld-import-attempt",
+          "markdownDescription": "Denies the report_makerworld_import_attempt command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the report_makerworld_page command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-report-makerworld-page",
+          "markdownDescription": "Denies the report_makerworld_page command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the resume_print command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-resume-print",
+          "markdownDescription": "Denies the resume_print command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the search_library_models command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-search-library-models",
+          "markdownDescription": "Denies the search_library_models command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the search_makerworld command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-search-makerworld",
+          "markdownDescription": "Denies the search_makerworld command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_active_view command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-active-view",
+          "markdownDescription": "Denies the set_active_view command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_default_printer command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-default-printer",
+          "markdownDescription": "Denies the set_default_printer command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the slice_model command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-slice-model",
+          "markdownDescription": "Denies the slice_model command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the start_oauth_callback command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-start-oauth-callback",
+          "markdownDescription": "Denies the start_oauth_callback command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the start_print command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-start-print",
+          "markdownDescription": "Denies the start_print command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the stop_oauth_callback command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-stop-oauth-callback",
+          "markdownDescription": "Denies the stop_oauth_callback command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the store_credential command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-store-credential",
+          "markdownDescription": "Denies the store_credential command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the switch_printer command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-switch-printer",
+          "markdownDescription": "Denies the switch_printer command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the sync_makerworld_webview command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-sync-makerworld-webview",
+          "markdownDescription": "Denies the sync_makerworld_webview command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the update_printer_config command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-update-printer-config",
+          "markdownDescription": "Denies the update_printer_config command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the update_settings command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-update-settings",
+          "markdownDescription": "Denies the update_settings command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the write_text_file command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-write-text-file",
+          "markdownDescription": "Denies the write_text_file command without any pre-configured scope."
+        },
+        {
           "description": "Default core plugins set.\n#### This default permission set includes:\n\n- `core:path:default`\n- `core:event:default`\n- `core:window:default`\n- `core:webview:default`\n- `core:app:default`\n- `core:image:default`\n- `core:resources:default`\n- `core:menu:default`\n- `core:tray:default`",
           "type": "string",
           "const": "core:default",

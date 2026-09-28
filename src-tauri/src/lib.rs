@@ -38,6 +38,12 @@ use slicer::SlicerService;
 use state::AppState;
 use tauri::Manager;
 
+/// The one expansion of `generate_context!`: on macOS it embeds Info.plist as a
+/// symbol, so a second expansion (the ACL tests) would not link.
+fn app_context() -> tauri::Context<tauri::Wry> {
+    tauri::generate_context!()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -199,6 +205,57 @@ pub fn run() {
             }
             Ok(())
         })
-        .run(tauri::generate_context!())
+        .run(app_context())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod acl_tests {
+    use std::collections::BTreeSet;
+
+    use tauri::ipc::Origin;
+
+    fn quoted_names(text: &str) -> BTreeSet<String> {
+        text.split('"').skip(1).step_by(2).map(str::to_owned).collect()
+    }
+
+    fn registered_commands() -> BTreeSet<String> {
+        let source = include_str!("lib.rs");
+        let start = source.find("generate_handler![").expect("handler list") + "generate_handler![".len();
+        let list = &source[start..start + source[start..].find(']').expect("end of handler list")];
+        list.split(',')
+            .map(|entry| entry.trim().rsplit("::").next().unwrap_or_default().to_owned())
+            .filter(|name| !name.is_empty())
+            .collect()
+    }
+
+    #[test]
+    fn manifest_and_main_capability_cover_exactly_the_registered_commands() {
+        let registered = registered_commands();
+        let build = include_str!("../build.rs");
+        let manifest = quoted_names(&build[build.find("APP_COMMANDS: &[&str] = &[").expect("command list")..]);
+        assert_eq!(manifest, registered, "build.rs APP_COMMANDS");
+        let main: serde_json::Value = serde_json::from_str(include_str!("../capabilities/default.json")).expect("json");
+        let allowed: BTreeSet<String> = main["permissions"]
+            .as_array()
+            .expect("permissions")
+            .iter()
+            .filter_map(|p| p.as_str()?.strip_prefix("allow-").map(|c| c.replace('-', "_")))
+            .collect();
+        assert_eq!(allowed, registered, "capabilities/default.json allow- entries");
+    }
+
+    #[test]
+    fn the_remote_makerworld_page_can_only_report_to_the_app() {
+        let mut context = super::app_context();
+        let authority = context.runtime_authority_mut();
+        let makerworld = Origin::Remote { url: "https://makerworld.com/en/models/1".parse().expect("url") };
+        for command in registered_commands() {
+            let from_main = authority.resolve_access(&command, "main", "main", &Origin::Local);
+            assert!(from_main.is_some(), "main webview must be allowed {command}");
+            let from_makerworld = authority.resolve_access(&command, "main", "makerworld", &makerworld);
+            let expected = matches!(command.as_str(), "report_makerworld_page" | "report_makerworld_import_attempt");
+            assert_eq!(from_makerworld.is_some(), expected, "makerworld access to {command}");
+        }
+    }
 }

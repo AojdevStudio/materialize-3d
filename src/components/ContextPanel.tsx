@@ -34,6 +34,10 @@ const CONTEXT_CONTENT: Record<ActiveView, { meta: string; items: Array<{ title: 
       { title: 'Print progress', subtitle: 'Queue and ETA placeholder' },
     ],
   },
+  history: {
+    meta: 'Completed and failed prints',
+    items: [{ title: 'Print history', subtitle: 'Recorded when prints finish' }],
+  },
   queue: {
     meta: 'Upcoming jobs and schedule',
     items: [

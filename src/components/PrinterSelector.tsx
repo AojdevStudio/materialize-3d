@@ -104,8 +104,6 @@ export function PrinterSelector({ open, onClose }: { open: boolean; onClose: () 
 
   if (!open) return null
 
-  const activeConfig = configs.find((c) => c.id === selectedPrinterId)
-
   return (
     <div className="printer-selector-popover" ref={popoverRef} role="dialog" aria-label="Printer selector">
       <div className="printer-selector-header">

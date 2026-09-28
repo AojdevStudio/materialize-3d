@@ -1,7 +1,6 @@
 import { invoke } from '@tauri-apps/api/core'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useLibraryStore, applyLibrarySnapshot, type LibraryModel } from '../stores/libraryStore'
-import { useWorkspaceStore } from '../stores/workspace'
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 

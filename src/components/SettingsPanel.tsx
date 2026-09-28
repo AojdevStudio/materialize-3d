@@ -24,8 +24,6 @@ export function SettingsPanel({
   onClose: () => void
 }) {
   const panelRef = useRef<HTMLDivElement>(null)
-  const getSetting = useSettingsStore((s) => s.getSetting)
-  const getSettingBool = useSettingsStore((s) => s.getSettingBool)
   const settings = useSettingsStore((s) => s.settings)
 
   const [profiles, setProfiles] = useState<ProfileList | null>(null)

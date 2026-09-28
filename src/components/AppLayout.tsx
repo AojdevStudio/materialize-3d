@@ -20,7 +20,9 @@ export function AppLayout() {
         <Sidebar activeView={sidebarItem} onNavigate={(view) => void setActiveView(view)} />
 
         <div className="content-area">
-          <ContextPanel />
+          <ErrorBoundary>
+            <ContextPanel />
+          </ErrorBoundary>
           <ErrorBoundary>
             <MainPanel />
           </ErrorBoundary>
