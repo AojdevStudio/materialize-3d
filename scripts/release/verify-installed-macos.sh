@@ -56,6 +56,8 @@ BOOTSTRAPPED=0
 stop_tail() {
   if [[ -n "$TAIL_PID" ]]; then
     kill "$TAIL_PID" 2>/dev/null || true
+    for _ in $(seq 1 20); do kill -0 "$TAIL_PID" 2>/dev/null || break; sleep 0.1; done
+    kill -9 "$TAIL_PID" 2>/dev/null || true
     wait "$TAIL_PID" 2>/dev/null || true
     TAIL_PID=""
   fi
