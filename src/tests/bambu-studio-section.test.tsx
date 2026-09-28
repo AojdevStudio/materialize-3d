@@ -51,7 +51,7 @@ describe('BambuStudioSection', () => {
     serve(found)
     render(<BambuStudioSection active />)
     expect((await screen.findByTestId('bambu-studio-found')).textContent).toContain('02.08.02.61')
-    expect(screen.getByTestId('bambu-studio-path').textContent).toBe(found.state === 'found' ? found.path : '')
+    expect(screen.getByTestId('bambu-studio-path').textContent).toBe(`${CHOSEN}/Contents/MacOS/BambuStudio`)
     expect(screen.queryByTestId('bambu-studio-steps')).toBeNull()
     expect(screen.getByTestId('bambu-studio-clear')).toBeTruthy()
   })

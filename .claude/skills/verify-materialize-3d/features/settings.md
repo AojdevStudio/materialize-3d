@@ -32,7 +32,7 @@ Preconditions:
 
 ## Gotchas
 
-- Selects stay disabled until the profile list loads. Wait for `slicer-ok` before clicking options.
+- Selects stay disabled until the profile list loads. Wait until the Quality select is enabled (`$S/wd.ts wait "[role=dialog] select:not([disabled])"`) before clicking options.
 - The select text renders light-on-light and is barely readable in screenshots. Prove values with `attr ... value` and the DB, not pixels.
 - The stored default filament `PLA Basic` is not one of the options, so a fresh run displays `Bambu PETG Basic`, the first option, without writing it.
 - Settings has no printer section. Printers live in the toolbar popover, see [printers](./printers.md).

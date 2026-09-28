@@ -679,11 +679,6 @@ button {
   font-weight: 500;
 }
 
-.settings-slicer-checking {
-  font-size: 12px;
-  color: var(--text-tertiary);
-}
-
 .main-layout {
   flex: 1;
   display: flex;
