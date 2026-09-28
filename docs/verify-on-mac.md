@@ -40,7 +40,7 @@ The release build contains no verification harness. The first Rust build takes s
 1. Finish onboarding. On the AI provider step, choose OpenAI or Anthropic and paste your key, or skip and add it later in Settings under Agent.
 2. In the AI Assistant panel, send: `Make a 150 x 210 mm door sign that says BACK SHORTLY in navy on white with a teal rule under it.`
    - You see `build_sign` with five steps: Spec validated, Geometry built, Package written, Sliced, Verified.
-   - The result reads `Verified 26 of 26 checks` and `Awaiting your approval (the assistant cannot approve)`.
+   - The result reads `Verified N of N checks`, with every check passing, and `Awaiting your approval (the assistant cannot approve)`.
    - The Signs view opens on the new revision.
 3. In the Signs view, review the preview and the checks. Confirm the three rows are separate: Sliced and verified is Yes, Print-tested is Not tested, Approval is Pending for a hash.
 4. Click `Approve r1 for …`. Approval now reads Approved for the same hash.
