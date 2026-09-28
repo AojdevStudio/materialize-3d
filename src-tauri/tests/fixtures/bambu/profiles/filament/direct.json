@@ -1,0 +1,7 @@
+{
+  "type": "filament",
+  "name": "Direct Template",
+  "from": "system",
+  "instantiation": "false",
+  "filament_extruder_variant": ["Direct Drive Standard", "Direct Drive High Flow"]
+}

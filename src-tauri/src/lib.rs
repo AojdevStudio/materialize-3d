@@ -3,6 +3,7 @@ mod credentials;
 mod database;
 mod makerworld;
 mod oauth_callback;
+pub mod fabrication;
 pub mod openscad;
 pub mod platform;
 mod print_queue;

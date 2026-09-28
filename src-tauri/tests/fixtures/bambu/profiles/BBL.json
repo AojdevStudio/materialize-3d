@@ -1,0 +1,18 @@
+{
+  "version": "1.2.3",
+  "machine_list": [
+    { "name": "Base Machine", "sub_path": "machine/base.json" },
+    { "name": "Start A", "sub_path": "machine/start-a.json" },
+    { "name": "Start B", "sub_path": "machine/start-b.json" },
+    { "name": "Test Printer 0.6 nozzle", "sub_path": "machine/leaf.json" }
+  ],
+  "process_list": [
+    { "name": "Base Process", "sub_path": "process/base.json" },
+    { "name": "Test Process", "sub_path": "process/leaf.json" }
+  ],
+  "filament_list": [
+    { "name": "Base Filament", "sub_path": "filament/base.json" },
+    { "name": "Direct Template", "sub_path": "filament/direct.json" },
+    { "name": "Test Filament", "sub_path": "filament/leaf.json" }
+  ]
+}

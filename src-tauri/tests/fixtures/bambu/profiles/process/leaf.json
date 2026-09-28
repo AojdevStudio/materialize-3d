@@ -1,0 +1,8 @@
+{
+  "type": "process",
+  "name": "Test Process",
+  "from": "system",
+  "instantiation": "true",
+  "inherits": "Base Process",
+  "compatible_printers": ["Test Printer 0.6 nozzle"]
+}
