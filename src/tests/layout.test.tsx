@@ -5,11 +5,12 @@ import { NAV_ITEMS, getContextTitle } from '../components/Sidebar'
 import { MAIN_TABS, getDefaultTabForView } from '../components/MainPanel'
 
 describe('wireframe layout shell', () => {
-  it('defines the six sidebar destinations from the wireframe', () => {
+  it('defines the sidebar destinations', () => {
     expect(NAV_ITEMS.map((item) => item.label)).toEqual([
       'Library',
       'MakerWorld',
       'Design',
+      'Signs',
       'Print Monitor',
       'Print Queue',
       'History',
@@ -22,10 +23,11 @@ describe('wireframe layout shell', () => {
     expect(getContextTitle('monitor')).toBe('Print Monitor')
   })
 
-  it('defines the six primary workspace tabs and default mapping', () => {
+  it('defines the primary workspace tabs and default mapping', () => {
     expect(MAIN_TABS.map((tab) => tab.label)).toEqual([
       'Model Library',
       '3D Preview',
+      'Signs',
       'MakerWorld',
       'OpenSCAD',
       'Print Monitor',
@@ -34,6 +36,7 @@ describe('wireframe layout shell', () => {
     expect(getDefaultTabForView('library')).toBe('library')
     expect(getDefaultTabForView('browser')).toBe('browser')
     expect(getDefaultTabForView('history')).toBe('history')
+    expect(getDefaultTabForView('signs')).toBe('signs')
     expect(getDefaultTabForView('queue')).toBe('preview')
   })
 

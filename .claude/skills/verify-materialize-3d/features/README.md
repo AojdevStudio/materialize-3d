@@ -28,12 +28,13 @@ This directory is the maintained source for verifying Materialize 3D's user-faci
 ## Host facts (the Linux host, 2026-09-25)
 
 - `openscad` is not installed. Design renders end in `Error`, see [design](./design-openscad.md).
+- Bambu Studio 02.08.02.61 is at `<path to the Bambu Studio 02.08.02.61 AppRun>`. Sign builds need `BAMBU_STUDIO_CLI` pointed at it before `up`, see [signs](./signs.md).
 - OrcaSlicer is not installed at any path the app checks. Settings still shows `OrcaSlicer ✓`, because the check reads static profiles.
 - The test P2S printer sits on a separate VLAN. Treat printer connection as unreachable unless you have confirmed the route.
 
 ## Feature entry contract
 
-Each feature file has an H1 and one paragraph of user-visible behavior, followed by exactly four H2s in this order: `Sub-features`, `How to get to it (user POV)`, `Driving it with wd.ts`, and `Gotchas`. Lines marked **(observed 2026-09-25)** were driven live on `86ea7c8`. Everything else comes from reading the code and should be confirmed on first use.
+Each feature file has an H1 and one paragraph of user-visible behavior, followed by exactly four H2s in this order: `Sub-features`, `How to get to it (user POV)`, `Driving it with wd.ts`, and `Gotchas`. Lines marked **(observed 2026-09-25)** were driven live on `86ea7c8`, and lines marked **(observed 2026-09-26)** in [signs](./signs.md) on `e258688`. Everything else comes from reading the code and should be confirmed on first use.
 
 ## Features
 
@@ -41,5 +42,6 @@ Each feature file has an H1 and one paragraph of user-visible behavior, followed
 - [Navigation](./navigation.md) covers the sidebar, the workspace tabs, and the Library and History views.
 - [Settings](./settings.md) covers print defaults, the agent provider and model, notifications, auto-connect, and the slicer indicator.
 - [Design (OpenSCAD)](./design-openscad.md) covers opening a `.scad` file, rendering, and parameters.
+- [Signs](./signs.md) covers building a sign from a spec file, reviewing a revision, hash-bound approval, export, and recording a print result.
 - [Printers](./printers.md) covers adding, switching, and deleting printer configs, and connection states.
 - [Chat](./chat.md) covers the always-on AI assistant panel.

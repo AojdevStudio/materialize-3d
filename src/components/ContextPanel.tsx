@@ -26,6 +26,10 @@ const CONTEXT_CONTENT: Record<ActiveView, { meta: string; items: Array<{ title: 
       { title: 'Recent exports', subtitle: 'STL and 3MF outputs' },
     ],
   },
+  signs: {
+    meta: 'Generated signs awaiting review',
+    items: [{ title: 'Approval', subtitle: 'Only a person approves a revision for printing' }],
+  },
   monitor: {
     meta: 'Live printer status and telemetry',
     items: [

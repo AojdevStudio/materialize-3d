@@ -4,8 +4,8 @@ The main UI has a left sidebar, a workspace tab bar, a context panel, a toolbar 
 
 ## Sub-features
 
-- `nav-sidebar` covers the `Library`, `MakerWorld`, `Design`, `Print Monitor`, `Print Queue`, and `History` buttons.
-- `nav-tabs` covers the workspace tabs `Model Library`, `3D Preview`, `MakerWorld`, `OpenSCAD`, `Print Monitor`, and `Print History`.
+- `nav-sidebar` covers the `Library`, `MakerWorld`, `Design`, `Signs`, `Print Monitor`, `Print Queue`, and `History` buttons.
+- `nav-tabs` covers the workspace tabs `Model Library`, `3D Preview`, `Signs`, `MakerWorld`, `OpenSCAD`, `Print Monitor`, and `Print History`.
 - `nav-library` covers the Model Library view, its empty state, and search.
 - `nav-history` covers the Print History view and its empty state.
 - `nav-statusbar` covers the version, temperatures, and the online indicator.

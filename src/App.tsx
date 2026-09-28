@@ -9,6 +9,7 @@ import { useLibraryEvents } from './stores/libraryStore'
 import { useOpenScadEvents, useOpenScadStore } from './stores/openscadStore'
 import { usePrinterConfigEvents, usePrinterConfigStore, hydratePrinterConfigs } from './stores/printerConfigs'
 import { useSettingsEvents, hydrateSettings } from './stores/settings'
+import { useSignsEvents } from './stores/signs'
 import { setupProactiveNotifications } from './agent/notifications'
 import { useUiStore } from './stores/ui'
 import './styles/global.css'
@@ -39,6 +40,7 @@ function AppStateBridge() {
   useOpenScadEvents()
   usePrinterConfigEvents()
   useSettingsEvents()
+  useSignsEvents()
 
   useEffect(() => {
     let notificationUnlisten: (() => void) | null = null

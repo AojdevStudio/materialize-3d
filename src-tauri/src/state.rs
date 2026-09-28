@@ -209,6 +209,7 @@ pub enum ViewType {
     Preview,
     Browser,
     Scad,
+    Signs,
     Monitor,
     Queue,
     History,
@@ -525,6 +526,12 @@ mod tests {
         assert_eq!(snapshot.workspace.makerworld.page_kind, MakerWorldPageKind::Home);
         assert_eq!(snapshot.workspace.makerworld.import_status, ModelImportStatus::Idle);
         assert!(snapshot.print_queue.is_empty());
+    }
+
+    #[test]
+    fn signs_view_uses_the_frontend_view_key() {
+        assert_eq!(serde_json::from_str::<ViewType>("\"signs\"").expect("deserialize"), ViewType::Signs);
+        assert_eq!(serde_json::to_string(&ViewType::Signs).expect("serialize"), "\"signs\"");
     }
 
     #[test]
