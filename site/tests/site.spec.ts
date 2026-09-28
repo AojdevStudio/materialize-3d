@@ -152,4 +152,9 @@ test("release claims match the release flags", async ({ page }) => {
     expect(text).toContain("Not published yet");
     expect(text).not.toMatch(/\b[0-9a-f]{64}\b/);
   }
+  if (appleTrusted) {
+    expect(text).toMatch(/signed and notarized by apple/i);
+    expect(text).not.toMatch(/open anyway/i);
+  }
+  if (checksumPublished) expect(text).toContain(release.sha256);
 });
