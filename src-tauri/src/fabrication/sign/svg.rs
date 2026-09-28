@@ -25,12 +25,14 @@ pub(crate) fn flatten(
     let unsupported = |reason: String| SpecError::Svg { element, reason };
     let document = usvg::roxmltree::Document::parse(source)
         .map_err(|e| unsupported(format!("svg_source is not valid XML: {e}")))?;
+    // usvg drops `<text>` (its text feature is off) and any `<image>` it cannot
+    // resolve without reporting an error, so both are rejected before parsing.
     if document
         .descendants()
-        .any(|n| n.is_element() && n.tag_name().name() == "text")
+        .any(|n| n.is_element() && matches!(n.tag_name().name(), "text" | "image"))
     {
         return Err(unsupported(
-            "svg <text> is not supported; convert text to paths".into(),
+            "svg <text> and <image> are not supported; convert both to filled paths".into(),
         ));
     }
     let tree = usvg::Tree::from_str(source, &usvg::Options::default())

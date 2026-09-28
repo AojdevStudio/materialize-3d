@@ -1,6 +1,7 @@
 //! Tauri commands for the Signs view. These are the GUI's callers of the shared
 //! fabrication functions; they are the only callers that act as `Actor::Human`.
 
+use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -27,16 +28,27 @@ impl SignService {
         Self { workspace, running: Mutex::new(HashMap::new()) }
     }
 
+    /// Claims `build_id` for one running build. An id already in use is refused,
+    /// so a second caller can neither replace the first build's cancel flag nor
+    /// remove it when the second call ends.
     fn register(&self, build_id: &str) -> Result<Arc<AtomicBool>, String> {
-        let flag = Arc::new(AtomicBool::new(false));
-        self.running.lock().map_err(|e| e.to_string())?.insert(build_id.to_owned(), flag.clone());
-        Ok(flag)
+        let mut running = self.running.lock().map_err(error)?;
+        match running.entry(build_id.to_owned()) {
+            Entry::Occupied(_) => Err(format!("a build with id {build_id} is already running")),
+            Entry::Vacant(slot) => Ok(slot.insert(Arc::new(AtomicBool::new(false))).clone()),
+        }
     }
 
     fn unregister(&self, build_id: &str) {
         if let Ok(mut running) = self.running.lock() {
             running.remove(build_id);
         }
+    }
+
+    /// Asks the running build to stop. False when no build has this id.
+    fn cancel(&self, build_id: &str) -> Result<bool, String> {
+        let running = self.running.lock().map_err(error)?;
+        Ok(running.get(build_id).map(|flag| flag.store(true, Ordering::Relaxed)).is_some())
     }
 }
 
@@ -82,8 +94,7 @@ pub async fn sign_build(
 
 #[tauri::command]
 pub fn sign_cancel(service: State<'_, SignService>, build_id: String) -> Result<bool, String> {
-    let running = service.running.lock().map_err(error)?;
-    Ok(running.get(&build_id).map(|flag| flag.store(true, Ordering::Relaxed)).is_some())
+    service.cancel(&build_id)
 }
 
 #[tauri::command]
@@ -148,4 +159,21 @@ pub fn sign_record_print(
         build::with_db(&state, |conn| revisions::record_print_result(conn, &id, passed, &note, Actor::Human)).map_err(error)?;
     let _ = app.emit(SIGNS_CHANGED, &revision.id);
     Ok(revision)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_duplicate_build_id_is_refused_and_the_first_build_stays_cancellable() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let service = SignService::new(Workspace::new(&dir.path().join("data"), &dir.path().join("cache")));
+        let first = service.register("build-1").expect("first registration");
+        assert!(service.register("build-1").is_err(), "a second build with the same id is refused");
+        assert_eq!(service.cancel("build-1"), Ok(true));
+        assert!(first.load(Ordering::Relaxed), "cancel reaches the first build");
+        service.unregister("build-1");
+        assert!(service.register("build-1").is_ok(), "the id is free once the first build ends");
+    }
 }

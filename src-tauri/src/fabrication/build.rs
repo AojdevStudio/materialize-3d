@@ -4,7 +4,8 @@
 //! [`build_sign`]; only the `actor` differs. The pipeline never holds the
 //! database lock while geometry or slicing runs, writes every artifact into a
 //! private `.partial-<id>` directory, and renames it into place before the
-//! revision is recorded, so a crash leaves either nothing or a complete record.
+//! revision is recorded. A crash leaves either a complete record or leftovers
+//! that [`reconcile_startup`] removes on the next launch.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -49,8 +50,8 @@ impl Workspace {
         self.signs_dir.join(id)
     }
 
-    /// Removes directories left by builds that never finished. Pairs with
-    /// [`revisions::reconcile_interrupted`] at startup.
+    /// Removes `.partial-*` directories left by builds that never finished.
+    /// Part of [`reconcile_startup`].
     pub fn remove_partials(&self) -> std::io::Result<usize> {
         let entries = match fs::read_dir(&self.signs_dir) {
             Ok(entries) => entries,
@@ -66,6 +67,40 @@ impl Workspace {
             }
         }
         Ok(removed)
+    }
+}
+
+/// What startup cleanup found and removed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StartupCleanup {
+    pub interrupted: usize,
+    pub removed_dirs: usize,
+}
+
+/// Recovers from builds the app stopped in the middle of. Run once at startup,
+/// before anything can claim a new build. A build interrupted after its
+/// rename left a complete-looking `signs/<id>` that no revision refers to, so
+/// the directory of every build still recorded as running is removed before
+/// the build is marked failed; a crash part way through is finished next launch.
+pub fn reconcile_startup(state: &AppState, workspace: &Workspace) -> Result<StartupCleanup, BuildError> {
+    let unfinished = with_db(state, |conn| revisions::unfinished_builds(conn))?;
+    let mut removed_dirs = 0;
+    for id in &unfinished {
+        if remove_dir_if_present(&workspace.final_dir(id.as_str()))? {
+            removed_dirs += 1;
+        }
+    }
+    let interrupted = with_db(state, |conn| revisions::reconcile_interrupted(conn))?;
+    removed_dirs += workspace.remove_partials()?;
+    Ok(StartupCleanup { interrupted, removed_dirs })
+}
+
+/// True when the directory existed and was removed.
+fn remove_dir_if_present(dir: &Path) -> std::io::Result<bool> {
+    match fs::remove_dir_all(dir) {
+        Ok(()) => Ok(true),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(err) => Err(err),
     }
 }
 
@@ -193,14 +228,11 @@ pub fn build_sign(
     };
 
     let id = revision.id.to_string();
-    let partial = workspace.partial_dir(&id);
-    let mut unfinished = UnfinishedBuild { state, id: &revision.id, partial: &partial, settled: false };
-    let artifacts = run_pipeline(&spec, &template, &studio, &presets, &partial, &workspace.final_dir(&id), progress, is_cancelled)
+    let (partial, final_dir) = (workspace.partial_dir(&id), workspace.final_dir(&id));
+    let mut unfinished = UnfinishedBuild::new(state, &revision.id, &partial, &final_dir);
+    let artifacts = run_pipeline(&spec, &template, &studio, &presets, &partial, &final_dir, progress, is_cancelled)
         .map_err(|err| unfinished.fail(err))?;
-    fs::rename(&partial, &artifacts.revision_dir).map_err(|err| unfinished.fail(err.into()))?;
-    let finished = with_db(state, |conn| revisions::finish_build(conn, &revision.id, artifacts))
-        .map_err(|err| unfinished.fail(err))?;
-    unfinished.settled = true;
+    let finished = unfinished.settle(artifacts)?;
     if matches!(finished.build, BuildState::Verified { .. }) {
         progress(BuildStep::Verified);
     }
@@ -224,16 +256,32 @@ fn wait_until_settled(state: &AppState, id: &RevisionId, is_cancelled: &dyn Fn()
 
 /// A claimed build that has not been recorded as finished. Dropping it before
 /// the build settles, through an error or a panic, marks the revision failed
-/// and removes its partial directory, so no revision stays `building` while
-/// the app keeps running.
+/// and removes its directory, so no revision stays `building` and no directory
+/// outlives a failed build while the app keeps running.
 struct UnfinishedBuild<'a> {
     state: &'a AppState,
     id: &'a RevisionId,
     partial: &'a Path,
+    final_dir: &'a Path,
+    /// The partial directory has been renamed to `final_dir`.
+    placed: bool,
     settled: bool,
 }
 
-impl UnfinishedBuild<'_> {
+impl<'a> UnfinishedBuild<'a> {
+    fn new(state: &'a AppState, id: &'a RevisionId, partial: &'a Path, final_dir: &'a Path) -> Self {
+        Self { state, id, partial, final_dir, placed: false, settled: false }
+    }
+
+    /// Moves the finished partial directory into place and records the build.
+    fn settle(mut self, artifacts: Artifacts) -> Result<SignRevision, BuildError> {
+        fs::rename(self.partial, self.final_dir).map_err(|err| self.fail(err.into()))?;
+        self.placed = true;
+        let finished = with_db(self.state, |conn| revisions::finish_build(conn, self.id, artifacts)).map_err(|err| self.fail(err))?;
+        self.settled = true;
+        Ok(finished)
+    }
+
     fn fail(&mut self, err: BuildError) -> BuildError {
         self.record_failure(&err.to_string());
         err
@@ -242,8 +290,18 @@ impl UnfinishedBuild<'_> {
     fn record_failure(&mut self, reason: &str) {
         self.settled = true;
         let _ = fs::remove_dir_all(self.partial);
-        if let Err(err) = with_db(self.state, |conn| revisions::fail_build(conn, self.id, reason)) {
-            log::error!("build {}: could not record failure ({reason}): {err}", self.id);
+        match with_db(self.state, |conn| revisions::fail_build(conn, self.id, reason)) {
+            // The revision moved from building to failed, so it has no artifacts
+            // on record and nothing refers to its placed directory.
+            Ok(_) if self.placed => {
+                if let Err(err) = remove_dir_if_present(self.final_dir) {
+                    log::error!("build {}: could not remove {}: {err}", self.id, self.final_dir.display());
+                }
+            }
+            Ok(_) => {}
+            // Still `building` if the database is failing; startup reconciliation
+            // removes the directory and records the failure next launch.
+            Err(err) => log::error!("build {}: could not record failure ({reason}): {err}", self.id),
         }
     }
 }
@@ -411,6 +469,95 @@ mod tests {
 
     fn fixture() -> Value {
         serde_json::from_str(FIXTURE).expect("fixture json")
+    }
+
+    fn claim(state: &AppState, key: &str) -> SignRevision {
+        let build = NewBuild {
+            lineage_id: None,
+            title: "Back shortly".into(),
+            spec: fixture(),
+            spec_sha256: Sha256Hex::of_bytes(key.as_bytes()),
+            build_key: Sha256Hex::of_bytes(key.as_bytes()),
+            requested_by: Actor::Human,
+        };
+        match with_db(state, |conn| revisions::claim_build(conn, build)).expect("claim") {
+            BuildClaim::Started(revision) => revision,
+            BuildClaim::Existing(revision) => panic!("expected a new build, got {}", revision.id),
+        }
+    }
+
+    /// A partial directory as the pipeline leaves it, and artifacts that pass every check.
+    fn staged(partial: &Path, final_dir: &Path) -> Artifacts {
+        fs::create_dir_all(partial).expect("partial dir");
+        fs::write(partial.join("sign.3mf"), b"package").expect("package");
+        Artifacts {
+            revision_dir: final_dir.to_path_buf(),
+            package_path: final_dir.join("sign.3mf"),
+            package_sha256: Sha256Hex::of_bytes(b"package"),
+            preview_path: final_dir.join("preview.png"),
+            slice_dir: final_dir.join("slice"),
+            gcode_sha256: Sha256Hex::of_bytes(b"gcode"),
+            slicer: SlicerIdentity { name: "Bambu Studio".into(), version: "02.08.02.61".into(), profile_version: "02.08.00.05".into() },
+            effective_settings: Value::Null,
+            checks: vec![RecordedCheck { id: "slice.slice_succeeded".into(), passed: true, detail: "return_code 0".into() }],
+        }
+    }
+
+    #[test]
+    fn a_placed_build_that_cannot_be_recorded_leaves_no_directory() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = app_state(dir.path());
+        let workspace = Workspace::new(&dir.path().join("data"), &dir.path().join("cache"));
+        let revision = claim(&state, "a");
+        let id = revision.id.to_string();
+        let (partial, final_dir) = (workspace.partial_dir(&id), workspace.final_dir(&id));
+        let artifacts = staged(&partial, &final_dir);
+        // The database refuses the result after the rename, as a full disk would.
+        with_db(&state, |conn| {
+            Ok(conn.execute_batch(
+                "CREATE TEMP TRIGGER finish_fails BEFORE UPDATE OF build_status ON sign_revisions
+                 WHEN NEW.build_status = 'verified' BEGIN SELECT RAISE(ABORT, 'disk full'); END;",
+            )?)
+        })
+        .expect("trigger");
+
+        let result = UnfinishedBuild::new(&state, &revision.id, &partial, &final_dir).settle(artifacts);
+        assert!(result.is_err());
+        assert!(!final_dir.exists(), "the placed directory is removed with the failed build");
+        assert!(!partial.exists());
+        let recorded = with_db(&state, |conn| revisions::get(conn, &revision.id)).expect("get");
+        assert!(matches!(recorded.build, BuildState::Failed { artifacts: None, .. }));
+    }
+
+    #[test]
+    fn startup_removes_directories_of_interrupted_builds_and_keeps_verified_ones() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = app_state(dir.path());
+        let workspace = Workspace::new(&dir.path().join("data"), &dir.path().join("cache"));
+
+        let verified = claim(&state, "verified");
+        let id = verified.id.to_string();
+        let (partial, verified_dir) = (workspace.partial_dir(&id), workspace.final_dir(&id));
+        let finished = UnfinishedBuild::new(&state, &verified.id, &partial, &verified_dir)
+            .settle(staged(&partial, &verified_dir))
+            .expect("settle");
+        assert!(matches!(finished.build, BuildState::Verified { .. }));
+
+        // The app stopped after the rename but before the result was recorded.
+        let interrupted = claim(&state, "interrupted");
+        let id = interrupted.id.to_string();
+        let (partial, interrupted_dir) = (workspace.partial_dir(&id), workspace.final_dir(&id));
+        staged(&partial, &interrupted_dir);
+        fs::rename(&partial, &interrupted_dir).expect("rename");
+        fs::create_dir_all(workspace.partial_dir("leftover")).expect("partial dir");
+
+        let cleanup = reconcile_startup(&state, &workspace).expect("reconcile");
+        assert_eq!(cleanup, StartupCleanup { interrupted: 1, removed_dirs: 2 });
+        assert!(!interrupted_dir.exists(), "the interrupted build's directory is removed");
+        assert!(verified_dir.join("sign.3mf").exists(), "the verified build's directory is kept");
+        let recorded = with_db(&state, |conn| revisions::get(conn, &interrupted.id)).expect("get");
+        assert!(matches!(recorded.build, BuildState::Failed { ref reason, artifacts: None } if reason.starts_with("interrupted")));
+        assert_eq!(workspace.remove_partials().expect("scan"), 0);
     }
 
     #[test]

@@ -143,20 +143,19 @@ pub fn run() {
             log::info!("setup: SQLite database initialized at {}", db_path.display());
 
             // A build that was running when the app stopped can never finish;
-            // record it as failed and drop its partial directory.
+            // record it as failed and remove its directory.
             let app_cache_dir = app
                 .path()
                 .app_cache_dir()
                 .map_err(|e| format!("failed to resolve app cache dir: {e}"))?;
             let workspace = fabrication::build::Workspace::new(&app_data_dir, &app_cache_dir);
-            let interrupted = fabrication::build::with_db(&app_state, |conn| {
-                fabrication::revisions::reconcile_interrupted(conn)
-            })
-            .map_err(|e| format!("sign revision reconcile failed: {e}"))?;
-            let partials = workspace
-                .remove_partials()
-                .map_err(|e| format!("failed to clean partial sign builds: {e}"))?;
-            log::info!("setup: signs reconciled ({interrupted} interrupted builds, {partials} partial dirs removed)");
+            let cleanup = fabrication::build::reconcile_startup(&app_state, &workspace)
+                .map_err(|e| format!("sign build reconcile failed: {e}"))?;
+            log::info!(
+                "setup: signs reconciled ({} interrupted builds, {} unfinished build dirs removed)",
+                cleanup.interrupted,
+                cleanup.removed_dirs
+            );
             app.manage(sign_commands::SignService::new(workspace));
 
             // Scan library filesystem for existing metadata.json files

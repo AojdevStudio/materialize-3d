@@ -90,6 +90,27 @@ fn rejects_svg_strokes() {
     assert!(matches!(err, SpecError::SvgStroke { element: 0 }), "{err}");
 }
 
+/// usvg drops an `<image>` it cannot resolve without an error, so a sign with
+/// fills beside such an image would build with the art silently missing.
+#[test]
+fn rejects_svg_images_even_when_usvg_would_drop_them() {
+    for image in [
+        r#"<image href="missing.png" width="4" height="4"/>"#,
+        r#"<image href="data:image/png;base64,not-base64!" width="4" height="4"/>"#,
+    ] {
+        let err = fixture_with(|v| {
+            v["elements"][0]["svg_source"] = json!(format!(
+                r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><path fill="#1F3A5F" d="M1 1H9V9Z"/>{image}</svg>"##
+            ));
+        })
+        .unwrap_err();
+        assert!(
+            matches!(&err, SpecError::Svg { element: 0, reason } if reason.contains("<image>")),
+            "{image}: {err}"
+        );
+    }
+}
+
 #[test]
 fn rejects_too_many_inks() {
     let err = fixture_with(|v| {

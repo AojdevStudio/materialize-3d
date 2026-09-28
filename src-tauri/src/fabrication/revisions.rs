@@ -404,6 +404,14 @@ pub fn fail_build(conn: &Connection, id: &RevisionId, reason: &str) -> Result<Si
     get(conn, id)
 }
 
+/// Builds still recorded as running. At startup these are builds the app
+/// stopped in the middle of; none of them has artifacts on record.
+pub fn unfinished_builds(conn: &Connection) -> Result<Vec<RevisionId>> {
+    let mut stmt = conn.prepare("SELECT id FROM sign_revisions WHERE build_status = 'building'")?;
+    let ids = stmt.query_map([], |row| row.get::<_, String>(0).map(RevisionId))?;
+    Ok(ids.collect::<rusqlite::Result<_>>()?)
+}
+
 /// Marks builds left running by a crash or quit as failed. Run once at startup
 /// before anything can claim new builds. Returns how many rows changed.
 pub fn reconcile_interrupted(conn: &Connection) -> Result<usize> {
