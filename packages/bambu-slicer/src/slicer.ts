@@ -3,8 +3,10 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import { detectOrcaSlicer, expectedOrcaCli, orcaInstallHint } from './platform';
 
-// OrcaSlicer is used instead of BambuStudio CLI because BambuStudio CLI has a
-// known segfault bug with P2S 0.4 nozzle profiles (GitHub #9636).
+// This legacy STL path slices with OrcaSlicer. It was chosen when Bambu Studio's
+// CLI crashed on STL input with P2S 0.4 nozzle profiles (GitHub #9636). Sign
+// packages are Bambu project 3MFs sliced by Bambu Studio 02.08.02.61 in the app's
+// Rust fabrication module instead.
 // Resolved per-platform (env override → install paths → PATH); see platform.ts.
 const ORCA_CLI = detectOrcaSlicer() ?? expectedOrcaCli();
 

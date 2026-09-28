@@ -11,12 +11,11 @@ Test printer: Bambu Lab P2S on the developer's LAN.
 ## Project Structure
 
 - packages/bambu-slicer/ — Headless slicing engine wrapping OrcaSlicer CLI
-- docs/printer/ — Hardware documentation for the test P2S
 
 ## Key Technical Context
 
-- OrcaSlicer is used instead of BambuStudio CLI (BambuStudio segfaults on P2S 0.4mm nozzle profiles, GitHub #9636)
-- Machine profiles are auto-patched at slice time: BambuStudio gcode templates replaced with OrcaSlicer-compatible versions
+- Two slicing paths exist. Sign packages are Bambu project 3MFs sliced by `src-tauri/src/fabrication/bambu`, which runs only Bambu Studio 02.08.02.61 with resolved P2S presets and verifies the G-code. The older STL path in `packages/bambu-slicer` and `src-tauri/src/slicer.rs` uses OrcaSlicer.
+- On the OrcaSlicer STL path, machine profiles are auto-patched at slice time: Bambu Studio G-code templates are replaced with OrcaSlicer-compatible versions
 - The development machine needs network access to the printer's VLAN.
 - Developer Mode on P2S enables local MQTT for direct print control (loses Bambu Handy app)
 
