@@ -27,8 +27,10 @@ usage: verify-installed-macos.sh <path-to-release.dmg> <checkout-with-docs/accep
 
 Installs the signed DMG into /Applications and verifies it end to end: Gatekeeper,
 the staple, the signature and bundle contents, the schema 3 migration, MCP off by
-default, the app's own keychain round trip, and a sign built and approved over MCP
-with a seeded token. Runs unattended and needs no input.
+default, the MCP endpoint's 401 without a valid token, the app's own keychain round
+trip, and a sign built over MCP with a seeded token that stays pending: the endpoint
+must refuse to approve, because approval stays with a person in the app. Each check
+fails the run. Runs unattended and needs no input.
 
 The user must be logged in at the console: the body runs as a LaunchAgent in that
 desktop session, because that is the session whose keychain the app reads.
