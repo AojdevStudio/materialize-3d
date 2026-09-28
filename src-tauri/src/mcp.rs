@@ -20,7 +20,7 @@ use rmcp::{tool, tool_handler, tool_router, ServerHandler};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
-use tokio::sync::Mutex;
+use tokio::sync::{watch, Mutex};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
@@ -66,6 +66,16 @@ fn json_text(value: &impl Serialize) -> Result<String, String> {
     serde_json::to_string_pretty(value).map_err(|e| e.to_string())
 }
 
+/// Runs an action on the blocking pool so a stall or panic in its database or
+/// hashing work stays inside that one tool call instead of the serve task.
+async fn off_serve_task<T, E>(work: impl FnOnce() -> Result<T, E> + Send + 'static) -> Result<T, String>
+where
+    T: Send + 'static,
+    E: ToString + Send + 'static,
+{
+    tokio::task::spawn_blocking(work).await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())
+}
+
 #[derive(Clone)]
 pub struct MaterializeMcp {
     actions: Actions,
@@ -82,12 +92,10 @@ impl MaterializeMcp {
         An identical spec returns the existing revision.")]
     async fn build_sign(&self, Parameters(args): Parameters<BuildSignArgs>) -> Result<String, String> {
         let actions = self.actions.clone();
-        let outcome = tokio::task::spawn_blocking(move || {
+        let outcome = off_serve_task(move || {
             actions.build_sign(args.spec, args.lineage_id.as_deref(), Actor::ExternalMcp, &|_| {}, &|| false)
         })
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())?;
+        .await?;
         json_text(&BuildSignOutput {
             revision: SignSummary::from(&outcome.revision),
             reused: outcome.reused,
@@ -97,13 +105,15 @@ impl MaterializeMcp {
 
     #[tool(description = "List recent sign revisions with build, approval, and print-test status.")]
     async fn list_signs(&self, Parameters(args): Parameters<ListSignsArgs>) -> Result<String, String> {
-        let revisions = self.actions.list_signs(args.limit.unwrap_or(20)).map_err(|e| e.to_string())?;
+        let actions = self.actions.clone();
+        let revisions = off_serve_task(move || actions.list_signs(args.limit.unwrap_or(20))).await?;
         json_text(&revisions.iter().map(SignSummary::from).collect::<Vec<_>>())
     }
 
     #[tool(description = "Read one sign revision, including any failed verification checks.")]
     async fn get_sign(&self, Parameters(args): Parameters<RevisionArgs>) -> Result<String, String> {
-        let revision = self.actions.get_sign(&args.revision_id).map_err(|e| e.to_string())?;
+        let actions = self.actions.clone();
+        let revision = off_serve_task(move || actions.get_sign(&args.revision_id)).await?;
         json_text(&SignSummary::from(&revision))
     }
 
@@ -115,7 +125,8 @@ impl MaterializeMcp {
 
     #[tool(description = "Read the connected printer's status: connection, temperatures, job state, and progress.")]
     async fn printer_status(&self) -> Result<String, String> {
-        json_text(&self.actions.printer_status().map_err(|e| e.to_string())?)
+        let actions = self.actions.clone();
+        json_text(&off_serve_task(move || actions.printer_status()).await?)
     }
 }
 
@@ -132,7 +143,8 @@ impl ServerHandler for MaterializeMcp {
     }
 }
 
-async fn require_bearer(State(token): State<Arc<str>>, req: Request, next: Next) -> Result<Response, StatusCode> {
+async fn require_bearer(State(token): State<watch::Receiver<Arc<str>>>, req: Request, next: Next) -> Result<Response, StatusCode> {
+    let token = token.borrow().clone();
     let presented = req
         .headers()
         .get(header::AUTHORIZATION)
@@ -150,11 +162,14 @@ struct Running {
     cancel: CancellationToken,
     task: JoinHandle<std::io::Result<()>>,
     port: u16,
+    /// The token the bearer check accepts; replacing it takes effect on the next request.
+    token: watch::Sender<Arc<str>>,
 }
 
 /// Owns the endpoint's lifecycle. Enabling, disabling, and rotating take the
 /// same lock and read or write the token while holding it, so the running
-/// server always serves the token that is currently stored.
+/// server always serves the token that is currently stored. A server whose
+/// task has ended is treated as off.
 #[derive(Default)]
 pub struct McpServer {
     running: Mutex<Option<Running>>,
@@ -175,36 +190,65 @@ impl McpServer {
         F: FnOnce() -> Fut,
         Fut: Future<Output = Result<String, String>>,
     {
-        let mut running = self.running.lock().await;
-        if !enabled {
-            if let Some(current) = running.take() {
-                shut_down(current).await;
-            }
-        } else if running.is_none() {
-            *running = Some(serve(actions, port, token().await?).await.map_err(|e| e.to_string())?);
-        }
-        Ok(status_of(running.as_ref().map(|r| r.port)))
+        self.set_enabled_recording(actions, port, enabled, token, |_| Ok(())).await
     }
 
-    /// Stores a new token through `new_token` and, when the endpoint is running,
-    /// restarts it on that token before returning, so the old token stops working.
-    pub async fn rotate<F, Fut>(&self, actions: Actions, new_token: F) -> Result<String, String>
+    /// [`Self::set_enabled`] that also hands the person's choice to `record`,
+    /// under the same lock: before stopping, and only after a successful start,
+    /// so a failed enable is never remembered as on.
+    pub async fn set_enabled_recording<F, Fut>(
+        &self,
+        actions: Actions,
+        port: u16,
+        enabled: bool,
+        token: F,
+        record: impl FnOnce(bool) -> Result<(), String>,
+    ) -> Result<McpStatus, String>
     where
         F: FnOnce() -> Fut,
         Fut: Future<Output = Result<String, String>>,
     {
         let mut running = self.running.lock().await;
+        reap(&mut running).await;
+        if !enabled {
+            record(false)?;
+            if let Some(current) = running.take() {
+                shut_down(current).await;
+            }
+        } else if running.is_none() {
+            let started = serve(actions, port, token().await?).await.map_err(|e| e.to_string())?;
+            if let Err(err) = record(true) {
+                shut_down(started).await;
+                return Err(err);
+            }
+            *running = Some(started);
+        } else {
+            record(true)?;
+        }
+        Ok(status_of(running.as_ref().map(|r| r.port)))
+    }
+
+    /// Stores a new token through `new_token` and, when the endpoint is running,
+    /// switches it to that token before returning, so the old token stops working.
+    /// The listener stays up throughout, and a failed store changes nothing.
+    pub async fn rotate<F, Fut>(&self, new_token: F) -> Result<String, String>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = Result<String, String>>,
+    {
+        let mut running = self.running.lock().await;
+        reap(&mut running).await;
         let token = new_token().await?;
-        if let Some(current) = running.take() {
-            let port = current.port;
-            shut_down(current).await;
-            *running = Some(serve(actions, port, token.clone()).await.map_err(|e| e.to_string())?);
+        if let Some(current) = running.as_ref() {
+            current.token.send_replace(Arc::from(token.as_str()));
         }
         Ok(token)
     }
 
     pub async fn status(&self) -> McpStatus {
-        status_of(self.running.lock().await.as_ref().map(|r| r.port))
+        let mut running = self.running.lock().await;
+        reap(&mut running).await;
+        status_of(running.as_ref().map(|r| r.port))
     }
 }
 
@@ -215,9 +259,10 @@ async fn serve(actions: Actions, port: u16, token: String) -> std::io::Result<Ru
         LocalSessionManager::default().into(),
         StreamableHttpServerConfig::default().with_cancellation_token(cancel.child_token()),
     );
+    let (token, accepted) = watch::channel(Arc::<str>::from(token));
     let router = axum::Router::new()
         .nest_service("/mcp", service)
-        .layer(middleware::from_fn_with_state(Arc::<str>::from(token), require_bearer));
+        .layer(middleware::from_fn_with_state(accepted, require_bearer));
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
     let port = listener.local_addr()?.port();
     let shutdown = cancel.clone();
@@ -225,7 +270,7 @@ async fn serve(actions: Actions, port: u16, token: String) -> std::io::Result<Ru
         axum::serve(listener, router).with_graceful_shutdown(async move { shutdown.cancelled().await }).await
     });
     log::info!("mcp: listening on 127.0.0.1:{port}");
-    Ok(Running { cancel, task, port })
+    Ok(Running { cancel, task, port, token })
 }
 
 async fn shut_down(running: Running) {
@@ -234,6 +279,17 @@ async fn shut_down(running: Running) {
         log::warn!("mcp: server task ended abnormally: {err}");
     }
     log::info!("mcp: stopped");
+}
+
+/// Drops the entry for a server whose task has already ended (a panic, or the
+/// listener failing), so status reads as off and enabling starts a fresh one.
+async fn reap(running: &mut Option<Running>) {
+    let Some(dead) = running.take_if(|r| r.task.is_finished()) else { return };
+    match dead.task.await {
+        Ok(Ok(())) => log::warn!("mcp: server stopped on its own"),
+        Ok(Err(err)) => log::error!("mcp: server failed: {err}"),
+        Err(err) => log::error!("mcp: server task ended abnormally: {err}"),
+    }
 }
 
 fn status_of(port: Option<u16>) -> McpStatus {
@@ -258,6 +314,13 @@ fn setting_enabled(state: &crate::state::AppState) -> Result<bool, String> {
     let guard = state.db.lock().map_err(|e| e.to_string())?;
     let conn = guard.as_ref().ok_or("database is not initialized")?;
     Ok(crate::database::get_setting(conn, ENABLED_SETTING)?.as_deref() == Some("true"))
+}
+
+/// Remembers the person's choice so the next launch starts the endpoint only with consent.
+fn record_enabled(state: &crate::state::AppState, enabled: bool) -> Result<(), String> {
+    let guard = state.db.lock().map_err(|e| e.to_string())?;
+    let conn = guard.as_ref().ok_or("database is not initialized")?;
+    crate::database::upsert_setting(conn, ENABLED_SETTING, if enabled { "true" } else { "false" })
 }
 
 /// Starts the endpoint at launch only when the person turned it on earlier.
@@ -290,12 +353,7 @@ pub async fn mcp_set_enabled(
     state: tauri::State<'_, Arc<crate::state::AppState>>,
     enabled: bool,
 ) -> Result<McpStatus, String> {
-    {
-        let guard = state.db.lock().map_err(|e| e.to_string())?;
-        let conn = guard.as_ref().ok_or("database is not initialized")?;
-        crate::database::upsert_setting(conn, ENABLED_SETTING, if enabled { "true" } else { "false" })?;
-    }
-    server.set_enabled(actions.inner().clone(), DEFAULT_PORT, enabled, token).await
+    server.set_enabled_recording(actions.inner().clone(), DEFAULT_PORT, enabled, token, |on| record_enabled(&state, on)).await
 }
 
 /// Reveals the token so a person can paste it into their agent's MCP config.
@@ -304,10 +362,10 @@ pub async fn mcp_token() -> Result<String, String> {
     token().await
 }
 
-/// Issues a new token and restarts a running endpoint so the old one stops working.
+/// Issues a new token and switches a running endpoint to it so the old one stops working.
 #[tauri::command]
-pub async fn mcp_rotate_token(server: tauri::State<'_, McpServer>, actions: tauri::State<'_, Actions>) -> Result<String, String> {
-    server.rotate(actions.inner().clone(), rotate_token).await
+pub async fn mcp_rotate_token(server: tauri::State<'_, McpServer>) -> Result<String, String> {
+    server.rotate(rotate_token).await
 }
 
 #[cfg(test)]
@@ -332,7 +390,7 @@ mod tests {
         let cancel = CancellationToken::new();
         let router = axum::Router::new()
             .route("/mcp", axum::routing::post(|| async { "reached" }))
-            .layer(middleware::from_fn_with_state(Arc::<str>::from(token), require_bearer));
+            .layer(middleware::from_fn_with_state(watch::channel(Arc::<str>::from(token)).1, require_bearer));
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.expect("bind");
         let port = listener.local_addr().expect("addr").port();
         let shutdown = cancel.clone();
@@ -448,7 +506,7 @@ mod tests {
         let server = McpServer::default();
         let url = server.set_enabled(actions.clone(), 0, true, || fixed("old-token")).await.expect("start").url.expect("url");
         assert_eq!(initialize_status(&url, "old-token").await, 200);
-        server.rotate(actions.clone(), || fixed("new-token")).await.expect("rotate");
+        server.rotate(|| fixed("new-token")).await.expect("rotate");
         let url = server.status().await.url.expect("still running");
         assert_eq!(initialize_status(&url, "old-token").await, 401, "the old token stops working");
         assert_eq!(initialize_status(&url, "new-token").await, 200);
@@ -469,7 +527,7 @@ mod tests {
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                 Ok(token)
             });
-            let rotate = server.rotate(actions.clone(), || async {
+            let rotate = server.rotate(|| async {
                 *stored.lock().expect("stored") = "new-token".to_owned();
                 Ok("new-token".to_owned())
             });
@@ -540,6 +598,72 @@ mod tests {
         assert_eq!(smuggled["result"]["isError"], true, "an actor argument is rejected, not ignored: {smuggled}");
         let reason = smuggled["result"]["content"][0]["text"].as_str().unwrap_or_default();
         assert!(reason.contains("unknown field `actor`"), "{reason}");
+        server.set_enabled(actions, 0, false, || fixed("unused")).await.expect("stop");
+    }
+
+    #[tokio::test]
+    async fn a_failed_enable_is_not_remembered_as_on() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (actions, state) = test_actions(dir.path());
+        record_enabled(&state, false).expect("seed setting");
+        let taken = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("occupy a port");
+        let port = taken.local_addr().expect("addr").port();
+        let server = McpServer::default();
+        let result = server
+            .set_enabled_recording(actions, port, true, || fixed("tok"), |on| record_enabled(&state, on))
+            .await;
+        assert!(result.is_err(), "enabling on an occupied port fails: {result:?}");
+        assert!(!server.status().await.running);
+        assert!(!setting_enabled(&state).expect("read setting"), "the next launch must not start the endpoint");
+    }
+
+    #[tokio::test]
+    async fn rotating_never_lets_go_of_the_port() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (actions, _state) = test_actions(dir.path());
+        let server = McpServer::default();
+        let url = server.set_enabled(actions.clone(), 0, true, || fixed("old-token")).await.expect("start").url.expect("url");
+        let port = server.running.lock().await.as_ref().expect("running").port;
+        // Another program trying to take the port for as long as the rotation runs.
+        let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let squatter = std::thread::spawn({
+            let done = done.clone();
+            move || loop {
+                if let Ok(listener) = std::net::TcpListener::bind(("127.0.0.1", port)) {
+                    return Some(listener);
+                }
+                if done.load(std::sync::atomic::Ordering::SeqCst) {
+                    return None;
+                }
+            }
+        });
+        let rotated = server.rotate(|| fixed("new-token")).await;
+        done.store(true, std::sync::atomic::Ordering::SeqCst);
+        let squatted = squatter.join().expect("squatter");
+        assert_eq!(rotated, Ok("new-token".to_owned()));
+        assert!(squatted.is_none(), "the port was free during rotation");
+        assert_eq!(server.status().await.url.as_deref(), Some(url.as_str()));
+        assert_eq!(initialize_status(&url, "old-token").await, 401);
+        assert_eq!(initialize_status(&url, "new-token").await, 200);
+        server.set_enabled(actions, 0, false, || fixed("unused")).await.expect("stop");
+    }
+
+    #[tokio::test]
+    async fn a_dead_server_task_reads_as_off_and_can_be_turned_back_on() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (actions, _state) = test_actions(dir.path());
+        let server = McpServer::default();
+        server.set_enabled(actions.clone(), 0, true, || fixed("tok-dead")).await.expect("start");
+        server.running.lock().await.as_ref().expect("running").task.abort();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while server.status().await.running {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("status reports the dead endpoint as off");
+        let url = server.set_enabled(actions.clone(), 0, true, || fixed("tok-dead")).await.expect("restart").url.expect("url");
+        assert_eq!(initialize_status(&url, "tok-dead").await, 200, "enabling again starts a live server");
         server.set_enabled(actions, 0, false, || fixed("unused")).await.expect("stop");
     }
 }
