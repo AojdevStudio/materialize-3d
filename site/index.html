@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Materialize 3D: describe a sign, approve a verified slice</title>
+    <meta
+      name="description"
+      content="A Mac app for the Bambu Lab P2S. Describe a three-color sign in chat; it builds, slices with Bambu Studio, runs 27 checks, and waits for your approval before you export a 3MF."
+    />
+    <meta name="color-scheme" content="light dark" />
+    <script>
+      // Apply the remembered theme before first paint. Light is the default.
+      try {
+        if (localStorage.getItem("m3d-theme") === "dark") document.documentElement.dataset.theme = "dark";
+      } catch {}
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

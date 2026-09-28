@@ -1,0 +1,444 @@
+/* Fonts copied from the app (src/assets/fonts), SIL OFL 1.1; license in assets/fonts/OFL.txt. */
+@font-face {
+  font-family: "DM Sans";
+  src: url("./assets/fonts/DMSans-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-display: swap;
+}
+@font-face {
+  font-family: "DM Sans";
+  src: url("./assets/fonts/DMSans-Medium.ttf") format("truetype");
+  font-weight: 500;
+  font-display: swap;
+}
+@font-face {
+  font-family: "DM Sans";
+  src: url("./assets/fonts/DMSans-Bold.ttf") format("truetype");
+  font-weight: 700;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Instrument Serif";
+  src: url("./assets/fonts/InstrumentSerif-Italic.ttf") format("truetype");
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("./assets/fonts/JetBrainsMono-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-display: swap;
+}
+
+/* Light is the default. Orange tones are darkened from the app's #e8682a to pass
+   WCAG AA on white; dark mode uses the app orange as is on pure black. */
+:root {
+  --bg: #fff;
+  --fg: #111;
+  --muted: #555;
+  --line: #dedede;
+  --line-strong: #111;
+  --accent: #b5470f;
+  --accent-fill: #c4501c;
+  --on-accent: #fff;
+  --focus: #c4501c;
+  --serif: "Instrument Serif", Georgia, serif;
+  --sans: "DM Sans", system-ui, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, monospace;
+  --gutter: clamp(16px, 4vw, 40px);
+  color-scheme: light;
+}
+:root[data-theme="dark"] {
+  --bg: #000;
+  --fg: #fff;
+  --muted: #a3a3a3;
+  --line: #262626;
+  --line-strong: #fff;
+  --accent: #e8682a;
+  --accent-fill: #e8682a;
+  --on-accent: #000;
+  --focus: #e8682a;
+  color-scheme: dark;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+html {
+  scroll-behavior: smooth;
+}
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+}
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 400 16px/1.55 var(--sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+a {
+  color: var(--accent);
+  text-underline-offset: 3px;
+}
+a:hover {
+  text-decoration-thickness: 2px;
+}
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 3px;
+  border-radius: 2px;
+}
+code {
+  font: 0.88em var(--mono);
+}
+h1,
+h2,
+h3 {
+  margin: 0;
+  letter-spacing: -0.015em;
+}
+h2 {
+  font-size: 28px;
+  line-height: 1.15;
+  margin-bottom: 24px;
+}
+h3 {
+  font-size: 17px;
+}
+p {
+  margin: 0;
+}
+
+.skip-link {
+  position: absolute;
+  left: var(--gutter);
+  top: -100px;
+  background: var(--bg);
+  padding: 8px 12px;
+  z-index: 10;
+}
+.skip-link:focus {
+  top: 8px;
+}
+
+/* Header */
+.site-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 32px;
+  padding: 14px var(--gutter);
+  border-bottom: 1px solid var(--line);
+}
+.wordmark {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  text-decoration: none;
+  color: var(--fg);
+}
+.wordmark-serif {
+  font: italic 400 28px/1 var(--serif);
+  color: var(--accent);
+}
+.wordmark-3d {
+  font: 12px var(--mono);
+}
+.site-header nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 20px;
+  flex: 1;
+  font-size: 14px;
+}
+.site-header nav a,
+.site-footer nav a {
+  color: var(--fg);
+  text-decoration: none;
+}
+.site-header nav a:hover,
+.site-footer nav a:hover {
+  color: var(--accent);
+}
+.theme-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font: 500 14px var(--sans);
+  color: var(--fg);
+  background: none;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  padding: 5px 10px;
+  cursor: pointer;
+}
+.theme-toggle-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 1.5px solid currentColor;
+}
+.theme-toggle[aria-pressed="true"] .theme-toggle-dot {
+  background: currentColor;
+}
+
+/* Sections */
+main > section {
+  padding: 56px var(--gutter);
+  border-bottom: 1px solid var(--line);
+}
+main > section:last-child {
+  border-bottom: 0;
+}
+
+/* Hero */
+.hero {
+  display: grid;
+  grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+  gap: 48px;
+  align-items: center;
+}
+.hero h1 {
+  font-size: clamp(34px, 4.2vw, 52px);
+  line-height: 1.06;
+  letter-spacing: -0.025em;
+}
+.hero h1 em {
+  font: italic 400 1.12em var(--serif);
+  color: var(--accent);
+  letter-spacing: 0;
+}
+.lede {
+  margin: 18px 0 28px;
+  max-width: 48ch;
+  color: var(--muted);
+  font-size: 17px;
+}
+.download {
+  display: inline-block;
+  background: var(--accent-fill);
+  color: var(--on-accent);
+  font-weight: 700;
+  font-size: 17px;
+  padding: 14px 22px;
+  border-radius: 6px;
+  text-decoration: none;
+}
+.download:hover {
+  text-decoration: underline;
+}
+.release-facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 3px 16px;
+  margin: 20px 0 0;
+  font: 13px/1.5 var(--mono);
+}
+.release-facts dt {
+  color: var(--muted);
+}
+.release-facts dd {
+  margin: 0;
+}
+.hash {
+  font-family: var(--mono);
+  overflow-wrap: anywhere;
+}
+.hero-note {
+  margin-top: 14px;
+  font-size: 14px;
+  color: var(--muted);
+}
+figure {
+  margin: 0;
+}
+figure img {
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+}
+figcaption {
+  margin-top: 8px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+/* Steps */
+.steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.step {
+  display: grid;
+  grid-template-columns: minmax(0, 4fr) minmax(0, 8fr);
+  gap: 16px 48px;
+  padding: 28px 0;
+  border-top: 1px solid var(--line);
+}
+.step:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+.step-copy {
+  max-width: 40ch;
+}
+.step-num {
+  font: 13px var(--mono);
+  color: var(--accent);
+}
+.step h3 {
+  font-size: 22px;
+  margin: 4px 0 8px;
+}
+
+/* Reference sign */
+.sign-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+  gap: 48px;
+  align-items: start;
+}
+.sign-grid img {
+  border: 1px solid var(--line);
+}
+.sign-grid p {
+  max-width: 60ch;
+  margin-bottom: 20px;
+}
+
+/* Definition tables */
+.facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0 24px;
+  margin: 0;
+}
+.facts dt,
+.facts dd {
+  padding: 10px 0;
+  border-top: 1px solid var(--line);
+  margin: 0;
+}
+.facts dt {
+  font-weight: 700;
+}
+.facts-wide {
+  grid-template-columns: 180px minmax(0, 72ch);
+}
+.swatches {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+}
+.swatches li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.swatch {
+  width: 14px;
+  height: 14px;
+  border: 1px solid var(--line-strong);
+}
+
+/* Install */
+.install {
+  margin: 0;
+  padding-left: 1.4em;
+  display: grid;
+  gap: 10px;
+  max-width: 72ch;
+}
+.install li::marker {
+  font-weight: 700;
+  color: var(--accent);
+}
+
+/* Scope */
+.scope {
+  display: grid;
+  grid-template-columns: 5fr 3fr 4fr;
+  gap: 40px;
+}
+.scope h3 {
+  padding-bottom: 8px;
+  margin-bottom: 12px;
+  border-bottom: 2px solid var(--line-strong);
+}
+.scope #roadmap h3 {
+  border-color: var(--accent);
+}
+.scope ul {
+  margin: 0;
+  padding-left: 1.1em;
+  display: grid;
+  gap: 6px;
+}
+.scope p {
+  margin-bottom: 10px;
+}
+
+/* Footer */
+.site-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px 20px;
+  padding: 28px var(--gutter);
+  border-top: 1px solid var(--line-strong);
+  font-size: 14px;
+}
+.site-footer > span:nth-child(2) {
+  font-family: var(--mono);
+  font-size: 13px;
+}
+.site-footer nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 20px;
+  margin-left: auto;
+}
+
+@media (max-width: 860px) {
+  /* Wordmark and toggle share the first row; the section nav drops to its own row. */
+  .site-header {
+    justify-content: space-between;
+  }
+  .site-header nav {
+    order: 3;
+    flex-basis: 100%;
+  }
+  .hero,
+  .step,
+  .sign-grid,
+  .scope {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .hero {
+    gap: 32px;
+  }
+  .facts-wide {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .facts-wide dd {
+    border-top: 0;
+    padding-top: 0;
+  }
+  .site-footer nav {
+    margin-left: 0;
+  }
+}

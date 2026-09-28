@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "title": "P2S three-color test",
+  "width_mm": 80,
+  "height_mm": 50,
+  "thickness_mm": 2.6,
+  "inlay_depth_mm": 0.4,
+  "corner_radius_mm": 4,
+  "base": { "name": "white", "hex": "#FFFFFF" },
+  "inks": [
+    { "name": "navy", "hex": "#123B6D" },
+    { "name": "teal", "hex": "#149B98" }
+  ],
+  "elements": [
+    { "type": "text", "ink": "navy", "text": "HELLO", "font": "heavy", "cap_height_mm": 12, "x_mm": 8, "y_mm": 22, "align": "left" },
+    { "type": "rect", "ink": "teal", "x_mm": 8, "y_mm": 26, "w_mm": 64, "h_mm": 2 },
+    { "type": "text", "ink": "navy", "text": "3 COLOR TEST", "font": "bold", "cap_height_mm": 4.5, "x_mm": 8, "y_mm": 36, "align": "left" },
+    { "type": "rect", "ink": "navy", "x_mm": 52, "y_mm": 31, "w_mm": 20, "h_mm": 11, "corner_radius_mm": 2 },
+    { "type": "text", "ink": "white", "text": "P2S", "font": "heavy", "cap_height_mm": 6, "x_mm": 62, "y_mm": 39.5, "align": "center" },
+    { "type": "svg", "ink_map": { "#149b98": "teal" }, "svg_source": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 10 10\"><circle fill=\"#149B98\" cx=\"5\" cy=\"5\" r=\"5\"/></svg>", "x_mm": 64, "y_mm": 9, "w_mm": 8 }
+  ]
+}

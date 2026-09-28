@@ -1,0 +1,44 @@
+<!doctype html>
+<!-- Mock A: spec sheet. Oversized italic wordmark, one sentence, and the download
+     presented as a monospace release record. No product imagery above the fold. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mock A: spec sheet</title>
+<style>
+@font-face { font-family: "DM Sans"; src: url("../src/assets/fonts/DMSans-Regular.ttf"); font-weight: 400; }
+@font-face { font-family: "DM Sans"; src: url("../src/assets/fonts/DMSans-Bold.ttf"); font-weight: 700; }
+@font-face { font-family: "Instrument Serif"; src: url("../src/assets/fonts/InstrumentSerif-Italic.ttf"); font-style: italic; }
+@font-face { font-family: "JetBrains Mono"; src: url("../src/assets/fonts/JetBrainsMono-Regular.ttf"); }
+* { box-sizing: border-box; margin: 0; }
+body { font: 16px/1.5 "DM Sans", sans-serif; color: #111; background: #fff; padding: 32px 48px; }
+header { display: flex; justify-content: space-between; font-size: 14px; border-bottom: 1px solid #111; padding-bottom: 12px; }
+nav a { color: #111; margin-left: 20px; text-decoration: none; }
+.mark { font: italic 400 clamp(72px, 14vw, 200px)/0.9 "Instrument Serif", serif; color: #b5470f; margin: 48px 0 16px; letter-spacing: -0.02em; }
+.mark span { font: 400 0.18em "JetBrains Mono", monospace; color: #111; vertical-align: top; margin-left: 8px; }
+h1 { font-size: 28px; font-weight: 700; max-width: 26ch; line-height: 1.2; }
+.row { display: grid; grid-template-columns: auto 1fr; gap: 48px; margin-top: 40px; border-top: 1px solid #111; padding-top: 24px; align-items: start; }
+.dl { display: inline-block; background: #c4501c; color: #fff; font-weight: 700; padding: 14px 22px; border-radius: 6px; text-decoration: none; }
+table { font: 13px/1.6 "JetBrains Mono", monospace; border-collapse: collapse; }
+td { padding: 2px 24px 2px 0; border-bottom: 1px solid #ddd; }
+td:first-child { color: #555; }
+</style>
+</head>
+<body>
+<header><strong>Materialize 3D</strong><nav><a href="#">How it works</a><a href="#">Requirements</a><a href="#">Install</a><a href="#">Roadmap</a></nav></header>
+<div class="mark">Materialize<span>3D</span></div>
+<h1>Describe a sign in chat. Approve a slice that passed 27 checks.</h1>
+<div class="row">
+  <a class="dl" href="#">Download for Mac (Apple Silicon)</a>
+  <table>
+    <tr><td>version</td><td>0.1.0</td></tr>
+    <tr><td>tested on</td><td>macOS 26.7, Apple Silicon</td></tr>
+    <tr><td>needs</td><td>Bambu Studio 02.08.02.61, your API key</td></tr>
+    <tr><td>printer</td><td>Bambu Lab P2S with AMS</td></tr>
+    <tr><td>sha-256</td><td>pending</td></tr>
+    <tr><td>apple</td><td>not signed, not notarized</td></tr>
+  </table>
+</div>
+</body>
+</html>

@@ -1,0 +1,36 @@
+<!doctype html>
+<!-- Mock C: stage track. Centered headline, the app's own build stage track restated as
+     the pitch, the rendered test sign as the hero object, download under it. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mock C: stage track</title>
+<style>
+@font-face { font-family: "DM Sans"; src: url("../src/assets/fonts/DMSans-Regular.ttf"); font-weight: 400; }
+@font-face { font-family: "DM Sans"; src: url("../src/assets/fonts/DMSans-Bold.ttf"); font-weight: 700; }
+@font-face { font-family: "Instrument Serif"; src: url("../src/assets/fonts/InstrumentSerif-Italic.ttf"); font-style: italic; }
+@font-face { font-family: "JetBrains Mono"; src: url("../src/assets/fonts/JetBrainsMono-Regular.ttf"); }
+* { box-sizing: border-box; margin: 0; }
+body { font: 16px/1.5 "DM Sans", sans-serif; color: #111; background: #fff; text-align: center; padding: 24px; }
+.wm { font: italic 400 32px "Instrument Serif", serif; color: #b5470f; }
+h1 { font-size: 40px; margin: 40px auto 20px; max-width: 20ch; line-height: 1.1; }
+ol { list-style: none; padding: 0; display: flex; justify-content: center; flex-wrap: wrap; gap: 0; font: 13px "JetBrains Mono", monospace; margin-bottom: 32px; }
+ol li { padding: 6px 14px; border-bottom: 2px solid #111; }
+ol li.gate { border-color: #c4501c; color: #b5470f; }
+img { width: min(520px, 100%); height: auto; border: 1px solid #ccc; }
+.dl { display: inline-block; margin-top: 32px; background: #c4501c; color: #fff; font-weight: 700; padding: 14px 22px; border-radius: 6px; text-decoration: none; }
+p.meta { font: 13px "JetBrains Mono", monospace; color: #555; margin-top: 12px; }
+</style>
+</head>
+<body>
+<div class="wm">Materialize</div>
+<h1>From a sentence to a checked, approved 3MF.</h1>
+<ol>
+  <li>Describe</li><li>Generate</li><li>Slice</li><li>27 checks</li><li class="gate">You approve</li><li>Export</li>
+</ol>
+<img src="../src/assets/p2s-test-sign-preview.png" width="800" height="500" alt="">
+<div><a class="dl" href="#">Download for Mac (Apple Silicon)</a></div>
+<p class="meta">0.1.0 · macOS 26.7 tested · SHA-256 pending · not signed, not notarized</p>
+</body>
+</html>
