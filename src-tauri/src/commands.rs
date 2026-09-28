@@ -10,7 +10,6 @@ use crate::makerworld::{
     self, ImportResult, MakerWorldImportAttempt, MakerWorldPageReport, MakerWorldService,
     MakerWorldWebviewBounds,
 };
-use crate::oauth_callback::{self, OAuthCallbackState};
 use crate::openscad::OpenScadService;
 use crate::print_queue;
 use crate::printer::{BambuCommand, BambuCredentials, PrinterService};
@@ -1015,80 +1014,6 @@ pub async fn delete_credential(key: String) -> Result<bool, String> {
 #[tauri::command]
 pub async fn has_credential(key: String) -> Result<bool, String> {
     credentials::has_credential(&key).await
-}
-
-// ─── OAuth Callback Commands ──────────────────────────────────────────────────
-
-/// Start a single-use OAuth callback server on the given port.
-///
-/// The server waits for one browser redirect, extracts the auth code,
-/// emits an `oauth:callback` event, then shuts down.
-#[tauri::command]
-pub async fn start_oauth_callback(
-    port: u16,
-    app: AppHandle,
-    oauth_state: State<'_, OAuthCallbackState>,
-) -> Result<(), String> {
-    // Abort any existing callback server
-    oauth_callback::stop_callback_server(&oauth_state).await;
-
-    let handle_clone = oauth_state.handle.clone();
-    let task = tokio::spawn(async move {
-        if let Err(e) = oauth_callback::start_callback_server(port, app).await {
-            log::error!("oauth:callback-server error: {e}");
-        }
-    });
-
-    let mut guard = handle_clone.lock().await;
-    *guard = Some(task);
-
-    Ok(())
-}
-
-/// Stop the running OAuth callback server, if any.
-#[tauri::command]
-pub async fn stop_oauth_callback(oauth_state: State<'_, OAuthCallbackState>) -> Result<(), String> {
-    oauth_callback::stop_callback_server(&oauth_state).await;
-    Ok(())
-}
-
-/// Proxy an OAuth token exchange through Rust to avoid CORS restrictions.
-///
-/// The Tauri webview's `fetch()` to OAuth token endpoints (e.g. platform.claude.com)
-/// is blocked by CORS — the server doesn't include `Access-Control-Allow-Origin` for
-/// localhost origins. Rust's reqwest has no CORS restrictions.
-#[tauri::command]
-pub async fn oauth_token_exchange(
-    url: String,
-    body: String,
-    content_type: String,
-) -> Result<String, String> {
-    let client = reqwest::Client::new();
-    let response = client
-        .post(&url)
-        .header("Content-Type", &content_type)
-        .header("Accept", "application/json")
-        .body(body)
-        .timeout(std::time::Duration::from_secs(30))
-        .send()
-        .await
-        .map_err(|e| format!("oauth:token-exchange request failed: {e}"))?;
-
-    let status = response.status();
-    let response_body = response
-        .text()
-        .await
-        .map_err(|e| format!("oauth:token-exchange read body failed: {e}"))?;
-
-    if !status.is_success() {
-        return Err(format!(
-            "oauth:token-exchange failed: status={} body={}",
-            status, response_body
-        ));
-    }
-
-    log::info!("oauth:token-exchange success url={}", url);
-    Ok(response_body)
 }
 
 // ─── Printer Config Commands ──────────────────────────────────────────────────

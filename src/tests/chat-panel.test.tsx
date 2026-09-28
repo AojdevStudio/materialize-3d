@@ -1,191 +1,220 @@
 // @vitest-environment jsdom
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { render, cleanup, screen, waitFor } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import type { Channel } from '@tauri-apps/api/core'
+import { clearMocks, mockIPC } from '@tauri-apps/api/mocks'
+import type { ChatModelRunOptions, ChatModelRunResult } from '@assistant-ui/react'
+import type { AgentEvent, HistoryEntry } from '../types/agent'
+import { ChatPanel } from '../components/ChatPanel'
+import { createAgentAdapter } from '../components/chat/agentAdapter'
+import { useAgentStore } from '../stores/agent'
+import { UI_DEFAULT_STATE, useUiStore } from '../stores/ui'
 
-// ── Mocks ──
-
-// Track setAgent calls
-const mockSetAgent = vi.fn().mockResolvedValue(undefined)
-
-// Mock pi-web-ui: ChatPanel returns a real HTMLElement (jsdom needs real Nodes),
-// ApiKeyPromptDialog with a static prompt method
-vi.mock('@mariozechner/pi-web-ui', () => {
-  // The mock ChatPanel creates a real DOM element and attaches setAgent to it
-  function MockChatPanel() {
-    const el = document.createElement('div')
-    el.setAttribute('data-testid', 'pi-chat-panel')
-    el.setAttribute('data-component', 'chat-panel')
-    ;(el as any).setAgent = async (agent: any, config?: any) => {
-      ;(el as any).agent = agent
-      mockSetAgent(agent, config)
-    }
-    return el
-  }
-
-  return {
-    ChatPanel: MockChatPanel,
-    ApiKeyPromptDialog: {
-      prompt: vi.fn().mockResolvedValue(true),
-    },
-    defaultConvertToLlm: vi.fn((messages: unknown[]) => messages),
-    AppStorage: vi.fn(),
-    IndexedDBStorageBackend: vi.fn(),
-    SettingsStore: vi.fn(() => ({ getConfig: vi.fn() })),
-    ProviderKeysStore: vi.fn(() => ({ getConfig: vi.fn(), get: vi.fn() })),
-    SessionsStore: Object.assign(vi.fn(() => ({ getConfig: vi.fn() })), {
-      getMetadataConfig: vi.fn(),
-    }),
-    CustomProvidersStore: vi.fn(() => ({ getConfig: vi.fn() })),
-    setAppStorage: vi.fn(),
-  }
-})
-
-// Mock the agent module
-const mockAgent = {
-  state: {
-    model: { id: 'claude-sonnet-4-6', provider: 'anthropic', api: 'messages' },
-    tools: [],
-    messages: [],
-    systemPrompt: 'test prompt',
-  },
-  subscribe: vi.fn(),
-  setSystemPrompt: vi.fn(),
+// A fake Rust agent behind mockIPC: each agent_send hands its channel to the
+// test, which then plays events and resolves the send.
+interface Turn {
+  conversationId: string
+  turnId: string
+  text: string
+  emit: (event: AgentEvent) => void
+  finish: () => void
 }
 
-vi.mock('../agent/agent', () => ({
-  getAgent: vi.fn(() => mockAgent),
-}))
+let turns: Turn[]
+let calls: { cmd: string; args: Record<string, unknown> }[]
+let history: HistoryEntry[]
 
-// Mock pi-ai (needed transitively)
-vi.mock('@mariozechner/pi-ai', () => ({
-  getModel: vi.fn((_provider: string, _modelId: string) => ({
-    id: _modelId,
-    provider: _provider,
-    api: 'messages',
-  })),
-}))
+const SIGN = {
+  revision_id: 'rev-2',
+  lineage_id: 'lin-1',
+  number: 2,
+  title: 'Back Shortly door sign',
+  build: 'verified',
+  failure_reason: null,
+  checks_passed: 9,
+  checks_total: 9,
+  failed_checks: [],
+  package_sha256: 'abc123f09d1e7b55c0a4e2f6781d3b9ac0ffee12de45f67a89b0c1d2e3f4c4e7',
+  approval: 'pending',
+  reused: false,
+}
 
-// Mock Tauri APIs
-vi.mock('@tauri-apps/api/core', () => ({
-  invoke: vi.fn(),
-}))
+beforeEach(() => {
+  turns = []
+  calls = []
+  history = []
+  useAgentStore.setState({ status: null })
+  useUiStore.setState(UI_DEFAULT_STATE)
+  mockIPC(
+    (cmd, payload) => {
+      const args = (payload ?? {}) as Record<string, unknown>
+      calls.push({ cmd, args })
+      switch (cmd) {
+        case 'agent_status':
+          return { provider: 'anthropic', model: 'claude-sonnet-5', hasApiKey: true }
+        case 'agent_history':
+          return { conversationId: 'conv-1', entries: history }
+        case 'agent_cancel':
+          return true
+        case 'agent_send':
+          return new Promise<void>((finish) => {
+            const channel = args.onEvent as Channel<AgentEvent>
+            turns.push({
+              conversationId: args.conversationId as string,
+              turnId: args.turnId as string,
+              text: args.text as string,
+              emit: (event) => channel.onmessage(event),
+              finish,
+            })
+          })
+      }
+      return undefined
+    },
+    { shouldMockEvents: true },
+  )
+})
 
-vi.mock('@tauri-apps/api/event', () => ({
-  listen: vi.fn(),
-}))
+afterEach(() => {
+  cleanup()
+  clearMocks()
+})
 
-describe('ChatPanel wrapper', () => {
-  beforeEach(() => {
-    vi.clearAllMocks()
-    // Ensure clean state
-    delete (globalThis as any).__MATERIALIZE_AGENT__
+async function sendMessage(text: string): Promise<Turn> {
+  await screen.findByTestId('chat-input')
+  fireEvent.change(screen.getByTestId('chat-input'), { target: { value: text } })
+  fireEvent.click(screen.getByTestId('chat-send'))
+  await waitFor(() => expect(turns.length).toBeGreaterThan(0))
+  const turn = turns[turns.length - 1]!
+  const play = turn.emit
+  // Events arrive outside React; wrap them so assertions see the render.
+  turn.emit = (event) => act(() => play(event))
+  return turn
+}
+
+describe('agent adapter', () => {
+  it('sends only the new user text and yields the full cumulative content each time', async () => {
+    const adapter = createAgentAdapter('conv-1')
+    const options = {
+      messages: [
+        { role: 'user', content: [{ type: 'text', text: 'earlier' }] },
+        { role: 'assistant', content: [{ type: 'text', text: 'reply' }] },
+        { role: 'user', content: [{ type: 'text', text: 'Make a sign' }] },
+      ],
+      abortSignal: new AbortController().signal,
+    } as unknown as ChatModelRunOptions
+    const stream = adapter.run(options) as AsyncGenerator<ChatModelRunResult>
+
+    const yields: ChatModelRunResult[] = []
+    const collecting = (async () => {
+      for await (const update of stream) yields.push(update)
+    })()
+
+    await waitFor(() => expect(turns).toHaveLength(1))
+    const [turn] = turns
+    expect(turn).toMatchObject({ conversationId: 'conv-1', text: 'Make a sign' })
+
+    turn!.emit({ type: 'turnStarted', conversationId: 'conv-1', turnId: turn!.turnId })
+    turn!.emit({ type: 'textDelta', text: 'Buil' })
+    turn!.emit({ type: 'textDelta', text: 'ding.' })
+    turn!.emit({ type: 'toolCall', callId: 'c1', name: 'build_sign', args: { title: 'Sign' } })
+    turn!.emit({ type: 'toolProgress', callId: 'c1', step: 'spec_validated' })
+    turn!.emit({ type: 'toolResult', callId: 'c1', ok: true, output: SIGN })
+    turn!.emit({ type: 'textDelta', text: 'Done' })
+    turn!.emit({ type: 'turnFinished' })
+    turn!.finish()
+    await collecting
+
+    expect(yields.map((y) => y.content?.length)).toEqual([1, 1, 2, 2, 2, 3])
+    expect(yields[1]!.content).toEqual([{ type: 'text', text: 'Building.' }])
+    expect(yields.at(-1)!.content).toMatchObject([
+      { type: 'text', text: 'Building.' },
+      { type: 'tool-call', toolCallId: 'c1', toolName: 'build_sign', result: SIGN, isError: false, artifact: { steps: ['spec_validated'] } },
+      { type: 'text', text: 'Done' },
+    ])
+  })
+})
+
+describe('ChatPanel', () => {
+  it('shows build_sign steps while running, then the result awaiting approval with no approve control', async () => {
+    render(<ChatPanel />)
+    expect(screen.getByLabelText('AI assistant panel').getAttribute('data-testid')).toBe('chat-panel')
+    const turn = await sendMessage('Make a Back Shortly door sign')
+
+    turn.emit({ type: 'turnStarted', conversationId: 'conv-1', turnId: turn.turnId })
+    turn.emit({ type: 'toolCall', callId: 'c1', name: 'build_sign', args: { title: 'Back Shortly door sign' } })
+    turn.emit({ type: 'toolProgress', callId: 'c1', step: 'spec_validated' })
+    turn.emit({ type: 'toolProgress', callId: 'c1', step: 'geometry_built' })
+
+    const steps = await screen.findByTestId('tool-steps')
+    expect([...steps.querySelectorAll('li')].map((li) => li.textContent)).toEqual([
+      'done1. Spec validated',
+      'done2. Geometry built',
+      'running3. Package written',
+      'waiting4. Sliced',
+      'waiting5. Verified',
+    ])
+    expect(screen.getByText('build_sign, step 3 of 5')).toBeTruthy()
+    expect(screen.getByTestId('chat-stop')).toBeTruthy()
+
+    for (const step of ['package_written', 'sliced', 'verified'] as const) {
+      turn.emit({ type: 'toolProgress', callId: 'c1', step })
+    }
+    turn.emit({ type: 'toolResult', callId: 'c1', ok: true, output: SIGN })
+    turn.emit({ type: 'turnFinished' })
+    await act(async () => turn.finish())
+
+    const result = await screen.findByTestId('tool-result')
+    expect(result.textContent).toContain('r2, Back Shortly door sign')
+    expect(result.textContent).toContain('9 of 9 checks')
+    expect(result.textContent).toContain('abc123f0…c4e7')
+    expect(result.textContent).toContain('Awaiting your approval (the assistant cannot approve)')
+    expect(screen.queryByTestId('tool-steps')).toBeNull()
+    expect(within(screen.getByTestId('tool-build-sign')).queryByRole('button')).toBeNull()
+    expect(screen.queryByRole('button', { name: /approve/i })).toBeNull()
+    await waitFor(() => expect(screen.queryByTestId('chat-stop')).toBeNull())
   })
 
-  afterEach(() => {
-    cleanup()
-    delete (globalThis as any).__MATERIALIZE_AGENT__
+  it('shows a missing key error that opens Settings', async () => {
+    render(<ChatPanel />)
+    const turn = await sendMessage('Retry that')
+    turn.emit({ type: 'error', kind: 'missingApiKey', message: 'Anthropic API key is missing. The request was not sent.' })
+    await act(async () => turn.finish())
+
+    const error = await screen.findByTestId('chat-error')
+    expect(error.textContent).toContain('Anthropic API key is missing. The request was not sent.')
+    fireEvent.click(within(error).getByText('Open Settings'))
+    expect(useUiStore.getState().settingsOpen).toBe(true)
   })
 
-  it('mounts and creates a container element with pi-chat-container class', async () => {
-    const { ChatPanel } = await import('../components/ChatPanel')
+  it('Stop cancels the running turn by its turn id', async () => {
+    render(<ChatPanel />)
+    const turn = await sendMessage('Make a sign')
+    turn.emit({ type: 'toolCall', callId: 'c1', name: 'build_sign', args: {} })
+    turn.emit({ type: 'toolProgress', callId: 'c1', step: 'spec_validated' })
+
+    fireEvent.click(await screen.findByTestId('chat-stop'))
+
+    await waitFor(() => expect(calls).toContainEqual({ cmd: 'agent_cancel', args: { turnId: turn.turnId } }))
+    await waitFor(() => expect(screen.getByTestId('tool-build-sign').textContent).toContain('Cancelled after 1 of 5 steps'))
+  })
+
+  it('renders history after reload, including an interrupted tool call', async () => {
+    const at = '2026-09-26T10:00:00Z'
+    history = [
+      { role: 'user', id: 'u1', text: 'Make a Back Shortly door sign', createdAt: at },
+      { role: 'assistant', id: 'a1', text: 'Building it now.', createdAt: at },
+      { role: 'tool', callId: 'c1', name: 'build_sign', args: {}, status: 'completed', output: SIGN, createdAt: at },
+      { role: 'user', id: 'u2', text: 'Try one more', createdAt: at },
+      { role: 'tool', callId: 'c2', name: 'build_sign', args: {}, status: 'interrupted', output: null, createdAt: at },
+    ]
     render(<ChatPanel />)
 
-    const container = document.querySelector('.pi-chat-container')
-    expect(container).toBeTruthy()
-    expect(container?.classList.contains('dark')).toBe(true)
-  })
-
-  it('renders header with "AI Assistant" title', async () => {
-    const { ChatPanel } = await import('../components/ChatPanel')
-    render(<ChatPanel />)
-
-    const title = screen.getByText('AI Assistant')
-    expect(title).toBeTruthy()
-    expect(title.tagName).toBe('H2')
-    expect(title.classList.contains('chat-title')).toBe(true)
-  })
-
-  it('renders provider badge with provider name from agent model', async () => {
-    const { ChatPanel } = await import('../components/ChatPanel')
-    render(<ChatPanel />)
-
-    // Wait for the async mount to complete and update state
-    await waitFor(() => {
-      const badge = screen.getByText('Anthropic')
-      expect(badge).toBeTruthy()
-      expect(badge.classList.contains('provider-badge')).toBe(true)
-    })
-  })
-
-  it('calls getAgent and setAgent on mount', async () => {
-    const { ChatPanel } = await import('../components/ChatPanel')
-    const { getAgent } = await import('../agent/agent')
-    render(<ChatPanel />)
-
-    await waitFor(() => {
-      expect(getAgent).toHaveBeenCalled()
-      expect(mockSetAgent).toHaveBeenCalledWith(
-        mockAgent,
-        expect.objectContaining({
-          onApiKeyRequired: expect.any(Function),
-        })
-      )
-    })
-  })
-
-  it('appends Lit panel element to container on mount', async () => {
-    const { ChatPanel } = await import('../components/ChatPanel')
-    render(<ChatPanel />)
-
-    await waitFor(() => {
-      const container = document.querySelector('.pi-chat-container')
-      const litPanel = container?.querySelector('[data-testid="pi-chat-panel"]')
-      expect(litPanel).toBeTruthy()
-    })
-  })
-
-  it('unmounting cleans up (no orphaned Lit elements)', async () => {
-    const { ChatPanel } = await import('../components/ChatPanel')
-    const { unmount } = render(<ChatPanel />)
-
-    // Wait for mount to complete
-    await waitFor(() => {
-      const container = document.querySelector('.pi-chat-container')
-      expect(container?.querySelector('[data-testid="pi-chat-panel"]')).toBeTruthy()
-    })
-
-    // Unmount and verify cleanup
-    unmount()
-
-    // The pi-chat-container itself is removed from DOM by React
-    const containers = document.querySelectorAll('.pi-chat-container')
-    expect(containers.length).toBe(0)
-
-    // No orphaned pi-chat-panel elements anywhere in the document
-    const orphanedPanels = document.querySelectorAll('[data-testid="pi-chat-panel"]')
-    expect(orphanedPanels.length).toBe(0)
-  })
-
-  it('sets window.__MATERIALIZE_AGENT__ in dev mode', async () => {
-    const { ChatPanel } = await import('../components/ChatPanel')
-    render(<ChatPanel />)
-
-    await waitFor(() => {
-      // Vitest runs with import.meta.env.DEV = true by default
-      expect((globalThis as any).__MATERIALIZE_AGENT__).toBeDefined()
-      expect((globalThis as any).__MATERIALIZE_AGENT__).toBe(mockAgent)
-    })
-  })
-
-  it('chat panel is inside chat-panel aside element', async () => {
-    const { ChatPanel } = await import('../components/ChatPanel')
-    render(<ChatPanel />)
-
-    const aside = document.querySelector('aside.chat-panel')
-    expect(aside).toBeTruthy()
-    expect(aside?.getAttribute('aria-label')).toBe('AI assistant panel')
-
-    const container = aside?.querySelector('.pi-chat-container')
-    expect(container).toBeTruthy()
+    expect(await screen.findByText('Make a Back Shortly door sign')).toBeTruthy()
+    expect(screen.getByText('Building it now.')).toBeTruthy()
+    expect(screen.getByText('Try one more')).toBeTruthy()
+    const [finished, interrupted] = screen.getAllByTestId('tool-build-sign')
+    expect(within(finished!).getByTestId('tool-result').textContent).toContain('Awaiting your approval')
+    expect(interrupted!.textContent).toContain('Interrupted, the app closed while it ran')
+    expect(screen.queryByTestId('chat-stop')).toBeNull()
   })
 })

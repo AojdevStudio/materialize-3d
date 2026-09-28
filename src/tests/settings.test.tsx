@@ -14,22 +14,21 @@ vi.mock('@tauri-apps/api/event', () => ({
   listen: listenMock,
 }))
 
+// agent_* commands go to a small fake Rust agent; everything else to invokeMock
+const agentInvokeMock = vi.fn()
 vi.mock('@tauri-apps/api/core', () => ({
-  invoke: invokeMock,
+  invoke: (...args: [string, unknown?]) =>
+    args[0].startsWith('agent_') ? agentInvokeMock(...args) : invokeMock(...args),
 }))
 
-// pi-ai mock: SettingsPanel imports model-config (provider/model catalog)
-vi.mock('@mariozechner/pi-ai', () => ({
-  getModel: vi.fn((_provider: string, _modelId: string) => ({
-    id: _modelId,
-    provider: _provider,
-    api: 'messages',
-  })),
-  getProviders: vi.fn(() => ['anthropic', 'openai']),
-  getModels: vi.fn((_provider: string) => [
-    { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4', provider: _provider, api: 'messages' },
-  ]),
-}))
+let agentKeys = new Set<string>()
+let agentModel = { provider: 'anthropic', model: 'claude-sonnet-5' }
+function fakeAgent(cmd: string, args?: Record<string, string>) {
+  if (cmd === 'agent_set_api_key') agentKeys.add(args!.provider!)
+  if (cmd === 'agent_clear_api_key') agentKeys.delete(args!.provider!)
+  if (cmd === 'agent_set_model') agentModel = { provider: args!.provider!, model: args!.model! }
+  return Promise.resolve({ ...agentModel, hasApiKey: agentKeys.has(agentModel.provider) })
+}
 
 function emitEvent<T>(name: string, payload: T) {
   const handler = eventHandlers.get(name)
@@ -146,6 +145,12 @@ describe('useSettingsStore', () => {
 
 describe('SettingsPanel component', () => {
   beforeEach(async () => {
+    agentKeys = new Set()
+    agentModel = { provider: 'anthropic', model: 'claude-sonnet-5' }
+    agentInvokeMock.mockReset()
+    agentInvokeMock.mockImplementation(fakeAgent)
+    const { useAgentStore } = await import('../stores/agent')
+    useAgentStore.setState({ status: null })
     eventHandlers.clear()
     listenMock.mockReset()
     invokeMock.mockReset()
@@ -259,6 +264,43 @@ describe('SettingsPanel component', () => {
     vi.useRealTimers()
   })
 
+  it('stores and clears the agent API key without ever showing it', async () => {
+    invokeMock.mockResolvedValue(MOCK_PROFILES)
+    const { SettingsPanel } = await import('../components/SettingsPanel')
+    render(React.createElement(SettingsPanel, { isOpen: true, onClose: vi.fn() }))
+
+    const input = (await screen.findByTestId('agent-api-key')) as HTMLInputElement
+    expect(input.type).toBe('password')
+    expect(screen.getByTestId('agent-key-state').textContent).toBe('No key stored')
+
+    fireEvent.change(input, { target: { value: 'sk-secret-123' } })
+    fireEvent.click(screen.getByTestId('agent-api-key-save'))
+
+    await waitFor(() => expect(screen.getByTestId('agent-key-state').textContent).toBe('Key stored'))
+    expect(agentInvokeMock).toHaveBeenCalledWith('agent_set_api_key', { provider: 'anthropic', apiKey: 'sk-secret-123' })
+    expect(input.value).toBe('')
+    expect(document.body.innerHTML).not.toContain('sk-secret-123')
+
+    fireEvent.click(screen.getByTestId('agent-api-key-clear'))
+    await waitFor(() => expect(screen.getByTestId('agent-key-state').textContent).toBe('No key stored'))
+    expect(agentInvokeMock).toHaveBeenCalledWith('agent_clear_api_key', { provider: 'anthropic' })
+  })
+
+  it('provider and model selects call agent_set_model', async () => {
+    invokeMock.mockResolvedValue(MOCK_PROFILES)
+    const { SettingsPanel } = await import('../components/SettingsPanel')
+    render(React.createElement(SettingsPanel, { isOpen: true, onClose: vi.fn() }))
+
+    fireEvent.change(await screen.findByTestId('agent-model'), { target: { value: 'claude-sonnet-5' } })
+    await waitFor(() =>
+      expect(agentInvokeMock).toHaveBeenCalledWith('agent_set_model', { provider: 'anthropic', model: 'claude-sonnet-5' }),
+    )
+
+    fireEvent.change(screen.getByTestId('agent-provider'), { target: { value: 'openai' } })
+    await waitFor(() => expect((screen.getByTestId('agent-provider') as HTMLSelectElement).value).toBe('openai'))
+    expect(agentInvokeMock).toHaveBeenLastCalledWith('agent_set_model', { provider: 'openai', model: 'gpt-5.5' })
+  })
+
   it('renders checkbox labels for all notification types', async () => {
     invokeMock.mockResolvedValue(MOCK_PROFILES)
     const { SettingsPanel } = await import('../components/SettingsPanel')
@@ -291,6 +333,8 @@ describe('Toolbar with SettingsPanel', () => {
     const { usePrinterConfigStore, PRINTER_CONFIG_DEFAULT_STATE } = await import('../stores/printerConfigs')
     const { usePrinterStore, PRINTER_DEFAULT_STATE } = await import('../stores/printer')
     const { useSettingsStore, SETTINGS_DEFAULT_STATE } = await import('../stores/settings')
+    const { useUiStore, UI_DEFAULT_STATE } = await import('../stores/ui')
+    useUiStore.setState(UI_DEFAULT_STATE)
     usePrinterConfigStore.setState(PRINTER_CONFIG_DEFAULT_STATE)
     usePrinterStore.setState(PRINTER_DEFAULT_STATE)
     useSettingsStore.setState({ ...SETTINGS_DEFAULT_STATE, settings: structuredClone(DEFAULT_SETTINGS), loaded: true })

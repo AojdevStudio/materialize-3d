@@ -92,77 +92,27 @@
     margin-inline: auto;
   }
 
-  /* ── Provider cards ── */
+  /* ── Provider choice ── */
 
-  .onboarding-providers {
+  .onboarding-choice {
     display: flex;
-    flex-direction: column;
-    gap: var(--space-3);
+    gap: var(--space-2);
   }
 
-  .provider-card {
-    display: flex;
-    align-items: center;
-    gap: var(--space-4);
-    padding: var(--space-4);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-md);
-    background: var(--bg-elevated);
-    transition: border-color var(--transition);
-  }
-
-  .provider-card:hover {
-    border-color: var(--text-tertiary);
-  }
-
-  .provider-card.connected {
-    border-color: var(--accent-green);
-    background: rgba(52, 211, 153, 0.05);
-  }
-
-  .provider-icon {
-    width: 40px;
-    height: 40px;
-    border-radius: var(--radius-sm);
-    background: var(--bg-deep);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 18px;
-    font-weight: 700;
-    flex-shrink: 0;
-    color: var(--text-secondary);
-  }
-
-  .provider-card.connected .provider-icon {
-    color: var(--accent-green);
-  }
-
-  .provider-info {
+  .onboarding-choice button {
     flex: 1;
-    min-width: 0;
+    padding: var(--space-2) var(--space-3);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: none;
+    color: var(--text-secondary);
+    font-size: 13px;
+    cursor: pointer;
   }
 
-  .provider-name {
-    font-size: 14px;
-    font-weight: 500;
+  .onboarding-choice button.selected {
+    border-color: var(--accent-orange);
     color: var(--text-primary);
-  }
-
-  .provider-desc {
-    font-size: 12px;
-    color: var(--text-tertiary);
-    margin-top: 2px;
-  }
-
-  .provider-status {
-    font-size: 11px;
-    color: var(--accent-orange);
-    margin-top: 2px;
-  }
-
-  .provider-action {
-    flex-shrink: 0;
   }
 
   /* ── Bambu printer section ── */

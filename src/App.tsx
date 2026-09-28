@@ -10,7 +10,6 @@ import { useOpenScadEvents, useOpenScadStore } from './stores/openscadStore'
 import { usePrinterConfigEvents, usePrinterConfigStore, hydratePrinterConfigs } from './stores/printerConfigs'
 import { useSettingsEvents, hydrateSettings } from './stores/settings'
 import { useSignsEvents } from './stores/signs'
-import { setupProactiveNotifications } from './agent/notifications'
 import { useUiStore } from './stores/ui'
 import './styles/global.css'
 
@@ -43,8 +42,6 @@ function AppStateBridge() {
   useSignsEvents()
 
   useEffect(() => {
-    let notificationUnlisten: (() => void) | null = null
-
     const hydrate = async () => {
       try {
         const snapshot = await invoke<AppStateSnapshot>('get_app_state')
@@ -61,16 +58,9 @@ function AppStateBridge() {
       await hydratePrinterConfigs()
       // Hydrate settings
       await hydrateSettings()
-
-      // Start proactive notification listener (after settings are hydrated)
-      notificationUnlisten = await setupProactiveNotifications()
     }
 
     void hydrate()
-
-    return () => {
-      notificationUnlisten?.()
-    }
   }, [])
 
   useEffect(() => {

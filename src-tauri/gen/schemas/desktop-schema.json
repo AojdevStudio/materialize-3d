@@ -357,6 +357,54 @@
           "markdownDescription": "Enables the add_to_queue command without any pre-configured scope."
         },
         {
+          "description": "Enables the agent_cancel command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-agent-cancel",
+          "markdownDescription": "Enables the agent_cancel command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the agent_clear_api_key command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-agent-clear-api-key",
+          "markdownDescription": "Enables the agent_clear_api_key command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the agent_history command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-agent-history",
+          "markdownDescription": "Enables the agent_history command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the agent_new_conversation command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-agent-new-conversation",
+          "markdownDescription": "Enables the agent_new_conversation command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the agent_send command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-agent-send",
+          "markdownDescription": "Enables the agent_send command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the agent_set_api_key command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-agent-set-api-key",
+          "markdownDescription": "Enables the agent_set_api_key command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the agent_set_model command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-agent-set-model",
+          "markdownDescription": "Enables the agent_set_model command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the agent_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-agent-status",
+          "markdownDescription": "Enables the agent_status command without any pre-configured scope."
+        },
+        {
           "description": "Enables the connect_printer command without any pre-configured scope.",
           "type": "string",
           "const": "allow-connect-printer",
@@ -493,12 +541,6 @@
           "type": "string",
           "const": "allow-navigate-makerworld",
           "markdownDescription": "Enables the navigate_makerworld command without any pre-configured scope."
-        },
-        {
-          "description": "Enables the oauth_token_exchange command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-oauth-token-exchange",
-          "markdownDescription": "Enables the oauth_token_exchange command without any pre-configured scope."
         },
         {
           "description": "Enables the open_library_model command without any pre-configured scope.",
@@ -657,22 +699,10 @@
           "markdownDescription": "Enables the slice_model command without any pre-configured scope."
         },
         {
-          "description": "Enables the start_oauth_callback command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-start-oauth-callback",
-          "markdownDescription": "Enables the start_oauth_callback command without any pre-configured scope."
-        },
-        {
           "description": "Enables the start_print command without any pre-configured scope.",
           "type": "string",
           "const": "allow-start-print",
           "markdownDescription": "Enables the start_print command without any pre-configured scope."
-        },
-        {
-          "description": "Enables the stop_oauth_callback command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-stop-oauth-callback",
-          "markdownDescription": "Enables the stop_oauth_callback command without any pre-configured scope."
         },
         {
           "description": "Enables the store_credential command without any pre-configured scope.",
@@ -721,6 +751,54 @@
           "type": "string",
           "const": "deny-add-to-queue",
           "markdownDescription": "Denies the add_to_queue command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the agent_cancel command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-agent-cancel",
+          "markdownDescription": "Denies the agent_cancel command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the agent_clear_api_key command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-agent-clear-api-key",
+          "markdownDescription": "Denies the agent_clear_api_key command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the agent_history command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-agent-history",
+          "markdownDescription": "Denies the agent_history command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the agent_new_conversation command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-agent-new-conversation",
+          "markdownDescription": "Denies the agent_new_conversation command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the agent_send command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-agent-send",
+          "markdownDescription": "Denies the agent_send command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the agent_set_api_key command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-agent-set-api-key",
+          "markdownDescription": "Denies the agent_set_api_key command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the agent_set_model command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-agent-set-model",
+          "markdownDescription": "Denies the agent_set_model command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the agent_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-agent-status",
+          "markdownDescription": "Denies the agent_status command without any pre-configured scope."
         },
         {
           "description": "Denies the connect_printer command without any pre-configured scope.",
@@ -859,12 +937,6 @@
           "type": "string",
           "const": "deny-navigate-makerworld",
           "markdownDescription": "Denies the navigate_makerworld command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the oauth_token_exchange command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-oauth-token-exchange",
-          "markdownDescription": "Denies the oauth_token_exchange command without any pre-configured scope."
         },
         {
           "description": "Denies the open_library_model command without any pre-configured scope.",
@@ -1023,22 +1095,10 @@
           "markdownDescription": "Denies the slice_model command without any pre-configured scope."
         },
         {
-          "description": "Denies the start_oauth_callback command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-start-oauth-callback",
-          "markdownDescription": "Denies the start_oauth_callback command without any pre-configured scope."
-        },
-        {
           "description": "Denies the start_print command without any pre-configured scope.",
           "type": "string",
           "const": "deny-start-print",
           "markdownDescription": "Denies the start_print command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the stop_oauth_callback command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-stop-oauth-callback",
-          "markdownDescription": "Denies the stop_oauth_callback command without any pre-configured scope."
         },
         {
           "description": "Denies the store_credential command without any pre-configured scope.",

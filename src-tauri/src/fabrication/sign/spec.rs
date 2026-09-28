@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -27,7 +28,7 @@ fn default_inlay_depth() -> f64 {
 
 /// A sign as requested by a caller (agent tool or UI). Parse it with
 /// [`ValidSignSpec::parse`] or [`ValidSignSpec::from_json`] before use.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SignSpec {
     pub schema_version: u32,
@@ -50,7 +51,7 @@ pub struct SignSpec {
     pub elements: Vec<Element>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Ink {
     pub name: String,
@@ -58,7 +59,7 @@ pub struct Ink {
     pub hex: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum FontWeight {
     Heavy,
@@ -66,7 +67,7 @@ pub enum FontWeight {
     Regular,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Align {
     Left,
@@ -75,7 +76,7 @@ pub enum Align {
 }
 
 /// One painted element. `ink` names the base (a knockout) or one of the inks.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Element {
     Text {

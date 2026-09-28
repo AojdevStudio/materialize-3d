@@ -1,15 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { useSettingsStore } from '../stores/settings'
-import {
-  DEFAULT_MODEL_ID,
-  DEFAULT_MODEL_REF,
-  DEFAULT_PROVIDER,
-  listModels,
-  listProviders,
-  parseModelSelection,
-  serializeModelSelection,
-} from '../agent/model-config'
+import { PROVIDERS, PROVIDER_LABELS, PROVIDER_MODELS, modelLabel, useAgentStore } from '../stores/agent'
+import type { Provider } from '../types/agent'
 
 interface ProfileList {
   qualities: string[]
@@ -28,19 +21,6 @@ export function SettingsPanel({
 
   const [profiles, setProfiles] = useState<ProfileList | null>(null)
   const [slicerError, setSlicerError] = useState<string | null>(null)
-
-  // Agent model selection ("provider:modelId") — hooks must run before the
-  // isOpen early-return below
-  const agentModelRef = settings['agent.model'] ?? DEFAULT_MODEL_REF
-  const modelSelection = parseModelSelection(agentModelRef) ?? {
-    provider: DEFAULT_PROVIDER,
-    modelId: DEFAULT_MODEL_ID,
-  }
-  const providers = useMemo(() => listProviders(), [])
-  const providerModels = useMemo(
-    () => listModels(modelSelection.provider),
-    [modelSelection.provider]
-  )
 
   // Fetch profiles when panel opens
   useEffect(() => {
@@ -160,62 +140,7 @@ export function SettingsPanel({
         </label>
       </div>
 
-      {/* Agent Section */}
-      <div className="settings-section">
-        <div className="settings-section-label">Agent</div>
-
-        <label className="settings-field">
-          <span>Provider</span>
-          <select
-            value={modelSelection.provider}
-            onChange={(e) => {
-              const provider = e.target.value
-              const first = listModels(provider)[0]
-              if (first) {
-                void handleChange(
-                  'agent.model',
-                  serializeModelSelection({ provider, modelId: first.id })
-                )
-              }
-            }}
-          >
-            {providers.map((p) => (
-              <option key={p} value={p}>{p}</option>
-            ))}
-            {!providers.includes(modelSelection.provider) && (
-              <option value={modelSelection.provider}>{modelSelection.provider}</option>
-            )}
-          </select>
-        </label>
-
-        <label className="settings-field">
-          <span>Model</span>
-          <select
-            value={modelSelection.modelId}
-            onChange={(e) =>
-              void handleChange(
-                'agent.model',
-                serializeModelSelection({
-                  provider: modelSelection.provider,
-                  modelId: e.target.value,
-                })
-              )
-            }
-          >
-            {providerModels.map((m) => (
-              <option key={m.id} value={m.id}>{m.name}</option>
-            ))}
-            {!providerModels.some((m) => m.id === modelSelection.modelId) && (
-              <option value={modelSelection.modelId}>{modelSelection.modelId}</option>
-            )}
-          </select>
-        </label>
-
-        <div className="settings-hint" data-testid="agent-model-hint">
-          Requires an API key for the selected provider (sign in via the chat panel).
-          Applies on the next agent turn.
-        </div>
-      </div>
+      <AgentSection active={isOpen} />
 
       {/* Notifications Section */}
       <div className="settings-section">
@@ -281,6 +206,124 @@ export function SettingsPanel({
           </div>
         )}
       </div>
+    </div>
+  )
+}
+
+/** Provider, model, and API key for the Rust agent. The key is write-only here. */
+function AgentSection({ active }: { active: boolean }) {
+  const status = useAgentStore((s) => s.status)
+  const [apiKey, setApiKey] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!active) return
+    useAgentStore
+      .getState()
+      .refresh()
+      .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
+  }, [active])
+
+  const run = async (call: () => Promise<unknown>) => {
+    setBusy(true)
+    setError(null)
+    try {
+      await call()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  if (!status) {
+    return (
+      <div className="settings-section">
+        <div className="settings-section-label">Agent</div>
+        {error && <div className="settings-slicer-warning" role="alert">{error}</div>}
+      </div>
+    )
+  }
+
+  const { provider, model, hasApiKey } = status
+  const models: readonly string[] = PROVIDER_MODELS[provider]
+  const { setModel, setApiKey: storeKey, clearApiKey } = useAgentStore.getState()
+
+  return (
+    <div className="settings-section">
+      <div className="settings-section-label">Agent</div>
+
+      <label className="settings-field">
+        <span>Provider</span>
+        <select
+          value={provider}
+          disabled={busy}
+          data-testid="agent-provider"
+          onChange={(e) => {
+            const next = e.target.value as Provider
+            void run(() => setModel(next, PROVIDER_MODELS[next][0]))
+          }}
+        >
+          {PROVIDERS.map((p) => (
+            <option key={p} value={p}>{PROVIDER_LABELS[p]}</option>
+          ))}
+        </select>
+      </label>
+
+      <label className="settings-field">
+        <span>Model</span>
+        <select
+          value={model}
+          disabled={busy}
+          data-testid="agent-model"
+          onChange={(e) => void run(() => setModel(provider, e.target.value))}
+        >
+          {models.map((m) => (
+            <option key={m} value={m}>{modelLabel(m)}</option>
+          ))}
+          {!models.includes(model) && <option value={model}>{model}</option>}
+        </select>
+      </label>
+
+      <form
+        className="settings-field"
+        onSubmit={(e) => {
+          e.preventDefault()
+          const key = apiKey.trim()
+          if (!key) return
+          void run(async () => {
+            await storeKey(provider, key)
+            setApiKey('')
+          })
+        }}
+      >
+        <span>API key</span>
+        <input
+          type="password"
+          autoComplete="off"
+          value={apiKey}
+          placeholder={hasApiKey ? 'Key stored' : `${PROVIDER_LABELS[provider]} API key`}
+          onChange={(e) => setApiKey(e.target.value)}
+          data-testid="agent-api-key"
+        />
+        <button type="submit" disabled={busy || !apiKey.trim()} data-testid="agent-api-key-save">
+          Save
+        </button>
+        <button
+          type="button"
+          disabled={busy || !hasApiKey}
+          onClick={() => void run(() => clearApiKey(provider))}
+          data-testid="agent-api-key-clear"
+        >
+          Clear
+        </button>
+      </form>
+
+      <div className="settings-hint" data-testid="agent-key-state">
+        {hasApiKey ? 'Key stored' : 'No key stored'}
+      </div>
+      {error && <div className="settings-slicer-warning" role="alert">{error}</div>}
     </div>
   )
 }
