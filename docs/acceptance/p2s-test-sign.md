@@ -6,7 +6,7 @@ The sign is 80 × 50 × 2.6 mm: a white base with navy "HELLO", a teal rule, nav
 
 ## Before you start
 
-- The Materialize 3D app from the release build (see the handoff), an OpenAI or Anthropic API key, and Bambu Studio 02.08.02.61 on the same Mac.
+- Materialize 3D installed from the release DMG (see `docs/install-macos.md`), an OpenAI or Anthropic API key, and Bambu Studio 02.08.02.61 on the same Mac.
 - The P2S with white, navy, and teal PLA loaded, and a clean plate.
 
 ## Checklist
@@ -49,4 +49,4 @@ Mark each box yourself. None of these steps is automated.
 
 ## What was automated before this checklist
 
-On macOS, the release build was checked for the absent harness, the schema 3 migration, and the MCP endpoint staying off by default. The sign itself was built from this spec on the verification build of the same commit, through the Signs view with isolated data: 27 of 27 checks passed, and the harness clicked Approve and exported through a scripted file dialog. Those clicks are automation evidence only. No automated run used the native Save panel, opened Bambu Studio, or printed. See the handoff for the package hash and screenshots.
+Before release, the signed app installed from the DMG built this spec through its local MCP endpoint with isolated data: 27 of 27 checks passed and the revision waited for a person's approval, which the MCP endpoint cannot give. That run never approved, exported, opened Bambu Studio, or printed. Those steps, and the native Open and Save dialogs, belong to this checklist.

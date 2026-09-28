@@ -12,28 +12,19 @@ Follow these steps to confirm the conversational sign workflow on macOS: a chat 
    defaults read /Applications/BambuStudio.app/Contents/Info.plist CFBundleShortVersionString
    ```
 
-   If it is not `02.08.02.61`, install that release next to the existing one (for example in `~/Applications/BambuStudio-02.08.02.61/`) and point the app at it:
+   If it is not `02.08.02.61`, install that release next to the existing one, as `docs/install-macos.md` describes, and choose it in **Settings > Bambu Studio**.
 
-   ```bash
-   export BAMBU_STUDIO_CLI="$HOME/Applications/BambuStudio-02.08.02.61/BambuStudio.app/Contents/MacOS/BambuStudio"
-   ```
-
-2. Install Rust (`rustup`), Bun, and the Xcode command line tools.
-3. Have an OpenAI or Anthropic API key. Claude Pro/Max sign-in is not offered.
+2. Have an OpenAI or Anthropic API key. Claude Pro/Max sign-in is not offered.
 
 ## Get the app
 
-Use the reviewed release build from the handoff (a zipped `Materialize 3D.app`, with its commit and SHA-256), or build the same commit yourself:
+Install the DMG from the [Releases page](https://github.com/AojdevStudio/materialize-3d/releases) as `docs/install-macos.md` describes. It contains no verification harness. To build the same commit yourself instead, install Rust, Bun, and the Xcode command line tools, then:
 
 ```bash
-git fetch origin
-git switch --detach <reviewed commit>
 bun install --frozen-lockfile
 bun tauri build --bundles app
 open "src-tauri/target/release/bundle/macos/Materialize 3D.app"
 ```
-
-The release build contains no verification harness. The first Rust build takes several minutes.
 
 ## Steps
 
