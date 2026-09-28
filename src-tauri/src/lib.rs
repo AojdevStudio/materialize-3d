@@ -257,5 +257,21 @@ mod acl_tests {
             let expected = matches!(command.as_str(), "report_makerworld_page" | "report_makerworld_import_attempt");
             assert_eq!(from_makerworld.is_some(), expected, "makerworld access to {command}");
         }
+        // Core plugin commands the main webview keeps, the remote page must not
+        // reach: the app event bus, window and webview control, app metadata.
+        for command in [
+            "plugin:event|listen",
+            "plugin:event|emit",
+            "plugin:event|emit_to",
+            "plugin:window|scale_factor",
+            "plugin:webview|get_all_webviews",
+            "plugin:app|version",
+        ] {
+            assert!(authority.resolve_access(command, "main", "main", &Origin::Local).is_some(), "main webview must be allowed {command}");
+            assert!(
+                authority.resolve_access(command, "main", "makerworld", &makerworld).is_none(),
+                "makerworld must not reach {command}"
+            );
+        }
     }
 }

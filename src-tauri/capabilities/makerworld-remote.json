@@ -13,7 +13,6 @@
     ]
   },
   "permissions": [
-    "core:default",
     "allow-report-makerworld-page",
     "allow-report-makerworld-import-attempt"
   ]

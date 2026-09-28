@@ -56,8 +56,15 @@ jobs:
     name: macOS desktop build gate
     runs-on: macos-15
     timeout-minutes: 60
+    env:
+      # The hosted runner has 7 GB of memory, and Node's default heap limit
+      # there (about 2 GB) is too small for the production frontend build.
+      NODE_OPTIONS: --max-old-space-size=4096
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v6.2.0
+        with:
+          node-version: "24"
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.3.7"
