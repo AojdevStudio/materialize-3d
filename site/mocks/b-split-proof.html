@@ -1,0 +1,51 @@
+<!doctype html>
+<!-- Mock B: split with proof. Copy and download on the left, the real app screenshot
+     showing 27 of 27 checks on the right, release facts in a tight list under the button. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mock B: split with proof</title>
+<style>
+@font-face { font-family: "DM Sans"; src: url("../src/assets/fonts/DMSans-Regular.ttf"); font-weight: 400; }
+@font-face { font-family: "DM Sans"; src: url("../src/assets/fonts/DMSans-Bold.ttf"); font-weight: 700; }
+@font-face { font-family: "Instrument Serif"; src: url("../src/assets/fonts/InstrumentSerif-Italic.ttf"); font-style: italic; }
+@font-face { font-family: "JetBrains Mono"; src: url("../src/assets/fonts/JetBrainsMono-Regular.ttf"); }
+* { box-sizing: border-box; margin: 0; }
+body { font: 16px/1.5 "DM Sans", sans-serif; color: #111; background: #fff; }
+header { display: flex; align-items: baseline; gap: 32px; padding: 16px 40px; border-bottom: 1px solid #e2e2e2; font-size: 14px; }
+.wm { font: italic 400 28px "Instrument Serif", serif; color: #b5470f; }
+.wm small { font: 12px "JetBrains Mono", monospace; color: #111; margin-left: 4px; }
+nav { display: flex; gap: 20px; flex: 1; }
+nav a { color: #111; text-decoration: none; }
+.hero { display: grid; grid-template-columns: minmax(320px, 5fr) 7fr; gap: 48px; padding: 56px 40px; align-items: center; }
+h1 { font-size: 44px; line-height: 1.08; letter-spacing: -0.02em; }
+h1 em { font: italic 400 1.1em "Instrument Serif", serif; color: #b5470f; }
+p.lede { margin: 16px 0 28px; color: #444; max-width: 46ch; }
+.dl { display: inline-block; background: #c4501c; color: #fff; font-weight: 700; padding: 14px 22px; border-radius: 6px; text-decoration: none; }
+dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 16px; margin-top: 20px; font: 13px/1.5 "JetBrains Mono", monospace; }
+dt { color: #555; }
+figure img { width: 100%; height: auto; display: block; border: 1px solid #111; border-radius: 6px; }
+figcaption { font-size: 13px; color: #555; margin-top: 8px; }
+</style>
+</head>
+<body>
+<header><span class="wm">Materialize<small>3D</small></span><nav><a href="#">How it works</a><a href="#">Requirements</a><a href="#">Install</a><a href="#">Roadmap</a></nav><span>Theme</span></header>
+<section class="hero">
+  <div>
+    <h1>Describe a sign. <em>Approve</em> a verified slice.</h1>
+    <p class="lede">A Mac app for Bambu Lab P2S owners. Tell the chat what sign you want; the app builds a three-color model, slices it with Bambu Studio, runs 27 checks, and waits for you to approve before you export a 3MF.</p>
+    <a class="dl" href="#">Download for Mac (Apple Silicon)</a>
+    <dl>
+      <dt>Version</dt><dd>0.1.0, tested on macOS 26.7</dd>
+      <dt>SHA-256</dt><dd>pending</dd>
+      <dt>Apple</dt><dd>not signed, not notarized</dd>
+    </dl>
+  </div>
+  <figure>
+    <img src="../src/assets/screens/04-verified-awaiting-approval.png" width="1440" height="900" alt="">
+    <figcaption>Revision r1 of the test sign: 27 of 27 checks passed, approval pending.</figcaption>
+  </figure>
+</section>
+</body>
+</html>
