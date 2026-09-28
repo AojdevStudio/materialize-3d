@@ -1,0 +1,80 @@
+{
+  "schema_version": 1,
+  "width_mm": 150,
+  "height_mm": 210,
+  "thickness_mm": 2.6,
+  "inlay_depth_mm": 0.4,
+  "corner_radius_mm": 6,
+  "base": { "name": "white", "hex": "#FFFFFF" },
+  "inks": [
+    { "name": "navy", "hex": "#1F3A5F" },
+    { "name": "teal", "hex": "#1A9E96" }
+  ],
+  "elements": [
+    {
+      "type": "svg",
+      "ink_map": { "#1f3a5f": "navy", "#1a9e96": "teal" },
+      "svg_source": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 100 100\"><path fill=\"#1F3A5F\" d=\"M8 6H78V24H30V42H66V60H30V94H8Z\"/><circle fill=\"#1A9E96\" cx=\"80\" cy=\"80\" r=\"13\"/></svg>",
+      "x_mm": 20,
+      "y_mm": 18,
+      "w_mm": 30
+    },
+    {
+      "type": "text",
+      "ink": "navy",
+      "text": "BACK SHORTLY",
+      "font": "heavy",
+      "cap_height_mm": 10,
+      "x_mm": 75,
+      "y_mm": 80,
+      "align": "center"
+    },
+    {
+      "type": "rect",
+      "ink": "teal",
+      "x_mm": 20,
+      "y_mm": 90,
+      "w_mm": 110,
+      "h_mm": 2.5
+    },
+    {
+      "type": "text",
+      "ink": "navy",
+      "text": "We stepped away for a moment.",
+      "font": "regular",
+      "cap_height_mm": 5,
+      "x_mm": 75,
+      "y_mm": 110,
+      "align": "center"
+    },
+    {
+      "type": "text",
+      "ink": "navy",
+      "text": "Please take a seat nearby.",
+      "font": "regular",
+      "cap_height_mm": 5,
+      "x_mm": 75,
+      "y_mm": 120,
+      "align": "center"
+    },
+    {
+      "type": "rect",
+      "ink": "navy",
+      "x_mm": 20,
+      "y_mm": 150,
+      "w_mm": 110,
+      "h_mm": 34,
+      "corner_radius_mm": 4
+    },
+    {
+      "type": "text",
+      "ink": "white",
+      "text": "THANK YOU",
+      "font": "heavy",
+      "cap_height_mm": 12,
+      "x_mm": 75,
+      "y_mm": 173,
+      "align": "center"
+    }
+  ]
+}

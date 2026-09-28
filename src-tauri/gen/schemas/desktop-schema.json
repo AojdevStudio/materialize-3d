@@ -597,6 +597,60 @@
           "markdownDescription": "Enables the set_default_printer command without any pre-configured scope."
         },
         {
+          "description": "Enables the sign_approve command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-sign-approve",
+          "markdownDescription": "Enables the sign_approve command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the sign_build command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-sign-build",
+          "markdownDescription": "Enables the sign_build command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the sign_cancel command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-sign-cancel",
+          "markdownDescription": "Enables the sign_cancel command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the sign_export command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-sign-export",
+          "markdownDescription": "Enables the sign_export command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the sign_get command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-sign-get",
+          "markdownDescription": "Enables the sign_get command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the sign_lineage command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-sign-lineage",
+          "markdownDescription": "Enables the sign_lineage command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the sign_list command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-sign-list",
+          "markdownDescription": "Enables the sign_list command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the sign_preview command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-sign-preview",
+          "markdownDescription": "Enables the sign_preview command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the sign_record_print command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-sign-record-print",
+          "markdownDescription": "Enables the sign_record_print command without any pre-configured scope."
+        },
+        {
           "description": "Enables the slice_model command without any pre-configured scope.",
           "type": "string",
           "const": "allow-slice-model",
@@ -907,6 +961,60 @@
           "type": "string",
           "const": "deny-set-default-printer",
           "markdownDescription": "Denies the set_default_printer command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the sign_approve command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-sign-approve",
+          "markdownDescription": "Denies the sign_approve command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the sign_build command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-sign-build",
+          "markdownDescription": "Denies the sign_build command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the sign_cancel command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-sign-cancel",
+          "markdownDescription": "Denies the sign_cancel command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the sign_export command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-sign-export",
+          "markdownDescription": "Denies the sign_export command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the sign_get command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-sign-get",
+          "markdownDescription": "Denies the sign_get command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the sign_lineage command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-sign-lineage",
+          "markdownDescription": "Denies the sign_lineage command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the sign_list command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-sign-list",
+          "markdownDescription": "Denies the sign_list command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the sign_preview command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-sign-preview",
+          "markdownDescription": "Denies the sign_preview command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the sign_record_print command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-sign-record-print",
+          "markdownDescription": "Denies the sign_record_print command without any pre-configured scope."
         },
         {
           "description": "Denies the slice_model command without any pre-configured scope.",

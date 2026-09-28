@@ -51,6 +51,15 @@ jobs:
       - name: Rust tests
         working-directory: src-tauri
         run: cargo test --lib --locked
+      - name: Install Bambu Studio 02.08.02.61
+        run: |
+          sudo apt-get install -y --no-install-recommends \
+            libgstreamer-plugins-base1.0-0 libgstreamer-gl1.0-0 libegl1 libgl1 libgbm1 \
+            libsecret-1-0 libmanette-0.2-0 libenchant-2-2 libhyphen0 libunwind8
+          scripts/ci/install-bambu-linux.sh
+      - name: Sign fabrication with real Bambu Studio (input immutability, multicolor, placement, revision integrity)
+        working-directory: src-tauri
+        run: cargo test --lib --locked fabrication::build -- --ignored --nocapture --test-threads=1
 
   macos:
     name: macOS desktop build gate
@@ -84,6 +93,11 @@ jobs:
       - name: Rust tests
         working-directory: src-tauri
         run: cargo test --lib --locked
+      - name: Install Bambu Studio 02.08.02.61
+        run: scripts/ci/install-bambu-macos.sh
+      - name: Sign fabrication with real Bambu Studio (input immutability, multicolor, placement, revision integrity)
+        working-directory: src-tauri
+        run: cargo test --lib --locked fabrication::build -- --ignored --nocapture --test-threads=1
       - name: Build the desktop app (release profile)
         run: bun tauri build --bundles app
 

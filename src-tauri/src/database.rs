@@ -69,6 +69,9 @@ pub fn init_db(db_path: &Path) -> Result<Connection, String> {
     Ok(conn)
 }
 
+/// Schema version after every migration has run.
+pub const SCHEMA_VERSION: i32 = 4;
+
 /// Run all pending migrations based on `PRAGMA user_version`.
 fn run_migrations(conn: &Connection) -> Result<(), String> {
     let version: i32 = conn
@@ -151,6 +154,15 @@ fn run_migrations(conn: &Connection) -> Result<(), String> {
         conn.pragma_update(None, "user_version", 3)
             .map_err(|e| format!("failed to set user_version to 3: {e}"))?;
         log::info!("database: migration 003 applied — schema version now 3");
+    }
+
+    if version < 4 {
+        log::info!("database: applying migration 004 — create sign_revisions table");
+        conn.execute_batch(crate::fabrication::revisions::MIGRATION_004)
+            .map_err(|e| format!("migration 004 failed: {e}"))?;
+        conn.pragma_update(None, "user_version", SCHEMA_VERSION)
+            .map_err(|e| format!("failed to set user_version to 4: {e}"))?;
+        log::info!("database: migration 004 applied — schema version now 4");
     }
 
     Ok(())
@@ -921,6 +933,36 @@ mod tests {
     }
 
     #[test]
+    fn a_database_from_the_released_schema_keeps_its_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("materialize.db");
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch(include_str!("../tests/fixtures/db/main-schema-v3.sql"))
+            .unwrap();
+
+        let conn = init_db(&path).expect("migrates a schema-3 database");
+        let version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0)).unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+
+        let history = get_all_history(&conn).unwrap();
+        assert_eq!(history.len(), 2);
+        assert!(history.iter().any(|h| h.id == "h1" && h.model_name == "Cable Clip" && h.filament_grams == Some(12.5)));
+        assert!(history.iter().any(|h| h.id == "h2" && h.fail_reason.as_deref() == Some("filament runout")));
+        let library = get_all_library_models(&conn).unwrap();
+        assert_eq!(library.len(), 1);
+        assert_eq!(library[0].folder_path, "/lib/hook");
+        let printer = get_printer_config(&conn, "p1").unwrap().expect("printer config kept");
+        assert_eq!((printer.name.as_str(), printer.host.as_str(), printer.is_default), ("Shop P2S", "192.0.2.10", true));
+        assert_eq!(get_setting(&conn, "onboarding.completed").unwrap().as_deref(), Some("true"));
+        assert_eq!(get_setting(&conn, "default.quality").unwrap().as_deref(), Some("0.16"));
+
+        drop(conn);
+        let reopened = init_db(&path).expect("reopening is a no-op");
+        assert_eq!(get_all_history(&reopened).unwrap().len(), 2);
+    }
+
+    #[test]
     fn migration_idempotent() {
         let conn = Connection::open_in_memory().unwrap();
         conn.pragma_update(None, "journal_mode", "WAL").unwrap();
@@ -933,7 +975,7 @@ mod tests {
         let version: i32 = conn
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 3);
+        assert_eq!(version, SCHEMA_VERSION);
 
         // Tables still work after double migration
         let record = make_record("r1", "Benchy", "2026-03-15T11:00:00Z", "completed");
@@ -1013,7 +1055,7 @@ mod tests {
         let version: i32 = conn
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 3);
+        assert_eq!(version, SCHEMA_VERSION);
 
         // Verify table exists by inserting and querying
         let model = make_library_model("lm1", "Benchy", "/tmp/benchy", "2026-03-15T10:00:00Z");
@@ -1276,7 +1318,7 @@ mod tests {
         let version: i32 = conn
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 3);
+        assert_eq!(version, SCHEMA_VERSION);
 
         // Both tables work
         let record = make_record("r1", "Benchy", "2026-03-15T11:00:00Z", "completed");
@@ -1325,7 +1367,7 @@ mod tests {
         let version: i32 = conn
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 3);
+        assert_eq!(version, SCHEMA_VERSION);
 
         // Verify printer_configs table exists
         let config = make_printer_config("pc1", "Test Printer", "10.0.0.1", "SERIAL1");
@@ -1363,7 +1405,7 @@ mod tests {
         let version: i32 = conn
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 3);
+        assert_eq!(version, SCHEMA_VERSION);
 
         // Tables still work after double migration
         let config = make_printer_config("pc1", "Printer", "10.0.0.1", "SN1");
