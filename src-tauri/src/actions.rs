@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use serde::Serialize;
 use serde_json::Value;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Runtime};
 
 use crate::fabrication::build::{self, BuildError, BuildOutcome, BuildRequest, BuildStep, Workspace};
 use crate::fabrication::revisions::{self, Actor, BuildState, LineageId, RevisionId, Sha256Hex, SignRevision};
@@ -84,21 +84,29 @@ impl From<&SignRevision> for SignSummary {
     }
 }
 
+/// Delivers an app event to the UI. A closed window is not an error, so
+/// delivery failures are logged by the sink and never fail an action.
+type EventSink = Arc<dyn Fn(&str, Value) + Send + Sync>;
+
 #[derive(Clone)]
 pub struct Actions {
-    app: AppHandle,
+    emit: EventSink,
     state: Arc<AppState>,
     workspace: Workspace,
 }
 
 impl Actions {
-    pub fn new(app: AppHandle, state: Arc<AppState>, workspace: Workspace) -> Self {
-        Self { app, state, workspace }
+    pub fn new<R: Runtime>(app: AppHandle<R>, state: Arc<AppState>, workspace: Workspace) -> Self {
+        let emit: EventSink = Arc::new(move |event, payload| {
+            if let Err(err) = app.emit(event, payload) {
+                log::warn!("actions: could not emit {event}: {err}");
+            }
+        });
+        Self { emit, state, workspace }
     }
 
     fn notify(&self, id: &RevisionId) {
-        // The UI refreshes on this event; a closed window is not an error.
-        let _ = self.app.emit(SIGNS_CHANGED, id);
+        (self.emit)(SIGNS_CHANGED, Value::String(id.to_string()));
     }
 
     /// Blocking: geometry and slicing run on the calling thread. Async callers
@@ -147,9 +155,8 @@ impl Actions {
     /// Asks the UI to show a revision. Agents use this to hand a result to a person.
     pub fn show_sign(&self, id: &str) -> Result<(), ActionError> {
         let id = RevisionId::parse(id)?;
-        self.app
-            .emit(SIGNS_OPEN, serde_json::json!({ "revisionId": id.as_str() }))
-            .map_err(|e| ActionError::State(e.to_string()))
+        (self.emit)(SIGNS_OPEN, serde_json::json!({ "revisionId": id.as_str() }));
+        Ok(())
     }
 
     pub fn approve_sign(&self, id: &str, package_sha256: String, actor: Actor) -> Result<SignRevision, ActionError> {

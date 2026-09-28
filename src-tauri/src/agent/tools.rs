@@ -236,7 +236,7 @@ impl AgentTool {
         }
     }
 
-    async fn run(self, scope: &TurnScope, call_id: String, args: Value) -> Result<Value, String> {
+    pub(crate) async fn run(self, scope: &TurnScope, call_id: String, args: Value) -> Result<Value, String> {
         let actions = &scope.actions;
         match self {
             AgentTool::BuildSign => {

@@ -537,6 +537,30 @@
           "markdownDescription": "Enables the makerworld_reload command without any pre-configured scope."
         },
         {
+          "description": "Enables the mcp_rotate_token command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-mcp-rotate-token",
+          "markdownDescription": "Enables the mcp_rotate_token command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the mcp_set_enabled command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-mcp-set-enabled",
+          "markdownDescription": "Enables the mcp_set_enabled command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the mcp_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-mcp-status",
+          "markdownDescription": "Enables the mcp_status command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the mcp_token command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-mcp-token",
+          "markdownDescription": "Enables the mcp_token command without any pre-configured scope."
+        },
+        {
           "description": "Enables the navigate_makerworld command without any pre-configured scope.",
           "type": "string",
           "const": "allow-navigate-makerworld",
@@ -931,6 +955,30 @@
           "type": "string",
           "const": "deny-makerworld-reload",
           "markdownDescription": "Denies the makerworld_reload command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the mcp_rotate_token command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-mcp-rotate-token",
+          "markdownDescription": "Denies the mcp_rotate_token command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the mcp_set_enabled command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-mcp-set-enabled",
+          "markdownDescription": "Denies the mcp_set_enabled command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the mcp_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-mcp-status",
+          "markdownDescription": "Denies the mcp_status command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the mcp_token command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-mcp-token",
+          "markdownDescription": "Denies the mcp_token command without any pre-configured scope."
         },
         {
           "description": "Denies the navigate_makerworld command without any pre-configured scope.",
