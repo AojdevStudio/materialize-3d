@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { useSettingsStore } from '../stores/settings'
 import { PROVIDERS, PROVIDER_LABELS, PROVIDER_MODELS, modelLabel, useAgentStore } from '../stores/agent'
 import type { Provider } from '../types/agent'
+import { BambuStudioSection } from './BambuStudioSection'
 import { McpSection } from './McpSection'
 
 interface ProfileList {
@@ -21,7 +22,6 @@ export function SettingsPanel({
   const settings = useSettingsStore((s) => s.settings)
 
   const [profiles, setProfiles] = useState<ProfileList | null>(null)
-  const [slicerError, setSlicerError] = useState<string | null>(null)
 
   // Fetch profiles when panel opens
   useEffect(() => {
@@ -33,13 +33,9 @@ export function SettingsPanel({
         const result = await invoke<ProfileList>('list_profiles')
         if (!cancelled) {
           setProfiles(result)
-          setSlicerError(null)
         }
-      } catch (err) {
-        if (!cancelled) {
-          setSlicerError('OrcaSlicer not found. Install it to configure default quality and filament.')
-          setProfiles(null)
-        }
+      } catch {
+        if (!cancelled) setProfiles(null)
       }
     }
 
@@ -109,6 +105,8 @@ export function SettingsPanel({
           ✕
         </button>
       </div>
+
+      <BambuStudioSection active={isOpen} />
 
       {/* Defaults Section */}
       <div className="settings-section">
@@ -191,24 +189,6 @@ export function SettingsPanel({
 
       <McpSection active={isOpen} />
 
-      {/* Slicer Diagnostic Section */}
-      <div className="settings-section">
-        <div className="settings-section-label">Slicer</div>
-
-        {slicerError ? (
-          <div className="settings-slicer-warning" role="alert" data-testid="slicer-warning">
-            OrcaSlicer not found — install it and restart the app to enable slicing
-          </div>
-        ) : profiles ? (
-          <div className="settings-slicer-ok" data-testid="slicer-ok">
-            OrcaSlicer ✓
-          </div>
-        ) : (
-          <div className="settings-slicer-checking" data-testid="slicer-checking">
-            Checking…
-          </div>
-        )}
-      </div>
     </div>
   )
 }

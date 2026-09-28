@@ -88,4 +88,7 @@ const APP_COMMANDS: &[&str] = &[
     "switch_printer",
     "get_settings",
     "update_settings",
+    "bambu_studio_status",
+    "choose_bambu_studio",
+    "clear_bambu_studio",
 ];

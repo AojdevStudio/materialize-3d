@@ -853,6 +853,14 @@ pub fn upsert_setting(conn: &Connection, key: &str, value: &str) -> Result<(), S
     Ok(())
 }
 
+/// Remove a stored setting. Removing a missing key is not an error.
+pub fn delete_setting(conn: &Connection, key: &str) -> Result<(), String> {
+    conn.execute("DELETE FROM settings WHERE key = ?1", params![key])
+        .map_err(|e| format!("failed to delete setting key={key}: {e}"))?;
+    log::info!("settings:deleted key={key}");
+    Ok(())
+}
+
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

@@ -14,11 +14,24 @@ vi.mock('@tauri-apps/api/event', () => ({
   listen: listenMock,
 }))
 
-// agent_* commands go to a small fake Rust agent; everything else to invokeMock
+// agent_* commands go to a small fake Rust agent, bambu_studio_status to a fixed
+// "found" status; everything else to invokeMock
 const agentInvokeMock = vi.fn()
+const BAMBU_FOUND = {
+  state: 'found',
+  path: '/Applications/BambuStudio.app/Contents/MacOS/BambuStudio',
+  version: '02.08.02.61',
+  chosenPath: null,
+  validatedVersions: ['02.08.02.61'],
+  downloadUrl: 'https://github.com/bambulab/BambuStudio/releases/tag/v02.08.02.61',
+}
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: (...args: [string, unknown?]) =>
-    args[0].startsWith('agent_') ? agentInvokeMock(...args) : invokeMock(...args),
+    args[0].startsWith('agent_')
+      ? agentInvokeMock(...args)
+      : args[0] === 'bambu_studio_status'
+        ? Promise.resolve(BAMBU_FOUND)
+        : invokeMock(...args),
 }))
 
 let agentKeys = new Set<string>()
@@ -206,17 +219,6 @@ describe('SettingsPanel component', () => {
     expect(screen.getByText('0.28mm')).toBeTruthy()
     expect(screen.getByText('Bambu PLA Matte')).toBeTruthy()
     expect(screen.getByText('Generic PETG')).toBeTruthy()
-  })
-
-  it('shows slicer warning when list_profiles fails', async () => {
-    invokeMock.mockRejectedValue(new Error('orca not found'))
-    const { SettingsPanel } = await import('../components/SettingsPanel')
-    render(React.createElement(SettingsPanel, { isOpen: true, onClose: vi.fn() }))
-
-    await waitFor(() => {
-      expect(screen.getByRole('alert')).toBeTruthy()
-    })
-    expect(screen.getByText(/OrcaSlicer not found/)).toBeTruthy()
   })
 
   it('checkbox toggle invokes update_settings', async () => {
@@ -547,59 +549,5 @@ describe('Error recovery UI', () => {
 
     const msg = screen.getByText(/A{10,}…/)
     expect(msg.textContent?.length).toBeLessThanOrEqual(81) // 80 chars + ellipsis
-  })
-})
-
-describe('Slicer diagnostic in SettingsPanel', () => {
-  beforeEach(async () => {
-    eventHandlers.clear()
-    listenMock.mockReset()
-    invokeMock.mockReset()
-    unlistenMock.mockReset()
-
-    listenMock.mockImplementation(async (name: string, handler: EventHandler) => {
-      eventHandlers.set(name, handler)
-      return () => {
-        unlistenMock(name)
-        eventHandlers.delete(name)
-      }
-    })
-
-    const { useSettingsStore, SETTINGS_DEFAULT_STATE } = await import('../stores/settings')
-    useSettingsStore.setState({ ...SETTINGS_DEFAULT_STATE, settings: structuredClone(DEFAULT_SETTINGS), loaded: true })
-  })
-
-  afterEach(() => {
-    cleanup()
-  })
-
-  it('shows OrcaSlicer ✓ when profiles load successfully', async () => {
-    invokeMock.mockResolvedValue(MOCK_PROFILES)
-    const { SettingsPanel } = await import('../components/SettingsPanel')
-    render(React.createElement(SettingsPanel, { isOpen: true, onClose: vi.fn() }))
-
-    await waitFor(() => {
-      expect(screen.getByTestId('slicer-ok')).toBeTruthy()
-    })
-    expect(screen.getByText('OrcaSlicer ✓')).toBeTruthy()
-  })
-
-  it('shows install warning when profiles fail to load', async () => {
-    invokeMock.mockRejectedValue(new Error('orca not found'))
-    const { SettingsPanel } = await import('../components/SettingsPanel')
-    render(React.createElement(SettingsPanel, { isOpen: true, onClose: vi.fn() }))
-
-    await waitFor(() => {
-      expect(screen.getByTestId('slicer-warning')).toBeTruthy()
-    })
-    expect(screen.getByText(/install it and restart the app/)).toBeTruthy()
-  })
-
-  it('renders Slicer section label', async () => {
-    invokeMock.mockResolvedValue(MOCK_PROFILES)
-    const { SettingsPanel } = await import('../components/SettingsPanel')
-    render(React.createElement(SettingsPanel, { isOpen: true, onClose: vi.fn() }))
-
-    expect(screen.getByText('Slicer')).toBeTruthy()
   })
 })

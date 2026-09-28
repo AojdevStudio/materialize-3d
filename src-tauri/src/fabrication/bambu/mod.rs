@@ -29,7 +29,10 @@ pub use presets::{
     RESOLVER_SCHEMA_VERSION,
 };
 pub use slice::{slice_project, EffectiveSettings, GcodeFile, PlateWarning, SliceReport};
-pub use studio::{BambuStudio, BambuVersion, VALIDATED_VERSIONS};
+pub use studio::{
+    studio_status, BambuStudio, BambuVersion, FoundBuild, StudioState, StudioStatus, DOWNLOAD_URL,
+    VALIDATED_VERSIONS,
+};
 pub use threemf::{part_footprints, read_preset_selection, PartFootprint, PresetSelection};
 pub use verify::{verify, Check, CheckId};
 
@@ -59,9 +62,16 @@ pub enum BambuError {
     #[error(
         "no validated Bambu Studio found (validated: {}); found {}",
         VALIDATED_VERSIONS.join(", "),
-        .found.join("; ")
+        join_display(.found)
     )]
-    UnvalidatedStudio { found: Vec<String> },
+    UnvalidatedStudio { found: Vec<FoundBuild> },
+    #[error("the chosen Bambu Studio was not found at {}", .path.display())]
+    ChosenStudioMissing { path: PathBuf },
+    #[error(
+        "the chosen Bambu Studio {build} is not a validated version (validated: {})",
+        VALIDATED_VERSIONS.join(", ")
+    )]
+    ChosenStudioUnvalidated { build: FoundBuild },
     #[error("could not determine Bambu Studio version from {exe} --help")]
     VersionUndetected { exe: PathBuf },
     #[error("no Bambu profile directory found next to {exe}")]
@@ -86,6 +96,14 @@ pub enum BambuError {
     },
     #[error("slice cancelled")]
     Cancelled,
+}
+
+fn join_display(items: &[impl std::fmt::Display]) -> String {
+    items
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 fn display_paths(paths: &[PathBuf]) -> String {

@@ -405,6 +405,24 @@
           "markdownDescription": "Enables the agent_status command without any pre-configured scope."
         },
         {
+          "description": "Enables the bambu_studio_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-bambu-studio-status",
+          "markdownDescription": "Enables the bambu_studio_status command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the choose_bambu_studio command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-choose-bambu-studio",
+          "markdownDescription": "Enables the choose_bambu_studio command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the clear_bambu_studio command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-clear-bambu-studio",
+          "markdownDescription": "Enables the clear_bambu_studio command without any pre-configured scope."
+        },
+        {
           "description": "Enables the connect_printer command without any pre-configured scope.",
           "type": "string",
           "const": "allow-connect-printer",
@@ -823,6 +841,24 @@
           "type": "string",
           "const": "deny-agent-status",
           "markdownDescription": "Denies the agent_status command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the bambu_studio_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-bambu-studio-status",
+          "markdownDescription": "Denies the bambu_studio_status command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the choose_bambu_studio command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-choose-bambu-studio",
+          "markdownDescription": "Denies the choose_bambu_studio command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the clear_bambu_studio command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-clear-bambu-studio",
+          "markdownDescription": "Denies the clear_bambu_studio command without any pre-configured scope."
         },
         {
           "description": "Denies the connect_printer command without any pre-configured scope.",

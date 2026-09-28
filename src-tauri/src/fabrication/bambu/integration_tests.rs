@@ -24,7 +24,7 @@ fn slice_proven() -> (
         std::env::var_os("BAMBU_STUDIO_CLI").is_some(),
         "BAMBU_STUDIO_CLI is set"
     );
-    let studio = BambuStudio::locate().expect("validated Bambu Studio");
+    let studio = BambuStudio::locate(None).expect("validated Bambu Studio");
     println!("studio: {} ({})", studio.exe.display(), studio.version);
 
     let scratch = tempfile::tempdir().expect("tempdir");
