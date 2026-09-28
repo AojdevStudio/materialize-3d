@@ -19,6 +19,10 @@ The first public release. The full notes are in [docs/releases/v0.1.0.md](docs/r
 - Settings > Bambu Studio to find or choose the validated Bambu Studio.
 - Signed and notarized macOS DMG for Apple Silicon.
 
+### Security
+
+- Tauri 2.11.6, which fixes an origin confusion that let remote pages invoke local-only IPC commands (GHSA-7gmj-67g7-phm9), and patched openssl, quinn-proto, rustls-webpki, serde_with, and rand.
+
 ## Links
 [Unreleased]: https://github.com/AojdevStudio/materialize-3d/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/AojdevStudio/materialize-3d/releases/tag/v0.1.0
