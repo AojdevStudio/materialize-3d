@@ -1,0 +1,372 @@
+@layer app {
+  .onboarding-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 1000;
+    background: var(--bg-deep);
+    color: var(--text-primary);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    font-family: 'DM Sans', sans-serif;
+  }
+
+  .onboarding-container {
+    width: 100%;
+    max-width: 560px;
+    padding: var(--space-6);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-6);
+  }
+
+  /* ── Step indicator ── */
+
+  .onboarding-steps {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-3);
+  }
+
+  .onboarding-step-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 999px;
+    background: var(--border);
+    transition: background var(--transition), box-shadow var(--transition);
+  }
+
+  .onboarding-step-dot.active {
+    background: var(--accent-orange);
+    box-shadow: 0 0 8px var(--accent-orange-dim);
+  }
+
+  .onboarding-step-dot.completed {
+    background: var(--accent-green);
+  }
+
+  /* ── Content card ── */
+
+  .onboarding-card {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 32px;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-5);
+    box-shadow: var(--shadow-float);
+  }
+
+  .onboarding-card-header {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    text-align: center;
+  }
+
+  .onboarding-kicker {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.7px;
+    color: var(--accent-orange);
+  }
+
+  .onboarding-title {
+    margin: 0;
+    font-size: 24px;
+    font-weight: 500;
+    letter-spacing: -0.03em;
+    color: var(--text-primary);
+  }
+
+  .onboarding-description {
+    margin: 0;
+    font-size: 14px;
+    line-height: 1.6;
+    color: var(--text-secondary);
+    max-width: 44ch;
+    margin-inline: auto;
+  }
+
+  /* ── Provider cards ── */
+
+  .onboarding-providers {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+  }
+
+  .provider-card {
+    display: flex;
+    align-items: center;
+    gap: var(--space-4);
+    padding: var(--space-4);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--bg-elevated);
+    transition: border-color var(--transition);
+  }
+
+  .provider-card:hover {
+    border-color: var(--text-tertiary);
+  }
+
+  .provider-card.connected {
+    border-color: var(--accent-green);
+    background: rgba(52, 211, 153, 0.05);
+  }
+
+  .provider-icon {
+    width: 40px;
+    height: 40px;
+    border-radius: var(--radius-sm);
+    background: var(--bg-deep);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 18px;
+    font-weight: 700;
+    flex-shrink: 0;
+    color: var(--text-secondary);
+  }
+
+  .provider-card.connected .provider-icon {
+    color: var(--accent-green);
+  }
+
+  .provider-info {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .provider-name {
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--text-primary);
+  }
+
+  .provider-desc {
+    font-size: 12px;
+    color: var(--text-tertiary);
+    margin-top: 2px;
+  }
+
+  .provider-status {
+    font-size: 11px;
+    color: var(--accent-orange);
+    margin-top: 2px;
+  }
+
+  .provider-action {
+    flex-shrink: 0;
+  }
+
+  /* ── Bambu printer section ── */
+
+  .onboarding-printer-status {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    padding: var(--space-4);
+    border-radius: var(--radius-md);
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+  }
+
+  .onboarding-printer-status.detected {
+    border-color: var(--accent-green);
+    background: rgba(52, 211, 153, 0.05);
+  }
+
+  .printer-status-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 999px;
+    flex-shrink: 0;
+  }
+
+  .printer-status-dot.green {
+    background: var(--accent-green);
+    box-shadow: 0 0 8px var(--accent-green-dim);
+  }
+
+  .printer-status-dot.gray {
+    background: var(--text-tertiary);
+  }
+
+  .printer-status-text {
+    font-size: 13px;
+    color: var(--text-primary);
+  }
+
+  .onboarding-form {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+  }
+
+  .onboarding-field {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+  }
+
+  .onboarding-label {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-secondary);
+  }
+
+  .onboarding-input {
+    padding: 10px 12px;
+    background: var(--bg-deep);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text-primary);
+    font-size: 13px;
+    outline: none;
+    transition: border-color var(--transition);
+  }
+
+  .onboarding-input:focus {
+    border-color: var(--accent-orange);
+  }
+
+  .onboarding-input::placeholder {
+    color: var(--text-tertiary);
+  }
+
+  .onboarding-connection-result {
+    font-size: 12px;
+    padding: var(--space-2) var(--space-3);
+    border-radius: var(--radius-sm);
+  }
+
+  .onboarding-connection-result.success {
+    color: var(--accent-green);
+    background: rgba(52, 211, 153, 0.08);
+  }
+
+  .onboarding-connection-result.error {
+    color: var(--accent-red);
+    background: rgba(248, 113, 113, 0.08);
+  }
+
+  /* ── Complete step summary ── */
+
+  .onboarding-summary {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+  }
+
+  .onboarding-summary-item {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    padding: var(--space-3);
+    border-radius: var(--radius-sm);
+    background: var(--bg-elevated);
+    font-size: 13px;
+  }
+
+  .summary-check {
+    width: 20px;
+    height: 20px;
+    border-radius: 999px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    flex-shrink: 0;
+  }
+
+  .summary-check.done {
+    background: rgba(52, 211, 153, 0.15);
+    color: var(--accent-green);
+  }
+
+  .summary-check.skipped {
+    background: var(--bg-deep);
+    color: var(--text-tertiary);
+  }
+
+  /* ── Buttons ── */
+
+  .onboarding-btn-primary {
+    appearance: none;
+    border: none;
+    padding: 12px 24px;
+    border-radius: var(--radius-md);
+    background: var(--accent-orange);
+    color: var(--text-inverse);
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: opacity var(--transition);
+    width: 100%;
+  }
+
+  .onboarding-btn-primary:hover {
+    opacity: 0.9;
+  }
+
+  .onboarding-btn-primary:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .onboarding-btn-secondary {
+    appearance: none;
+    border: 1px solid var(--border);
+    padding: 8px 16px;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text-primary);
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: border-color var(--transition), background var(--transition);
+  }
+
+  .onboarding-btn-secondary:hover {
+    border-color: var(--accent-orange);
+    background: var(--bg-hover);
+  }
+
+  .onboarding-btn-secondary:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .onboarding-skip {
+    appearance: none;
+    border: none;
+    background: none;
+    color: var(--text-tertiary);
+    font-size: 12px;
+    cursor: pointer;
+    padding: var(--space-2);
+    text-align: center;
+    transition: color var(--transition);
+  }
+
+  .onboarding-skip:hover {
+    color: var(--text-secondary);
+  }
+
+  /* ── Footer ── */
+
+  .onboarding-footer {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--space-3);
+  }
+}

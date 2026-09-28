@@ -1,0 +1,1473 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Materialize 3D — UI Wireframe</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link
+    href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@300;400;500&family=Instrument+Serif:ital@0;1&display=swap"
+    rel="stylesheet">
+  <style>
+    :root {
+      --bg-deep: #0a0a0c;
+      --bg-surface: #111114;
+      --bg-elevated: #18181c;
+      --bg-hover: #1f1f24;
+      --border: #2a2a30;
+      --border-subtle: #1e1e23;
+      --text-primary: #e8e6e3;
+      --text-secondary: #8a8891;
+      --text-tertiary: #5a5862;
+      --accent-orange: #e8682a;
+      --accent-orange-dim: #e8682a33;
+      --accent-green: #34d399;
+      --accent-green-dim: #34d39922;
+      --accent-blue: #60a5fa;
+      --accent-blue-dim: #60a5fa22;
+      --accent-red: #f87171;
+      --accent-yellow: #fbbf24;
+      --accent-purple: #a78bfa;
+      --filament-pla: #60a5fa;
+      --filament-petg: #f97316;
+      --filament-empty: #2a2a30;
+      --radius-sm: 6px;
+      --radius-md: 10px;
+      --radius-lg: 14px;
+      --shadow-float: 0 8px 32px rgba(0, 0, 0, 0.4);
+      --transition: 180ms cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: 'DM Sans', sans-serif;
+      background: var(--bg-deep);
+      color: var(--text-primary);
+      height: 100vh;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ====== TOOLBAR ====== */
+    .toolbar {
+      height: 52px;
+      background: var(--bg-surface);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      padding: 0 16px;
+      gap: 12px;
+      flex-shrink: 0;
+      -webkit-app-region: drag;
+    }
+
+    .toolbar-logo {
+      font-family: 'Instrument Serif', serif;
+      font-size: 18px;
+      font-style: italic;
+      color: var(--accent-orange);
+      letter-spacing: -0.3px;
+      margin-right: 8px;
+      white-space: nowrap;
+    }
+
+    .toolbar-divider {
+      width: 1px;
+      height: 24px;
+      background: var(--border);
+    }
+
+    .printer-badge {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 5px 12px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: border-color var(--transition);
+      -webkit-app-region: no-drag;
+    }
+
+    .printer-badge:hover {
+      border-color: var(--accent-green);
+    }
+
+    .printer-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--accent-green);
+      box-shadow: 0 0 8px var(--accent-green);
+      animation: pulse 2.5s ease-in-out infinite;
+    }
+
+    @keyframes pulse {
+
+      0%,
+      100% {
+        opacity: 1;
+      }
+
+      50% {
+        opacity: 0.5;
+      }
+    }
+
+    .printer-badge .conn-type {
+      font-size: 9px;
+      font-family: 'JetBrains Mono', monospace;
+      color: var(--accent-green);
+      background: var(--accent-green-dim);
+      padding: 1px 5px;
+      border-radius: 3px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .ams-display {
+      display: flex;
+      gap: 4px;
+      align-items: center;
+      margin-left: 4px;
+      -webkit-app-region: no-drag;
+    }
+
+    .ams-label {
+      font-size: 10px;
+      color: var(--text-tertiary);
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      margin-right: 4px;
+    }
+
+    .ams-slot {
+      width: 18px;
+      height: 18px;
+      border-radius: 4px;
+      border: 1.5px solid var(--border);
+      position: relative;
+      cursor: pointer;
+      transition: transform var(--transition);
+    }
+
+    .ams-slot:hover {
+      transform: scale(1.15);
+    }
+
+    .ams-slot.filled {
+      border-color: transparent;
+    }
+
+    .ams-slot[data-filament="pla-blue"] {
+      background: var(--filament-pla);
+    }
+
+    .ams-slot[data-filament="petg-orange"] {
+      background: var(--filament-petg);
+    }
+
+    .ams-slot[data-filament="pla-white"] {
+      background: #d4d4d8;
+    }
+
+    .ams-slot.empty {
+      background: var(--bg-deep);
+      border-style: dashed;
+    }
+
+    .ams-slot .tooltip {
+      display: none;
+      position: absolute;
+      top: -32px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      padding: 3px 8px;
+      border-radius: 4px;
+      font-size: 10px;
+      white-space: nowrap;
+      color: var(--text-secondary);
+      pointer-events: none;
+      box-shadow: var(--shadow-float);
+    }
+
+    .ams-slot:hover .tooltip {
+      display: block;
+    }
+
+    .toolbar-spacer {
+      flex: 1;
+    }
+
+    .toolbar-actions {
+      display: flex;
+      gap: 6px;
+      -webkit-app-region: no-drag;
+    }
+
+    .toolbar-btn {
+      width: 32px;
+      height: 32px;
+      border-radius: var(--radius-sm);
+      border: none;
+      background: transparent;
+      color: var(--text-secondary);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all var(--transition);
+      font-size: 15px;
+    }
+
+    .toolbar-btn:hover {
+      background: var(--bg-hover);
+      color: var(--text-primary);
+    }
+
+    /* ====== MAIN LAYOUT ====== */
+    .main-layout {
+      flex: 1;
+      display: flex;
+      overflow: hidden;
+    }
+
+    /* ====== SIDEBAR ====== */
+    .sidebar {
+      width: 56px;
+      background: var(--bg-surface);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 12px 0;
+      gap: 4px;
+      flex-shrink: 0;
+    }
+
+    .sidebar-btn {
+      width: 40px;
+      height: 40px;
+      border-radius: var(--radius-md);
+      border: none;
+      background: transparent;
+      color: var(--text-tertiary);
+      cursor: pointer;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 2px;
+      transition: all var(--transition);
+      position: relative;
+      font-size: 18px;
+    }
+
+    .sidebar-btn span {
+      font-size: 8px;
+      font-weight: 600;
+      letter-spacing: 0.3px;
+      text-transform: uppercase;
+    }
+
+    .sidebar-btn:hover {
+      background: var(--bg-hover);
+      color: var(--text-secondary);
+    }
+
+    .sidebar-btn.active {
+      color: var(--accent-orange);
+      background: var(--accent-orange-dim);
+    }
+
+    .sidebar-btn.active::before {
+      content: '';
+      position: absolute;
+      left: -8px;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 3px;
+      height: 20px;
+      background: var(--accent-orange);
+      border-radius: 0 3px 3px 0;
+    }
+
+    .sidebar-spacer {
+      flex: 1;
+    }
+
+    /* ====== CONTENT AREA ====== */
+    .content-area {
+      flex: 1;
+      display: flex;
+      overflow: hidden;
+    }
+
+    /* ====== SECONDARY SIDEBAR (context panel) ====== */
+    .context-panel {
+      width: 240px;
+      background: var(--bg-surface);
+      border-right: 1px solid var(--border-subtle);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .context-header {
+      padding: 14px 16px 10px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .context-header h3 {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: var(--text-secondary);
+    }
+
+    .context-search {
+      margin: 0 12px 10px;
+      padding: 7px 10px;
+      background: var(--bg-deep);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+      color: var(--text-primary);
+      font-size: 12px;
+      font-family: 'DM Sans', sans-serif;
+      outline: none;
+      width: calc(100% - 24px);
+      transition: border-color var(--transition);
+    }
+
+    .context-search:focus {
+      border-color: var(--accent-orange);
+    }
+
+    .context-search::placeholder {
+      color: var(--text-tertiary);
+    }
+
+    .model-list {
+      flex: 1;
+      overflow-y: auto;
+      padding: 0 8px;
+    }
+
+    .model-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px;
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      transition: background var(--transition);
+      margin-bottom: 2px;
+    }
+
+    .model-item:hover {
+      background: var(--bg-hover);
+    }
+
+    .model-item.selected {
+      background: var(--accent-orange-dim);
+    }
+
+    .model-thumb {
+      width: 36px;
+      height: 36px;
+      border-radius: 6px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-subtle);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 16px;
+      color: var(--text-tertiary);
+      flex-shrink: 0;
+    }
+
+    .model-info {
+      overflow: hidden;
+    }
+
+    .model-name {
+      font-size: 12px;
+      font-weight: 500;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      color: var(--text-primary);
+    }
+
+    .model-meta {
+      font-size: 10px;
+      color: var(--text-tertiary);
+      margin-top: 1px;
+    }
+
+    .model-meta .source {
+      color: var(--accent-blue);
+    }
+
+    /* ====== MAIN PANEL ====== */
+    .main-panel {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      position: relative;
+    }
+
+    .main-panel-tabs {
+      display: flex;
+      align-items: center;
+      height: 38px;
+      background: var(--bg-surface);
+      border-bottom: 1px solid var(--border);
+      padding: 0 8px;
+      gap: 2px;
+      flex-shrink: 0;
+    }
+
+    .panel-tab {
+      padding: 6px 14px;
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--text-tertiary);
+      cursor: pointer;
+      border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+      transition: all var(--transition);
+      border: 1px solid transparent;
+      border-bottom: none;
+      position: relative;
+      white-space: nowrap;
+    }
+
+    .panel-tab:hover {
+      color: var(--text-secondary);
+      background: var(--bg-hover);
+    }
+
+    .panel-tab.active {
+      color: var(--text-primary);
+      background: var(--bg-deep);
+      border-color: var(--border);
+    }
+
+    .panel-tab.active::after {
+      content: '';
+      position: absolute;
+      bottom: -1px;
+      left: 0;
+      right: 0;
+      height: 1px;
+      background: var(--bg-deep);
+    }
+
+    .panel-content {
+      flex: 1;
+      background: var(--bg-deep);
+      position: relative;
+      overflow: hidden;
+    }
+
+    /* 3D Preview Viewport */
+    .viewport {
+      width: 100%;
+      height: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+    }
+
+    .build-plate {
+      width: 380px;
+      height: 380px;
+      position: relative;
+      transform: perspective(800px) rotateX(55deg) rotateZ(-25deg);
+      transform-style: preserve-3d;
+    }
+
+    .plate-surface {
+      width: 100%;
+      height: 100%;
+      background:
+        linear-gradient(90deg, var(--border-subtle) 1px, transparent 1px),
+        linear-gradient(0deg, var(--border-subtle) 1px, transparent 1px);
+      background-size: 24px 24px;
+      border: 2px solid var(--border);
+      border-radius: 4px;
+      position: relative;
+    }
+
+    .plate-surface::after {
+      content: '256 × 256 mm';
+      position: absolute;
+      bottom: -28px;
+      left: 50%;
+      transform: translateX(-50%) rotateX(0deg);
+      font-size: 10px;
+      font-family: 'JetBrains Mono', monospace;
+      color: var(--text-tertiary);
+      white-space: nowrap;
+    }
+
+    .model-on-plate {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%) translateZ(40px);
+      width: 100px;
+      height: 120px;
+      background: linear-gradient(135deg, var(--accent-orange) 0%, #d45a22 100%);
+      border-radius: 8px 8px 2px 2px;
+      opacity: 0.85;
+      box-shadow: 0 -40px 30px -10px rgba(232, 104, 42, 0.15);
+    }
+
+    .viewport-overlay {
+      position: absolute;
+      bottom: 16px;
+      right: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .viewport-btn {
+      width: 32px;
+      height: 32px;
+      border-radius: var(--radius-sm);
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      color: var(--text-secondary);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 14px;
+      transition: all var(--transition);
+    }
+
+    .viewport-btn:hover {
+      border-color: var(--text-secondary);
+      color: var(--text-primary);
+    }
+
+    .viewport-info {
+      position: absolute;
+      top: 16px;
+      left: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .info-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+      font-size: 11px;
+      font-family: 'JetBrains Mono', monospace;
+      color: var(--text-secondary);
+      width: fit-content;
+    }
+
+    .info-chip .label {
+      color: var(--text-tertiary);
+      font-size: 9px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    /* ====== CHAT PANEL ====== */
+    .chat-panel {
+      width: 360px;
+      background: var(--bg-surface);
+      border-left: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      flex-shrink: 0;
+    }
+
+    .chat-header {
+      height: 38px;
+      display: flex;
+      align-items: center;
+      padding: 0 14px;
+      border-bottom: 1px solid var(--border);
+      gap: 8px;
+    }
+
+    .chat-header h3 {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-secondary);
+    }
+
+    .provider-badge {
+      font-size: 9px;
+      font-family: 'JetBrains Mono', monospace;
+      padding: 2px 6px;
+      border-radius: 3px;
+      letter-spacing: 0.3px;
+    }
+
+    .provider-badge.anthropic {
+      background: var(--accent-orange-dim);
+      color: var(--accent-orange);
+    }
+
+    .provider-badge.openai {
+      background: var(--accent-green-dim);
+      color: var(--accent-green);
+    }
+
+    .chat-messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .chat-msg {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .chat-msg.user {
+      align-items: flex-end;
+    }
+
+    .chat-msg.agent {
+      align-items: flex-start;
+    }
+
+    .msg-sender {
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--text-tertiary);
+    }
+
+    .msg-bubble {
+      max-width: 90%;
+      padding: 10px 14px;
+      border-radius: var(--radius-md);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .chat-msg.user .msg-bubble {
+      background: var(--accent-orange);
+      color: #fff;
+      border-bottom-right-radius: 4px;
+    }
+
+    .chat-msg.agent .msg-bubble {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-subtle);
+      color: var(--text-primary);
+      border-bottom-left-radius: 4px;
+    }
+
+    .tool-result {
+      max-width: 90%;
+      background: var(--bg-deep);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      overflow: hidden;
+    }
+
+    .tool-result-header {
+      padding: 6px 10px;
+      background: var(--bg-elevated);
+      border-bottom: 1px solid var(--border-subtle);
+      font-size: 10px;
+      font-family: 'JetBrains Mono', monospace;
+      color: var(--accent-blue);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .tool-result-body {
+      padding: 10px;
+    }
+
+    .search-result-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px;
+    }
+
+    .search-result-card {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+      padding: 8px;
+      cursor: pointer;
+      transition: border-color var(--transition);
+    }
+
+    .search-result-card:hover {
+      border-color: var(--accent-orange);
+    }
+
+    .search-result-card .thumb {
+      width: 100%;
+      aspect-ratio: 1;
+      background: var(--bg-hover);
+      border-radius: 4px;
+      margin-bottom: 6px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 24px;
+      color: var(--text-tertiary);
+    }
+
+    .search-result-card .name {
+      font-size: 11px;
+      font-weight: 500;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .search-result-card .author {
+      font-size: 9px;
+      color: var(--text-tertiary);
+      margin-top: 2px;
+    }
+
+    .chat-input-area {
+      padding: 12px;
+      border-top: 1px solid var(--border);
+    }
+
+    .chat-input-wrap {
+      display: flex;
+      align-items: flex-end;
+      background: var(--bg-deep);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      padding: 4px;
+      transition: border-color var(--transition);
+    }
+
+    .chat-input-wrap:focus-within {
+      border-color: var(--accent-orange);
+    }
+
+    .chat-input {
+      flex: 1;
+      background: none;
+      border: none;
+      color: var(--text-primary);
+      font-family: 'DM Sans', sans-serif;
+      font-size: 13px;
+      padding: 8px 10px;
+      resize: none;
+      outline: none;
+      min-height: 20px;
+      max-height: 120px;
+    }
+
+    .chat-input::placeholder {
+      color: var(--text-tertiary);
+    }
+
+    .chat-send {
+      width: 32px;
+      height: 32px;
+      border-radius: var(--radius-sm);
+      background: var(--accent-orange);
+      border: none;
+      color: #fff;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 14px;
+      flex-shrink: 0;
+      transition: opacity var(--transition);
+    }
+
+    .chat-send:hover {
+      opacity: 0.85;
+    }
+
+    /* ====== STATUS BAR ====== */
+    .status-bar {
+      height: 28px;
+      background: var(--bg-surface);
+      border-top: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      padding: 0 16px;
+      gap: 16px;
+      flex-shrink: 0;
+    }
+
+    .status-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      color: var(--text-tertiary);
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    .progress-track {
+      width: 140px;
+      height: 4px;
+      background: var(--bg-deep);
+      border-radius: 2px;
+      overflow: hidden;
+    }
+
+    .progress-fill {
+      height: 100%;
+      width: 47%;
+      background: linear-gradient(90deg, var(--accent-orange), var(--accent-yellow));
+      border-radius: 2px;
+      animation: shimmer 2s ease-in-out infinite;
+    }
+
+    @keyframes shimmer {
+
+      0%,
+      100% {
+        opacity: 1;
+      }
+
+      50% {
+        opacity: 0.7;
+      }
+    }
+
+    .status-item .temp {
+      color: var(--accent-red);
+    }
+
+    .status-spacer {
+      flex: 1;
+    }
+
+    .status-item.conn {
+      color: var(--accent-green);
+    }
+
+    /* ====== SCROLLBAR ====== */
+    ::-webkit-scrollbar {
+      width: 6px;
+    }
+
+    ::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    ::-webkit-scrollbar-thumb {
+      background: var(--border);
+      border-radius: 3px;
+    }
+
+    ::-webkit-scrollbar-thumb:hover {
+      background: var(--text-tertiary);
+    }
+
+    /* ====== VIEW SWITCHER ANIMATION ====== */
+    .panel-content>div {
+      animation: fadeIn 200ms ease-out;
+    }
+
+    @keyframes fadeIn {
+      from {
+        opacity: 0;
+        transform: translateY(4px);
+      }
+
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    /* ====== PRINT MONITOR VIEW (hidden by default) ====== */
+    .print-monitor {
+      display: none;
+      width: 100%;
+      height: 100%;
+      padding: 24px;
+      gap: 20px;
+    }
+
+    .print-monitor.visible {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      grid-template-rows: auto 1fr;
+    }
+
+    .monitor-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-lg);
+      padding: 20px;
+    }
+
+    .monitor-card h4 {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: var(--text-tertiary);
+      margin-bottom: 14px;
+    }
+
+    .temp-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 8px 0;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+
+    .temp-row:last-child {
+      border-bottom: none;
+    }
+
+    .temp-label {
+      font-size: 13px;
+      color: var(--text-secondary);
+    }
+
+    .temp-value {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 14px;
+      font-weight: 500;
+    }
+
+    .temp-value.hot {
+      color: var(--accent-red);
+    }
+
+    .temp-value.warm {
+      color: var(--accent-yellow);
+    }
+
+    /* Camera placeholder */
+    .camera-feed {
+      background: var(--bg-deep);
+      border-radius: var(--radius-md);
+      width: 100%;
+      height: 200px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--text-tertiary);
+      font-size: 13px;
+      border: 1px dashed var(--border);
+    }
+
+    /* ====== MAKERWORLD BROWSER VIEW ====== */
+    .browser-view {
+      display: none;
+      width: 100%;
+      height: 100%;
+      flex-direction: column;
+    }
+
+    .browser-view.visible {
+      display: flex;
+    }
+
+    .browser-bar {
+      height: 36px;
+      background: var(--bg-surface);
+      border-bottom: 1px solid var(--border-subtle);
+      display: flex;
+      align-items: center;
+      padding: 0 10px;
+      gap: 6px;
+    }
+
+    .browser-nav-btn {
+      width: 26px;
+      height: 26px;
+      border-radius: 4px;
+      background: none;
+      border: none;
+      color: var(--text-tertiary);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 12px;
+    }
+
+    .browser-nav-btn:hover {
+      background: var(--bg-hover);
+      color: var(--text-secondary);
+    }
+
+    .browser-url {
+      flex: 1;
+      background: var(--bg-deep);
+      border: 1px solid var(--border-subtle);
+      border-radius: 4px;
+      padding: 5px 10px;
+      color: var(--text-secondary);
+      font-size: 12px;
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    .browser-url .domain {
+      color: var(--text-primary);
+    }
+
+    .browser-content {
+      flex: 1;
+      background: #fafafa;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .browser-placeholder {
+      text-align: center;
+      color: #999;
+      font-size: 14px;
+    }
+
+    .browser-placeholder .mw-logo {
+      font-size: 36px;
+      margin-bottom: 12px;
+      display: block;
+    }
+
+    .download-fab {
+      position: absolute;
+      bottom: 20px;
+      right: 20px;
+      padding: 10px 20px;
+      background: var(--accent-orange);
+      color: #fff;
+      border: none;
+      border-radius: var(--radius-md);
+      font-family: 'DM Sans', sans-serif;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      box-shadow: var(--shadow-float);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      transition: transform var(--transition);
+    }
+
+    .download-fab:hover {
+      transform: translateY(-2px);
+    }
+
+    /* ====== INTERACTIVE TAB SWITCHING ====== */
+    .view-3d {
+      display: block;
+    }
+
+    .view-3d.hidden {
+      display: none;
+    }
+
+    /* ====== RESPONSIVE CHAT COLLAPSE ====== */
+    .chat-toggle {
+      display: none;
+      position: absolute;
+      right: 16px;
+      top: 50%;
+      transform: translateY(-50%);
+      z-index: 10;
+    }
+  </style>
+</head>
+
+<body>
+
+  <!-- ====== TOOLBAR ====== -->
+  <div class="toolbar">
+    <div class="toolbar-logo">Materialize</div>
+    <div class="toolbar-divider"></div>
+
+    <div class="printer-badge">
+      <div class="printer-dot"></div>
+      <span>P2S — AOJDevStudio</span>
+      <span class="conn-type">MQTT</span>
+    </div>
+
+    <div class="ams-display">
+      <span class="ams-label">AMS</span>
+      <div class="ams-slot filled" data-filament="pla-blue">
+        <div class="tooltip">Slot 1 · PLA Blue</div>
+      </div>
+      <div class="ams-slot filled" data-filament="petg-orange">
+        <div class="tooltip">Slot 2 · PETG Orange</div>
+      </div>
+      <div class="ams-slot filled" data-filament="pla-white">
+        <div class="tooltip">Slot 3 · PLA White</div>
+      </div>
+      <div class="ams-slot empty">
+        <div class="tooltip">Slot 4 · Empty</div>
+      </div>
+    </div>
+
+    <div class="toolbar-spacer"></div>
+
+    <div class="toolbar-actions">
+      <button class="toolbar-btn" title="Notifications">&#x1F514;</button>
+      <button class="toolbar-btn" title="Settings">&#x2699;</button>
+    </div>
+  </div>
+
+  <!-- ====== MAIN LAYOUT ====== -->
+  <div class="main-layout">
+
+    <!-- Sidebar -->
+    <nav class="sidebar">
+      <button class="sidebar-btn active" data-view="library" title="Library">
+        &#x1F4C1;
+      </button>
+      <button class="sidebar-btn" data-view="browser" title="MakerWorld">
+        &#x1F310;
+      </button>
+      <button class="sidebar-btn" data-view="design" title="Design">
+        &#x270F;
+      </button>
+      <button class="sidebar-btn" data-view="monitor" title="Print Monitor">
+        &#x1F5A8;
+      </button>
+      <div class="sidebar-spacer"></div>
+      <button class="sidebar-btn" data-view="queue" title="Print Queue">
+        &#x1F4CB;
+      </button>
+    </nav>
+
+    <div class="content-area">
+
+      <!-- Context Panel (secondary sidebar) -->
+      <div class="context-panel">
+        <div class="context-header">
+          <h3>Library</h3>
+        </div>
+        <input class="context-search" type="text" placeholder="Search models...">
+        <div class="model-list">
+          <div class="model-item selected">
+            <div class="model-thumb">&#x1F9CA;</div>
+            <div class="model-info">
+              <div class="model-name">Headphone Wall Hook</div>
+              <div class="model-meta"><span class="source">MakerWorld</span> · 2.4 MB</div>
+            </div>
+          </div>
+          <div class="model-item">
+            <div class="model-thumb">&#x1F529;</div>
+            <div class="model-info">
+              <div class="model-name">Cable Clip (Parametric)</div>
+              <div class="model-meta"><span class="source">OpenSCAD</span> · 48 KB</div>
+            </div>
+          </div>
+          <div class="model-item">
+            <div class="model-thumb">&#x1F4F1;</div>
+            <div class="model-info">
+              <div class="model-name">Phone Stand v3</div>
+              <div class="model-meta"><span class="source">MakerWorld</span> · 1.1 MB</div>
+            </div>
+          </div>
+          <div class="model-item">
+            <div class="model-thumb">&#x2699;</div>
+            <div class="model-info">
+              <div class="model-name">Gear Set 32T</div>
+              <div class="model-meta"><span class="source">OpenSCAD</span> · 92 KB</div>
+            </div>
+          </div>
+          <div class="model-item">
+            <div class="model-thumb">&#x1F50C;</div>
+            <div class="model-info">
+              <div class="model-name">USB Hub Mount</div>
+              <div class="model-meta"><span class="source">MakerWorld</span> · 3.8 MB</div>
+            </div>
+          </div>
+          <div class="model-item">
+            <div class="model-thumb">&#x1F3AE;</div>
+            <div class="model-info">
+              <div class="model-name">Controller Stand</div>
+              <div class="model-meta"><span class="source">MakerWorld</span> · 5.2 MB</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Main Panel -->
+      <div class="main-panel">
+        <div class="main-panel-tabs">
+          <div class="panel-tab active" data-panel="preview">3D Preview</div>
+          <div class="panel-tab" data-panel="browser">MakerWorld</div>
+          <div class="panel-tab" data-panel="scad">OpenSCAD</div>
+          <div class="panel-tab" data-panel="monitor">Print Monitor</div>
+        </div>
+
+        <div class="panel-content">
+          <!-- 3D Preview (default) -->
+          <div class="viewport view-3d" id="view-3d">
+            <div class="viewport-info">
+              <div class="info-chip">
+                <span class="label">Model</span> Headphone Wall Hook.stl
+              </div>
+              <div class="info-chip">
+                <span class="label">Size</span> 62 × 45 × 38 mm
+              </div>
+              <div class="info-chip">
+                <span class="label">Profile</span> 0.20mm · PLA
+              </div>
+            </div>
+
+            <div class="build-plate">
+              <div class="plate-surface">
+                <div class="model-on-plate"></div>
+              </div>
+            </div>
+
+            <div class="viewport-overlay">
+              <button class="viewport-btn" title="Zoom In">+</button>
+              <button class="viewport-btn" title="Zoom Out">−</button>
+              <button class="viewport-btn" title="Reset View">⟲</button>
+              <button class="viewport-btn" title="Fit to View">⊞</button>
+            </div>
+          </div>
+
+          <!-- MakerWorld Browser -->
+          <div class="browser-view" id="view-browser">
+            <div class="browser-bar">
+              <button class="browser-nav-btn">◀</button>
+              <button class="browser-nav-btn">▶</button>
+              <button class="browser-nav-btn">⟲</button>
+              <div class="browser-url">
+                https://<span class="domain">makerworld.com</span>/models/search?q=headphone+hook
+              </div>
+            </div>
+            <div class="browser-content">
+              <div class="browser-placeholder">
+                <span class="mw-logo">&#x1F310;</span>
+                MakerWorld embedded browser<br>
+                <span style="font-size: 12px; color: #bbb;">Content renders in Tauri webview</span>
+              </div>
+              <button class="download-fab">
+                &#x2B07; Import to Library
+              </button>
+            </div>
+          </div>
+
+          <!-- Print Monitor -->
+          <div class="print-monitor" id="view-monitor">
+            <div class="monitor-card" style="grid-column: 1 / -1;">
+              <h4>Camera Feed</h4>
+              <div class="camera-feed">&#x1F3A5; Live camera feed from P2S</div>
+            </div>
+            <div class="monitor-card">
+              <h4>Temperatures</h4>
+              <div class="temp-row">
+                <span class="temp-label">Nozzle</span>
+                <span class="temp-value hot">215°C</span>
+              </div>
+              <div class="temp-row">
+                <span class="temp-label">Bed</span>
+                <span class="temp-value warm">60°C</span>
+              </div>
+              <div class="temp-row">
+                <span class="temp-label">Chamber</span>
+                <span class="temp-value">34°C</span>
+              </div>
+            </div>
+            <div class="monitor-card">
+              <h4>Print Progress</h4>
+              <div style="margin-top: 8px;">
+                <div
+                  style="font-family: 'JetBrains Mono', monospace; font-size: 32px; font-weight: 300; color: var(--accent-orange);">
+                  47%</div>
+                <div style="font-size: 12px; color: var(--text-tertiary); margin-top: 4px;">Layer 94 / 200 · ETA 1h 23m
+                </div>
+                <div class="progress-track" style="margin-top: 12px; width: 100%; height: 6px;">
+                  <div class="progress-fill"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Chat Panel -->
+      <div class="chat-panel">
+        <div class="chat-header">
+          <h3>Agent</h3>
+          <span class="provider-badge anthropic">Claude</span>
+        </div>
+
+        <div class="chat-messages">
+          <div class="chat-msg user">
+            <span class="msg-sender">You</span>
+            <div class="msg-bubble">Find me a wall-mounted headphone hook on MakerWorld</div>
+          </div>
+
+          <div class="chat-msg agent">
+            <span class="msg-sender">Agent</span>
+            <div class="msg-bubble">Searching MakerWorld for wall-mounted headphone hooks...</div>
+          </div>
+
+          <div class="chat-msg agent">
+            <div class="tool-result">
+              <div class="tool-result-header">
+                &#x1F50D; search_makerworld
+              </div>
+              <div class="tool-result-body">
+                <div class="search-result-grid">
+                  <div class="search-result-card">
+                    <div class="thumb">&#x1F3A7;</div>
+                    <div class="name">Minimal Hook v2</div>
+                    <div class="author">by printer_joe</div>
+                  </div>
+                  <div class="search-result-card">
+                    <div class="thumb">&#x1F3A7;</div>
+                    <div class="name">Floating Hook Pro</div>
+                    <div class="author">by makermax</div>
+                  </div>
+                  <div class="search-result-card">
+                    <div class="thumb">&#x1F3A7;</div>
+                    <div class="name">Articulated Stand</div>
+                    <div class="author">by designlab3d</div>
+                  </div>
+                  <div class="search-result-card">
+                    <div class="thumb">&#x1F3A7;</div>
+                    <div class="name">Under-Desk Mount</div>
+                    <div class="author">by funcprint</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="chat-msg agent">
+            <div class="msg-bubble">Found 4 options. The <strong>Minimal Hook v2</strong> has the highest rating and
+              prints in under an hour with PLA. Want me to download it and slice it for your P2S?</div>
+          </div>
+        </div>
+
+        <div class="chat-input-area">
+          <div class="chat-input-wrap">
+            <textarea class="chat-input" rows="1" placeholder="Tell the agent what to print..."></textarea>
+            <button class="chat-send">&#x2191;</button>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ====== STATUS BAR ====== -->
+  <div class="status-bar">
+    <div class="status-item">
+      &#x1F5A8; Printing
+      <div class="progress-track">
+        <div class="progress-fill"></div>
+      </div>
+      47%
+    </div>
+    <div class="status-item">
+      ETA 1h 23m
+    </div>
+    <div class="status-item">
+      <span class="temp">&#x1F321; 215°C</span>
+    </div>
+    <div class="status-spacer"></div>
+    <div class="status-item conn">
+      &#x26A1; MQTT · 192.0.2.136
+    </div>
+  </div>
+
+  <script>
+    const sidebarBtns = document.querySelectorAll('.sidebar-btn');
+    const panelTabs = document.querySelectorAll('.panel-tab');
+    const views = {
+      'preview': document.getElementById('view-3d'),
+      'browser': document.getElementById('view-browser'),
+      'monitor': document.getElementById('view-monitor'),
+    };
+
+    function switchView(viewKey) {
+      Object.values(views).forEach(v => {
+        v.classList.remove('visible');
+        v.style.display = 'none';
+      });
+      panelTabs.forEach(t => t.classList.remove('active'));
+
+      if (views[viewKey]) {
+        views[viewKey].style.display = viewKey === 'preview' ? 'block' :
+          viewKey === 'monitor' ? 'grid' : 'flex';
+        views[viewKey].classList.add('visible');
+      }
+
+      panelTabs.forEach(t => {
+        if (t.dataset.panel === viewKey) t.classList.add('active');
+      });
+    }
+
+    panelTabs.forEach(tab => {
+      tab.addEventListener('click', () => switchView(tab.dataset.panel));
+    });
+
+    const viewMap = {
+      'library': 'preview',
+      'browser': 'browser',
+      'design': 'preview',
+      'monitor': 'monitor',
+      'queue': 'preview',
+    };
+
+    sidebarBtns.forEach(btn => {
+      btn.addEventListener('click', () => {
+        sidebarBtns.forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        const target = viewMap[btn.dataset.view] || 'preview';
+        switchView(target);
+      });
+    });
+
+    switchView('preview');
+  </script>
+
+</body>
+
+</html>

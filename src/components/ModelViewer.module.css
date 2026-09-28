@@ -1,0 +1,78 @@
+.viewerContainer {
+  width: 100%;
+  height: 100%;
+  position: relative;
+}
+
+/* ─── Info Overlay (top-left) ───────────────────────────────────────────── */
+
+.viewportInfo {
+  position: absolute;
+  top: 16px;
+  left: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.infoChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  font-family: 'JetBrains Mono', monospace;
+  width: fit-content;
+  pointer-events: auto;
+}
+
+.chipLabel {
+  color: var(--text-tertiary);
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.chipValue {
+  color: var(--text-secondary);
+}
+
+/* ─── Viewport Control Buttons (bottom-right) ───────────────────────────── */
+
+.viewportOverlay {
+  position: absolute;
+  bottom: 16px;
+  right: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.viewportBtn {
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  pointer-events: auto;
+  transition: border-color var(--transition), color var(--transition);
+  padding: 0;
+}
+
+.viewportBtn:hover {
+  border-color: var(--text-secondary);
+  color: var(--text-primary);
+}

@@ -1,0 +1,62 @@
+/*
+ * Pi Web UI ChatPanel — CSS integration
+ *
+ * Import pi-web-ui's Tailwind CSS directly. The @layer ordering in global.css
+ * (base, pi-chat, app) ensures our app styles win over pi-web-ui's resets.
+ *
+ * Note: wrapping @import in @layer pi-chat caused nested layer issues with
+ * Tailwind v4's internal @layer declarations. Direct import works because
+ * the layer ordering still takes precedence.
+ */
+@import '@mariozechner/pi-web-ui/app.css';
+
+/*
+ * Token overrides — scoped to .pi-chat-container so pi-web-ui components
+ * pick up our brand palette instead of their neutral oklch defaults.
+ */
+.pi-chat-container {
+  /* Layout */
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+
+  /* Remap pi-web-ui's oklch design tokens to our hex tokens */
+  --background: var(--bg-surface);
+  --foreground: var(--text-primary);
+  --border: var(--border);
+  --muted: var(--bg-elevated);
+  --muted-foreground: var(--text-secondary);
+  --primary: var(--accent-orange);
+  --primary-foreground: var(--text-inverse);
+  --accent: var(--accent-orange-dim);
+  --accent-foreground: var(--accent-orange);
+  --input: var(--bg-deep);
+  --ring: var(--accent-orange);
+  --card: var(--bg-elevated);
+  --card-foreground: var(--text-primary);
+  --popover: var(--bg-elevated);
+  --popover-foreground: var(--text-primary);
+  --secondary: var(--bg-hover);
+  --secondary-foreground: var(--text-primary);
+  --destructive: var(--accent-red);
+  --destructive-foreground: var(--text-inverse);
+
+  /* Pi-web-ui uses --spacing for Tailwind v4 — set to 0.25rem (4px) */
+  --spacing: 0.25rem;
+
+  /* Override font stack so pi-web-ui inherits our app font */
+  --font-sans: 'DM Sans', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
+}
+
+/* Ensure the Lit element fills its container */
+.pi-chat-container pi-chat-panel {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  flex: 1;
+  min-height: 0;
+}
