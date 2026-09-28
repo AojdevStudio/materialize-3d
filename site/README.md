@@ -49,4 +49,13 @@ The fonts in `src/assets/fonts/` are copied from the app. They are licensed unde
 - axe finds no violations in either theme
 - no signing or notarization claim appears while the flags are false
 
-The layout tests also save full-page screenshots to `test-results/screens/`, which is gitignored. The tests never fetch GitHub.
+The layout tests also save full-page screenshots to `test-results/screens/`, which is gitignored. The tests never fetch GitHub. CI runs them in the `Landing site` job.
+
+## Deploy
+
+The site is a Cloudflare Pages project named `materialize-3d`, deployed by hand from `main` after a release is published and `src/release.ts` carries its checksum. No deploy credential is stored in GitHub.
+
+```sh
+cd site && bun install --frozen-lockfile && bun run build
+CLOUDFLARE_ACCOUNT_ID=... CLOUDFLARE_API_TOKEN=... bunx wrangler pages deploy dist --project-name materialize-3d --branch main
+```
