@@ -26,11 +26,12 @@ usage() {
 usage: verify-installed-macos.sh <path-to-release.dmg> <checkout-with-docs/acceptance-and-schema3-fixture>
 
 Installs the signed DMG into /Applications and verifies it end to end: Gatekeeper,
-the staple, the signature and bundle contents, the schema 3 migration, MCP off by
+the staple, the signature, the schema 3 migration, MCP off by
 default, the MCP endpoint's 401 without a valid token, the app's own keychain round
 trip, and a sign built over MCP with a seeded token that stays pending: the endpoint
 must refuse to approve, because approval stays with a person in the app. Each check
-fails the run. Runs unattended and needs no input.
+fails the run. Also records the bundle inventory for inspection. Runs unattended
+and needs no input. The installed release app remains in /Applications afterward.
 
 The user must be logged in at the console: the body runs as a LaunchAgent in that
 desktop session, because that is the session whose keychain the app reads.
@@ -384,6 +385,8 @@ quit; launch
 for _ in $(seq 1 30); do lsof -nP -iTCP:45373 -sTCP:LISTEN >/dev/null 2>&1 && break; sleep 0.5; done
 item2="$(HOME="$H" security find-generic-password -s com.materialize3d -a mcp:token "$KC1" 2>&1 | grep -E '"mdat"|"cdat"' | tr -s ' ' | tr '\n' ' ')"
 log "launch 2: listening $(lsof -nP -iTCP:45373 -sTCP:LISTEN >/dev/null 2>&1 && echo yes || echo no), item unchanged: $([[ "$item1" == "$item2" ]] && echo yes || echo "no ($item2)"), items in keychain: $(HOME="$H" security dump-keychain "$KC1" 2>/dev/null | grep -c '^keychain:')"
+lsof -nP -iTCP:45373 -sTCP:LISTEN >/dev/null 2>&1 || { log "FAIL MCP did not start after relaunch"; exit 1; }
+[[ -n "$item1" && "$item1" == "$item2" ]] || { log "FAIL the app's keychain item changed after relaunch"; exit 1; }
 unattended "launch 2"
 quit
 
@@ -467,4 +470,5 @@ end_list="$(list_now)"
 restore
 log "real user keychains untouched: default $end_default, list $end_list"
 [[ "$end_default" == "$ORIG_DEFAULT" ]] || { log "FAIL the real default keychain changed"; exit 1; }
+[[ "$end_list" == "$ORIG_LIST_STR" ]] || { log "FAIL the real keychain search list changed"; exit 1; }
 log "done: $RUN"
