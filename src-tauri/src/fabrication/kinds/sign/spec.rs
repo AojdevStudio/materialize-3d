@@ -6,15 +6,11 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::{font, svg};
-use crate::fabrication::printer::{P2S_04, UM_PER_MM};
-use crate::fabrication::revisions::Sha256Hex;
+use crate::fabrication::printer::{PrinterProfile, UM_PER_MM};
 
 const MAX_TITLE_CHARS: usize = 80;
 /// Schema version this build accepts in `SignSpec::schema_version`.
 pub const SIGN_SCHEMA_VERSION: u32 = 1;
-
-/// Largest sign edge that fits the bed of the printer the package targets.
-const MAX_EDGE_MM: f64 = (P2S_04.max_edge() / UM_PER_MM) as f64;
 
 fn default_thickness() -> f64 {
     2.6
@@ -224,11 +220,12 @@ pub struct ValidSignSpec {
 }
 
 impl ValidSignSpec {
-    pub fn from_json(json: &str) -> Result<Self, SpecError> {
-        Self::parse(serde_json::from_str(json)?)
+    pub fn from_json(json: &str, printer: &PrinterProfile) -> Result<Self, SpecError> {
+        Self::parse(serde_json::from_str(json)?, printer)
     }
 
-    pub fn parse(spec: SignSpec) -> Result<Self, SpecError> {
+    /// Validates `spec` for `printer`: no edge may be longer than its bed.
+    pub fn parse(spec: SignSpec, printer: &PrinterProfile) -> Result<Self, SpecError> {
         if spec.schema_version != SIGN_SCHEMA_VERSION {
             return Err(SpecError::SchemaVersion {
                 found: spec.schema_version,
@@ -238,11 +235,12 @@ impl ValidSignSpec {
         positive("height_mm", spec.height_mm)?;
         positive("thickness_mm", spec.thickness_mm)?;
         positive("inlay_depth_mm", spec.inlay_depth_mm)?;
+        let max_edge_mm = (printer.max_edge() / UM_PER_MM) as f64;
         for (field, value) in [("width_mm", spec.width_mm), ("height_mm", spec.height_mm)] {
-            if value > MAX_EDGE_MM {
+            if value > max_edge_mm {
                 return Err(dimension(
                     field,
-                    format!("{value} mm exceeds the {MAX_EDGE_MM} mm bed"),
+                    format!("{value} mm exceeds the {max_edge_mm} mm bed"),
                 ));
             }
         }
@@ -491,45 +489,5 @@ fn non_negative(field: &str, value: f64) -> Result<(), SpecError> {
         Ok(())
     } else {
         Err(dimension(field, "must be zero or positive"))
-    }
-}
-
-/// SHA-256 (lowercase hex) of the spec's canonical JSON: object keys sorted,
-/// no whitespace, derived data excluded. Input field order does not matter.
-pub fn spec_hash(spec: &ValidSignSpec) -> String {
-    let value = serde_json::to_value(spec).expect("ValidSignSpec always serializes");
-    let mut canonical = String::new();
-    write_canonical(&value, &mut canonical);
-    Sha256Hex::of_bytes(canonical.as_bytes()).into()
-}
-
-fn write_canonical(value: &serde_json::Value, out: &mut String) {
-    use serde_json::Value;
-    match value {
-        Value::Object(map) => {
-            let mut entries: Vec<_> = map.iter().collect();
-            entries.sort_by(|a, b| a.0.cmp(b.0));
-            out.push('{');
-            for (i, (key, value)) in entries.into_iter().enumerate() {
-                if i > 0 {
-                    out.push(',');
-                }
-                out.push_str(&Value::String(key.clone()).to_string());
-                out.push(':');
-                write_canonical(value, out);
-            }
-            out.push('}');
-        }
-        Value::Array(items) => {
-            out.push('[');
-            for (i, item) in items.iter().enumerate() {
-                if i > 0 {
-                    out.push(',');
-                }
-                write_canonical(item, out);
-            }
-            out.push(']');
-        }
-        scalar => out.push_str(&scalar.to_string()),
     }
 }

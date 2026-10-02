@@ -17,6 +17,7 @@ use super::store;
 use super::tools::TurnScope;
 use super::turn::{run_turn, ModelChoice, TurnEnd};
 use crate::actions::{ActionError, RequestActions, RequestActor};
+use crate::fabrication::kind::BuildControl;
 use crate::fabrication::pipeline::{self, BuildError, BuildOutcome, BuildRequest, BuildStep, Workspace};
 use crate::fabrication::revisions::{self, BuildState, LineageId, RevisionId, SignRevision};
 use crate::state::{AppState, PrinterState};
@@ -170,7 +171,8 @@ impl RequestActions for PipelineActions {
     ) -> Result<BuildOutcome, ActionError> {
         let lineage_id = lineage_id.map(LineageId::parse).transpose()?;
         let actor = requester.into();
-        Ok(pipeline::build_sign(&self.state, &self.workspace, BuildRequest { spec, lineage_id, actor }, progress, is_cancelled)?)
+        let request = BuildRequest { kind: "sign".into(), spec, lineage_id, actor };
+        Ok(pipeline::build(&self.state, &self.workspace, request, &BuildControl::new(progress, is_cancelled))?)
     }
 
     fn list_signs(&self, limit: u32) -> Result<Vec<SignRevision>, ActionError> {

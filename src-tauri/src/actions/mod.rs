@@ -16,6 +16,7 @@ use serde_json::Value;
 
 pub use gui::HumanActor;
 
+use crate::fabrication::kind::BuildControl;
 use crate::fabrication::pipeline::{self, BuildError, BuildOutcome, BuildRequest, BuildStep, Workspace};
 use crate::fabrication::revisions::{self, Actor, BuildState, LineageId, RevisionId, Sha256Hex, SignRevision};
 use crate::state::{AppState, PrinterState};
@@ -206,13 +207,8 @@ impl Actions {
         is_cancelled: &dyn Fn() -> bool,
     ) -> Result<BuildOutcome, ActionError> {
         let lineage_id = lineage_id.map(LineageId::parse).transpose()?;
-        let outcome = pipeline::build_sign(
-            &self.state,
-            &self.workspace,
-            BuildRequest { spec, lineage_id, actor },
-            progress,
-            is_cancelled,
-        )?;
+        let request = BuildRequest { kind: "sign".into(), spec, lineage_id, actor };
+        let outcome = pipeline::build(&self.state, &self.workspace, request, &BuildControl::new(progress, is_cancelled))?;
         self.notify(&outcome.revision.id);
         Ok(outcome)
     }

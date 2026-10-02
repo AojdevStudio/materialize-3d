@@ -2,24 +2,24 @@
 
 use tiny_skia::{Color, FillRule, Paint, PathBuilder, Pixmap, Transform};
 
-use super::geometry::{Shapes, SignGeometry, UM_PER_MM};
+use super::geometry::{Shapes, SignLayout, UM_PER_MM};
 use super::{Result, SignError};
 
 /// PNG of the finished face at `px_per_mm`. Outside the outline is transparent.
-pub fn render_preview(geometry: &SignGeometry, px_per_mm: f64) -> Result<Vec<u8>> {
+pub fn render_preview(layout: &SignLayout, px_per_mm: f64) -> Result<Vec<u8>> {
     if !(px_per_mm.is_finite() && px_per_mm > 0.0) {
         return Err(SignError::Preview(format!(
             "px_per_mm {px_per_mm} must be positive"
         )));
     }
-    let width = (geometry.width_mm() * px_per_mm).round() as u32;
-    let height = (geometry.height_mm() * px_per_mm).round() as u32;
+    let width = (layout.width_mm() * px_per_mm).round() as u32;
+    let height = (layout.height_mm() * px_per_mm).round() as u32;
     let mut pixmap = Pixmap::new(width, height)
         .ok_or_else(|| SignError::Preview(format!("cannot allocate {width}x{height} px")))?;
     let scale = (px_per_mm / UM_PER_MM) as f32;
 
-    let layers = std::iter::once((&geometry.outline, &geometry.palette[0]))
-        .chain(geometry.face.iter().zip(&geometry.palette).skip(1));
+    let layers = std::iter::once((&layout.outline, &layout.palette[0]))
+        .chain(layout.face.iter().zip(&layout.palette).skip(1));
     for (shapes, ink) in layers {
         let Some(path) = path(shapes, scale) else {
             continue;

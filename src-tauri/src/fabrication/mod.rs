@@ -1,5 +1,6 @@
 pub mod bambu;
 pub mod checks;
+pub mod kind;
 pub mod kinds;
 pub mod model;
 pub mod package;
