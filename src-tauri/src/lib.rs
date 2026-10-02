@@ -11,6 +11,7 @@ mod e2e;
 mod mcp;
 mod sign_commands;
 mod studio_commands;
+pub mod tools;
 mod makerworld;
 pub mod openscad;
 pub mod platform;
