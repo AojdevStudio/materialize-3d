@@ -229,11 +229,39 @@ fn backup_before_schema_6(conn: &Connection) -> Result<(), String> {
     #[cfg(test)]
     tests::interrupt_backup_if_asked(&staged);
     verify_backup(&staged, expected).map_err(failed)?;
-    // A hard link refuses an existing name, so publishing never replaces a backup.
-    std::fs::hard_link(&staged, &backup).map_err(|e| failed(format!("could not publish the checked copy: {e}")))?;
-    std::fs::remove_file(&staged).map_err(|e| failed(format!("could not remove {} after publishing it: {e}", staged.display())))?;
+    publish_backup(&staged, &backup).map_err(|e| failed(format!("could not publish the checked copy: {e}")))?;
     log::info!("database: backed up the database to {} before migration 006", backup.display());
     Ok(())
+}
+
+/// Gives the checked copy its final name without replacing anything already
+/// there. A hard link refuses an existing name outright. Some filesystems
+/// cannot link at all (exFAT, FAT32, SMB, some FUSE mounts), so on any other
+/// link failure the name is checked again and the copy is renamed into place;
+/// both names are in one directory.
+fn publish_backup(staged: &Path, backup: &Path) -> std::io::Result<()> {
+    match hard_link(staged, backup) {
+        Ok(()) => std::fs::remove_file(staged),
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => Err(err),
+        Err(link) => {
+            if backup.symlink_metadata().is_ok() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    format!("{} appeared while publishing", backup.display()),
+                ));
+            }
+            std::fs::rename(staged, backup)
+                .map_err(|e| std::io::Error::new(e.kind(), format!("hard link failed ({link}), then rename failed ({e})")))
+        }
+    }
+}
+
+fn hard_link(staged: &Path, backup: &Path) -> std::io::Result<()> {
+    #[cfg(test)]
+    if tests::hard_link_unsupported_if_asked() {
+        return Err(std::io::Error::from(std::io::ErrorKind::Unsupported));
+    }
+    std::fs::hard_link(staged, backup)
 }
 
 /// What a backup must match: the schema version and the number of sign revisions.
@@ -1185,6 +1213,35 @@ mod tests {
             let len = file.metadata().unwrap().len();
             file.set_len(len / 2).unwrap();
         }
+    }
+
+    thread_local! {
+        static HARD_LINK_UNSUPPORTED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    /// When a test asks, the next hard link fails as a filesystem without hard links would.
+    pub(super) fn hard_link_unsupported_if_asked() -> bool {
+        HARD_LINK_UNSUPPORTED.with(|ask| ask.replace(false))
+    }
+
+    /// On a filesystem that cannot hard-link, the checked copy is renamed into
+    /// place instead, and the migration proceeds.
+    #[test]
+    fn without_hard_links_the_checked_copy_is_renamed_into_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = schema_5_database(dir.path());
+        let before = revision_columns(&Connection::open(&path).unwrap(), SIGN_REVISION_COLUMNS);
+
+        HARD_LINK_UNSUPPORTED.with(|ask| ask.set(true));
+        init_db(&path).expect("migrates");
+
+        assert!(!HARD_LINK_UNSUPPORTED.with(|ask| ask.get()), "the hard link was tried and failed");
+        assert_eq!(version_of(&path), 6);
+        let backup = Connection::open(backup_of(&path)).expect("the renamed backup");
+        let version: i32 = backup.pragma_query_value(None, "user_version", |row| row.get(0)).unwrap();
+        assert_eq!(version, 5);
+        assert_eq!(revision_columns(&backup, SIGN_REVISION_COLUMNS), before, "the backup holds every sign revision");
+        assert!(!staged_of(&path).exists(), "the staged copy became the backup");
     }
 
     fn staged_of(path: &Path) -> std::path::PathBuf {
