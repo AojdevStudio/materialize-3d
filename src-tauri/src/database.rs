@@ -70,7 +70,7 @@ pub fn init_db(db_path: &Path) -> Result<Connection, String> {
 }
 
 /// Schema version after every migration has run.
-pub const SCHEMA_VERSION: i32 = 5;
+pub const SCHEMA_VERSION: i32 = 6;
 
 /// Run all pending migrations based on `PRAGMA user_version`.
 fn run_migrations(conn: &Connection) -> Result<(), String> {
@@ -169,9 +169,21 @@ fn run_migrations(conn: &Connection) -> Result<(), String> {
         log::info!("database: applying migration 005 — create agent conversation tables");
         conn.execute_batch(crate::agent::store::MIGRATION_005)
             .map_err(|e| format!("migration 005 failed: {e}"))?;
-        conn.pragma_update(None, "user_version", SCHEMA_VERSION)
+        conn.pragma_update(None, "user_version", 5)
             .map_err(|e| format!("failed to set user_version to 5: {e}"))?;
         log::info!("database: migration 005 applied — schema version now 5");
+    }
+
+    if version < 6 {
+        log::info!("database: applying migration 006 — separate builds from revisions");
+        // It moves rows between tables, so all of it lands or none of it does.
+        let tx = conn.unchecked_transaction().map_err(|e| format!("migration 006 failed to start: {e}"))?;
+        tx.execute_batch(crate::fabrication::revisions::MIGRATION_006)
+            .map_err(|e| format!("migration 006 failed: {e}"))?;
+        tx.pragma_update(None, "user_version", SCHEMA_VERSION)
+            .map_err(|e| format!("failed to set user_version to 6: {e}"))?;
+        tx.commit().map_err(|e| format!("migration 006 failed to commit: {e}"))?;
+        log::info!("database: migration 006 applied — schema version now 6");
     }
 
     Ok(())
@@ -977,6 +989,84 @@ mod tests {
         drop(conn);
         let reopened = init_db(&path).expect("reopening is a no-op");
         assert_eq!(get_all_history(&reopened).unwrap().len(), 2);
+    }
+
+    /// A revision's columns that a migration must carry over unchanged.
+    type RevisionColumns = (String, String, u32, Option<String>, String, String, String, String, String, Option<String>, String, Option<String>);
+
+    fn revision_columns(conn: &Connection, sql: &str) -> Vec<RevisionColumns> {
+        let mut stmt = conn.prepare(sql).unwrap();
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?,
+                row.get(6)?, row.get(7)?, row.get(8)?, row.get(9)?, row.get(10)?, row.get(11)?,
+            ))
+        });
+        rows.unwrap().collect::<rusqlite::Result<_>>().unwrap()
+    }
+
+    /// Build state a migration must carry over unchanged, per revision id.
+    fn build_columns(conn: &Connection, sql: &str) -> Vec<(String, String, String, Option<String>, Option<String>)> {
+        let mut stmt = conn.prepare(sql).unwrap();
+        let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)));
+        rows.unwrap().collect::<rusqlite::Result<_>>().unwrap()
+    }
+
+    #[test]
+    fn a_schema_5_database_with_signs_moves_to_builds_and_revisions() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("materialize.db");
+        let before = Connection::open(&path).unwrap();
+        before.execute_batch(include_str!("../tests/fixtures/db/main-schema-v5-signs.sql")).unwrap();
+        let revisions_before = revision_columns(
+            &before,
+            "SELECT id, lineage_id, number, parent_id, title, spec_json, spec_sha256, requested_by, approval_status,
+                 approved_sha256, print_status, void_reason FROM sign_revisions ORDER BY id",
+        );
+        let builds_before = build_columns(
+            &before,
+            "SELECT id, build_key, build_status, failure_reason, artifacts_json FROM sign_revisions ORDER BY id",
+        );
+        drop(before);
+        assert_eq!(revisions_before.len(), 5);
+
+        let conn = init_db(&path).expect("migrates a schema-5 database");
+        let version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0)).unwrap();
+        assert_eq!(version, 6);
+        let tables: Vec<String> = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('builds', 'revisions', 'revision_exports', 'sign_revisions') ORDER BY name")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(tables, ["builds", "revision_exports", "revisions"]);
+
+        let revisions_after = revision_columns(
+            &conn,
+            "SELECT id, lineage_id, number, parent_id, title, spec_json, spec_sha256, requested_by, approval_status,
+                 approved_package_sha256, print_status, void_reason FROM revisions ORDER BY id",
+        );
+        assert_eq!(revisions_after, revisions_before, "ids, ancestry, specs, and human decisions are unchanged");
+        let builds_after = build_columns(
+            &conn,
+            "SELECT r.id, b.build_key, b.build_status, b.failure_reason, b.artifacts_json
+             FROM revisions r JOIN builds b ON b.id = r.build_id ORDER BY r.id",
+        );
+        assert_eq!(builds_after, builds_before, "each revision keeps its build key, build status, and artifacts as stored");
+        let odd: i64 = conn
+            .query_row("SELECT count(*) FROM revisions r JOIN builds b ON b.id = r.build_id WHERE r.kind != 'sign' OR b.legacy != 1 OR r.build_id != r.id", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(odd, 0, "every migrated revision is a sign on its own legacy build");
+
+        let listed = crate::fabrication::revisions::list_recent(&conn, 10).expect("every migrated row reads back");
+        assert_eq!(listed.len(), 5);
+        assert_eq!(crate::fabrication::revisions::unfinished_builds(&conn).unwrap().len(), 1, "the interrupted build is still found");
+        assert_eq!(get_all_history(&conn).unwrap().len(), 2, "other tables are untouched");
+
+        drop(conn);
+        let reopened = init_db(&path).expect("reopening is a no-op");
+        assert_eq!(crate::fabrication::revisions::list_recent(&reopened, 10).unwrap().len(), 5);
     }
 
     #[test]

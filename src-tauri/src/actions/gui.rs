@@ -3,7 +3,7 @@
 //! create a [`HumanActor`].
 
 use std::collections::hash_map::Entry;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -14,7 +14,8 @@ use tauri::{AppHandle, Emitter, Runtime, State};
 
 use super::{Actions, EventSink};
 use crate::fabrication::pipeline::{BuildOutcome, BuildStep};
-use crate::fabrication::revisions::{Actor, SignRevision};
+use crate::fabrication::checks::CheckId;
+use crate::fabrication::revisions::{Actor, ExportFormat, Revision};
 
 /// Proof that a person at the GUI is acting. Its field is private to this
 /// module, so tools, the agent, and MCP cannot create one, and approving,
@@ -127,17 +128,17 @@ pub fn sign_cancel(builds: State<'_, GuiBuilds>, build_id: String) -> Result<boo
 }
 
 #[tauri::command]
-pub fn sign_list(actions: State<'_, Actions>, limit: Option<u32>) -> Result<Vec<SignRevision>, String> {
+pub fn sign_list(actions: State<'_, Actions>, limit: Option<u32>) -> Result<Vec<Revision>, String> {
     actions.list_signs(limit.unwrap_or(100)).map_err(error)
 }
 
 #[tauri::command]
-pub fn sign_lineage(actions: State<'_, Actions>, lineage_id: String) -> Result<Vec<SignRevision>, String> {
+pub fn sign_lineage(actions: State<'_, Actions>, lineage_id: String) -> Result<Vec<Revision>, String> {
     actions.sign_lineage(&lineage_id).map_err(error)
 }
 
 #[tauri::command]
-pub fn sign_get(actions: State<'_, Actions>, id: String) -> Result<SignRevision, String> {
+pub fn sign_get(actions: State<'_, Actions>, id: String) -> Result<Revision, String> {
     actions.get_sign(&id).map_err(error)
 }
 
@@ -147,14 +148,19 @@ pub fn sign_preview(actions: State<'_, Actions>, id: String) -> Result<Response,
 }
 
 #[tauri::command]
-pub fn sign_approve(actions: State<'_, Actions>, id: String, package_sha256: String) -> Result<SignRevision, String> {
-    actions.approve(&PERSON, &id, package_sha256).map_err(error)
+pub fn sign_approve(
+    actions: State<'_, Actions>,
+    id: String,
+    package_sha256: String,
+    acknowledged_warnings: BTreeSet<CheckId>,
+) -> Result<Revision, String> {
+    actions.approve(&PERSON, &id, package_sha256, acknowledged_warnings).map_err(error)
 }
 
 #[tauri::command]
-pub fn sign_export(actions: State<'_, Actions>, id: String, destination: String) -> Result<String, String> {
+pub fn sign_export(actions: State<'_, Actions>, id: String, format: ExportFormat, destination: String) -> Result<String, String> {
     actions
-        .export(&PERSON, &id, &PathBuf::from(destination))
+        .export(&PERSON, &id, format, &PathBuf::from(destination))
         .map(|written| written.display().to_string())
         .map_err(error)
 }
@@ -165,7 +171,7 @@ pub fn sign_record_print(
     id: String,
     passed: bool,
     note: String,
-) -> Result<SignRevision, String> {
+) -> Result<Revision, String> {
     actions.record_print_result(&PERSON, &id, passed, &note).map_err(error)
 }
 

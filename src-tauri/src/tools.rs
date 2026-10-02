@@ -297,7 +297,7 @@ impl Tool {
 mod tests {
     use super::*;
     use crate::fabrication::pipeline::BuildOutcome;
-    use crate::fabrication::revisions::SignRevision;
+    use crate::fabrication::revisions::Revision;
     use crate::state::PrinterState;
 
     const FIXTURE: &str = include_str!("../tests/fixtures/signs/synthetic-back-shortly.json");
@@ -334,12 +334,12 @@ mod tests {
             Err(ActionError::State("not in this test".into()))
         }
 
-        fn list_signs(&self, limit: u32) -> Result<Vec<SignRevision>, ActionError> {
+        fn list_signs(&self, limit: u32) -> Result<Vec<Revision>, ActionError> {
             self.limits.lock().expect("limits").push(limit);
             Ok(Vec::new())
         }
 
-        fn get_sign(&self, _id: &str) -> Result<SignRevision, ActionError> {
+        fn get_sign(&self, _id: &str) -> Result<Revision, ActionError> {
             Err(ActionError::State("not in this test".into()))
         }
 

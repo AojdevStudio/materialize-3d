@@ -19,7 +19,7 @@ use super::turn::{run_turn, ModelChoice, TurnEnd};
 use crate::actions::{ActionError, RequestActions, RequestActor};
 use crate::fabrication::kind::BuildControl;
 use crate::fabrication::pipeline::{self, BuildError, BuildOutcome, BuildRequest, BuildStep, Workspace};
-use crate::fabrication::revisions::{self, BuildState, LineageId, RevisionId, SignRevision};
+use crate::fabrication::revisions::{self, BuildState, LineageId, RevisionId, Revision};
 use crate::state::{AppState, PrinterState};
 use crate::tools::{Surface, Tool};
 
@@ -130,11 +130,11 @@ impl RequestActions for FakeActions {
         Err(ActionError::Build(BuildError::Cancelled))
     }
 
-    fn list_signs(&self, _limit: u32) -> Result<Vec<SignRevision>, ActionError> {
+    fn list_signs(&self, _limit: u32) -> Result<Vec<Revision>, ActionError> {
         Ok(Vec::new())
     }
 
-    fn get_sign(&self, id: &str) -> Result<SignRevision, ActionError> {
+    fn get_sign(&self, id: &str) -> Result<Revision, ActionError> {
         Err(ActionError::State(format!("no sign {id}")))
     }
 
@@ -175,11 +175,11 @@ impl RequestActions for PipelineActions {
         Ok(pipeline::build(&self.state, &self.workspace, request, &BuildControl::new(progress, is_cancelled))?)
     }
 
-    fn list_signs(&self, limit: u32) -> Result<Vec<SignRevision>, ActionError> {
+    fn list_signs(&self, limit: u32) -> Result<Vec<Revision>, ActionError> {
         Ok(pipeline::with_db(&self.state, |conn| revisions::list_recent(conn, limit))?)
     }
 
-    fn get_sign(&self, id: &str) -> Result<SignRevision, ActionError> {
+    fn get_sign(&self, id: &str) -> Result<Revision, ActionError> {
         let id = RevisionId::parse(id)?;
         Ok(pipeline::with_db(&self.state, |conn| revisions::check_integrity(conn, &id))?)
     }

@@ -8,6 +8,7 @@
 
 pub(crate) mod gui;
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -18,7 +19,8 @@ pub use gui::HumanActor;
 
 use crate::fabrication::kind::BuildControl;
 use crate::fabrication::pipeline::{self, BuildError, BuildOutcome, BuildRequest, BuildStep, Workspace};
-use crate::fabrication::revisions::{self, Actor, BuildState, LineageId, RevisionId, Sha256Hex, SignRevision};
+use crate::fabrication::checks::CheckId;
+use crate::fabrication::revisions::{self, Actor, Artifacts, BuildState, ExportFormat, LineageId, Revision, RevisionId, Sha256Hex};
 use crate::state::{AppState, PrinterState};
 
 pub const SIGNS_CHANGED: &str = "signs:changed";
@@ -44,9 +46,12 @@ pub struct SignSummary {
     pub title: String,
     pub build: &'static str,
     pub failure_reason: Option<String>,
+    /// Blocking checks only; a failed advisory check is a warning.
     pub checks_passed: usize,
     pub checks_total: usize,
     pub failed_checks: Vec<String>,
+    /// Failed advisory checks, which a person acknowledges when approving.
+    pub warnings: Vec<String>,
     pub package_sha256: Option<String>,
     pub approval: &'static str,
     pub print_validation: &'static str,
@@ -54,10 +59,12 @@ pub struct SignSummary {
     pub created_at: String,
 }
 
-impl From<&SignRevision> for SignSummary {
-    fn from(revision: &SignRevision) -> Self {
+impl From<&Revision> for SignSummary {
+    fn from(revision: &Revision) -> Self {
         let artifacts = revision.artifacts();
-        let checks = artifacts.map(|a| a.checks.as_slice()).unwrap_or_default();
+        let checks = artifacts.map(Artifacts::checks).unwrap_or_default();
+        let blocking = || checks.iter().filter(|c| !c.advisory);
+        let described = |c: &revisions::RecordedCheck| format!("{}: {}", c.id, c.detail);
         Self {
             revision_id: revision.id.to_string(),
             lineage_id: revision.lineage_id.to_string(),
@@ -67,15 +74,17 @@ impl From<&SignRevision> for SignSummary {
                 BuildState::Building => "building",
                 BuildState::Verified { .. } => "verified",
                 BuildState::Failed { .. } => "failed",
+                BuildState::Invalid { .. } => "invalid",
             },
             failure_reason: match &revision.build {
-                BuildState::Failed { reason, .. } => Some(reason.clone()),
+                BuildState::Failed { reason, .. } | BuildState::Invalid { reason, .. } => Some(reason.clone()),
                 _ => None,
             },
-            checks_passed: checks.iter().filter(|c| c.passed).count(),
-            checks_total: checks.len(),
-            failed_checks: checks.iter().filter(|c| !c.passed).map(|c| format!("{}: {}", c.id, c.detail)).collect(),
-            package_sha256: artifacts.map(|a| a.package_sha256.to_string()),
+            checks_passed: blocking().filter(|c| c.passed).count(),
+            checks_total: blocking().count(),
+            failed_checks: blocking().filter(|c| !c.passed).map(described).collect(),
+            warnings: checks.iter().filter(|c| c.advisory && !c.passed).map(described).collect(),
+            package_sha256: artifacts.map(|a| a.files().package_sha256.to_string()),
             approval: match revision.approval {
                 revisions::Approval::Pending => "pending",
                 revisions::Approval::Approved { .. } => "approved",
@@ -173,8 +182,8 @@ pub trait RequestActions: Send + Sync + 'static {
         progress: &dyn Fn(BuildStep),
         is_cancelled: &dyn Fn() -> bool,
     ) -> Result<BuildOutcome, ActionError>;
-    fn list_signs(&self, limit: u32) -> Result<Vec<SignRevision>, ActionError>;
-    fn get_sign(&self, id: &str) -> Result<SignRevision, ActionError>;
+    fn list_signs(&self, limit: u32) -> Result<Vec<Revision>, ActionError>;
+    fn get_sign(&self, id: &str) -> Result<Revision, ActionError>;
     fn show_sign(&self, id: &str) -> Result<(), ActionError>;
     fn printer_status(&self) -> Result<PrinterState, ActionError>;
 }
@@ -213,17 +222,17 @@ impl Actions {
         Ok(outcome)
     }
 
-    pub fn list_signs(&self, limit: u32) -> Result<Vec<SignRevision>, ActionError> {
+    pub fn list_signs(&self, limit: u32) -> Result<Vec<Revision>, ActionError> {
         Ok(pipeline::with_db(&self.state, |conn| revisions::list_recent(conn, limit))?)
     }
 
-    pub fn sign_lineage(&self, lineage_id: &str) -> Result<Vec<SignRevision>, ActionError> {
+    pub fn sign_lineage(&self, lineage_id: &str) -> Result<Vec<Revision>, ActionError> {
         let lineage = LineageId::parse(lineage_id)?;
         Ok(pipeline::with_db(&self.state, |conn| revisions::list_lineage(conn, &lineage))?)
     }
 
     /// Re-hashes an approved package first, so a changed file reads as void.
-    pub fn get_sign(&self, id: &str) -> Result<SignRevision, ActionError> {
+    pub fn get_sign(&self, id: &str) -> Result<Revision, ActionError> {
         let id = RevisionId::parse(id)?;
         Ok(pipeline::with_db(&self.state, |conn| revisions::check_integrity(conn, &id))?)
     }
@@ -231,7 +240,7 @@ impl Actions {
     pub fn sign_preview_png(&self, id: &str) -> Result<Vec<u8>, ActionError> {
         let revision = self.get_sign(id)?;
         let artifacts = revision.artifacts().ok_or_else(|| ActionError::State("this revision has no preview".into()))?;
-        std::fs::read(&artifacts.preview_path).map_err(|e| ActionError::State(e.to_string()))
+        std::fs::read(&artifacts.files().preview_path).map_err(|e| ActionError::State(e.to_string()))
     }
 
     /// Asks the UI to show a revision. Agents use this to hand a result to a person.
@@ -241,20 +250,30 @@ impl Actions {
         Ok(())
     }
 
-    /// Approves the package a person saw, identified by its hash. `revisions::approve`
-    /// checks the actor again, so the rule holds in both the types and the transition.
-    pub fn approve(&self, who: &HumanActor, id: &str, package_sha256: String) -> Result<SignRevision, ActionError> {
+    /// Approves the package a person saw, identified by its hash, with the
+    /// warnings they were shown. `revisions::approve` checks the actor again,
+    /// so the rule holds in both the types and the transition, and refuses
+    /// warnings that are not exactly the build's.
+    pub fn approve(
+        &self,
+        who: &HumanActor,
+        id: &str,
+        package_sha256: String,
+        acknowledged_warnings: BTreeSet<CheckId>,
+    ) -> Result<Revision, ActionError> {
         let id = RevisionId::parse(id)?;
         let expected = Sha256Hex::try_from(package_sha256)?;
-        let revision = pipeline::with_db(&self.state, |conn| revisions::approve(conn, &id, &expected, who.actor()))?;
+        let revision = pipeline::with_db(&self.state, |conn| {
+            revisions::approve(conn, &id, &expected, &acknowledged_warnings, who.actor())
+        })?;
         self.notify(&revision.id);
         Ok(revision)
     }
 
-    /// Copies an approved package to `destination` for a person.
-    pub fn export(&self, _who: &HumanActor, id: &str, destination: &Path) -> Result<PathBuf, ActionError> {
+    /// Copies an approved package to `destination` for a person, in `format`.
+    pub fn export(&self, _who: &HumanActor, id: &str, format: ExportFormat, destination: &Path) -> Result<PathBuf, ActionError> {
         let id = RevisionId::parse(id)?;
-        Ok(pipeline::with_db(&self.state, |conn| revisions::export(conn, &id, destination))?)
+        Ok(pipeline::with_db(&self.state, |conn| revisions::export(conn, &id, format, destination))?)
     }
 
     pub fn record_print_result(
@@ -263,7 +282,7 @@ impl Actions {
         id: &str,
         passed: bool,
         note: &str,
-    ) -> Result<SignRevision, ActionError> {
+    ) -> Result<Revision, ActionError> {
         let id = RevisionId::parse(id)?;
         let revision =
             pipeline::with_db(&self.state, |conn| revisions::record_print_result(conn, &id, passed, note, who.actor()))?;
@@ -292,11 +311,11 @@ impl RequestActions for Actions {
         Actions::build_sign(self, spec, lineage_id, requester.into(), progress, is_cancelled)
     }
 
-    fn list_signs(&self, limit: u32) -> Result<Vec<SignRevision>, ActionError> {
+    fn list_signs(&self, limit: u32) -> Result<Vec<Revision>, ActionError> {
         Actions::list_signs(self, limit)
     }
 
-    fn get_sign(&self, id: &str) -> Result<SignRevision, ActionError> {
+    fn get_sign(&self, id: &str) -> Result<Revision, ActionError> {
         Actions::get_sign(self, id)
     }
 

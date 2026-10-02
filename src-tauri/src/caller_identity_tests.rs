@@ -13,8 +13,9 @@ use tauri::{Manager, WebviewWindow, WebviewWindowBuilder};
 
 use crate::actions::Actions;
 use crate::fabrication::pipeline::Workspace;
+use crate::fabrication::kind::KindId;
 use crate::fabrication::revisions::{
-    self, Actor, Approval, Artifacts, BuildClaim, NewBuild, PrintValidation, Sha256Hex, SignRevision, SlicerIdentity,
+    self, Actor, Approval, BuildFiles, Claim, NewRevision, PrintValidation, Revision, Sha256Hex, SlicerIdentity,
 };
 use crate::fabrication::{bambu, checks};
 use crate::state::AppState;
@@ -62,41 +63,37 @@ fn invoke(gui: &Gui, cmd: &str, body: Value) -> Result<Value, Value> {
 }
 
 /// A verified revision requested by the agent, written without Bambu Studio.
-fn agent_built_revision(gui: &Gui, dir: &Path) -> SignRevision {
+fn agent_built_revision(gui: &Gui, dir: &Path) -> Revision {
     let package = dir.join("sign.3mf");
     std::fs::write(&package, b"package bytes").expect("package");
     let key = Sha256Hex::of_bytes(b"agent build");
     crate::fabrication::pipeline::with_db(&gui.state, |conn| {
-        let BuildClaim::Started(revision) = revisions::claim_build(
-            conn,
-            NewBuild {
-                lineage_id: None,
-                title: "Agent sign".into(),
-                spec: json!({}),
-                spec_sha256: key.clone(),
-                build_key: key,
-                requested_by: Actor::Agent,
-            },
-        )?
-        else {
+        let request = NewRevision {
+            lineage_id: None,
+            kind: KindId::new("sign"),
+            title: "Agent sign".into(),
+            spec: json!({}),
+            spec_sha256: key.clone(),
+            build_key: key,
+            check_plan: checks::test_support::PLAN,
+            requested_by: Actor::Agent,
+        };
+        let Claim::Started(revision) = revisions::claim(conn, &request)? else {
             unreachable!("fresh database")
         };
-        revisions::finish_verified(
-            conn,
-            &revision.id,
-            Artifacts {
-                revision_dir: dir.to_path_buf(),
-                package_sha256: Sha256Hex::of_file(&package)?,
-                package_path: package.clone(),
-                preview_path: dir.join("preview.png"),
-                slice_dir: dir.join("slice"),
-                gcode_sha256: Sha256Hex::of_bytes(b"gcode"),
-                slicer: SlicerIdentity { name: "Bambu Studio".into(), version: "02.08.02.61".into(), profile_version: "02.08.00.05".into() },
-                effective_settings: json!({}),
-                checks: Vec::new(),
-            },
-            &checks::test_support::passed(&[checks::slice_check_id(bambu::CheckId::SliceSucceeded)]),
-        )
+        let files = BuildFiles {
+            revision_dir: dir.to_path_buf(),
+            package_sha256: Sha256Hex::of_file(&package)?,
+            package_path: package.clone(),
+            preview_path: dir.join("preview.png"),
+            slice_dir: dir.join("slice"),
+            gcode_sha256: Sha256Hex::of_bytes(b"gcode"),
+            slicer: SlicerIdentity { name: "Bambu Studio".into(), version: "02.08.02.61".into(), profile_version: "02.08.00.05".into() },
+            effective_settings: json!({}),
+        };
+        let proof = checks::test_support::passed(&[checks::slice_check_id(bambu::CheckId::SliceSucceeded)]);
+        revisions::finish_verified(conn, &revision.build_id, files, &proof)?;
+        revisions::get(conn, &revision.id)
     })
     .expect("agent-built revision")
 }
@@ -106,9 +103,10 @@ fn a_person_approves_and_records_a_print_through_the_gui_commands() {
     let dir = tempfile::tempdir().expect("tempdir");
     let gui = gui(dir.path());
     let revision = agent_built_revision(&gui, dir.path());
-    let hash = revision.artifacts().expect("artifacts").package_sha256.to_string();
+    let hash = revision.artifacts().expect("artifacts").files().package_sha256.to_string();
 
-    let approved = invoke(&gui, "sign_approve", json!({ "id": revision.id.as_str(), "packageSha256": hash })).expect("approve");
+    let approved = invoke(&gui, "sign_approve", json!({ "id": revision.id.as_str(), "packageSha256": hash, "acknowledgedWarnings": [] }))
+        .expect("approve");
     assert_eq!(approved["approval"]["status"], "approved");
     assert_eq!(approved["approval"]["package_sha256"], hash.as_str());
     assert_eq!(approved["requested_by"], "agent", "approval does not rewrite who asked for the build");
@@ -127,7 +125,7 @@ fn the_gui_approves_only_the_hash_it_was_shown() {
     let gui = gui(dir.path());
     let revision = agent_built_revision(&gui, dir.path());
     let other = Sha256Hex::of_bytes(b"a different package").to_string();
-    let refused = invoke(&gui, "sign_approve", json!({ "id": revision.id.as_str(), "packageSha256": other }));
+    let refused = invoke(&gui, "sign_approve", json!({ "id": revision.id.as_str(), "packageSha256": other, "acknowledgedWarnings": [] }));
     assert!(refused.is_err(), "{refused:?}");
     assert!(matches!(gui.actions.get_sign(revision.id.as_str()).expect("stored").approval, Approval::Pending));
 }
