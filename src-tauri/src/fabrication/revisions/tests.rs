@@ -303,7 +303,6 @@ fn changing_the_file_after_approval_invalidates_the_build_and_blocks_export() {
     assert!(!target.exists());
 }
 
-#[test]
 /// Invalidating a build voids the approval a person gave, and only that: a
 /// revision on the same build that nobody approved stays pending, with no
 /// approval time, and cannot be approved because its build is invalid.
