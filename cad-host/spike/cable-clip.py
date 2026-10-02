@@ -1,3 +1,5 @@
+# The design.md Usage clip as first written, kept as evidence: filleting after the channel cut leaves a
+# self-intersecting solid whose mesh comes back open. See cad-runtime/SPIKE-REPORT.md.
 from build123d import *
 from materialize import Body        # provided by the guest runtime: name, filament slot, solid
 

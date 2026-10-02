@@ -46,7 +46,9 @@ docker run --rm "${user[@]}" -v "$out:/out" m3d-cad-tools bash -c '
   mkdir -p /tmp/t && tar -xf /out/rootfs.tar -C /tmp/t && du -sb /tmp/t | cut -f1 > /out/installed-bytes'
 rm -f "$out/rootfs.tar"
 
-python3 - "$out" "$arch" "$PYTHON_BASE" "$KERNEL_VERSION" "$KERNEL_SHA256" "$here/lock/requirements-$arch.txt" <<'PY'
+# pins.json is written inside the tools container, so the host needs no Python.
+docker run --rm -i "${user[@]}" -v "$out:/out" -v "$here/lock:/lock:ro" m3d-cad-tools \
+  python3 - /out "$arch" "$PYTHON_BASE" "$KERNEL_VERSION" "$KERNEL_SHA256" "/lock/requirements-$arch.txt" <<'PY'
 import hashlib, json, os, sys
 out, arch, base, kver, ksha, lock = sys.argv[1:]
 def digest(path):

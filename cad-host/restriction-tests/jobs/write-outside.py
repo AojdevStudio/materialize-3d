@@ -31,4 +31,7 @@ def build(p):
         with open(ok, "wb") as f:
             f.write(b"fine")
     print(f"uid={os.getuid()} gid={os.getgid()} groups={os.getgroups()} env={dict(os.environ)}", file=sys.stderr)
+    # The environment block the job was exec'd with, before the interpreter changed anything.
+    with open("/proc/self/environ", "rb") as f:
+        print(f"environ={f.read()!r}", file=sys.stderr)
     raise RuntimeError(f"breaches={len(breaches)}")

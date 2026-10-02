@@ -1,5 +1,6 @@
-# The design.md reference clip with one change: the fillet runs before the channels are cut. As written in
-# design.md, filleting after the cut leaves a self-intersecting solid (see cad-runtime/SPIKE-REPORT.md).
+# The design.md reference clip with one change: the fillet runs before the channels are cut. The first version in
+# design.md filleted after the cut, which leaves a self-intersecting solid (see cad-runtime/SPIKE-REPORT.md);
+# design.md now uses this order.
 from build123d import *
 from materialize import Body        # provided by the guest runtime: name, filament slot, solid
 

@@ -1,6 +1,6 @@
-restriction tests, 2026-10-02T09:51:48Z
+restriction tests, 2026-10-02T10:23:34Z
 host: Apple M4, 24 GiB, macOS 26.7 (25G220)
-helper: sha256 6e185ee3e69a549713d98a1be68b10c838afdce339a586225ed2abae32a13f8a
+helper: sha256 f6c3aa7b8bc77ddaf411dcd6cc0f9d3621839d3a455a16135d5a79841baab3d3
   CodeDirectory v=20500 size=1790 flags=0x10002(adhoc,runtime) hashes=44+7 location=embedded
   Signature=adhoc
   	[Key] com.apple.security.virtualization
@@ -32,6 +32,7 @@ PASS 02-network
   ok    all ten outside writes were blocked
   ok    remounting the root read-write was blocked
   ok    setuid(0) and chown were blocked
+  ok    the job was exec'd with an empty environment block
   ok    the job ran unprivileged with an empty environment
   ok    the runtime files still match their pins
   ok    the job disk was deleted
@@ -41,8 +42,8 @@ PASS 03-write-outside-output
 
 == 04-fork-bomb
   ok    the job failed with a bounded error
-  ok    forks were refused
-  ok    the process count peaked at the cap of 64
+  ok    forks were refused after 63 children
+  ok    the process count peaked exactly at the cap of 64
   ok    the guest answered well inside the deadline
   ok    no VM is left running
 PASS 04-fork-bomb
@@ -70,14 +71,20 @@ PASS 06-exhaust-disk
 == 07-ignore-cancel
   ok    cancel: outcome deadline (cancelled)
   ok    cancel: the VM was force-stopped
+  ok    cancel: the VM ended stopped
   ok    cancel: the helper returned within 13 s
   ok    cancel: no VM is left running
+  ok    cancel at start: outcome deadline (cancelled)
+  ok    cancel at start: the VM was force-stopped
+  ok    cancel at start: the VM ended stopped
+  ok    cancel at start: no VM is left running
   ok    deadline: outcome deadline
   ok    deadline: the VM was force-stopped
+  ok    deadline: the VM ended stopped
   ok    deadline: the helper returned within 18 s
   ok    deadline: no VM is left running
 PASS 07-ignore-cancel
-   (29 s)
+   (30 s)
 
 == 08-malformed-mesh
   ok    control: a valid mesh from the same guest is accepted
@@ -95,7 +102,7 @@ PASS 07-ignore-cancel
   ok    wrong-role: rejected (guest protocol violation: a Inspect guest may not send Manifest)
   ok    no VM is left running
 PASS 08-malformed-mesh
-   (22 s)
+   (23 s)
 
 == 09-inspector-tamper
   ok    inside: both writes to the inspector were blocked

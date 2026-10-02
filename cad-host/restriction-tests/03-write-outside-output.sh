@@ -12,6 +12,7 @@ check "remounting the root read-write was blocked" grep -q 'remount / rw: blocke
 check "setuid(0) and chown were blocked" test "$(grep -cE '^(setuid\(0\)|chown): blocked' "$out/diagnostics-generate.txt")" = 2
 # The agent execs the job with an empty environment; CPython's own PEP 538 locale coercion then sets LC_CTYPE
 # inside the interpreter. Nothing from the host can appear here.
+check "the job was exec'd with an empty environment block" grep -qx "environ=b''" "$out/diagnostics-generate.txt"
 check "the job ran unprivileged with an empty environment" grep -qE "uid=1000 gid=1000 groups=\[\] env=(\{\}|\{'LC_CTYPE': 'C.UTF-8'\})$" "$out/diagnostics-generate.txt"
 check "the runtime files still match their pins" runtime_unchanged
 check "the job disk was deleted" test ! -e "$(field "$out" .guest.job_disk.path)"

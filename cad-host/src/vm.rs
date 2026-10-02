@@ -66,12 +66,15 @@ pub enum GuestError {
     Start(String),
     #[error("guest stopped before answering")]
     StoppedEarly,
-    #[error("host deadline of {0:?} reached; VM force-stopped")]
+    #[error("host deadline of {0:?} reached")]
     Deadline(Duration),
-    #[error("cancelled; VM force-stopped")]
+    #[error("cancelled")]
     Cancelled,
     #[error("guest protocol violation: {0}")]
     Protocol(#[from] ProtocolError),
+    /// The host could not confirm the VM stopped, so it may still be running. Replaces any other result.
+    #[error("could not confirm the VM stopped: {0}")]
+    StopUnconfirmed(String),
 }
 
 #[derive(Debug, Default, serde::Serialize)]
@@ -85,8 +88,10 @@ pub struct Timings {
     /// DONE (or the failure) to the VM stopped.
     pub stop_ms: u64,
     pub total_ms: u64,
-    /// Whether the host had to force-stop the VM.
+    /// Whether the host force-stopped the VM and the framework confirmed it halted.
     pub forced_stop: bool,
+    /// The VM's state when the host was done with it. Anything but "stopped" or "error" means it may still run.
+    pub final_state: &'static str,
     /// Connections after the agent's, all refused (job code trying to reach the host).
     pub refused_connections: u32,
 }
@@ -393,15 +398,18 @@ pub fn run_guest(
     } else {
         Duration::ZERO
     };
-    // SAFETY: state is readable on the VM's queue.
-    let stopped_itself = spin_until(
-        done_at + grace,
-        || unsafe { vm.state() } == VZVirtualMachineState::Stopped,
-    );
-    if !stopped_itself {
-        timings.forced_stop = true;
-        force_stop(&vm);
-    }
+    let result = match halt(&vm, done_at + grace) {
+        Ok(Halt::ByGuest) => result,
+        Ok(Halt::Forced) => {
+            timings.forced_stop = true;
+            result
+        }
+        Err(e) => Err(GuestError::StopUnconfirmed(match &result {
+            Ok(_) => e,
+            Err(earlier) => format!("{e} (after: {earlier})"),
+        })),
+    };
+    timings.final_state = state_name(&vm);
     timings.stop_ms = ms(done_at.elapsed());
     timings.refused_connections = delegate.ivars().refused.get();
     drop((vm, config, device));
@@ -417,16 +425,81 @@ pub fn run_guest(
     }
 }
 
-/// Force-stops the VM (no guest cooperation) and waits for the framework to confirm.
-fn force_stop(vm: &VZVirtualMachine) {
-    let done: Rc<Cell<bool>> = Rc::default();
-    let slot = done.clone();
-    let on_stop = RcBlock::new(move |_err: *mut NSError| slot.set(true));
-    // SAFETY: called on the VM's queue with a live completion block; `stop` is the framework's forced stop.
-    unsafe {
-        if vm.canStop() {
-            vm.stopWithCompletionHandler(&on_stop);
-            spin_until(Instant::now() + Duration::from_secs(10), || done.get());
-        }
+/// How long the host waits for each step of a forced stop.
+const STOP_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How the VM came to a halt.
+enum Halt {
+    /// The guest powered off (or the VM failed) on its own.
+    ByGuest,
+    /// The host force-stopped it and the framework confirmed.
+    Forced,
+}
+
+fn state_name(vm: &VZVirtualMachine) -> &'static str {
+    // SAFETY: state is readable on the VM's queue.
+    match unsafe { vm.state() } {
+        VZVirtualMachineState::Stopped => "stopped",
+        VZVirtualMachineState::Running => "running",
+        VZVirtualMachineState::Paused => "paused",
+        VZVirtualMachineState::Error => "error",
+        VZVirtualMachineState::Starting => "starting",
+        VZVirtualMachineState::Pausing => "pausing",
+        VZVirtualMachineState::Resuming => "resuming",
+        VZVirtualMachineState::Stopping => "stopping",
+        VZVirtualMachineState::Saving => "saving",
+        VZVirtualMachineState::Restoring => "restoring",
+        _ => "unknown",
     }
+}
+
+/// Whether the VM no longer runs: stopped, or failed (the framework's error state ends execution).
+fn halted(vm: &VZVirtualMachine) -> bool {
+    matches!(state_name(vm), "stopped" | "error")
+}
+
+/// Waits until `grace_until` for the guest to halt, then force-stops the VM without guest cooperation and confirms
+/// it halted. A VM that is still starting cannot be stopped yet, so the forced stop first waits (bounded) until the
+/// framework allows it. Every wait is bounded; an error means the VM may still be running.
+fn halt(vm: &VZVirtualMachine, grace_until: Instant) -> Result<Halt, String> {
+    if spin_until(grace_until, || halted(vm)) {
+        return Ok(Halt::ByGuest);
+    }
+    let until = Instant::now() + STOP_TIMEOUT;
+    // SAFETY: canStop is readable on the VM's queue.
+    if !spin_until(until, || halted(vm) || unsafe { vm.canStop() }) {
+        return Err(format!(
+            "the VM never became stoppable within {STOP_TIMEOUT:?} (state {})",
+            state_name(vm)
+        ));
+    }
+    if halted(vm) {
+        return Ok(Halt::ByGuest);
+    }
+    let completion: Rc<RefCell<Option<Result<(), String>>>> = Rc::default();
+    let slot = completion.clone();
+    let on_stop = RcBlock::new(move |err: *mut NSError| {
+        // SAFETY: the framework passes null or an NSError valid for the callback.
+        *slot.borrow_mut() = Some(match unsafe { err.as_ref() } {
+            None => Ok(()),
+            Some(e) => Err(e.localizedDescription().to_string()),
+        });
+    });
+    // SAFETY: called on the VM's queue with a live completion block; `stop` is the framework's forced stop.
+    unsafe { vm.stopWithCompletionHandler(&on_stop) };
+    if !spin_until(until, || completion.borrow().is_some()) {
+        return Err(format!(
+            "the framework did not complete the stop within {STOP_TIMEOUT:?}"
+        ));
+    }
+    if let Some(Err(e)) = completion.borrow_mut().take() {
+        return Err(format!("the framework refused the stop: {e}"));
+    }
+    if !spin_until(until, || halted(vm)) {
+        return Err(format!(
+            "the stop completed but the VM is {}",
+            state_name(vm)
+        ));
+    }
+    Ok(Halt::Forced)
 }

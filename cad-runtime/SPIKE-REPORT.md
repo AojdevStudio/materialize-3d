@@ -10,7 +10,7 @@ Everything here was measured on the Mac mini (Apple M4, 10 cores, 24 GiB, macOS 
 |---|---|
 | Notarization | **Untested: blocked pending gate G2.** The Developer ID identity and the notarytool API key exist and are reachable (below), but the agent's permission classifier denied using the release keychain and the BWS Apple API values. The helper is signed ad hoc with the virtualization entitlement and the hardened runtime. |
 | Quarantined-DMG boot on macOS 13.0 | **Partly untestable: gate G1.** A macOS 13.0 (22A380) guest installs and boots on the M4 under the Virtualization framework. A Linux guest cannot boot inside any macOS guest, because Apple exposes nested virtualization only on `VZGenericPlatformConfiguration` (Linux guests, macOS 15 and later). A real Linux boot on macOS 13.0 needs a physical M1 or M2 Mac running 13.0. |
-| Restriction tests | **All nine held** on the real VM on the mini. Log: `cad-runtime/evidence/restriction-tests.log`, sha256 `e6bfaa0b37efca8137944222a2cfeaaae533a485b4c9c6a3f53c81eebb592ab2`. |
+| Restriction tests | **All nine held** on the real VM on the mini. Log: `cad-runtime/evidence/restriction-tests.log`, sha256 `caca8a08f6a3e86604040aad6cc6032a4d55562cc1f1b6410a4ef2899fbbddb0`. |
 
 ### Notarization (G2)
 
@@ -71,6 +71,8 @@ It gets no network device, no directory share, no USB, and no graphics, and the 
 
 **Channel direction.** The host listens on vsock port 7000 before boot and accepts exactly one connection. The guest agent makes that connection before any job code runs; every later connection is refused and counted. This avoids an ambiguity in Apple's documentation: `connectToPort` "does nothing if the guest does not listen", so host-side retries could race.
 
+**Stopping.** The host's deadline and cancel force-stop the VM whatever the guest is doing. The helper waits, bounded, until the framework allows a stop (a VM that is still starting does not yet), checks the stop's completion error, and confirms the VM halted. `forced_stop` is recorded only from a confirmed stop, and `final_state` records the VM's state at the end. A stop it cannot confirm replaces the result with an error, because the VM may still be running.
+
 **Inside the guest.** The agent runs as PID 1 and execs the job as uid and gid 1000 with no supplementary groups, `no_new_privs`, and an empty environment. The job runs in a cgroup capped at memory.max (guest RAM minus 320 MiB, with no swap in the kernel) and 64 processes, with core dumps off, 256 file descriptors, and 64 MiB per file. Inputs are root-owned and read-only. The agent reads outputs by fixed name with `O_NOFOLLOW`, regular files only, under caps. Guest-to-host frames carry no paths, and the host writes accepted payloads only under names it chooses.
 
 **Two adjustments the real runs required:**
@@ -79,13 +81,13 @@ It gets no network device, no directory share, no USB, and no graphics, and the 
 
 ## The reference part through both guests
 
-The `design.md` Usage clip, copied verbatim, is `cad-host/spike/cable-clip.py`. It builds through both guests, but **its mesh is not closed**: 468 open edges. The cause is the script's own geometry, not the worker. Filleting after the channels are cut leaves a self-intersecting solid:
+The `design.md` Usage clip as first written is `cad-host/spike/cable-clip.py`. It builds through both guests, but **its mesh is not closed**: 468 open edges. The cause is the script's own geometry, not the worker. Filleting after the channels are cut leaves a self-intersecting solid:
 - OpenCascade's `BRepCheck_Analyzer` calls it valid.
 - `BOPAlgo_ArgumentAnalyzer` flags it faulty.
 - Its bounding box runs y from -0.278 to 25.278 on a part cut from a 25 mm block.
 - A 0.6 mm fillet on the same edges fails outright.
 
-The same clip with the fillet moved before the channel cut, `cable-clip-fillet-first.py`, is clean. Through both guests it comes back closed, non-degenerate, and outward: 2,100 triangles, mesh volume 14,499.7 mm³ against the B-rep's 14,498.3 mm³. Both results are in `cad-runtime/evidence/cable-clip*/result.json`. So the acceptance line "the reference script builds through both guests and the decoded mesh is closed" holds for the corrected clip and not for the clip as written. The Rust `closed_manifold` check catching the as-written clip is the design working: PR 7 would fail that build at the `geometry` stage, and `design.md`'s Usage example needs the fillet moved.
+The same clip with the fillet moved before the channel cut, `cable-clip-fillet-first.py`, is clean. Through both guests it comes back closed, non-degenerate, and outward: 2,100 triangles, mesh volume 14,499.7 mm³ against the B-rep's 14,498.3 mm³. Both results are in `cad-runtime/evidence/cable-clip*/result.json`. So the acceptance line "the reference script builds through both guests and the decoded mesh is closed" holds for the corrected clip and not for the clip as first written. The Rust `closed_manifold` check catching the first version is the design working: PR 7 would fail that build at the `geometry` stage. `design.md` now uses the fillet-first clip (corrected 2026-10-02).
 
 ## Measurements
 
@@ -94,7 +96,7 @@ Five cold builds of the fillet-first clip; every guest is a fresh VM (`cad-runti
 | Step | Median | Range |
 |---|---|---|
 | Verify runtime digests (860 MB hashed) | 1,592 ms | 1,578 to 1,609 |
-| Any guest: framework start call to running | 75 ms | 66 to 77 |
+| Any guest: framework start call to running | not logged | 66 to 77 (10 guests) |
 | Generation guest: cold boot to agent connected | 158 ms | 153 to 168 |
 | Generation guest: job (import build123d, run script, export STEP) | 3,619 ms | 3,556 to 3,774 |
 | Generation guest: total | 3,998 ms | 3,931 to 4,150 |
@@ -129,13 +131,15 @@ Run on the mini with `HELPER=<signed helper> RUNTIME=<runtime dir> cad-host/rest
 |---|---|---|
 | 01 host canary | Writes a random `M3D-CANARY-<uuid>` file on the Mac. The job scans every regular file in the guest and lists mounts and block devices. | **Held.** The guest found no canary. There was no virtiofs, 9p, FUSE, NFS, or CIFS mount, and only `vda,vdb`. The token appears in nothing the host received. |
 | 02 network | TCP to 1.1.1.1:443 and 192.168.64.1:22, DNS, UDP to 8.8.8.8:53, and vsock to CID 2 ports 7000/22/80 and CIDs 1 and 3. | **Held.** All 9 blocked, interfaces `lo` only, and the host refused the job's vsock connection. |
-| 03 write outside output | Writes to the inspector, agent, build123d, `/etc/passwd`, `/`, the read-only inputs, the job-disk root, `/dev/vda`, `/dev/vdb`, and `/sys`; remount `/` read-write; setuid(0); chown. | **Held.** All 10 writes blocked, remount and privilege calls blocked, job ran as uid 1000 with no groups. Runtime files still match their pins after the run; job disk deleted. |
+| 03 write outside output | Writes to the inspector, agent, build123d, `/etc/passwd`, `/`, the read-only inputs, the job-disk root, `/dev/vda`, `/dev/vdb`, and `/sys`; remount `/` read-write; setuid(0); chown. | **Held.** All 10 writes blocked, remount and privilege calls blocked, job ran as uid 1000 with no groups and an empty environment block (`/proc/self/environ` is empty). Runtime files still match their pins after the run; job disk deleted. |
 | 04 fork bomb | Forks until refused; children sleep forever. | **Held.** Forks refused after 63 children (64 processes, the cap); bounded failure in 2 s; VM stopped. |
 | 05 exhaust memory | Allocates and touches 64 MiB chunks. | **Held.** The job held 1,664 MiB, then the guest OOM killer killed it at a 1,680 MiB peak, under its 1,728 MiB cgroup cap; the agent reported "job ran out of memory". |
 | 06 exhaust disk | Fills `/job/out` and `/tmp`. | **Held.** Both ended in ENOSPC (job disk after 221 MiB, tmpfs after 64 MiB). The job disk file kept its exact size, was never allocated beyond it, and was deleted. |
-| 07 ignore cancel | Ignores every catchable signal and spins (cancel at 10 s); separately, a guest that never answers (deadline 15 s). | **Held.** The host force-stopped the VM at 10.1 s and 15.1 s, with no VM process left. |
+| 07 ignore cancel | Ignores every catchable signal and spins (cancel at 10 s); the same job cancelled at 0 s, while the VM is still starting and the framework does not yet allow a stop; and a guest that never answers (deadline 15 s). | **Held.** The host force-stopped the VM in all three cases, and the framework confirmed each stop (final state `stopped`), with no VM process left. |
 | 08 malformed mesh | Boots `hostile-guest.c` as a fully compromised inspection guest and sends one hostile answer per case. | **Held.** All 11 rejected: NaN, infinite, and 1e300 coordinates, an out-of-range index, a 2³¹ vertex count, zero bodies, trailing bytes, a 4 GiB frame, a path-like tag, a duplicate frame, and a frame wrong for the role. A valid control mesh from the same guest was accepted. |
 | 09 inspector tamper | A generation job writes the inspector and its bytecode and plants a forged `mesh.bin` and verdict; separately, one byte of `rootfs.img` or `Image` is changed in a copy of the runtime. | **Held.** Both in-guest writes blocked; inspection returned the honest 10 mm cube, closed; pinned files unchanged. Both tampered runtimes were refused before any VM booted. |
+
+A crafted STEP that makes the re-exported STEP differ from the mesh is covered two ways. The inspector tessellates the same in-memory shapes it re-exports, so an honest inspector cannot produce a mesh of different geometry. Test 08 models the case where a crafted STEP fully compromises the inspection guest, and the host rejects or bounds everything that guest can send.
 
 Two test assertions were corrected during the work. Both were wrong expectations in the harness, not breaches:
 - **Test 01.** The scan first read `/dev/zero` until the memory cap stopped it; it now reads regular files only. It also first "found" its own search string in `/job/in/job.json`; the needle is now built at run time.
@@ -174,7 +178,7 @@ Each failure needs at least one repair build. Allowing for one clarifying questi
 ## Not proven here
 - Notarization of the helper (G2) and any run on macOS 13.0 itself (G1).
 - An amd64 kernel and the Linux microVM test backend (PR 6).
-- **Build reproducibility.** The image is not bit-reproducible yet. A `--no-cache` rebuild of the arm64 rootfs on the same box, 20 minutes later, gave `rootfs.img` sha256 `cdba943e…` against the pinned `6ed9ccde…`. Diffing the two trees shows 6,333 differing files: 6,330 `.pyc` files under `/usr/local/lib` (CPython's marshal output is not stable across runs, especially under parallel `compileall`) and `/var/log/dpkg.log`, `/var/log/apt/history.log`, and `/var/log/apt/term.log`. Every source file, wheel, and shared library matched. Debian packages also come from the live archive, not a snapshot.
+- **Build reproducibility.** The image is not bit-reproducible yet. A `--no-cache` rebuild of the arm64 rootfs on the same box, 20 minutes later, gave `rootfs.img` sha256 `cdba943e…` against the pinned `6ed9ccde…`. Diffing the two trees shows 6,333 differing files: 6,330 `.pyc` files under `/usr/local/lib` (CPython's marshal output is not stable across runs, especially under parallel `compileall`) and `/var/log/dpkg.log`, `/var/log/apt/history.log`, and `/var/log/apt/term.log`. Every source file, wheel, and shared library matched. The restriction-test initramfs also differs between builds, because `cpio` records each file's mtime and the init binary is recompiled on every run. Debian packages also come from the live archive, not a snapshot.
 - Timing on an M1.
 - A live Anthropic or OpenAI call carrying a view image.
 - Bambu Studio GUI behavior with a STEP member.
@@ -183,7 +187,7 @@ Each failure needs at least one repair build. Allowing for one clarifying questi
 
 **For PR 6:**
 - Build the runtime in CI with `cad-runtime/build.sh`.
-- Make the image bit-reproducible: compile bytecode deterministically (single-threaded `compileall`, or build the `.pyc` files in one pass and verify them twice), delete `/var/log/apt` and `/var/log/dpkg.log` in the image, pin Debian packages to snapshot.debian.org, and verify the kernel tarball's PGP signature, not only its sha256.
+- Make the image bit-reproducible: compile bytecode deterministically (single-threaded `compileall`, or build the `.pyc` files in one pass and verify them twice), delete `/var/log/apt` and `/var/log/dpkg.log` in the image, clamp the initramfs files' mtimes before `cpio`, pin Debian packages to snapshot.debian.org, and verify the kernel tarball's PGP signature, not only its sha256.
 - Add the amd64 kernel and the microVM backend.
 - Use the macOS 13.0 bundle at `~/m3d-scratch/pr5-macos13/` for the quarantined-DMG Gatekeeper test.
 - Sign the helper with the app's Developer ID inside the bundle once G2 clears.
@@ -194,7 +198,9 @@ Each failure needs at least one repair build. Allowing for one clarifying questi
 - Keep tessellation at 0.02 mm (part of the build key).
 - Add a self-interference check (`BOPAlgo_ArgumentAnalyzer`) to the inspector so a self-intersecting script gets a repairable error instead of "mesh not closed".
 - Carry body names through STEP (XCAF) rather than by order.
-- Fix the `design.md` Usage clip (fillet before the channel cut).
+- Make `RawBody`'s fields private or validate in `weld` and `analyze`: built by hand with an out-of-range index or a non-finite coordinate, they can panic (`decode_mesh` is the only safe constructor today).
+- Refuse zero-width and bidirectional-control characters in manifest body names, not only control characters.
+- Close the console pipe's write end in `run_guest` when `configure` fails after `pipe()`; today that descriptor leaks.
 
 ## Reproduce
 
