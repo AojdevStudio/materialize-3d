@@ -75,6 +75,8 @@ subtle = "2"
 jsonschema = { version = "0.33", default-features = false }
 rig = { version = "=0.42.0", features = ["test-utils"] }
 tauri = { version = "~2.11.6", features = ["test"] }
+# Generates src/types/generated.ts from the Rust types the frontend reads; see tools::frontend_types.
+ts-rs = "12"
 
 # OS-native credential store: Keychain (macOS), Credential Manager (Windows),
 # Secret Service (Linux).

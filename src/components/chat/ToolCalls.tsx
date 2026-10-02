@@ -1,23 +1,9 @@
 import { emit } from '@tauri-apps/api/event'
 import type { ToolCallMessagePartComponent, ToolCallMessagePartProps } from '@assistant-ui/react'
 import type { BuildStep } from '../../types/agent'
+import type { BuildResult } from '../../types/generated'
 import { BUILD_STEPS, type ToolArtifact } from './agentAdapter'
 import styles from './ChatPanel.module.css'
-
-/** build_sign's output: mirror of `SignSummary` in src-tauri/src/actions/mod.rs (fields the chat reads). */
-interface SignSummary {
-  revision_id: string
-  number: number
-  title: string
-  build: 'building' | 'verified' | 'failed'
-  failure_reason?: string | null
-  checks_passed: number
-  checks_total: number
-  failed_checks: string[]
-  package_sha256: string | null
-  approval: 'pending' | 'approved' | 'void'
-  reused: boolean
-}
 
 type CallState = 'running' | 'done' | 'failed' | 'cancelled' | 'interrupted'
 
@@ -53,11 +39,15 @@ function errorText(result: unknown): string {
 
 const shortHash = (hash: string) => `${hash.slice(0, 8)}…${hash.slice(-4)}`
 
-const openRevision = (revisionId: string) => void emit('signs:open', { revisionId })
+const openRevision = (revisionId: string) => void emit('designs:open', { revisionId })
 
-/** Result of a finished build_sign. There is deliberately no approve control here. */
-function SignResult({ sign }: { sign: SignSummary }) {
-  const allPassed = sign.checks_total > 0 && sign.checks_passed === sign.checks_total
+/**
+ * Result of a finished build. There is deliberately no approve control here.
+ * The counts cover blocking checks only; warnings are listed apart and never
+ * read as failures.
+ */
+function BuildResultTable({ result }: { result: BuildResult }) {
+  const allPassed = result.checks_total > 0 && result.checks_passed === result.checks_total
   return (
     <table className={styles.result} data-testid="tool-result">
       <tbody>
@@ -68,51 +58,59 @@ function SignResult({ sign }: { sign: SignSummary }) {
               href="#"
               onClick={(e) => {
                 e.preventDefault()
-                openRevision(sign.revision_id)
+                openRevision(result.revision_id)
               }}
             >
-              r{sign.number}
+              r{result.number}
             </a>
-            , {sign.title}
-            {sign.reused && <span className={styles.muted}> (unchanged, reused)</span>}
+            , {result.title}
+            {result.reused && <span className={styles.muted}> (unchanged, reused)</span>}
           </td>
         </tr>
-        {sign.build === 'failed' ? (
+        {result.build === 'failed' || result.build === 'invalid' ? (
           <tr>
             <th>Build</th>
-            <td className={styles.bad}>Failed{sign.failure_reason ? `: ${sign.failure_reason}` : ''}</td>
+            <td className={styles.bad}>
+              {result.build === 'invalid' ? 'Invalid' : 'Failed'}
+              {result.failure_reason ? `: ${result.failure_reason}` : ''}
+            </td>
           </tr>
         ) : (
           <tr>
             <th>Verified</th>
             <td>
               <span className={allPassed ? styles.ok : styles.bad}>
-                {sign.checks_passed} of {sign.checks_total} checks
+                {result.checks_passed} of {result.checks_total} checks
               </span>
-              {sign.failed_checks.map((check) => (
+              {result.failed_checks.map((check) => (
                 <div key={check} className={styles.bad}>
                   {check}
+                </div>
+              ))}
+              {result.warnings.map((warning) => (
+                <div key={warning} className={styles.muted}>
+                  Warning: {warning}
                 </div>
               ))}
             </td>
           </tr>
         )}
-        {sign.package_sha256 && (
+        {result.package_sha256 && (
           <tr>
             <th>Package</th>
             <td>
-              <code title={sign.package_sha256}>{shortHash(sign.package_sha256)}</code>
+              <code title={result.package_sha256}>{shortHash(result.package_sha256)}</code>
             </td>
           </tr>
         )}
         <tr>
           <th>Approval</th>
           <td>
-            {sign.approval === 'pending' ? (
+            {result.approval === 'pending' ? (
               <>
                 <b>Awaiting your approval</b> <span className={styles.muted}>(the assistant cannot approve)</span>
               </>
-            ) : sign.approval === 'approved' ? (
+            ) : result.approval === 'approved' ? (
               'Approved'
             ) : (
               <span className={styles.bad}>Void, the package changed after approval</span>
@@ -133,8 +131,8 @@ function stepState(index: number, completed: number, state: CallState): StepStat
   return index === completed ? 'stopped' : 'skipped'
 }
 
-/** build_sign: numbered steps while running, one line plus the result once finished. */
-export const BuildSignTool: ToolCallMessagePartComponent = (props) => {
+/** build: numbered steps while running, one line plus the result once finished. */
+export const BuildTool: ToolCallMessagePartComponent = (props) => {
   const state = callState(props)
   const steps = stepsOf(props.artifact)
   const total = BUILD_STEPS.length
@@ -151,12 +149,12 @@ export const BuildSignTool: ToolCallMessagePartComponent = (props) => {
             ? 'Interrupted, the app closed while it ran'
             : 'Failed'
   const showSteps = state === 'running' || (state === 'cancelled' && steps.length > 0)
-  const sign = state === 'done' ? (props.result as SignSummary) : null
+  const result = state === 'done' ? (props.result as BuildResult) : null
 
   return (
-    <div className={styles.tool} data-testid="tool-build-sign" data-state={state}>
+    <div className={styles.tool} data-testid="tool-build" data-state={state}>
       <div className={styles.toolHead}>
-        <span className={styles.mono}>build_sign</span>
+        <span className={styles.mono}>build</span>
         <span className={state === 'done' ? styles.ok : state === 'failed' ? styles.bad : styles.muted}>{summary}</span>
       </div>
       {showSteps && (
@@ -176,7 +174,7 @@ export const BuildSignTool: ToolCallMessagePartComponent = (props) => {
         </ol>
       )}
       {state === 'failed' && props.result !== undefined && <div className={styles.bad}>{errorText(props.result)}</div>}
-      {sign && <SignResult sign={sign} />}
+      {result && <BuildResultTable result={result} />}
     </div>
   )
 }
@@ -189,7 +187,7 @@ const LINE_TEXT: Record<CallState, string> = {
   interrupted: 'interrupted',
 }
 
-/** Every other tool (list_signs, get_sign, show_sign, printer_status, unknown): one status line. */
+/** Every other tool (list, get, show, printer_status, and names from older history): one status line. */
 export const ToolLine: ToolCallMessagePartComponent = (props) => {
   const state = callState(props)
   return (

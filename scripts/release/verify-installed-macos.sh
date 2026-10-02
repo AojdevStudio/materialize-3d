@@ -434,32 +434,34 @@ log "tools: $tools"
 for t in $tools; do
   case "$t" in *approve*|*export*|*print_result*|*record_print*) log "FAIL MCP exposes $t; approval, export, and print results stay with a person"; exit 1 ;; esac
 done
-[[ " $tools " == *" build_sign "* ]] || { log "FAIL MCP does not expose build_sign"; exit 1; }
+[[ " $tools " == *" build "* ]] || { log "FAIL MCP does not expose build"; exit 1; }
 SPEC=$(python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1]))))' "$SRC/docs/acceptance/p2s-test-sign.json")
 START=$(date +%s)
-rpc "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"build_sign\",\"arguments\":{\"spec\":$SPEC}}}" > "$RUN/evidence/build_sign.json"
+rpc "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"build\",\"arguments\":{\"kind\":\"sign\",\"spec\":$SPEC}}}" > "$RUN/evidence/build.json"
 log "build took $(( $(date +%s) - START )) s"
-unattended "build_sign"
+unattended "build"
 build_ok=0
-python3 - "$RUN/evidence/build_sign.json" <<'PY' | tee -a "$RUN/evidence/actions.log" || build_ok=$?
+python3 - "$RUN/evidence/build.json" <<'PY' | tee -a "$RUN/evidence/actions.log" || build_ok=$?
 import json,sys
 r=json.load(open(sys.argv[1]))["result"]; s=json.loads(r["content"][0]["text"])
-print(f"  isError={r.get('isError')} r{s['number']} build={s['build']} checks={s['checks_passed']}/{s['checks_total']} approval={s['approval']} print={s['print_validation']} requested_by={s['requested_by']}")
+print(f"  isError={r.get('isError')} {s['kind']} r{s['number']} build={s['build']} checks={s['checks_passed']}/{s['checks_total']} approval={s['approval']} print={s['print_validation']} requested_by={s['requested_by']}")
 print(f"  package_sha256={s['package_sha256']}")
 if r.get("isError") or s["build"] != "verified" or s["approval"] != "pending" or s["checks_passed"] != s["checks_total"]:
     sys.exit(1)
 PY
-[[ "$build_ok" == 0 ]] || { log "FAIL build_sign did not return a verified revision awaiting approval"; exit 1; }
+[[ "$build_ok" == 0 ]] || { log "FAIL build did not return a verified revision awaiting approval"; exit 1; }
 # Approval stays with a person in the app: the endpoint must refuse to approve.
 refusal="$(rpc '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"approve_sign","arguments":{}}}')"
 log "approve over MCP -> $(printf '%s' "$refusal" | head -c 140)"
 printf '%s' "$refusal" | python3 -c 'import json,sys; sys.exit(0 if "error" in json.load(sys.stdin) else 1)' \
   || { log "FAIL the MCP endpoint accepted an approval"; exit 1; }
-row="$(sqlite3 "$DATA/materialize.db" "select number, build_status, approval_status, print_status, requested_by from sign_revisions")"
+row="$(sqlite3 "$DATA/materialize.db" "select r.number, b.build_status, r.approval_status, r.print_status, r.requested_by from revisions r join builds b on b.id = r.build_id")"
 log "db: $row"
 [[ "$row" == "1|verified|pending|not_tested|external_mcp" ]] || { log "FAIL the stored revision is not a verified build awaiting a person's approval"; exit 1; }
-REV=$(python3 -c 'import json,sys; print(json.loads(json.load(open(sys.argv[1]))["result"]["content"][0]["text"])["revision_id"])' "$RUN/evidence/build_sign.json")
-cp "$DATA/signs/$REV/preview.png" "$RUN/evidence/p2s-test-sign-preview.png" 2>/dev/null || true
+REV=$(python3 -c 'import json,sys; print(json.loads(json.load(open(sys.argv[1]))["result"]["content"][0]["text"])["revision_id"])' "$RUN/evidence/build.json")
+# Build files live in the build's directory, which revisions that reuse the build share.
+BUILD="$(sqlite3 "$DATA/materialize.db" "select build_id from revisions where id = '$REV'")"
+cp "$DATA/signs/$BUILD/preview.png" "$RUN/evidence/p2s-test-sign-preview.png" 2>/dev/null || true
 quit
 
 unattended "end of run"

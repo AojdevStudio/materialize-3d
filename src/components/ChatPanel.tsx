@@ -18,15 +18,16 @@ import type { HistoryEntry } from '../types/agent'
 import { PROVIDER_LABELS, modelLabel, useAgentStore } from '../stores/agent'
 import { useUiStore } from '../stores/ui'
 import { BUILD_STEPS, createAgentAdapter, historyToMessages, type ToolArtifact } from './chat/agentAdapter'
-import { BuildSignTool, ToolLine } from './chat/ToolCalls'
+import { BuildTool, ToolLine } from './chat/ToolCalls'
 import styles from './chat/ChatPanel.module.css'
 
 // Render-only UIs for tools that run in Rust; keys are the Rust tool names.
+// Calls under names the app no longer has render through the Fallback line.
 const toolkit = defineToolkit({
-  build_sign: { type: 'backend', render: BuildSignTool },
-  list_signs: { type: 'backend', render: ToolLine },
-  get_sign: { type: 'backend', render: ToolLine },
-  show_sign: { type: 'backend', render: ToolLine },
+  build: { type: 'backend', render: BuildTool },
+  list: { type: 'backend', render: ToolLine },
+  get: { type: 'backend', render: ToolLine },
+  show: { type: 'backend', render: ToolLine },
   printer_status: { type: 'backend', render: ToolLine },
 })
 
@@ -224,9 +225,9 @@ function activity(thread: AssistantState['thread']): string {
     .filter((part) => part.type === 'tool-call' && part.result === undefined)
     .pop()
   if (pending?.type !== 'tool-call') return 'responding'
-  if (pending.toolName !== 'build_sign') return `running ${pending.toolName}`
+  if (pending.toolName !== 'build') return `running ${pending.toolName}`
   const done = (pending.artifact as ToolArtifact | undefined)?.steps.length ?? 0
-  return `build_sign, step ${Math.min(done + 1, BUILD_STEPS.length)} of ${BUILD_STEPS.length}`
+  return `build, step ${Math.min(done + 1, BUILD_STEPS.length)} of ${BUILD_STEPS.length}`
 }
 
 function StatusLine() {

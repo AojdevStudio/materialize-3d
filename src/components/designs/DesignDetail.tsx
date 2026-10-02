@@ -1,8 +1,8 @@
 import { invoke } from '@tauri-apps/api/core'
 import { pickSaveTarget } from '../../lib/fileDialog'
 import { useEffect, useState, type ReactNode } from 'react'
-import { useSignsStore } from '../../stores/signs'
-import { revisionArtifacts, type Artifacts, type RevisionId, type Sha256Hex, type SignRevision } from '../../types/signs'
+import { useDesignsStore } from '../../stores/designs'
+import { buildWarnings, revisionArtifacts, type Artifacts, type Revision, type RevisionId, type Sha256Hex } from '../../types/designs'
 import { RevisionRows } from './RevisionRows'
 import {
   approvalAxis,
@@ -13,8 +13,8 @@ import {
   printAxis,
   shortHash,
   type StateWord,
-} from './signFormat'
-import styles from './SignsView.module.css'
+} from './designFormat'
+import styles from './DesignsView.module.css'
 
 /** Default thickness the backend applies when a spec omits `thickness_mm`. */
 const DEFAULT_THICKNESS_MM = 2.6
@@ -25,7 +25,7 @@ type PreviewState =
   | { status: 'ready'; url: string }
   | { status: 'error'; message: string }
 
-/** Loads `sign_preview` PNG bytes into an object URL, revoked when the revision changes or the view unmounts. */
+/** Loads `design_preview` PNG bytes into an object URL, revoked when the revision changes or the view unmounts. */
 function usePreview(id: RevisionId, hasPreview: boolean): PreviewState {
   const [preview, setPreview] = useState<PreviewState>({ status: 'none' })
 
@@ -37,7 +37,7 @@ function usePreview(id: RevisionId, hasPreview: boolean): PreviewState {
     let disposed = false
     let url: string | null = null
     setPreview({ status: 'loading' })
-    invoke<ArrayBuffer>('sign_preview', { id })
+    invoke<ArrayBuffer>('design_preview', { id })
       .then((bytes) => {
         if (disposed) return
         url = URL.createObjectURL(new Blob([bytes], { type: 'image/png' }))
@@ -59,12 +59,12 @@ function Word({ word }: { word: StateWord }) {
   return <span className={styles[word.tone]}>{word.text}</span>
 }
 
-function sizeText(revision: SignRevision): string {
+function sizeText(revision: Revision): string {
   const { width_mm, height_mm, thickness_mm = DEFAULT_THICKNESS_MM } = revision.spec
   return `${width_mm} x ${height_mm} x ${thickness_mm} mm`
 }
 
-function SignPreview({ revision }: { revision: SignRevision }) {
+function DesignPreview({ revision }: { revision: Revision }) {
   const preview = usePreview(revision.id, revisionArtifacts(revision) !== null)
 
   return (
@@ -96,7 +96,7 @@ function FactRow({ label, testId, children }: { label: string; testId?: string; 
 }
 
 /** The three independent axes, one row each. None is derived from another. */
-function Axes({ revision }: { revision: SignRevision }) {
+function Axes({ revision }: { revision: Revision }) {
   const rows = [
     ['Sliced and verified', 'axis-build', buildAxis(revision)],
     ['Print-tested', 'axis-print', printAxis(revision)],
@@ -118,13 +118,15 @@ function Axes({ revision }: { revision: SignRevision }) {
 
 function ChecksTable({ artifacts }: { artifacts: Artifacts }) {
   const rows = checkRows(artifacts.checks)
-  const passed = artifacts.checks.filter((check) => check.passed).length
-  const allPassed = passed === artifacts.checks.length
+  // Warnings are listed, not counted: they never fail a build.
+  const blocking = artifacts.checks.filter((check) => !check.advisory)
+  const passed = blocking.filter((check) => check.passed).length
+  const allPassed = passed === blocking.length
 
   return (
     <>
       <h2 className={styles.sectionTitle}>
-        Checks <span className={allPassed ? styles.ok : styles.bad}>{passed} of {artifacts.checks.length}</span>
+        Checks <span className={allPassed ? styles.ok : styles.bad}>{passed} of {blocking.length}</span>
       </h2>
       <table className={`${styles.table} ${styles.checks}`} data-testid="sign-checks">
         <thead>
@@ -138,7 +140,9 @@ function ChecksTable({ artifacts }: { artifacts: Artifacts }) {
         <tbody>
           {rows.map((row) => (
             <tr key={row.key} data-check={row.key} title={row.title}>
-              <td className={row.passed ? styles.ok : styles.bad}>{row.passed ? 'Pass' : 'Fail'}</td>
+              <td className={row.passed ? styles.ok : row.warning ? styles.muted : styles.bad}>
+                {row.passed ? 'Pass' : row.warning ? 'Warning' : 'Fail'}
+              </td>
               <td className={styles.muted}>{row.stage}</td>
               <td>{row.label}</td>
               <td className={styles.muted}>{row.detail}</td>
@@ -150,7 +154,7 @@ function ChecksTable({ artifacts }: { artifacts: Artifacts }) {
   )
 }
 
-function Materials({ revision, artifacts }: { revision: SignRevision; artifacts: Artifacts | null }) {
+function Materials({ revision, artifacts }: { revision: Revision; artifacts: Artifacts | null }) {
   const effective = artifacts?.effective_settings ?? null
   const slots = [revision.spec.base, ...revision.spec.inks]
 
@@ -232,14 +236,14 @@ function Hashes({ artifacts }: { artifacts: Artifacts }) {
 
 /**
  * Approve, export, and the physical print result. Approve sends exactly the
- * package hash printed on the button; export and print recording appear only
- * once that approval exists.
+ * package hash printed on the button and the warnings the checks table shows;
+ * export and print recording appear only once that approval exists.
  */
-function Actions({ revision }: { revision: SignRevision }) {
-  const approve = useSignsStore((state) => state.approve)
-  const exportPackage = useSignsStore((state) => state.exportPackage)
-  const recordPrint = useSignsStore((state) => state.recordPrint)
-  const error = useSignsStore((state) => state.error)
+function Actions({ revision }: { revision: Revision }) {
+  const approve = useDesignsStore((state) => state.approve)
+  const exportPackage = useDesignsStore((state) => state.exportPackage)
+  const recordPrint = useDesignsStore((state) => state.recordPrint)
+  const error = useDesignsStore((state) => state.error)
   const [busy, setBusy] = useState(false)
   const [written, setWritten] = useState<string | null>(null)
   const [note, setNote] = useState('')
@@ -255,6 +259,7 @@ function Actions({ revision }: { revision: SignRevision }) {
 
   const { build, approval } = revision
   const approvableHash = build.status === 'verified' ? build.artifacts.package_sha256 : null
+  const warnings = build.status === 'verified' ? buildWarnings(build.artifacts) : []
   const blocked = approveBlockedReason(revision)
 
   const onExport = () =>
@@ -276,7 +281,7 @@ function Actions({ revision }: { revision: SignRevision }) {
             data-testid="btn-approve"
             className={`${styles.btn} ${styles.primary}`}
             disabled={approvableHash === null || busy}
-            onClick={() => approvableHash && void run(() => approve(revision.id, approvableHash))}
+            onClick={() => approvableHash && void run(() => approve(revision.id, approvableHash, warnings))}
           >
             {approvableHash ? `Approve r${revision.number} for ${shortHash(approvableHash)}` : `Approve r${revision.number}`}
           </button>
@@ -342,14 +347,14 @@ function Actions({ revision }: { revision: SignRevision }) {
   )
 }
 
-interface SignDetailProps {
-  revision: SignRevision
-  lineage: SignRevision[]
+interface DesignDetailProps {
+  revision: Revision
+  lineage: Revision[]
 }
 
-/** Preview-first review of one revision, with its sign's other revisions above the preview. */
-export function SignDetail({ revision, lineage }: SignDetailProps) {
-  const open = useSignsStore((state) => state.open)
+/** Preview-first review of one revision, with its design's other revisions above the preview. */
+export function DesignDetail({ revision, lineage }: DesignDetailProps) {
+  const open = useDesignsStore((state) => state.open)
   const artifacts = revisionArtifacts(revision)
 
   return (
@@ -358,7 +363,7 @@ export function SignDetail({ revision, lineage }: SignDetailProps) {
         <div className={styles.lineage}>
           <RevisionRows revisions={lineage} variant="lineage" currentId={revision.id} onOpen={(id) => void open(id)} />
         </div>
-        <SignPreview revision={revision} />
+        <DesignPreview revision={revision} />
       </div>
 
       <div className={styles.right}>
@@ -376,4 +381,4 @@ export function SignDetail({ revision, lineage }: SignDetailProps) {
   )
 }
 
-export default SignDetail
+export default DesignDetail

@@ -54,7 +54,7 @@ bun run test
 (cd src-tauri && cargo test --lib --locked)
 ```
 
-Tests that slice with a real Bambu Studio are ignored by default. Point `BAMBU_STUDIO_CLI` at a 02.08.02.61 executable and run `cargo test --lib --locked fabrication::build -- --ignored`.
+Tests that slice with a real Bambu Studio are ignored by default. Point `BAMBU_STUDIO_CLI` at a 02.08.02.61 executable and run `cargo test --lib --locked fabrication::pipeline -- --ignored`.
 
 ## Roadmap
 

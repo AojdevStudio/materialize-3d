@@ -1,11 +1,14 @@
-//! `build_sign`: one spec in, one verified (or failed) sign revision out.
+//! `build`: one spec of a registered kind in, one verified (or failed)
+//! revision out.
 //!
 //! GUI commands, the in-app agent, and external MCP callers all call
-//! [`build_sign`]; only the `actor` differs. The pipeline never holds the
-//! database lock while geometry or slicing runs, writes every artifact into a
-//! private `.partial-<id>` directory, and renames it into place before the
-//! revision is recorded. A crash leaves either a complete record or leftovers
-//! that [`reconcile_startup`] removes on the next launch.
+//! [`build`]; only the `actor` differs. The kind's [`KindDriver`] builds and
+//! certifies the model; packaging, slicing, slice verification, and recording
+//! are shared here. The pipeline never holds the database lock while geometry
+//! or slicing runs, writes every artifact into a private `.partial-<id>`
+//! directory, and renames it into place before the build is recorded. A crash
+//! leaves either a complete record or leftovers that [`reconcile_startup`]
+//! removes on the next launch.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -16,49 +19,46 @@ use serde_json::{json, Value};
 
 use super::bambu::{self, BambuError, BambuStudio, Check, ResolvedPresets, SliceReport};
 use super::checks::{self, CheckOutcome, ChecksFailed, PassedChecks};
+use super::kind::{self, BuildControl, KernelContext, KernelError, KindDriver, ParsedSpec, SpecError};
 use super::model::Palette;
 use super::package::{self, PackageError};
 use super::printer::{PrinterProfile, P2S_04};
 use super::revisions::{
-    self, Actor, Artifacts, BuildClaim, BuildState, LineageId, NewBuild, RecordedCheck, RevisionError, RevisionId,
-    Sha256Hex, SignRevision, SlicerIdentity,
+    self, Actor, BuildFiles, BuildId, BuildState, Claim, LineageId, NewRevision, RecordedCheck, Revision, RevisionError,
+    Sha256Hex, SlicerIdentity,
 };
-use super::sign::{self, SignError, ValidSignSpec};
 use super::studio_choice;
 use crate::state::AppState;
-
-/// Bump when geometry or packaging output changes for the same spec, so a
-/// retry after an upgrade builds a new revision instead of reusing an old one.
-const PIPELINE_VERSION: &str = "sign-pipeline-1";
-const PREVIEW_PX_PER_MM: f64 = 4.0;
 
 /// Where builds live on disk.
 #[derive(Debug, Clone)]
 pub struct Workspace {
-    pub signs_dir: PathBuf,
+    /// One directory per build, named by its id. The folder is still called
+    /// `signs/` because recorded artifacts hold absolute paths into it.
+    pub builds_dir: PathBuf,
     pub preset_cache: PathBuf,
 }
 
 impl Workspace {
     pub fn new(app_data_dir: &Path, app_cache_dir: &Path) -> Self {
         Self {
-            signs_dir: app_data_dir.join("signs"),
+            builds_dir: app_data_dir.join("signs"),
             preset_cache: app_cache_dir.join("bambu-presets"),
         }
     }
 
-    fn partial_dir(&self, id: &str) -> PathBuf {
-        self.signs_dir.join(format!(".partial-{id}"))
+    fn partial_dir(&self, build: &BuildId) -> PathBuf {
+        self.builds_dir.join(format!(".partial-{build}"))
     }
 
-    fn final_dir(&self, id: &str) -> PathBuf {
-        self.signs_dir.join(id)
+    fn final_dir(&self, build: &BuildId) -> PathBuf {
+        self.builds_dir.join(build.as_str())
     }
 
     /// Removes `.partial-*` directories left by builds that never finished.
     /// Part of [`reconcile_startup`].
     pub fn remove_partials(&self) -> std::io::Result<usize> {
-        let entries = match fs::read_dir(&self.signs_dir) {
+        let entries = match fs::read_dir(&self.builds_dir) {
             Ok(entries) => entries,
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(0),
             Err(err) => return Err(err),
@@ -84,14 +84,14 @@ pub struct StartupCleanup {
 
 /// Recovers from builds the app stopped in the middle of. Run once at startup,
 /// before anything can claim a new build. A build interrupted after its
-/// rename left a complete-looking `signs/<id>` that no revision refers to, so
+/// rename left a complete-looking `signs/<id>` that no build record refers to, so
 /// the directory of every build still recorded as running is removed before
 /// the build is marked failed; a crash part way through is finished next launch.
 pub fn reconcile_startup(state: &AppState, workspace: &Workspace) -> Result<StartupCleanup, BuildError> {
     let unfinished = with_db(state, |conn| revisions::unfinished_builds(conn))?;
     let mut removed_dirs = 0;
-    for id in &unfinished {
-        if remove_dir_if_present(&workspace.final_dir(id.as_str()))? {
+    for build in &unfinished {
+        if remove_dir_if_present(&workspace.final_dir(build))? {
             removed_dirs += 1;
         }
     }
@@ -111,6 +111,7 @@ fn remove_dir_if_present(dir: &Path) -> std::io::Result<bool> {
 
 /// Coarse progress, in order. Each step is reported once it completes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum BuildStep {
     SpecValidated,
@@ -122,15 +123,18 @@ pub enum BuildStep {
 
 #[derive(Debug, Serialize)]
 pub struct BuildOutcome {
-    pub revision: SignRevision,
-    /// True when an identical build already existed and nothing ran.
+    pub revision: Revision,
+    /// True when nothing ran: the revision already existed, or it uses an
+    /// identical build that was already verified.
     pub reused: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum BuildError {
+    #[error("unknown kind {0:?}; the registered kinds are {}", registered_kinds())]
+    UnknownKind(String),
     #[error(transparent)]
-    Spec(#[from] sign::SpecError),
+    Spec(#[from] SpecError),
     /// Bambu Studio is missing or not a validated version. The message is what
     /// a person in the Signs view and the in-app agent read, so it ends with
     /// what to do next.
@@ -161,13 +165,17 @@ impl From<BambuError> for BuildError {
     }
 }
 
-impl From<SignError> for BuildError {
-    fn from(err: SignError) -> Self {
+impl From<KernelError> for BuildError {
+    fn from(err: KernelError) -> Self {
         match err {
-            SignError::Spec(spec) => BuildError::Spec(spec),
-            other => BuildError::Failed(other.to_string()),
+            KernelError::Cancelled => BuildError::Cancelled,
+            KernelError::Failed(reason) => BuildError::Failed(reason),
         }
     }
+}
+
+fn registered_kinds() -> String {
+    kind::KINDS.iter().map(|kind| kind.id().as_str()).collect::<Vec<_>>().join(", ")
 }
 
 impl From<PackageError> for BuildError {
@@ -189,6 +197,8 @@ impl From<std::io::Error> for BuildError {
 }
 
 pub struct BuildRequest {
+    /// A registered kind's id, such as `sign`.
+    pub kind: String,
     pub spec: Value,
     pub lineage_id: Option<LineageId>,
     pub actor: Actor,
@@ -201,76 +211,75 @@ pub fn with_db<T>(state: &AppState, f: impl FnOnce(&mut Connection) -> Result<T,
     Ok(f(conn)?)
 }
 
-/// Builds, slices, and verifies a sign. Identical input returns the existing
-/// live revision without doing any work. A validation error or a missing
-/// slicer fails before any revision is recorded; anything later is recorded
-/// on the revision as a failure.
-pub fn build_sign(
+/// Builds, slices, and verifies a spec of a registered kind. Repeating the
+/// latest revision returns it, and a spec that builds the same as a verified
+/// build becomes a revision on that build, both without doing any work. An
+/// unknown kind, a validation error, or a missing slicer fails before any
+/// revision is recorded; anything later is recorded on the build as a failure.
+pub fn build(
     state: &AppState,
     workspace: &Workspace,
     request: BuildRequest,
-    progress: &dyn Fn(BuildStep),
-    is_cancelled: &dyn Fn() -> bool,
+    control: &BuildControl<'_>,
 ) -> Result<BuildOutcome, BuildError> {
-    let spec = ValidSignSpec::parse(serde_json::from_value(request.spec.clone()).map_err(sign::SpecError::from)?)?;
-    let spec_sha256 = Sha256Hex::try_from(sign::spec_hash(&spec))?;
-    progress(BuildStep::SpecValidated);
+    let driver = kind::find(&request.kind).ok_or_else(|| BuildError::UnknownKind(request.kind.clone()))?;
+    let ctx = KernelContext { printer: P2S_04 };
+    let parsed = driver.parse(request.spec.clone(), &ctx.printer)?;
+    control.report(BuildStep::SpecValidated);
 
     let chosen = studio_choice::chosen(state).map_err(BuildError::Failed)?;
     let studio = BambuStudio::locate(chosen.as_deref()).map_err(BuildError::Studio)?;
-    let printer = &P2S_04;
-    let template: Value = serde_json::from_str(printer.template)
+    let template: Value = serde_json::from_str(ctx.printer.template)
         .map_err(|e| BuildError::Failed(format!("project settings template: {e}")))?;
     let presets = bambu::resolve_presets(&studio, &template_selection(&template)?, &workspace.preset_cache)
         .map_err(BuildError::Slicer)?;
-    let build_key = Sha256Hex::of_bytes(
-        [PIPELINE_VERSION, spec_sha256.as_str(), &presets.app_version, &presets.profile_version, printer.template]
-            .join("\n")
-            .as_bytes(),
-    );
-
-    let new_build = NewBuild {
+    let request = NewRevision {
         lineage_id: request.lineage_id,
-        title: spec.title().to_owned(),
+        kind: parsed.kind(),
+        title: parsed.title().to_owned(),
         spec: request.spec,
-        spec_sha256,
-        build_key,
+        spec_sha256: parsed.spec_sha256().clone(),
+        build_key: build_key(&parsed, &presets.app_version, &presets.profile_version, ctx.printer.template),
+        check_plan: parsed.plan().id(),
         requested_by: request.actor,
     };
     // An identical build already running is awaited, never reported as done:
     // once it settles, a verified result is reused and a failed one is retried.
     let revision = loop {
-        match with_db(state, |conn| revisions::claim_build(conn, new_build.clone()))? {
-            BuildClaim::Started(revision) => break revision,
-            BuildClaim::Existing(revision) if !matches!(revision.build, BuildState::Building) => {
-                return Ok(BuildOutcome { revision, reused: true });
-            }
-            BuildClaim::Existing(running) => wait_until_settled(state, &running.id, is_cancelled)?,
+        match with_db(state, |conn| revisions::claim(conn, &request))? {
+            Claim::Started(revision) => break revision,
+            Claim::Reused(revision) => return Ok(BuildOutcome { revision, reused: true }),
+            Claim::Busy(build) => wait_until_settled(state, &build, control)?,
         }
     };
 
-    let id = revision.id.to_string();
-    let (partial, final_dir) = (workspace.partial_dir(&id), workspace.final_dir(&id));
-    let mut unfinished = UnfinishedBuild::new(state, &revision.id, &partial, &final_dir);
-    let (artifacts, verdict) =
-        run_pipeline(&spec, printer, &template, &studio, &presets, &partial, &final_dir, progress, is_cancelled)
-            .map_err(|err| unfinished.fail(err))?;
-    let finished = unfinished.settle(artifacts, verdict)?;
+    let build = &revision.build_id;
+    let (partial, final_dir) = (workspace.partial_dir(build), workspace.final_dir(build));
+    let mut unfinished = UnfinishedBuild::new(state, build, &partial, &final_dir);
+    let staged = Staged { template: &template, studio: &studio, presets: &presets, partial: &partial, final_dir: &final_dir };
+    let (files, verdict) = run_pipeline(driver, &parsed, &ctx, &staged, control).map_err(|err| unfinished.fail(err))?;
+    unfinished.settle(files, verdict)?;
+    let finished = with_db(state, |conn| revisions::get(conn, &revision.id))?;
     if matches!(finished.build, BuildState::Verified { .. }) {
-        progress(BuildStep::Verified);
+        control.report(BuildStep::Verified);
     }
     Ok(BuildOutcome { revision: finished, reused: false })
 }
 
+/// Hash of every input that determines a build's output: the kind's tag, the
+/// validated spec, the slicer and profile versions, and the project template.
+fn build_key(parsed: &ParsedSpec, app_version: &str, profile_version: &str, template: &str) -> Sha256Hex {
+    Sha256Hex::of_bytes([parsed.tag(), parsed.spec_sha256().as_str(), app_version, profile_version, template].join("\n").as_bytes())
+}
+
 const SETTLE_POLL: std::time::Duration = std::time::Duration::from_millis(250);
 
-fn wait_until_settled(state: &AppState, id: &RevisionId, is_cancelled: &dyn Fn() -> bool) -> Result<(), BuildError> {
+fn wait_until_settled(state: &AppState, build: &BuildId, control: &BuildControl<'_>) -> Result<(), BuildError> {
     loop {
-        if is_cancelled() {
+        if control.is_cancelled() {
             return Err(BuildError::Cancelled);
         }
-        let current = with_db(state, |conn| revisions::get(conn, id))?;
-        if !matches!(current.build, BuildState::Building) {
+        if with_db(state, |conn| revisions::build_settled(conn, build))? {
             return Ok(());
         }
         std::thread::sleep(SETTLE_POLL);
@@ -278,12 +287,12 @@ fn wait_until_settled(state: &AppState, id: &RevisionId, is_cancelled: &dyn Fn()
 }
 
 /// A claimed build that has not been recorded as finished. Dropping it before
-/// the build settles, through an error or a panic, marks the revision failed
-/// and removes its directory, so no revision stays `building` and no directory
+/// the build settles, through an error or a panic, marks the build failed and
+/// removes its directory, so no build stays `building` and no directory
 /// outlives a failed build while the app keeps running.
 struct UnfinishedBuild<'a> {
     state: &'a AppState,
-    id: &'a RevisionId,
+    build: &'a BuildId,
     partial: &'a Path,
     final_dir: &'a Path,
     /// The partial directory has been renamed to `final_dir`.
@@ -292,22 +301,22 @@ struct UnfinishedBuild<'a> {
 }
 
 impl<'a> UnfinishedBuild<'a> {
-    fn new(state: &'a AppState, id: &'a RevisionId, partial: &'a Path, final_dir: &'a Path) -> Self {
-        Self { state, id, partial, final_dir, placed: false, settled: false }
+    fn new(state: &'a AppState, build: &'a BuildId, partial: &'a Path, final_dir: &'a Path) -> Self {
+        Self { state, build, partial, final_dir, placed: false, settled: false }
     }
 
     /// Moves the finished partial directory into place and records the build:
     /// verified only from the plan's proof, failed with its evidence otherwise.
-    fn settle(mut self, artifacts: Artifacts, verdict: Verdict) -> Result<SignRevision, BuildError> {
+    fn settle(mut self, files: BuildFiles, verdict: Verdict) -> Result<(), BuildError> {
         fs::rename(self.partial, self.final_dir).map_err(|err| self.fail(err.into()))?;
         self.placed = true;
-        let finished = with_db(self.state, |conn| match verdict {
-            Verdict::Passed(passed) => revisions::finish_verified(conn, self.id, artifacts, &passed),
-            Verdict::Failed => revisions::finish_failed(conn, self.id, artifacts),
+        with_db(self.state, |conn| match verdict {
+            Verdict::Passed(passed) => revisions::finish_verified(conn, self.build, files, &passed),
+            Verdict::Failed(outcomes) => revisions::finish_failed(conn, self.build, files, &outcomes),
         })
         .map_err(|err| self.fail(err))?;
         self.settled = true;
-        Ok(finished)
+        Ok(())
     }
 
     fn fail(&mut self, err: BuildError) -> BuildError {
@@ -318,18 +327,18 @@ impl<'a> UnfinishedBuild<'a> {
     fn record_failure(&mut self, reason: &str) {
         self.settled = true;
         let _ = fs::remove_dir_all(self.partial);
-        match with_db(self.state, |conn| revisions::fail_build(conn, self.id, reason)) {
-            // The revision moved from building to failed, so it has no artifacts
+        match with_db(self.state, |conn| revisions::fail_build(conn, self.build, reason)) {
+            // The build moved from building to failed, so it has no artifacts
             // on record and nothing refers to its placed directory.
-            Ok(_) if self.placed => {
+            Ok(()) if self.placed => {
                 if let Err(err) = remove_dir_if_present(self.final_dir) {
-                    log::error!("build {}: could not remove {}: {err}", self.id, self.final_dir.display());
+                    log::error!("build {}: could not remove {}: {err}", self.build, self.final_dir.display());
                 }
             }
-            Ok(_) => {}
+            Ok(()) => {}
             // Still `building` if the database is failing; startup reconciliation
             // removes the directory and records the failure next launch.
-            Err(err) => log::error!("build {}: could not record failure ({reason}): {err}", self.id),
+            Err(err) => log::error!("build {}: could not record failure ({reason}): {err}", self.build),
         }
     }
 }
@@ -363,61 +372,70 @@ fn template_selection(template: &Value) -> Result<bambu::PresetSelection, BuildE
 
 /// What a finished build's checks proved.
 enum Verdict {
-    /// Every planned check passed; the build is recorded as verified from this.
+    /// Every planned blocking check passed; the build is recorded as verified
+    /// from this, with any failed advisory checks as warnings.
     Passed(PassedChecks),
-    /// Every planned check ran and at least one failed.
-    Failed,
+    /// Every planned check ran and at least one blocking check failed. Holds
+    /// every outcome, in plan order.
+    Failed(Vec<CheckOutcome>),
 }
 
-/// Builds the sign's model, certifies it against the sign's check plan, writes
-/// and slices the package, and judges every planned check. The artifacts carry
-/// every outcome in plan order. Checks that do not match the plan fail the
-/// build outright.
-#[allow(clippy::too_many_arguments)]
+/// Where one build's shared stages read and write.
+struct Staged<'a> {
+    template: &'a Value,
+    studio: &'a BambuStudio,
+    presets: &'a ResolvedPresets,
+    partial: &'a Path,
+    final_dir: &'a Path,
+}
+
+/// Has the kind build and certify its model, then writes and slices the
+/// package and judges every planned check. Checks that do not match the plan
+/// fail the build outright.
 fn run_pipeline(
-    spec: &ValidSignSpec,
-    printer: &PrinterProfile,
-    template: &Value,
-    studio: &BambuStudio,
-    presets: &ResolvedPresets,
-    partial: &Path,
-    final_dir: &Path,
-    progress: &dyn Fn(BuildStep),
-    is_cancelled: &dyn Fn() -> bool,
-) -> Result<(Artifacts, Verdict), BuildError> {
-    let cancelled = || if is_cancelled() { Err(BuildError::Cancelled) } else { Ok(()) };
+    driver: &dyn KindDriver,
+    parsed: &ParsedSpec,
+    ctx: &KernelContext,
+    staged: &Staged<'_>,
+    control: &BuildControl<'_>,
+) -> Result<(BuildFiles, Verdict), BuildError> {
+    let Staged { template, studio, presets, partial, final_dir } = *staged;
+    let printer = &ctx.printer;
+    let cancelled = || if control.is_cancelled() { Err(BuildError::Cancelled) } else { Ok(()) };
     fs::create_dir_all(partial)?;
-    fs::write(partial.join("spec.json"), serde_json::to_vec_pretty(spec)?)?;
+    fs::write(partial.join("spec.json"), serde_json::to_vec_pretty(parsed.validated())?)?;
 
-    let plan = sign::check_plan(spec).map_err(|e| BuildError::Failed(e.to_string()))?;
-    let geometry = sign::build_geometry(spec, printer)?;
-    let evidence = sign::check_geometry(&geometry).iter().map(sign::GeometryCheck::outcome).collect();
-    progress(BuildStep::GeometryBuilt);
-    cancelled()?;
-
-    let preview = sign::render_preview(&geometry, PREVIEW_PX_PER_MM)?;
-    let checked = plan
-        .certify(geometry.into_model(), evidence)
-        .map_err(|e| BuildError::Failed(e.to_string()))?;
-    let package = partial.join("sign.3mf");
-    let info = package::write_package(&checked, spec.title(), printer, &package)?;
+    let prepared = driver.prepare(parsed, ctx, control)?;
+    if !prepared.extra.is_empty() {
+        return Err(BuildError::Failed("this build returned files the package cannot carry yet".into()));
+    }
+    let (checked, plan) = (prepared.checked, parsed.plan());
+    let package = partial.join(format!("{}.3mf", parsed.kind()));
+    let info = package::write_package(&checked, parsed.title(), printer, &package)?;
     set_read_only(&package)?;
-    fs::write(partial.join("preview.png"), preview)?;
-    progress(BuildStep::PackageWritten);
+    fs::write(partial.join("preview.png"), prepared.preview)?;
+    control.report(BuildStep::PackageWritten);
     cancelled()?;
 
     let slice_dir = partial.join("slice");
-    let report = bambu::slice_project(studio, presets, &package, &slice_dir, is_cancelled)?;
-    progress(BuildStep::Sliced);
+    let report = bambu::slice_project(studio, presets, &package, &slice_dir, &|| control.is_cancelled())?;
+    control.report(BuildStep::Sliced);
 
     let footprints = bambu::part_footprints(&package)?;
     let slice = bambu::verify(&report, &footprints, presets).iter().map(slice_outcome).collect();
     let handoff = vec![handoff_matches_slice(template, checked.model().palette(), printer, &report)];
-    let (checks, verdict): (Vec<RecordedCheck>, Verdict) = match plan.finish(checked.geometry(), slice, handoff) {
-        Ok(passed) => (passed.outcomes().iter().map(RecordedCheck::from).collect(), Verdict::Passed(passed)),
-        Err(ChecksFailed::Failed(outcomes)) => (outcomes.iter().map(RecordedCheck::from).collect(), Verdict::Failed),
-        Err(mismatch @ ChecksFailed::Mismatch(_)) => return Err(BuildError::Failed(mismatch.to_string())),
+    let verdict = match plan.finish(checked.geometry(), slice, handoff) {
+        Ok(passed) => Verdict::Passed(passed),
+        Err(ChecksFailed::Failed(outcomes)) => Verdict::Failed(outcomes),
+        Err(mismatch @ (ChecksFailed::Mismatch(_) | ChecksFailed::WrongPlan { .. })) => {
+            return Err(BuildError::Failed(mismatch.to_string()))
+        }
     };
+    let outcomes = match &verdict {
+        Verdict::Passed(passed) => passed.outcomes(),
+        Verdict::Failed(outcomes) => outcomes,
+    };
+    let checks: Vec<RecordedCheck> = outcomes.iter().map(RecordedCheck::from).collect();
     fs::write(partial.join("checks.json"), serde_json::to_vec_pretty(&checks)?)?;
 
     let gcode_sha256 = report
@@ -427,7 +445,7 @@ fn run_pipeline(
         .transpose()?
         .ok_or_else(|| BuildError::Failed("slice produced no G-code".into()))?;
     let rebase = |path: &Path| final_dir.join(path.strip_prefix(partial).unwrap_or(path));
-    Ok((Artifacts {
+    Ok((BuildFiles {
         revision_dir: final_dir.to_path_buf(),
         package_path: rebase(&package),
         package_sha256: Sha256Hex::try_from(info.sha256)?,
@@ -440,7 +458,6 @@ fn run_pipeline(
             profile_version: presets.profile_version.clone(),
         },
         effective_settings: serde_json::to_value(&report.effective)?,
-        checks,
     }, verdict))
 }
 
@@ -498,7 +515,11 @@ fn handoff_matches_slice(template: &Value, palette: &Palette, printer: &PrinterP
 mod tests {
     use std::cell::{Cell, RefCell};
 
+    use std::collections::BTreeSet;
+
     use super::*;
+    use crate::fabrication::kind::{Kind, KindId};
+    use crate::fabrication::kinds::sign::Sign;
     use crate::fabrication::revisions::{Approval, BuildState};
 
     const FIXTURE: &str = include_str!("../../tests/fixtures/signs/synthetic-back-shortly.json");
@@ -513,19 +534,25 @@ mod tests {
         serde_json::from_str(FIXTURE).expect("fixture json")
     }
 
-    fn claim(state: &AppState, key: &str) -> SignRevision {
-        let build = NewBuild {
+    fn claim(state: &AppState, key: &str) -> Revision {
+        let request = NewRevision {
             lineage_id: None,
+            kind: KindId::new("sign"),
             title: "Back shortly".into(),
             spec: fixture(),
             spec_sha256: Sha256Hex::of_bytes(key.as_bytes()),
             build_key: Sha256Hex::of_bytes(key.as_bytes()),
+            check_plan: checks::test_support::PLAN,
             requested_by: Actor::Human,
         };
-        match with_db(state, |conn| revisions::claim_build(conn, build)).expect("claim") {
-            BuildClaim::Started(revision) => revision,
-            BuildClaim::Existing(revision) => panic!("expected a new build, got {}", revision.id),
+        match with_db(state, |conn| revisions::claim(conn, &request)).expect("claim") {
+            Claim::Started(revision) => revision,
+            other => panic!("expected a new build, got {other:?}"),
         }
+    }
+
+    fn get(state: &AppState, revision: &Revision) -> Revision {
+        with_db(state, |conn| revisions::get(conn, &revision.id)).expect("get")
     }
 
     /// Proof that the one check `staged` records passed.
@@ -533,11 +560,11 @@ mod tests {
         Verdict::Passed(checks::test_support::passed(&[checks::slice_check_id(bambu::CheckId::SliceSucceeded)]))
     }
 
-    /// A partial directory as the pipeline leaves it, and artifacts that pass every check.
-    fn staged(partial: &Path, final_dir: &Path) -> Artifacts {
+    /// A partial directory as the pipeline leaves it, and the files it records.
+    fn staged(partial: &Path, final_dir: &Path) -> BuildFiles {
         fs::create_dir_all(partial).expect("partial dir");
         fs::write(partial.join("sign.3mf"), b"package").expect("package");
-        Artifacts {
+        BuildFiles {
             revision_dir: final_dir.to_path_buf(),
             package_path: final_dir.join("sign.3mf"),
             package_sha256: Sha256Hex::of_bytes(b"package"),
@@ -546,8 +573,17 @@ mod tests {
             gcode_sha256: Sha256Hex::of_bytes(b"gcode"),
             slicer: SlicerIdentity { name: "Bambu Studio".into(), version: "02.08.02.61".into(), profile_version: "02.08.00.05".into() },
             effective_settings: Value::Null,
-            checks: vec![RecordedCheck { id: "slice.slice_succeeded".into(), passed: true, detail: "return_code 0".into() }],
         }
+    }
+
+    /// The build key formula is the one sign builds used before kinds existed,
+    /// with the sign's tag where the pipeline version was, so pre-kind sign
+    /// builds are found by key.
+    #[test]
+    fn the_sign_build_key_is_the_pre_kind_formula() {
+        let parsed = Kind::<Sign>::NEW.parse(fixture(), &P2S_04).expect("parse");
+        let before = ["sign-pipeline-1", "8251927fe35f701ab5275eba7fb540f100b08776616b5c20a9e9db88d4d4c0eb", "02.08.02.61", "02.08.00.05", P2S_04.template];
+        assert_eq!(build_key(&parsed, "02.08.02.61", "02.08.00.05", P2S_04.template), Sha256Hex::of_bytes(before.join("\n").as_bytes()));
     }
 
     #[test]
@@ -556,24 +592,22 @@ mod tests {
         let state = app_state(dir.path());
         let workspace = Workspace::new(&dir.path().join("data"), &dir.path().join("cache"));
         let revision = claim(&state, "a");
-        let id = revision.id.to_string();
-        let (partial, final_dir) = (workspace.partial_dir(&id), workspace.final_dir(&id));
-        let artifacts = staged(&partial, &final_dir);
+        let (partial, final_dir) = (workspace.partial_dir(&revision.build_id), workspace.final_dir(&revision.build_id));
+        let files = staged(&partial, &final_dir);
         // The database refuses the result after the rename, as a full disk would.
         with_db(&state, |conn| {
             Ok(conn.execute_batch(
-                "CREATE TEMP TRIGGER finish_fails BEFORE UPDATE OF build_status ON sign_revisions
+                "CREATE TEMP TRIGGER finish_fails BEFORE UPDATE OF build_status ON builds
                  WHEN NEW.build_status = 'verified' BEGIN SELECT RAISE(ABORT, 'disk full'); END;",
             )?)
         })
         .expect("trigger");
 
-        let result = UnfinishedBuild::new(&state, &revision.id, &partial, &final_dir).settle(artifacts, passed());
+        let result = UnfinishedBuild::new(&state, &revision.build_id, &partial, &final_dir).settle(files, passed());
         assert!(result.is_err());
         assert!(!final_dir.exists(), "the placed directory is removed with the failed build");
         assert!(!partial.exists());
-        let recorded = with_db(&state, |conn| revisions::get(conn, &revision.id)).expect("get");
-        assert!(matches!(recorded.build, BuildState::Failed { artifacts: None, .. }));
+        assert!(matches!(get(&state, &revision).build, BuildState::Failed { artifacts: None, .. }));
     }
 
     #[test]
@@ -583,26 +617,25 @@ mod tests {
         let workspace = Workspace::new(&dir.path().join("data"), &dir.path().join("cache"));
 
         let verified = claim(&state, "verified");
-        let id = verified.id.to_string();
-        let (partial, verified_dir) = (workspace.partial_dir(&id), workspace.final_dir(&id));
-        let finished = UnfinishedBuild::new(&state, &verified.id, &partial, &verified_dir)
+        let (partial, verified_dir) = (workspace.partial_dir(&verified.build_id), workspace.final_dir(&verified.build_id));
+        UnfinishedBuild::new(&state, &verified.build_id, &partial, &verified_dir)
             .settle(staged(&partial, &verified_dir), passed())
             .expect("settle");
-        assert!(matches!(finished.build, BuildState::Verified { .. }));
+        assert!(matches!(get(&state, &verified).build, BuildState::Verified { .. }));
 
         // The app stopped after the rename but before the result was recorded.
         let interrupted = claim(&state, "interrupted");
-        let id = interrupted.id.to_string();
-        let (partial, interrupted_dir) = (workspace.partial_dir(&id), workspace.final_dir(&id));
+        let build = &interrupted.build_id;
+        let (partial, interrupted_dir) = (workspace.partial_dir(build), workspace.final_dir(build));
         staged(&partial, &interrupted_dir);
         fs::rename(&partial, &interrupted_dir).expect("rename");
-        fs::create_dir_all(workspace.partial_dir("leftover")).expect("partial dir");
+        fs::create_dir_all(workspace.builds_dir.join(".partial-leftover")).expect("partial dir");
 
         let cleanup = reconcile_startup(&state, &workspace).expect("reconcile");
         assert_eq!(cleanup, StartupCleanup { interrupted: 1, removed_dirs: 2 });
         assert!(!interrupted_dir.exists(), "the interrupted build's directory is removed");
         assert!(verified_dir.join("sign.3mf").exists(), "the verified build's directory is kept");
-        let recorded = with_db(&state, |conn| revisions::get(conn, &interrupted.id)).expect("get");
+        let recorded = get(&state, &interrupted);
         assert!(matches!(recorded.build, BuildState::Failed { ref reason, artifacts: None } if reason.starts_with("interrupted")));
         assert_eq!(workspace.remove_partials().expect("scan"), 0);
     }
@@ -614,32 +647,34 @@ mod tests {
         let state = app_state(dir.path());
         let workspace = Workspace::new(&dir.path().join("data"), &dir.path().join("cache"));
         let steps = RefCell::new(Vec::new());
-        let request = || BuildRequest { spec: fixture(), lineage_id: None, actor: Actor::Agent };
+        let request = || BuildRequest { kind: "sign".into(), spec: fixture(), lineage_id: None, actor: Actor::Agent };
 
-        let first = build_sign(&state, &workspace, request(), &|s| steps.borrow_mut().push(s), &|| false).expect("build");
+        let first = build(&state, &workspace, request(), &BuildControl::new(&|s| steps.borrow_mut().push(s), &|| false)).expect("build");
         let artifacts = first.revision.artifacts().expect("artifacts").clone();
-        for check in &artifacts.checks {
+        for check in artifacts.checks() {
             println!("{} {} {}", if check.passed { "PASS" } else { "FAIL" }, check.id, check.detail);
         }
+        let files = artifacts.files();
         assert!(matches!(first.revision.build, BuildState::Verified { .. }), "every check passes");
         assert_eq!(
             *steps.borrow(),
             [BuildStep::SpecValidated, BuildStep::GeometryBuilt, BuildStep::PackageWritten, BuildStep::Sliced, BuildStep::Verified]
         );
-        assert!(fs::metadata(&artifacts.package_path).expect("package").permissions().readonly(), "package is read-only");
-        assert_eq!(Sha256Hex::of_file(&artifacts.package_path).expect("hash"), artifacts.package_sha256);
+        assert!(fs::metadata(&files.package_path).expect("package").permissions().readonly(), "package is read-only");
+        assert_eq!(Sha256Hex::of_file(&files.package_path).expect("hash"), files.package_sha256);
         assert_eq!(workspace.remove_partials().expect("scan"), 0, "no partial directory left behind");
 
-        let again = build_sign(&state, &workspace, request(), &|_| {}, &|| false).expect("rebuild");
+        let again = build(&state, &workspace, request(), &BuildControl::new(&|_| {}, &|| false)).expect("rebuild");
         assert!(again.reused, "identical request reuses the revision");
         assert_eq!(again.revision.id, first.revision.id);
 
-        let refused = with_db(&state, |conn| revisions::approve(conn, &first.revision.id, &artifacts.package_sha256, Actor::Agent));
+        let none = BTreeSet::new();
+        let refused = with_db(&state, |conn| revisions::approve(conn, &first.revision.id, &files.package_sha256, &none, Actor::Agent));
         assert!(matches!(refused, Err(BuildError::Revision(RevisionError::HumanOnly(_)))));
-        let approved = with_db(&state, |conn| revisions::approve(conn, &first.revision.id, &artifacts.package_sha256, Actor::Human))
+        let approved = with_db(&state, |conn| revisions::approve(conn, &first.revision.id, &files.package_sha256, &none, Actor::Human))
             .expect("human approves");
         assert!(matches!(approved.approval, Approval::Approved { .. }));
-        println!("revision {} package {}", first.revision.id, artifacts.package_sha256);
+        println!("revision {} package {}", first.revision.id, files.package_sha256);
     }
 
     /// The fixture sign records exactly the 27 checks it recorded before signs
@@ -652,12 +687,12 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let state = app_state(dir.path());
         let workspace = Workspace::new(&dir.path().join("data"), &dir.path().join("cache"));
-        let request = BuildRequest { spec: fixture(), lineage_id: None, actor: Actor::Human };
+        let request = BuildRequest { kind: "sign".into(), spec: fixture(), lineage_id: None, actor: Actor::Human };
 
-        let built = build_sign(&state, &workspace, request, &|_| {}, &|| false).expect("build");
+        let built = build(&state, &workspace, request, &BuildControl::new(&|_| {}, &|| false)).expect("build");
         assert!(matches!(built.revision.build, BuildState::Verified { .. }), "every check passes");
         let artifacts = built.revision.artifacts().expect("artifacts");
-        let ids: Vec<&str> = artifacts.checks.iter().map(|c| c.id.as_str()).collect();
+        let ids: Vec<&str> = artifacts.checks().iter().map(|c| c.id.as_str()).collect();
         let want: Vec<&str> = expected["synthetic_back_shortly_check_ids"]
             .as_array()
             .expect("check ids")
@@ -666,7 +701,7 @@ mod tests {
             .collect();
         assert_eq!(want.len(), 27);
         assert_eq!(ids, want);
-        assert_eq!(artifacts.package_sha256.as_str(), expected["packages"]["synthetic-back-shortly"]["sha256"]);
+        assert_eq!(artifacts.files().package_sha256.as_str(), expected["packages"]["synthetic-back-shortly"]["sha256"]);
     }
 
     #[test]
@@ -681,8 +716,8 @@ mod tests {
             crate::database::upsert_setting(conn, "bambu_studio.path", gone.to_str().expect("utf-8")).expect("store choice");
         }
 
-        let request = BuildRequest { spec: fixture(), lineage_id: None, actor: Actor::Human };
-        let err = build_sign(&state, &workspace, request, &|_| {}, &|| false)
+        let request = BuildRequest { kind: "sign".into(), spec: fixture(), lineage_id: None, actor: Actor::Human };
+        let err = build(&state, &workspace, request, &BuildControl::new(&|_| {}, &|| false))
             .expect_err("build fails without Bambu Studio (BAMBU_STUDIO_CLI, if set, overrides the stored choice)");
         let message = err.to_string();
         assert!(message.contains(&gone.display().to_string()), "{message}");
@@ -691,7 +726,7 @@ mod tests {
         assert!(revisions_of(&state).is_empty(), "no revision is recorded");
     }
 
-    fn revisions_of(state: &AppState) -> Vec<SignRevision> {
+    fn revisions_of(state: &AppState) -> Vec<Revision> {
         with_db(state, |conn| revisions::list_recent(conn, 50)).expect("list")
     }
 
@@ -704,18 +739,19 @@ mod tests {
         let (claimed_tx, claimed_rx) = std::sync::mpsc::channel();
         let (first, second) = std::thread::scope(|scope| {
             let first = scope.spawn(|| {
-                let request = BuildRequest { spec: fixture(), lineage_id: None, actor: Actor::Human };
+                let request = BuildRequest { kind: "sign".into(), spec: fixture(), lineage_id: None, actor: Actor::Human };
                 let claimed = claimed_tx.clone();
-                build_sign(&state, &workspace, request, &move |step| {
+                let progress = move |step| {
                     if step == BuildStep::GeometryBuilt {
                         let _ = claimed.send(());
                     }
-                }, &|| false)
+                };
+                build(&state, &workspace, request, &BuildControl::new(&progress, &|| false))
             });
             claimed_rx.recv().expect("first build claimed its revision");
             let second = scope.spawn(|| {
-                let request = BuildRequest { spec: fixture(), lineage_id: None, actor: Actor::Agent };
-                build_sign(&state, &workspace, request, &|_| {}, &|| false)
+                let request = BuildRequest { kind: "sign".into(), spec: fixture(), lineage_id: None, actor: Actor::Agent };
+                build(&state, &workspace, request, &BuildControl::new(&|_| {}, &|| false))
             });
             (first.join().expect("first thread"), second.join().expect("second thread"))
         });
@@ -736,18 +772,20 @@ mod tests {
         let (claimed_tx, claimed_rx) = std::sync::mpsc::channel();
         let (first, second) = std::thread::scope(|scope| {
             let first = scope.spawn(|| {
-                let request = BuildRequest { spec: fixture(), lineage_id: None, actor: Actor::Human };
+                let request = BuildRequest { kind: "sign".into(), spec: fixture(), lineage_id: None, actor: Actor::Human };
                 let claimed = claimed_tx.clone();
-                build_sign(&state, &workspace, request, &move |step| {
+                let progress = move |step| {
                     if step == BuildStep::GeometryBuilt {
                         let _ = claimed.send(());
                     }
-                }, &|| cancel_first.load(std::sync::atomic::Ordering::SeqCst))
+                };
+                let cancelled = || cancel_first.load(std::sync::atomic::Ordering::SeqCst);
+                build(&state, &workspace, request, &BuildControl::new(&progress, &cancelled))
             });
             claimed_rx.recv().expect("first build claimed its revision");
             let second = scope.spawn(|| {
-                let request = BuildRequest { spec: fixture(), lineage_id: None, actor: Actor::Agent };
-                build_sign(&state, &workspace, request, &|_| {}, &|| false)
+                let request = BuildRequest { kind: "sign".into(), spec: fixture(), lineage_id: None, actor: Actor::Agent };
+                build(&state, &workspace, request, &BuildControl::new(&|_| {}, &|| false))
             });
             std::thread::sleep(SETTLE_POLL * 2);
             cancel_first.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -769,15 +807,16 @@ mod tests {
         let state = app_state(dir.path());
         let workspace = Workspace::new(&dir.path().join("data"), &dir.path().join("cache"));
         let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let request = BuildRequest { spec: fixture(), lineage_id: None, actor: Actor::Human };
-            build_sign(&state, &workspace, request, &|step| assert_ne!(step, BuildStep::PackageWritten, "simulated crash"), &|| false)
+            let request = BuildRequest { kind: "sign".into(), spec: fixture(), lineage_id: None, actor: Actor::Human };
+            build(&state, &workspace, request, &BuildControl::new(&|step| assert_ne!(step, BuildStep::PackageWritten, "simulated crash"), &|| false))
         }));
         assert!(panicked.is_err());
         let after_panic = revisions_of(&state);
         assert!(matches!(&after_panic[0].build, BuildState::Failed { reason, .. } if reason == "build panicked"));
         assert_eq!(workspace.remove_partials().expect("scan"), 0, "partial directory removed");
 
-        let retry = build_sign(&state, &workspace, BuildRequest { spec: fixture(), lineage_id: None, actor: Actor::Human }, &|_| {}, &|| false)
+        let request = BuildRequest { kind: "sign".into(), spec: fixture(), lineage_id: None, actor: Actor::Human };
+        let retry = build(&state, &workspace, request, &BuildControl::new(&|_| {}, &|| false))
             .expect("retry");
         assert!(!retry.reused);
         assert!(matches!(retry.revision.build, BuildState::Verified { .. }));
@@ -790,16 +829,44 @@ mod tests {
         let state = app_state(dir.path());
         let workspace = Workspace::new(&dir.path().join("data"), &dir.path().join("cache"));
         let cancel = Cell::new(false);
-        let result = build_sign(
-            &state,
-            &workspace,
-            BuildRequest { spec: fixture(), lineage_id: None, actor: Actor::Human },
-            &|step| cancel.set(step == BuildStep::GeometryBuilt),
-            &|| cancel.get(),
-        );
+        let request = BuildRequest { kind: "sign".into(), spec: fixture(), lineage_id: None, actor: Actor::Human };
+        let progress = |step| cancel.set(step == BuildStep::GeometryBuilt);
+        let result = build(&state, &workspace, request, &BuildControl::new(&progress, &|| cancel.get()));
         assert!(matches!(result, Err(BuildError::Cancelled)));
         let listed = with_db(&state, |conn| revisions::list_recent(conn, 10)).expect("list");
         assert!(matches!(&listed[0].build, BuildState::Failed { reason, .. } if reason == "build cancelled"));
         assert_eq!(workspace.remove_partials().expect("scan"), 0);
+    }
+
+    /// 60 -> 65 -> 60 with the real slicer: the third request is revision 3 on
+    /// revision 1's build, and nothing past spec validation runs for it.
+    #[test]
+    #[ignore = "needs a validated Bambu Studio (BAMBU_STUDIO_CLI or a standard install)"]
+    fn returning_to_an_earlier_spec_reuses_its_build_without_geometry_or_slicing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = app_state(dir.path());
+        let workspace = Workspace::new(&dir.path().join("data"), &dir.path().join("cache"));
+        let tall = |height: u32| {
+            let mut spec = fixture();
+            spec["height_mm"] = serde_json::json!(height);
+            spec
+        };
+        let request = |spec, lineage_id| BuildRequest { kind: "sign".into(), spec, lineage_id, actor: Actor::Agent };
+        let quiet = BuildControl::new(&|_| {}, &|| false);
+
+        let first = build(&state, &workspace, request(tall(210), None), &quiet).expect("first");
+        let lineage = first.revision.lineage_id.clone();
+        let second = build(&state, &workspace, request(tall(215), Some(lineage.clone())), &quiet).expect("second");
+        assert!(matches!(second.revision.build, BuildState::Verified { .. }) && !second.reused);
+
+        let steps = RefCell::new(Vec::new());
+        let third = build(&state, &workspace, request(tall(210), Some(lineage)), &BuildControl::new(&|s| steps.borrow_mut().push(s), &|| false))
+            .expect("third");
+        assert!(third.reused, "nothing was built");
+        assert_eq!(*steps.borrow(), [BuildStep::SpecValidated], "no geometry, package, or slice step ran");
+        assert_eq!((third.revision.number, third.revision.parent_id.as_ref()), (3, Some(&second.revision.id)));
+        assert_eq!(third.revision.build_id, first.revision.build_id);
+        assert!(matches!(third.revision.build, BuildState::Verified { .. }));
+        assert_eq!(revisions_of(&state).len(), 3);
     }
 }

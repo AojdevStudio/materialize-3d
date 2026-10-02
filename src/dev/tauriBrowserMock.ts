@@ -4,7 +4,8 @@ import { mockIPC, mockWindows } from '@tauri-apps/api/mocks'
 import type { PrinterSnapshot } from '../stores/printer'
 import type { WorkspaceSnapshot } from '../stores/workspace'
 import type { PrinterConfig } from '../stores/printerConfigs'
-import type { SignRevision } from '../types/signs'
+import type { Revision } from '../types/designs'
+import type { BuildResult } from '../types/generated'
 import type { AgentEvent, AgentStatus, BuildStep, HistoryEntry, Provider } from '../types/agent'
 
 interface MockAppStateSnapshot {
@@ -97,11 +98,12 @@ function sampleModel(url: string) {
 
 // One verified sign revision so the Signs view renders in a plain browser.
 const MOCK_SIGN_PACKAGE_SHA = 'abc123f09e2d7b41c8a5e6f2d3b4c5a6e7f8091a2b3c4d5e6f708192a3b4c4e7'
-let mockSign: SignRevision = {
+let mockSign: Revision = {
   id: '6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b',
   lineage_id: '0a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d',
   number: 1,
   parent_id: null,
+  kind: 'sign',
   title: 'Back Shortly',
   spec: {
     schema_version: 1,
@@ -117,6 +119,7 @@ let mockSign: SignRevision = {
     elements: [],
   },
   spec_sha256: '5e'.repeat(32),
+  build_id: '6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b',
   build_key: 'b4'.repeat(32),
   requested_by: 'agent',
   build: {
@@ -146,14 +149,20 @@ let mockSign: SignRevision = {
           ['closed_manifold', 'non_degenerate', 'outward_orientation'].map((name) => ({
             id: `geometry.${name}.${body}`,
             passed: true,
+            advisory: false,
             detail: 'ok',
           })),
         ),
-        { id: 'geometry.bounds.sign', passed: true, detail: '150.00 x 210.00 x 2.60 mm' },
-        { id: 'slice.slice_succeeded', passed: true, detail: 'exit 0, return_code 0, 1 plate(s)' },
-        { id: 'slice.no_warnings', passed: true, detail: 'no plate warnings' },
-        { id: 'slice.placement_preserved', passed: true, detail: 'max deviation 0.48 mm of 1.00 mm' },
-        { id: 'handoff.settings_match_slice', passed: true, detail: 'package settings and colors match the verified slice' },
+        { id: 'geometry.bounds.sign', passed: true, advisory: false, detail: '150.00 x 210.00 x 2.60 mm' },
+        { id: 'slice.slice_succeeded', passed: true, advisory: false, detail: 'exit 0, return_code 0, 1 plate(s)' },
+        { id: 'slice.no_warnings', passed: true, advisory: false, detail: 'no plate warnings' },
+        { id: 'slice.placement_preserved', passed: true, advisory: false, detail: 'max deviation 0.48 mm of 1.00 mm' },
+        {
+          id: 'handoff.settings_match_slice',
+          passed: true,
+          advisory: false,
+          detail: 'package settings and colors match the verified slice',
+        },
       ],
     },
   },
@@ -163,7 +172,7 @@ let mockSign: SignRevision = {
   updated_at: '2026-09-25T14:12:00Z',
 }
 
-/** Draws a stand-in finished face and returns PNG bytes, like `sign_preview`. */
+/** Draws a stand-in finished face and returns PNG bytes, like `design_preview`. */
 async function mockSignPreview(): Promise<ArrayBuffer> {
   const canvas = new OffscreenCanvas(600, 840)
   const context = canvas.getContext('2d')
@@ -182,9 +191,9 @@ async function mockSignPreview(): Promise<ArrayBuffer> {
   return (await canvas.convertToBlob({ type: 'image/png' })).arrayBuffer()
 }
 
-async function updateMockSign(next: Partial<SignRevision>): Promise<SignRevision> {
+async function updateMockSign(next: Partial<Revision>): Promise<Revision> {
   mockSign = { ...mockSign, ...next, updated_at: new Date().toISOString() }
-  await emit('signs:changed', mockSign.id)
+  await emit('designs:changed', mockSign.id)
   return structuredClone(mockSign)
 }
 
@@ -567,31 +576,38 @@ export function installTauriBrowserMock() {
       return undefined
     }
 
-    if (cmd === 'sign_list' || cmd === 'sign_lineage') {
+    if (cmd === 'design_list' || cmd === 'design_lineage') {
       return [structuredClone(mockSign)]
     }
 
-    if (cmd === 'sign_get') {
+    if (cmd === 'design_get') {
       return structuredClone(mockSign)
     }
 
-    if (cmd === 'sign_preview') {
+    if (cmd === 'design_preview') {
       return mockSignPreview()
     }
 
-    if (cmd === 'sign_approve') {
-      const args = payload as { id: string; packageSha256: string }
+    if (cmd === 'design_approve') {
+      const args = payload as { id: string; packageSha256: string; acknowledgedWarnings: string[] }
       if (args.packageSha256 !== MOCK_SIGN_PACKAGE_SHA) {
         throw `package hash mismatch: expected ${args.packageSha256}, found ${MOCK_SIGN_PACKAGE_SHA}`
       }
-      return updateMockSign({ approval: { status: 'approved', package_sha256: MOCK_SIGN_PACKAGE_SHA, at: new Date().toISOString() } })
+      return updateMockSign({
+        approval: {
+          status: 'approved',
+          package_sha256: MOCK_SIGN_PACKAGE_SHA,
+          acknowledged_warnings: args.acknowledgedWarnings,
+          at: new Date().toISOString(),
+        },
+      })
     }
 
-    if (cmd === 'sign_export') {
+    if (cmd === 'design_export') {
       return (payload as { destination: string }).destination
     }
 
-    if (cmd === 'sign_record_print') {
+    if (cmd === 'design_record_print') {
       const args = payload as { passed: boolean; note: string }
       const at = new Date().toISOString()
       return updateMockSign({
@@ -603,11 +619,11 @@ export function installTauriBrowserMock() {
       return JSON.stringify(mockSign.spec)
     }
 
-    if (cmd === 'sign_build') {
+    if (cmd === 'design_build') {
       return { revision: structuredClone(mockSign), reused: true }
     }
 
-    if (cmd === 'sign_cancel') {
+    if (cmd === 'design_cancel') {
       return false
     }
 
@@ -619,7 +635,7 @@ export function installTauriBrowserMock() {
 //
 // Mirrors the Rust agent's commands closely enough for `bun run dev` in a
 // browser: a prompt about the printer runs printer_status; anything else runs a
-// build_sign turn with one step every STEP_MS. Clear the key in Settings to see
+// build turn with one step every STEP_MS. Clear the key in Settings to see
 // the missing-key error.
 
 const NOT_AGENT = Symbol('not an agent command')
@@ -710,10 +726,10 @@ async function runMockTurn(turnId: string, text: string, channel: Channel<AgentE
 
   await say('Building a 150 x 210 x 2.6 mm sign: white PLA Basic base, navy and teal inlays.')
   const callId = crypto.randomUUID()
-  const buildArgs = { title: 'Back Shortly door sign', width_mm: 150, height_mm: 210 }
-  send({ type: 'toolCall', callId, name: 'build_sign', args: buildArgs })
+  const buildArgs = { kind: 'sign', spec: { title: 'Back Shortly door sign', width_mm: 150, height_mm: 210 } }
+  send({ type: 'toolCall', callId, name: 'build', args: buildArgs })
   const record = (status: 'completed' | 'cancelled', output: unknown) =>
-    mockAgent.history.push({ role: 'tool', callId, name: 'build_sign', args: buildArgs, status, output, createdAt: now() })
+    mockAgent.history.push({ role: 'tool', callId, name: 'build', args: buildArgs, status, output, createdAt: now() })
 
   for (const step of BUILD_STEPS) {
     await sleep(STEP_MS)
@@ -726,16 +742,23 @@ async function runMockTurn(turnId: string, text: string, channel: Channel<AgentE
   }
 
   mockAgent.revision += 1
-  const sign = {
+  const sign: BuildResult = {
     revision_id: `mock-rev-${mockAgent.revision}`,
+    lineage_id: 'mock-lineage',
+    kind: 'sign',
     number: mockAgent.revision,
-    title: buildArgs.title,
+    title: buildArgs.spec.title,
     build: 'verified',
+    failure_reason: null,
     checks_passed: 9,
     checks_total: 9,
     failed_checks: [],
+    warnings: [],
     package_sha256: 'abc123f09d1e7b55c0a4e2f6781d3b9ac0ffee12de45f67a89b0c1d2e3f4c4e7',
     approval: 'pending',
+    print_validation: 'not_tested',
+    requested_by: 'agent',
+    created_at: now(),
     reused: false,
   }
   send({ type: 'toolResult', callId, ok: true, output: sign })

@@ -5,12 +5,12 @@ use std::collections::HashMap;
 
 use serde::Serialize;
 
-use super::geometry::{mm, SignGeometry, UM_PER_MM};
+use super::geometry::{mm, SignLayout, UM_PER_MM};
 use super::spec::ValidSignSpec;
 use crate::fabrication::checks::{
     slice_and_handoff_checks, CheckId, CheckOutcome, CheckPhase, CheckPlan, CheckPlanId, InvalidPlan,
 };
-use crate::fabrication::model::Body;
+use crate::fabrication::model::{Body, PrintableModel};
 use crate::fabrication::printer::Um;
 
 /// Version of the sign's check plan: 6n + 9 checks for a palette of n filaments.
@@ -82,20 +82,21 @@ pub fn check_plan(spec: &ValidSignSpec) -> Result<CheckPlan, InvalidPlan> {
     CheckPlan::new(SIGN_CHECK_PLAN, required)
 }
 
-/// Runs every check. A sign is packageable only when all of them pass.
-pub fn check_geometry(geometry: &SignGeometry) -> Vec<GeometryCheck> {
-    let bodies = geometry.model.bodies();
+/// Measures `model` against the finished face it was built from. A sign is
+/// packageable only when every check passes.
+pub fn check_geometry(layout: &SignLayout, model: &PrintableModel) -> Vec<GeometryCheck> {
+    let bodies = model.bodies();
     let mut checks = Vec::new();
     for body in bodies {
         checks.push(closed_manifold(body));
         checks.push(non_degenerate(body));
         checks.push(outward_orientation(body));
     }
-    checks.push(bounds(geometry));
+    checks.push(bounds(layout, model));
     for body in &bodies[1..] {
-        checks.push(inlay_z_range(body, geometry.dims.d));
+        checks.push(inlay_z_range(body, layout.dims.d));
     }
-    checks.push(area_partition(geometry));
+    checks.push(area_partition(layout, model));
     for body in &bodies[1..] {
         let area = bottom_area_mm2(body);
         checks.push(GeometryCheck::new(
@@ -105,7 +106,7 @@ pub fn check_geometry(geometry: &SignGeometry) -> Vec<GeometryCheck> {
             format!("finished-face area {area:.3} mm²"),
         ));
     }
-    checks.extend(orientation_oracle(geometry));
+    checks.extend(orientation_oracle(layout, model));
     checks
 }
 
@@ -193,9 +194,9 @@ fn mm_of(um: Um) -> f64 {
     um as f64 / UM_PER_MM
 }
 
-fn bounds(geometry: &SignGeometry) -> GeometryCheck {
-    let [lo, hi] = geometry.model.bounds();
-    let d = geometry.dims;
+fn bounds(layout: &SignLayout, model: &PrintableModel) -> GeometryCheck {
+    let [lo, hi] = model.bounds();
+    let d = layout.dims;
     let want = [d.w, d.h, d.t].map(Um::from);
     let tolerance = Um::from(BOUNDS_TOLERANCE_UM);
     let passed = (0..3).all(|k| lo[k].abs() <= tolerance && (hi[k] - want[k]).abs() <= tolerance);
@@ -244,10 +245,10 @@ fn bottom_area_mm2(body: &Body) -> f64 {
     twice as f64 / 2.0 / UM_PER_MM.powi(2)
 }
 
-fn area_partition(geometry: &SignGeometry) -> GeometryCheck {
-    let parts: Vec<f64> = geometry.model.bodies().iter().map(bottom_area_mm2).collect();
+fn area_partition(layout: &SignLayout, model: &PrintableModel) -> GeometryCheck {
+    let parts: Vec<f64> = model.bodies().iter().map(bottom_area_mm2).collect();
     let total: f64 = parts.iter().sum();
-    let outline = geometry.outline_area_mm2;
+    let outline = layout.outline_area_mm2;
     let gap = (total - outline).abs() / outline;
     GeometryCheck::new(
         "area_partition",
@@ -264,17 +265,17 @@ fn area_partition(geometry: &SignGeometry) -> GeometryCheck {
 /// with the bed faces of the emitted meshes as seen by a camera under the bed.
 /// The camera undoes the mirror by where it stands; it never calls the
 /// face-down transform.
-fn orientation_oracle(geometry: &SignGeometry) -> Vec<GeometryCheck> {
+fn orientation_oracle(layout: &SignLayout, model: &PrintableModel) -> Vec<GeometryCheck> {
     let s = ORACLE_PX_PER_MM / UM_PER_MM;
-    let width = (mm(geometry.dims.w) * ORACLE_PX_PER_MM).ceil() as usize;
-    let height = (mm(geometry.dims.h) * ORACLE_PX_PER_MM).ceil() as usize;
+    let width = (mm(layout.dims.w) * ORACLE_PX_PER_MM).ceil() as usize;
+    let height = (mm(layout.dims.h) * ORACLE_PX_PER_MM).ceil() as usize;
 
     // Camera under the bed looking up: forward = +Z, screen up = +Y, so
     // screen right = forward x up = (0,0,1) x (0,1,0) = (-1,0,0) and screen
     // down = -Y. The image origin is the footprint corner at (max X, max Y).
     let right = [-1.0, 0.0];
     let down = [0.0, -1.0];
-    let origin = [f64::from(geometry.dims.w), f64::from(geometry.dims.h)];
+    let origin = [f64::from(layout.dims.w), f64::from(layout.dims.h)];
     let view = |v: [i64; 3]| {
         let rel = [v[0] as f64 - origin[0], v[1] as f64 - origin[1]];
         [
@@ -283,11 +284,10 @@ fn orientation_oracle(geometry: &SignGeometry) -> Vec<GeometryCheck> {
         ]
     };
 
-    geometry
-        .model
+    model
         .bodies()
         .iter()
-        .zip(&geometry.face)
+        .zip(&layout.face)
         .map(|(body, face)| {
             let mut expected = Mask::new(width, height);
             let rings: Vec<Vec<[f64; 2]>> = face

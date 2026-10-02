@@ -30,7 +30,7 @@ open "src-tauri/target/release/bundle/macos/Materialize 3D.app"
 
 1. Finish onboarding. On the AI provider step, choose OpenAI or Anthropic and paste your key, or skip and add it later in Settings under Agent.
 2. In the AI Assistant panel, send: `Make a 150 x 210 mm door sign that says BACK SHORTLY in navy on white with a teal rule under it.`
-   - You see `build_sign` with five steps: Spec validated, Geometry built, Package written, Sliced, Verified.
+   - You see `build` with five steps: Spec validated, Geometry built, Package written, Sliced, Verified.
    - The result reads `Verified N of N checks`, with every check passing, and `Awaiting your approval (the assistant cannot approve)`.
    - The Signs view opens on the new revision.
 3. In the Signs view, review the preview and the checks. Confirm the three rows are separate: Sliced and verified is Yes, Print-tested is Not tested, Approval is Pending for a hash.
@@ -63,14 +63,14 @@ CI and the steps above prove a verified slice. They do not prove a print. Print 
 
 ## Where the files are
 
-Each revision lives in `~/Library/Application Support/com.aojdevstudio.materialize3d/signs/<revision id>/`: `sign.3mf` (read-only), `preview.png`, `spec.json`, `checks.json`, and `slice/` with the G-code, `result.json`, `effective-settings.json`, and Bambu's logs.
+Each build lives in `~/Library/Application Support/com.aojdevstudio.materialize3d/signs/<build id>/`: `sign.3mf` (read-only), `preview.png`, `spec.json`, `checks.json`, and `slice/` with the G-code, `result.json`, `effective-settings.json`, and Bambu's logs. A revision's `build_id` names its build, and revisions that reuse a build share its directory. Builds from before revisions and builds were separate keep their revision's id as the directory name.
 
 ## Automated checks you can run
 
 ```bash
 cd src-tauri
 cargo test --lib
-cargo test --lib fabrication::build -- --ignored --nocapture --test-threads=1
+cargo test --lib fabrication::pipeline -- --ignored --nocapture --test-threads=1
 ```
 
 The second command builds, slices, and verifies a synthetic sign with your Bambu Studio and prints every check.

@@ -4,9 +4,9 @@
 //! Migrations tracked via `PRAGMA user_version`.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OpenFlags};
 
 use crate::state::{LibraryModel, PrintHistoryRecord, PrinterConfig};
 
@@ -70,7 +70,7 @@ pub fn init_db(db_path: &Path) -> Result<Connection, String> {
 }
 
 /// Schema version after every migration has run.
-pub const SCHEMA_VERSION: i32 = 5;
+pub const SCHEMA_VERSION: i32 = 6;
 
 /// Run all pending migrations based on `PRAGMA user_version`.
 fn run_migrations(conn: &Connection) -> Result<(), String> {
@@ -169,12 +169,156 @@ fn run_migrations(conn: &Connection) -> Result<(), String> {
         log::info!("database: applying migration 005 — create agent conversation tables");
         conn.execute_batch(crate::agent::store::MIGRATION_005)
             .map_err(|e| format!("migration 005 failed: {e}"))?;
-        conn.pragma_update(None, "user_version", SCHEMA_VERSION)
+        conn.pragma_update(None, "user_version", 5)
             .map_err(|e| format!("failed to set user_version to 5: {e}"))?;
         log::info!("database: migration 005 applied — schema version now 5");
     }
 
+    if version < 6 {
+        // A database that held sign revisions before this run keeps a copy of
+        // them: migration 006 is the first one that drops a table.
+        if version >= 4 {
+            backup_before_schema_6(conn)?;
+        }
+        log::info!("database: applying migration 006 — separate builds from revisions");
+        // It moves rows between tables, so all of it lands or none of it does.
+        let tx = conn.unchecked_transaction().map_err(|e| format!("migration 006 failed to start: {e}"))?;
+        tx.execute_batch(crate::fabrication::revisions::MIGRATION_006)
+            .map_err(|e| format!("migration 006 failed: {e}"))?;
+        tx.pragma_update(None, "user_version", SCHEMA_VERSION)
+            .map_err(|e| format!("failed to set user_version to 6: {e}"))?;
+        tx.commit().map_err(|e| format!("migration 006 failed to commit: {e}"))?;
+        log::info!("database: migration 006 applied — schema version now 6");
+    }
+
     Ok(())
+}
+
+/// Copies the database to `<database>.pre-schema-6` beside it before migration
+/// 006 drops `sign_revisions`.
+///
+/// The copy is written to `<backup>.partial` with `VACUUM INTO` (one consistent
+/// file that includes anything still in the WAL), checked against the live
+/// database, and only then published under its final name, which is never
+/// replaced. A backup that already exists is checked the same way before it is
+/// trusted. Anything that goes wrong stops the migration, so the database never
+/// reaches schema 6 without a good copy of its sign revisions. An in-memory
+/// database has no file to protect.
+fn backup_before_schema_6(conn: &Connection) -> Result<(), String> {
+    let Some(path) = conn.path().filter(|path| !path.is_empty()) else {
+        return Ok(());
+    };
+    let backup = PathBuf::from(format!("{path}.pre-schema-6"));
+    let staged = PathBuf::from(format!("{path}.pre-schema-6.partial"));
+    let failed = |why: String| format!("could not back up the database to {} before migration 006: {why}", backup.display());
+
+    let expected = backup_shape(conn).map_err(|e| failed(e.to_string()))?;
+    remove_if_present(&staged).map_err(|e| failed(format!("could not remove the stale {}: {e}", staged.display())))?;
+    if backup.symlink_metadata().is_ok() {
+        verify_backup(&backup, expected).map_err(|why| {
+            format!(
+                "the existing backup {} is not a copy of this database ({why}); move it aside and launch again",
+                backup.display()
+            )
+        })?;
+        log::info!("database: keeping the existing backup {}", backup.display());
+        return Ok(());
+    }
+
+    conn.execute("VACUUM INTO ?1", [staged.to_string_lossy()]).map_err(|e| failed(e.to_string()))?;
+    #[cfg(test)]
+    if tests::faulted(tests::Fault::CutStaged) {
+        tests::cut_in_half(&staged);
+    }
+    verify_backup(&staged, expected).map_err(failed)?;
+    publish_backup(&staged, &backup, expected).map_err(|e| failed(format!("could not publish the checked copy: {e}")))?;
+    log::info!("database: backed up the database to {} before migration 006", backup.display());
+    Ok(())
+}
+
+/// Gives the checked copy its final name without ever replacing a file
+/// already there. Both ways of publishing refuse an existing name in the same
+/// step that creates the file. A hard link is tried first. Some filesystems
+/// cannot link at all (exFAT, FAT32, SMB, some FUSE mounts), so on any other
+/// link failure the copy is written to a file created exclusively under the
+/// final name and checked again there.
+fn publish_backup(staged: &Path, backup: &Path, expected: (i32, i64)) -> Result<(), String> {
+    match hard_link(staged, backup) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => return Err(err.to_string()),
+        Err(link) => copy_exclusively(staged, backup, expected).map_err(|e| format!("hard link failed ({link}), then {e}"))?,
+    }
+    std::fs::remove_file(staged).map_err(|e| format!("could not remove {} after publishing it: {e}", staged.display()))
+}
+
+fn hard_link(staged: &Path, backup: &Path) -> std::io::Result<()> {
+    #[cfg(test)]
+    if tests::faulted(tests::Fault::HardLinkUnsupported) {
+        return Err(std::io::Error::from(std::io::ErrorKind::Unsupported));
+    }
+    std::fs::hard_link(staged, backup)
+}
+
+/// Copies `staged` into a file that `create_new` makes under the final name,
+/// which fails if anything already has that name. Once created, the file is
+/// ours: if the copy or its check fails, it is removed, so a half-written
+/// backup never stands in the way of a later launch.
+fn copy_exclusively(staged: &Path, backup: &Path, expected: (i32, i64)) -> Result<(), String> {
+    #[cfg(test)]
+    if tests::faulted(tests::Fault::PlantBackup) {
+        tests::plant(backup);
+    }
+    let mut published = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(backup)
+        .map_err(|e| format!("could not create it: {e}"))?;
+    let written = (|| {
+        std::io::copy(&mut std::fs::File::open(staged)?, &mut published)?;
+        published.sync_all()
+    })()
+    .map_err(|e| format!("could not copy it: {e}"));
+    drop(published);
+    #[cfg(test)]
+    if tests::faulted(tests::Fault::CutPublished) {
+        tests::cut_in_half(backup);
+    }
+    let result = written.and_then(|()| verify_backup(backup, expected));
+    if let Err(why) = result {
+        return Err(match std::fs::remove_file(backup) {
+            Ok(()) => why,
+            Err(e) => format!("{why}; the incomplete {} could not be removed: {e}", backup.display()),
+        });
+    }
+    Ok(())
+}
+
+/// What a backup must match: the schema version and the number of sign revisions.
+fn backup_shape(conn: &Connection) -> rusqlite::Result<(i32, i64)> {
+    let version = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    let sign_revisions = conn.query_row("SELECT count(*) FROM sign_revisions", [], |row| row.get(0))?;
+    Ok((version, sign_revisions))
+}
+
+/// Opens the copy at `path` read-only and checks it holds what the live database holds.
+fn verify_backup(path: &Path, (version, sign_revisions): (i32, i64)) -> Result<(), String> {
+    let copy = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX)
+        .map_err(|e| format!("could not open the copy: {e}"))?;
+    let found = backup_shape(&copy).map_err(|e| format!("could not read the copy: {e}"))?;
+    if found != (version, sign_revisions) {
+        return Err(format!(
+            "the copy holds schema {} with {} sign revisions, not schema {version} with {sign_revisions}",
+            found.0, found.1
+        ));
+    }
+    Ok(())
+}
+
+fn remove_if_present(path: &Path) -> std::io::Result<()> {
+    match std::fs::remove_file(path) {
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        other => other,
+    }
 }
 
 /// Insert a print history record.
@@ -977,6 +1121,269 @@ mod tests {
         drop(conn);
         let reopened = init_db(&path).expect("reopening is a no-op");
         assert_eq!(get_all_history(&reopened).unwrap().len(), 2);
+    }
+
+    /// A revision's columns that a migration must carry over unchanged.
+    type RevisionColumns = (String, String, u32, Option<String>, String, String, String, String, String, Option<String>, String, Option<String>);
+
+    fn revision_columns(conn: &Connection, sql: &str) -> Vec<RevisionColumns> {
+        let mut stmt = conn.prepare(sql).unwrap();
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?,
+                row.get(6)?, row.get(7)?, row.get(8)?, row.get(9)?, row.get(10)?, row.get(11)?,
+            ))
+        });
+        rows.unwrap().collect::<rusqlite::Result<_>>().unwrap()
+    }
+
+    /// Build state a migration must carry over unchanged, per revision id.
+    fn build_columns(conn: &Connection, sql: &str) -> Vec<(String, String, String, Option<String>, Option<String>)> {
+        let mut stmt = conn.prepare(sql).unwrap();
+        let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)));
+        rows.unwrap().collect::<rusqlite::Result<_>>().unwrap()
+    }
+
+    #[test]
+    fn a_schema_5_database_with_signs_moves_to_builds_and_revisions() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("materialize.db");
+        let before = Connection::open(&path).unwrap();
+        before.execute_batch(include_str!("../tests/fixtures/db/main-schema-v5-signs.sql")).unwrap();
+        let revisions_before = revision_columns(
+            &before,
+            "SELECT id, lineage_id, number, parent_id, title, spec_json, spec_sha256, requested_by, approval_status,
+                 approved_sha256, print_status, void_reason FROM sign_revisions ORDER BY id",
+        );
+        let builds_before = build_columns(
+            &before,
+            "SELECT id, build_key, build_status, failure_reason, artifacts_json FROM sign_revisions ORDER BY id",
+        );
+        drop(before);
+        assert_eq!(revisions_before.len(), 5);
+
+        let conn = init_db(&path).expect("migrates a schema-5 database");
+        let version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0)).unwrap();
+        assert_eq!(version, 6);
+        let tables: Vec<String> = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('builds', 'revisions', 'revision_exports', 'sign_revisions') ORDER BY name")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(tables, ["builds", "revision_exports", "revisions"]);
+
+        let revisions_after = revision_columns(
+            &conn,
+            "SELECT id, lineage_id, number, parent_id, title, spec_json, spec_sha256, requested_by, approval_status,
+                 approved_package_sha256, print_status, void_reason FROM revisions ORDER BY id",
+        );
+        assert_eq!(revisions_after, revisions_before, "ids, ancestry, specs, and human decisions are unchanged");
+        let builds_after = build_columns(
+            &conn,
+            "SELECT r.id, b.build_key, b.build_status, b.failure_reason, b.artifacts_json
+             FROM revisions r JOIN builds b ON b.id = r.build_id ORDER BY r.id",
+        );
+        assert_eq!(builds_after, builds_before, "each revision keeps its build key, build status, and artifacts as stored");
+        let odd: i64 = conn
+            .query_row("SELECT count(*) FROM revisions r JOIN builds b ON b.id = r.build_id WHERE r.kind != 'sign' OR b.legacy != 1 OR r.build_id != r.id", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(odd, 0, "every migrated revision is a sign on its own legacy build");
+
+        let listed = crate::fabrication::revisions::list_recent(&conn, 10).expect("every migrated row reads back");
+        assert_eq!(listed.len(), 5);
+        assert_eq!(crate::fabrication::revisions::unfinished_builds(&conn).unwrap().len(), 1, "the interrupted build is still found");
+        assert_eq!(get_all_history(&conn).unwrap().len(), 2, "other tables are untouched");
+
+        drop(conn);
+        let reopened = init_db(&path).expect("reopening is a no-op");
+        assert_eq!(crate::fabrication::revisions::list_recent(&reopened, 10).unwrap().len(), 5);
+    }
+
+    const SIGN_REVISION_COLUMNS: &str = "SELECT id, lineage_id, number, parent_id, title, spec_json, spec_sha256,
+        requested_by, approval_status, approved_sha256, print_status, void_reason FROM sign_revisions ORDER BY id";
+
+    /// A schema-5 database from the fixture at `dir/materialize.db`.
+    fn schema_5_database(dir: &Path) -> std::path::PathBuf {
+        let path = dir.join("materialize.db");
+        Connection::open(&path).unwrap().execute_batch(include_str!("../tests/fixtures/db/main-schema-v5-signs.sql")).unwrap();
+        path
+    }
+
+    fn backup_of(path: &Path) -> std::path::PathBuf {
+        path.with_file_name("materialize.db.pre-schema-6")
+    }
+
+    #[test]
+    fn migrating_a_schema_5_database_keeps_a_backup_with_its_sign_revisions() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = schema_5_database(dir.path());
+        let before = revision_columns(&Connection::open(&path).unwrap(), SIGN_REVISION_COLUMNS);
+
+        init_db(&path).expect("migrates");
+
+        let backup = Connection::open(backup_of(&path)).expect("the backup beside the database");
+        let version: i32 = backup.pragma_query_value(None, "user_version", |row| row.get(0)).unwrap();
+        assert_eq!(version, 5, "the backup is the database as it was before migration 006");
+        assert_eq!(revision_columns(&backup, SIGN_REVISION_COLUMNS), before, "every sign revision, unchanged");
+        assert!(!staged_of(&path).exists(), "the staged copy is gone once published");
+    }
+
+    /// Failures a test injects into the backup, each taken once where it applies.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(super) enum Fault {
+        /// The staged copy is cut short, as a write that stopped part way leaves it.
+        CutStaged,
+        /// The hard link fails as on a filesystem without hard links.
+        HardLinkUnsupported,
+        /// Another writer creates a file under the backup's name just before the fallback publishes.
+        PlantBackup,
+        /// The fallback's published copy is cut short before it is checked.
+        CutPublished,
+    }
+
+    thread_local! {
+        static FAULTS: std::cell::RefCell<Vec<Fault>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    fn inject(faults: &[Fault]) {
+        FAULTS.with(|injected| injected.borrow_mut().extend_from_slice(faults));
+    }
+
+    /// True once for each injected `fault`.
+    pub(super) fn faulted(fault: Fault) -> bool {
+        FAULTS.with(|injected| {
+            let mut injected = injected.borrow_mut();
+            let found = injected.iter().position(|f| *f == fault);
+            found.map(|i| injected.remove(i)).is_some()
+        })
+    }
+
+    pub(super) fn cut_in_half(path: &Path) {
+        let file = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+        let len = file.metadata().unwrap().len();
+        file.set_len(len / 2).unwrap();
+    }
+
+    const PLANTED: &[u8] = b"another writer's backup";
+
+    pub(super) fn plant(path: &Path) {
+        std::fs::write(path, PLANTED).unwrap();
+    }
+
+    /// On a filesystem that cannot hard-link, the checked copy is written to a
+    /// file created exclusively under the final name, and the migration proceeds.
+    #[test]
+    fn without_hard_links_the_checked_copy_is_copied_into_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = schema_5_database(dir.path());
+        let before = revision_columns(&Connection::open(&path).unwrap(), SIGN_REVISION_COLUMNS);
+
+        inject(&[Fault::HardLinkUnsupported]);
+        init_db(&path).expect("migrates");
+
+        assert!(!faulted(Fault::HardLinkUnsupported), "the hard link was tried and failed");
+        assert_eq!(version_of(&path), 6);
+        let backup = Connection::open(backup_of(&path)).expect("the published backup");
+        let version: i32 = backup.pragma_query_value(None, "user_version", |row| row.get(0)).unwrap();
+        assert_eq!(version, 5);
+        assert_eq!(revision_columns(&backup, SIGN_REVISION_COLUMNS), before, "the backup holds every sign revision");
+        assert!(!staged_of(&path).exists(), "the staged copy is removed once published");
+    }
+
+    /// A file that appears under the backup's name after every earlier check
+    /// is still never replaced: the fallback's exclusive create refuses it.
+    #[test]
+    fn the_fallback_never_replaces_a_backup_that_appears_while_it_publishes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = schema_5_database(dir.path());
+
+        inject(&[Fault::HardLinkUnsupported, Fault::PlantBackup]);
+        let err = init_db(&path).err().expect("the migration stops");
+
+        assert!(!faulted(Fault::PlantBackup), "the file was planted just before publishing");
+        assert!(err.contains("could not publish the checked copy"), "{err}");
+        assert_eq!(std::fs::read(backup_of(&path)).unwrap(), PLANTED, "the planted file is untouched");
+        assert_eq!(version_of(&path), 5, "migration 006 did not run");
+    }
+
+    /// A fallback copy that fails its check is removed, so the next launch
+    /// publishes a good one instead of stopping on a broken backup.
+    #[test]
+    fn a_fallback_copy_that_fails_its_check_is_removed_and_the_retry_migrates() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = schema_5_database(dir.path());
+        let before = revision_columns(&Connection::open(&path).unwrap(), SIGN_REVISION_COLUMNS);
+
+        inject(&[Fault::HardLinkUnsupported, Fault::CutPublished]);
+        let err = init_db(&path).err().expect("the migration stops");
+        assert!(err.contains("could not publish the checked copy"), "{err}");
+        assert!(backup_of(&path).symlink_metadata().is_err(), "the broken copy was removed");
+        assert_eq!(version_of(&path), 5, "migration 006 did not run");
+
+        init_db(&path).expect("the retry migrates");
+        assert_eq!(version_of(&path), 6);
+        let backup = Connection::open(backup_of(&path)).expect("backup");
+        assert_eq!(revision_columns(&backup, SIGN_REVISION_COLUMNS), before, "the backup holds every sign revision");
+    }
+
+    fn staged_of(path: &Path) -> std::path::PathBuf {
+        path.with_file_name("materialize.db.pre-schema-6.partial")
+    }
+
+    fn version_of(path: &Path) -> i32 {
+        Connection::open(path).unwrap().pragma_query_value(None, "user_version", |row| row.get(0)).unwrap()
+    }
+
+    /// A copy cut short stops the migration without leaving anything under the
+    /// backup's name, and the next launch makes a good copy and migrates.
+    #[test]
+    fn an_interrupted_backup_stops_the_migration_and_the_retry_backs_up_and_migrates() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = schema_5_database(dir.path());
+        let before = revision_columns(&Connection::open(&path).unwrap(), SIGN_REVISION_COLUMNS);
+
+        inject(&[Fault::CutStaged]);
+        let err = init_db(&path).err().expect("the migration stops");
+        assert!(err.contains("could not back up the database"), "{err}");
+        assert_eq!(version_of(&path), 5, "migration 006 did not run");
+        assert!(backup_of(&path).symlink_metadata().is_err(), "nothing was published under the backup's name");
+
+        init_db(&path).expect("the retry migrates");
+        assert_eq!(version_of(&path), 6);
+        let backup = Connection::open(backup_of(&path)).expect("backup");
+        assert_eq!(revision_columns(&backup, SIGN_REVISION_COLUMNS), before, "the backup holds every sign revision");
+        assert!(!staged_of(&path).exists(), "the stale staged copy is gone");
+    }
+
+    /// An empty database under the backup's name, as a failed copy used to
+    /// leave, is not trusted: the migration stops and the file is left alone.
+    #[test]
+    fn an_existing_backup_that_does_not_match_stops_the_migration() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = schema_5_database(dir.path());
+        drop(Connection::open(backup_of(&path)).unwrap());
+        let left = std::fs::read(backup_of(&path)).unwrap();
+
+        let err = init_db(&path).err().expect("the migration stops");
+        assert!(err.contains("is not a copy of this database"), "{err}");
+        assert_eq!(version_of(&path), 5, "migration 006 did not run");
+        assert_eq!(std::fs::read(backup_of(&path)).unwrap(), left, "the existing file is left alone");
+    }
+
+    /// A good copy from an earlier attempt is kept, never replaced.
+    #[test]
+    fn an_existing_backup_that_matches_is_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = schema_5_database(dir.path());
+        std::fs::copy(&path, backup_of(&path)).unwrap();
+        let earlier = std::fs::read(backup_of(&path)).unwrap();
+
+        init_db(&path).expect("migrates");
+
+        assert_eq!(version_of(&path), 6);
+        assert_eq!(std::fs::read(backup_of(&path)).unwrap(), earlier, "the earlier copy is kept as it was");
     }
 
     #[test]

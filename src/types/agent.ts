@@ -1,6 +1,9 @@
-// Mirrors src-tauri/src/agent/protocol.rs; change both together.
+// Mirrors src-tauri/src/agent/protocol.rs; change both together. `BuildStep`
+// is generated from Rust (./generated.ts).
 
-export type BuildStep = 'spec_validated' | 'geometry_built' | 'package_written' | 'sliced' | 'verified'
+import type { BuildStep } from './generated'
+
+export type { BuildStep }
 
 export type AgentErrorKind = 'missingApiKey' | 'provider' | 'internal'
 

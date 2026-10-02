@@ -330,13 +330,14 @@ mod tests {
 
     use super::*;
     use crate::fabrication::printer::P2S_04;
-    use crate::fabrication::sign::{build_geometry, check_geometry, check_plan, GeometryCheck, ValidSignSpec};
+    use crate::fabrication::kinds::sign::{build_model, check_geometry, check_plan, GeometryCheck, SignDesign, ValidSignSpec};
 
     fn checked() -> CheckedModel {
-        let spec = ValidSignSpec::from_json(include_str!("../../tests/fixtures/signs/synthetic-one-ink.json")).expect("spec");
-        let geometry = build_geometry(&spec, &P2S_04).expect("geometry");
-        let evidence = check_geometry(&geometry).iter().map(GeometryCheck::outcome).collect();
-        check_plan(&spec).expect("plan").certify(geometry.into_model(), evidence).expect("certified")
+        let spec = ValidSignSpec::from_json(include_str!("../../tests/fixtures/signs/synthetic-one-ink.json"), &P2S_04).expect("spec");
+        let design = SignDesign::new(spec).expect("layout");
+        let model = build_model(design.layout(), design.spec().title(), &P2S_04).expect("model");
+        let evidence = check_geometry(design.layout(), &model).iter().map(GeometryCheck::outcome).collect();
+        check_plan(design.spec()).expect("plan").certify(model, evidence).expect("certified")
     }
 
     fn entry(path: &Path, name: &str) -> String {

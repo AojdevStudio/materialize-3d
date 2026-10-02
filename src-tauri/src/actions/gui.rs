@@ -1,9 +1,9 @@
-//! Tauri commands for the Signs view: the GUI's caller of [`Actions`]. These
+//! Tauri commands for the designs view: the GUI's caller of [`Actions`]. These
 //! are the only callers that act as `Actor::Human`, and the only code that can
 //! create a [`HumanActor`].
 
 use std::collections::hash_map::Entry;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -13,8 +13,10 @@ use tauri::ipc::{Channel, Response};
 use tauri::{AppHandle, Emitter, Runtime, State};
 
 use super::{Actions, EventSink};
-use crate::fabrication::build::{BuildOutcome, BuildStep};
-use crate::fabrication::revisions::{Actor, SignRevision};
+use crate::fabrication::pipeline::{BuildOutcome, BuildStep};
+use crate::fabrication::checks::CheckId;
+use crate::fabrication::kind::BuildControl;
+use crate::fabrication::revisions::{Actor, ExportFormat, Revision};
 
 /// Proof that a person at the GUI is acting. Its field is private to this
 /// module, so tools, the agent, and MCP cannot create one, and approving,
@@ -94,9 +96,10 @@ fn error(err: impl std::fmt::Display) -> String {
 }
 
 #[tauri::command]
-pub async fn sign_build(
+pub async fn design_build(
     actions: State<'_, Actions>,
     builds: State<'_, GuiBuilds>,
+    kind: String,
     spec: Value,
     lineage_id: Option<String>,
     build_id: String,
@@ -105,15 +108,11 @@ pub async fn sign_build(
     let cancel = builds.register(&build_id)?;
     let actions = actions.inner().clone();
     let outcome = tauri::async_runtime::spawn_blocking(move || {
-        actions.build_sign(
-            spec,
-            lineage_id.as_deref(),
-            Actor::Human,
-            &|step| {
-                let _ = on_progress.send(step);
-            },
-            &|| cancel.load(Ordering::Relaxed),
-        )
+        let progress = |step| {
+            let _ = on_progress.send(step);
+        };
+        let cancelled = || cancel.load(Ordering::Relaxed);
+        actions.build(&kind, spec, lineage_id.as_deref(), Actor::Human, &BuildControl::new(&progress, &cancelled))
     })
     .await
     .map_err(error);
@@ -122,50 +121,55 @@ pub async fn sign_build(
 }
 
 #[tauri::command]
-pub fn sign_cancel(builds: State<'_, GuiBuilds>, build_id: String) -> Result<bool, String> {
+pub fn design_cancel(builds: State<'_, GuiBuilds>, build_id: String) -> Result<bool, String> {
     builds.cancel(&build_id)
 }
 
 #[tauri::command]
-pub fn sign_list(actions: State<'_, Actions>, limit: Option<u32>) -> Result<Vec<SignRevision>, String> {
-    actions.list_signs(limit.unwrap_or(100)).map_err(error)
+pub fn design_list(actions: State<'_, Actions>, limit: Option<u32>) -> Result<Vec<Revision>, String> {
+    actions.list(limit.unwrap_or(100)).map_err(error)
 }
 
 #[tauri::command]
-pub fn sign_lineage(actions: State<'_, Actions>, lineage_id: String) -> Result<Vec<SignRevision>, String> {
-    actions.sign_lineage(&lineage_id).map_err(error)
+pub fn design_lineage(actions: State<'_, Actions>, lineage_id: String) -> Result<Vec<Revision>, String> {
+    actions.lineage(&lineage_id).map_err(error)
 }
 
 #[tauri::command]
-pub fn sign_get(actions: State<'_, Actions>, id: String) -> Result<SignRevision, String> {
-    actions.get_sign(&id).map_err(error)
+pub fn design_get(actions: State<'_, Actions>, id: String) -> Result<Revision, String> {
+    actions.get(&id).map_err(error)
 }
 
 #[tauri::command]
-pub fn sign_preview(actions: State<'_, Actions>, id: String) -> Result<Response, String> {
-    actions.sign_preview_png(&id).map(Response::new).map_err(error)
+pub fn design_preview(actions: State<'_, Actions>, id: String) -> Result<Response, String> {
+    actions.preview_png(&id).map(Response::new).map_err(error)
 }
 
 #[tauri::command]
-pub fn sign_approve(actions: State<'_, Actions>, id: String, package_sha256: String) -> Result<SignRevision, String> {
-    actions.approve(&PERSON, &id, package_sha256).map_err(error)
+pub fn design_approve(
+    actions: State<'_, Actions>,
+    id: String,
+    package_sha256: String,
+    acknowledged_warnings: BTreeSet<CheckId>,
+) -> Result<Revision, String> {
+    actions.approve(&PERSON, &id, package_sha256, acknowledged_warnings).map_err(error)
 }
 
 #[tauri::command]
-pub fn sign_export(actions: State<'_, Actions>, id: String, destination: String) -> Result<String, String> {
+pub fn design_export(actions: State<'_, Actions>, id: String, format: ExportFormat, destination: String) -> Result<String, String> {
     actions
-        .export(&PERSON, &id, &PathBuf::from(destination))
+        .export(&PERSON, &id, format, &PathBuf::from(destination))
         .map(|written| written.display().to_string())
         .map_err(error)
 }
 
 #[tauri::command]
-pub fn sign_record_print(
+pub fn design_record_print(
     actions: State<'_, Actions>,
     id: String,
     passed: bool,
     note: String,
-) -> Result<SignRevision, String> {
+) -> Result<Revision, String> {
     actions.record_print_result(&PERSON, &id, passed, &note).map_err(error)
 }
 

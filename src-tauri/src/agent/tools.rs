@@ -2,7 +2,7 @@
 //! to Rig for one turn.
 //!
 //! Every call is journaled as `started` before it runs, reported to the UI as
-//! `ToolCall`, then `ToolProgress` (build_sign only), then `ToolResult`, and
+//! `ToolCall`, then `ToolProgress` (build only), then `ToolResult`, and
 //! journaled again with its outcome. A tool never fails the turn: errors go
 //! back to the model and the UI as `{ "error": ... }` with `ok: false`.
 

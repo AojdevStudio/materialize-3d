@@ -1,17 +1,21 @@
 {
   "captured_from": "canonical/main b046141, before the shared model, printer profile, and check plans",
+  "spec_sha256_captured_from": "canonical/main f7aee8f, before object kinds",
   "packages": {
     "synthetic-back-shortly": {
       "sha256": "a99dbb1d78752018455ddcbcc7462aba0aba6a965ca26810be21ae2144d333c5",
-      "bytes": 293399
+      "bytes": 293399,
+      "spec_sha256": "8251927fe35f701ab5275eba7fb540f100b08776616b5c20a9e9db88d4d4c0eb"
     },
     "p2s-test-sign": {
       "sha256": "9fee629040b4a8a782ca3dc9a359f05a709c1c33117a49c3c6542d72cba90738",
-      "bytes": 89912
+      "bytes": 89912,
+      "spec_sha256": "48af20da2213ee2682216b987a342b38e6ae7584d4d0df5be5013348dd8af5c0"
     },
     "synthetic-one-ink": {
       "sha256": "85582c6bbe03bf83563fdd81e8889dcc6ff0811ffd1fd31de93d304295dc3e25",
-      "bytes": 32053
+      "bytes": 32053,
+      "spec_sha256": "e7eda1e178e210f8cb139e9f644cb71aaaeed938dd043a77c1da17f5014e9ae9"
     }
   },
   "synthetic_back_shortly_check_ids": [

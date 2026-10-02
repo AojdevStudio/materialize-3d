@@ -2,25 +2,35 @@ use std::io::Read;
 
 use serde_json::{json, Value};
 
-use super::geometry::{build_geometry_with, Dims, Shapes, P};
+use super::geometry::{build_model_with, Dims, Shapes, P};
 use super::mesh::area2;
 use super::*;
+use crate::fabrication::kind::{Kind, KindDriver};
+use crate::fabrication::model::PrintableModel;
 use crate::fabrication::package::{write_package, PackageError, PackageInfo};
 use crate::fabrication::printer::P2S_04;
 
-const FIXTURE: &str = include_str!("../../../tests/fixtures/signs/synthetic-back-shortly.json");
+const FIXTURE: &str = include_str!("../../../../tests/fixtures/signs/synthetic-back-shortly.json");
 
-fn fixture() -> ValidSignSpec {
-    ValidSignSpec::from_json(FIXTURE).expect("fixture validates")
+fn design(json: &str) -> SignDesign {
+    SignDesign::new(ValidSignSpec::from_json(json, &P2S_04).expect("spec validates")).expect("layout")
 }
 
-/// Certifies the sign's geometry against its check plan and writes its package,
+fn fixture() -> SignDesign {
+    design(FIXTURE)
+}
+
+fn model_of(design: &SignDesign) -> PrintableModel {
+    build_model(design.layout(), design.spec().title(), &P2S_04).unwrap()
+}
+
+/// Certifies the sign's model against its check plan and writes its package,
 /// as the build pipeline does, with the title as the 3MF object name.
-fn package(spec: &ValidSignSpec, out: &std::path::Path) -> Result<PackageInfo, PackageError> {
-    let geometry = build_geometry(spec, &P2S_04).unwrap();
-    let evidence = check_geometry(&geometry).iter().map(GeometryCheck::outcome).collect();
-    let checked = check_plan(spec).unwrap().certify(geometry.into_model(), evidence).unwrap();
-    write_package(&checked, spec.title(), &P2S_04, out)
+fn package(design: &SignDesign, out: &std::path::Path) -> Result<PackageInfo, PackageError> {
+    let model = model_of(design);
+    let evidence = check_geometry(design.layout(), &model).iter().map(GeometryCheck::outcome).collect();
+    let checked = check_plan(design.spec()).unwrap().certify(model, evidence).unwrap();
+    write_package(&checked, design.spec().title(), &P2S_04, out)
 }
 
 fn failed(checks: &[GeometryCheck]) -> Vec<String> {
@@ -39,16 +49,16 @@ fn area_mm2(shapes: &Shapes) -> f64 {
 fn fixture_with(edit: impl FnOnce(&mut Value)) -> Result<ValidSignSpec, SpecError> {
     let mut value: Value = serde_json::from_str(FIXTURE).unwrap();
     edit(&mut value);
-    ValidSignSpec::from_json(&value.to_string())
+    ValidSignSpec::from_json(&value.to_string(), &P2S_04)
 }
 
 #[test]
 fn fixture_geometry_passes_every_check() {
-    let geometry = build_geometry(&fixture(), &P2S_04).unwrap();
-    let checks = check_geometry(&geometry);
+    let design = fixture();
+    let model = model_of(&design);
+    let checks = check_geometry(design.layout(), &model);
     assert_eq!(failed(&checks), Vec::<String>::new());
-    let names: Vec<_> = geometry
-        .model()
+    let names: Vec<_> = model
         .bodies()
         .iter()
         .map(|b| (b.name.as_str(), b.slot.number()))
@@ -69,11 +79,10 @@ fn fixture_geometry_passes_every_check() {
 
 #[test]
 fn the_acceptance_sign_passes_every_geometry_check() {
-    let spec = ValidSignSpec::from_json(include_str!("../../../../docs/acceptance/p2s-test-sign.json")).expect("valid spec");
-    let geometry = build_geometry(&spec, &P2S_04).expect("geometry");
-    assert_eq!(failed(&check_geometry(&geometry)), Vec::<String>::new());
+    let design = design(include_str!("../../../../../docs/acceptance/p2s-test-sign.json"));
+    assert_eq!(failed(&check_geometry(design.layout(), &model_of(&design))), Vec::<String>::new());
     if let Some(out) = std::env::var_os("ACCEPTANCE_PREVIEW_OUT") {
-        std::fs::write(out, render_preview(&geometry, 10.0).expect("preview")).expect("write preview");
+        std::fs::write(out, render_preview(design.layout(), 10.0).expect("preview")).expect("write preview");
     }
 }
 
@@ -152,6 +161,11 @@ fn rejects_bad_hex() {
     }
 }
 
+/// The hash the build key is made from, through the kind as the pipeline parses it.
+fn spec_hash(json: &str) -> String {
+    Kind::<Sign>::NEW.parse(serde_json::from_str(json).unwrap(), &P2S_04).unwrap().spec_sha256().to_string()
+}
+
 #[test]
 fn spec_hash_is_stable_across_field_order() {
     /// JSON text with every object's keys in reverse order.
@@ -176,17 +190,49 @@ fn spec_hash_is_stable_across_field_order() {
             scalar => scalar.to_string(),
         }
     }
-    let original = fixture();
     let reversed_json = reversed(&serde_json::from_str(FIXTURE).unwrap());
     assert!(
         reversed_json.starts_with(r#"{"width_mm":150"#),
         "{reversed_json:.40}"
     );
-    let reordered = ValidSignSpec::from_json(&reversed_json).unwrap();
-    assert_eq!(spec_hash(&original), spec_hash(&reordered));
+    assert_eq!(spec_hash(FIXTURE), spec_hash(&reversed_json));
 
-    let changed = fixture_with(|v| v["elements"][1]["text"] = json!("BACK SOON")).unwrap();
-    assert_ne!(spec_hash(&original), spec_hash(&changed));
+    let mut changed: Value = serde_json::from_str(FIXTURE).unwrap();
+    changed["elements"][1]["text"] = json!("BACK SOON");
+    assert_ne!(spec_hash(FIXTURE), spec_hash(&changed.to_string()));
+}
+
+/// Sign build keys join the kind's tag and the spec hash. Both must stay what
+/// they were before kinds existed, or no pre-kind sign build would be reused.
+#[test]
+fn sign_spec_hashes_and_tag_match_the_characterization_fixture() {
+    let expected: Value = serde_json::from_str(CHARACTERIZATION).unwrap();
+    for (name, json) in [
+        ("synthetic-back-shortly", FIXTURE),
+        ("p2s-test-sign", include_str!("../../../../../docs/acceptance/p2s-test-sign.json")),
+        ("synthetic-one-ink", include_str!("../../../../tests/fixtures/signs/synthetic-one-ink.json")),
+    ] {
+        assert_eq!(spec_hash(json), expected["packages"][name]["spec_sha256"], "{name} spec hash");
+    }
+    let parsed = Kind::<Sign>::NEW.parse(serde_json::from_str(FIXTURE).unwrap(), &P2S_04).unwrap();
+    assert_eq!(parsed.tag(), "sign-pipeline-1");
+    assert_eq!(parsed.kind().as_str(), "sign");
+}
+
+/// The edge limit is the bed of the printer the spec is validated for.
+#[test]
+fn a_sign_edge_may_not_exceed_the_printers_bed() {
+    let wide = |width: f64| {
+        let mut value: Value = serde_json::from_str(FIXTURE).unwrap();
+        value["width_mm"] = json!(width);
+        value.to_string()
+    };
+    let small = crate::fabrication::printer::PrinterProfile { bed: [100_000, 256_000, 256_000], ..P2S_04 };
+    assert!(ValidSignSpec::from_json(&wide(150.0), &P2S_04).is_ok());
+    let err = ValidSignSpec::from_json(&wide(150.0), &small).unwrap_err();
+    assert_eq!(err.to_string(), "width_mm: 150 mm exceeds the 100 mm bed");
+    let err = ValidSignSpec::from_json(&wide(257.0), &P2S_04).unwrap_err();
+    assert_eq!(err.to_string(), "width_mm: 257 mm exceeds the 256 mm bed");
 }
 
 #[test]
@@ -250,7 +296,9 @@ fn orientation_oracle_rejects_an_unmirrored_face() {
     fn wrong(p: P, dims: Dims) -> P {
         P::new(p.x, dims.h - p.y)
     }
-    let checks = check_geometry(&build_geometry_with(&fixture(), &P2S_04, wrong).unwrap());
+    let design = fixture();
+    let mirrored = build_model_with(design.layout(), design.spec().title(), &P2S_04, wrong).unwrap();
+    let checks = check_geometry(design.layout(), &mirrored);
     let failures = failed(&checks);
     assert!(!failures.is_empty());
     assert!(
@@ -267,7 +315,7 @@ fn orientation_oracle_rejects_an_unmirrored_face() {
 
 #[test]
 fn base_paint_knocks_out_and_later_ink_paints_over() {
-    let spec = ValidSignSpec::from_json(
+    let design = design(
         &json!({
             "schema_version": 1,
             "width_mm": 100, "height_mm": 60,
@@ -281,11 +329,9 @@ fn base_paint_knocks_out_and_later_ink_paints_over() {
             ]
         })
         .to_string(),
-    )
-    .unwrap();
-    let geometry = build_geometry(&spec, &P2S_04).unwrap();
-    assert_eq!(failed(&check_geometry(&geometry)), Vec::<String>::new());
-    let [base, navy, teal] = [0, 1, 2].map(|i| area_mm2(&geometry.face[i]));
+    );
+    assert_eq!(failed(&check_geometry(design.layout(), &model_of(&design))), Vec::<String>::new());
+    let [base, navy, teal] = [0, 1, 2].map(|i| area_mm2(&design.layout().face[i]));
     // Navy: 40x40 minus the teal overlap (10x40) minus the knockout (10x10), plus 10x10.
     assert!(
         (navy - (1600.0 - 400.0 - 100.0 + 100.0)).abs() < 1e-6,
@@ -306,9 +352,9 @@ fn write_fixture_artifacts() {
     let out =
         std::path::PathBuf::from(std::env::var("SIGN_FIXTURE_OUT").expect("set SIGN_FIXTURE_OUT"));
     std::fs::create_dir_all(&out).unwrap();
-    let spec = fixture();
-    let geometry = build_geometry(&spec, &P2S_04).unwrap();
-    let checks = check_geometry(&geometry);
+    let design = fixture();
+    let model = model_of(&design);
+    let checks = check_geometry(design.layout(), &model);
     std::fs::write(
         out.join("checks.json"),
         serde_json::to_vec_pretty(&checks).unwrap(),
@@ -316,18 +362,17 @@ fn write_fixture_artifacts() {
     .unwrap();
     std::fs::write(
         out.join("preview.png"),
-        render_preview(&geometry, 5.0).unwrap(),
+        render_preview(design.layout(), 5.0).unwrap(),
     )
     .unwrap();
-    let triangles: Vec<(String, usize)> = geometry
-        .model()
+    let triangles: Vec<(String, usize)> = model
         .bodies()
         .iter()
         .map(|b| (b.name.clone(), b.mesh.triangles().len()))
         .collect();
-    let info = package(&spec, &out.join("synthetic-back-shortly.3mf")).unwrap();
+    let info = package(&design, &out.join("synthetic-back-shortly.3mf")).unwrap();
     let summary = json!({
-        "spec_hash": spec_hash(&spec),
+        "spec_hash": spec_hash(FIXTURE),
         "package": info,
         "triangles": triangles,
     });
@@ -342,7 +387,7 @@ fn write_fixture_artifacts() {
 
 /// Package hashes captured from `canonical/main` before signs moved onto the
 /// shared printable model. Any change to sign package bytes fails here.
-const CHARACTERIZATION: &str = include_str!("../../../tests/fixtures/signs/characterization.json");
+const CHARACTERIZATION: &str = include_str!("../../../../tests/fixtures/signs/characterization.json");
 
 #[test]
 fn sign_packages_match_the_characterization_fixture() {
@@ -350,11 +395,10 @@ fn sign_packages_match_the_characterization_fixture() {
     let dir = tempfile::tempdir().unwrap();
     for (name, json) in [
         ("synthetic-back-shortly", FIXTURE),
-        ("p2s-test-sign", include_str!("../../../../docs/acceptance/p2s-test-sign.json")),
-        ("synthetic-one-ink", include_str!("../../../tests/fixtures/signs/synthetic-one-ink.json")),
+        ("p2s-test-sign", include_str!("../../../../../docs/acceptance/p2s-test-sign.json")),
+        ("synthetic-one-ink", include_str!("../../../../tests/fixtures/signs/synthetic-one-ink.json")),
     ] {
-        let spec = ValidSignSpec::from_json(json).unwrap();
-        let info = package(&spec, &dir.path().join(format!("{name}.3mf"))).unwrap();
+        let info = package(&design(json), &dir.path().join(format!("{name}.3mf"))).unwrap();
         let want = &expected["packages"][name];
         assert_eq!(info.sha256, want["sha256"], "{name} package sha256");
         assert_eq!(info.bytes, want["bytes"], "{name} package size");
@@ -371,12 +415,12 @@ fn the_sign_check_plan_names_the_characterized_checks_in_recorded_order() {
         .map(|id| id.as_str().unwrap())
         .collect();
     assert_eq!(want.len(), 27);
-    let plan = check_plan(&fixture()).unwrap();
+    let design = fixture();
+    let plan = check_plan(design.spec()).unwrap();
     let ids: Vec<&str> = plan.required().iter().map(|id| id.as_str()).collect();
     assert_eq!(ids, want);
     assert_eq!(plan.id(), SIGN_CHECK_PLAN);
 
-    let geometry = build_geometry(&fixture(), &P2S_04).unwrap();
-    let measured: Vec<String> = check_geometry(&geometry).iter().map(|c| c.id().to_string()).collect();
+    let measured: Vec<String> = check_geometry(design.layout(), &model_of(&design)).iter().map(|c| c.id().to_string()).collect();
     assert_eq!(measured, want[..18], "the geometry checks measured are the ones planned, in order");
 }
