@@ -1,7 +1,7 @@
-// Pure presentation helpers for the Signs view. Nothing here merges the three
+// Pure presentation helpers for the designs view. Nothing here merges the three
 // revision axes (build, approval, print validation); each is summarized alone.
 
-import type { Approval, BuildState, PrintValidation, RecordedCheck, Sha256Hex, SignRevision } from '../../types/signs'
+import type { Approval, BuildState, PrintValidation, RecordedCheck, Revision, Sha256Hex } from '../../types/designs'
 
 /** `abc123f…c4e7`: the first 7 and last 4 hex digits, the form the Approve button shows. */
 export function shortHash(hash: Sha256Hex): string {
@@ -23,6 +23,8 @@ export function buildWord(build: BuildState): StateWord {
       return { text: 'Verified', tone: 'ok' }
     case 'failed':
       return { text: 'Failed', tone: 'bad' }
+    case 'invalid':
+      return { text: 'Invalid', tone: 'bad' }
   }
 }
 
@@ -62,7 +64,7 @@ export function checkLabel(name: string): string {
   return words.charAt(0).toUpperCase() + words.slice(1)
 }
 
-const STAGES = { geometry: 'Geometry', slice: 'Slice', handoff: 'Handoff' } as const
+const STAGES = { geometry: 'Geometry', print: 'Print', slice: 'Slice', handoff: 'Handoff' } as const
 type StageKey = keyof typeof STAGES
 
 interface ParsedCheck {
@@ -83,6 +85,8 @@ export interface CheckRow {
   stage: string
   label: string
   passed: boolean
+  /** A failed advisory check: shown, and acknowledged on approval, but not a failure. */
+  warning: boolean
   detail: string
   /** Per-subject details of a grouped geometry row. */
   title?: string
@@ -90,8 +94,9 @@ export interface CheckRow {
 
 /**
  * Table rows for a revision's checks: every failed check first with its own
- * detail, then passing geometry checks grouped by name (one row lists the
- * bodies it covered), then each passing slice and handoff check on its own row.
+ * detail, then every warning, then passing geometry checks grouped by name
+ * (one row lists the bodies it covered), then each other passing check on its
+ * own row.
  */
 export function checkRows(checks: RecordedCheck[]): CheckRow[] {
   const single = (check: RecordedCheck): CheckRow => {
@@ -101,11 +106,13 @@ export function checkRows(checks: RecordedCheck[]): CheckRow[] {
       stage,
       label: subject ? `${checkLabel(name)} (${subject})` : checkLabel(name),
       passed: check.passed,
+      warning: check.advisory && !check.passed,
       detail: check.detail,
     }
   }
 
-  const failed = checks.filter((check) => !check.passed).map(single)
+  const failed = checks.filter((check) => !check.passed && !check.advisory).map(single)
+  const warnings = checks.filter((check) => !check.passed && check.advisory).map(single)
   const geometry = new Map<string, RecordedCheck[]>()
   const others: CheckRow[] = []
   for (const check of checks.filter((check) => check.passed)) {
@@ -125,27 +132,30 @@ export function checkRows(checks: RecordedCheck[]): CheckRow[] {
       stage: STAGES.geometry,
       label: checkLabel(name),
       passed: true,
+      warning: false,
       detail: onlySign ? group[0].detail : subjects.join(', '),
       title: group.map((check, index) => `${subjects[index]}: ${check.detail}`).join('\n'),
     }
   })
 
-  return [...failed, ...grouped, ...others]
+  return [...failed, ...warnings, ...grouped, ...others]
 }
 
 /**
  * Why Approve is unavailable for a build that is not verified: the first
  * failing check with its detail, else the build's recorded reason.
  */
-export function approveBlockedReason(revision: SignRevision): string | null {
+export function approveBlockedReason(revision: Revision): string | null {
   const { build } = revision
   switch (build.status) {
     case 'verified':
       return null
     case 'building':
       return 'Build still running'
+    case 'invalid':
+      return build.reason
     case 'failed': {
-      const failed = build.artifacts?.checks.find((check) => !check.passed)
+      const failed = build.artifacts?.checks.find((check) => !check.passed && !check.advisory)
       if (!failed) return build.reason
       const { name, subject } = parseCheckId(failed.id)
       const label = subject ? `${checkLabel(name)} (${subject})` : checkLabel(name)
@@ -155,8 +165,8 @@ export function approveBlockedReason(revision: SignRevision): string | null {
 }
 
 /** Default Save dialog name: `<title>-r<N>.3mf`, with path separators removed from the title. */
-export function exportFileName(revision: SignRevision): string {
-  const title = revision.title.replace(/[\\/:*?"<>|]/g, '-').trim() || 'sign'
+export function exportFileName(revision: Revision): string {
+  const title = revision.title.replace(/[\\/:*?"<>|]/g, '-').trim() || revision.kind
   return `${title}-r${revision.number}.3mf`
 }
 
@@ -166,12 +176,16 @@ export interface AxisSummary {
   note: string
 }
 
+/** Blocking checks only; warnings are counted on their own. */
 function checkCount(checks: RecordedCheck[]): string {
-  return `${checks.filter((check) => check.passed).length} of ${checks.length} checks passed`
+  const blocking = checks.filter((check) => !check.advisory)
+  const warnings = checks.filter((check) => check.advisory && !check.passed).length
+  const counted = `${blocking.filter((check) => check.passed).length} of ${blocking.length} checks passed`
+  return warnings > 0 ? `${counted}, ${warnings} ${warnings === 1 ? 'warning' : 'warnings'}` : counted
 }
 
 /** "Sliced and verified": the build axis alone. */
-export function buildAxis(revision: SignRevision): AxisSummary {
+export function buildAxis(revision: Revision): AxisSummary {
   const { build } = revision
   switch (build.status) {
     case 'building':
@@ -186,11 +200,13 @@ export function buildAxis(revision: SignRevision): AxisSummary {
         word: { text: 'No', tone: 'bad' },
         note: build.artifacts ? `sliced, ${checkCount(build.artifacts.checks)}` : build.reason,
       }
+    case 'invalid':
+      return { word: { text: 'No', tone: 'bad' }, note: build.reason }
   }
 }
 
 /** "Approval": the approval axis alone. A pending approval names the hash it would bind to, if any. */
-export function approvalAxis(revision: SignRevision): AxisSummary {
+export function approvalAxis(revision: Revision): AxisSummary {
   const { approval, build } = revision
   const word = approvalWord(approval)
   switch (approval.status) {
@@ -207,7 +223,7 @@ export function approvalAxis(revision: SignRevision): AxisSummary {
 }
 
 /** "Print-tested": the physical print axis alone. Only a person sets it. */
-export function printAxis(revision: SignRevision): AxisSummary {
+export function printAxis(revision: Revision): AxisSummary {
   const print = revision.print_validation
   const word = printWord(print)
   switch (print.status) {

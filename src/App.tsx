@@ -9,7 +9,7 @@ import { useLibraryEvents } from './stores/libraryStore'
 import { useOpenScadEvents, useOpenScadStore } from './stores/openscadStore'
 import { usePrinterConfigEvents, usePrinterConfigStore, hydratePrinterConfigs } from './stores/printerConfigs'
 import { useSettingsEvents, hydrateSettings } from './stores/settings'
-import { useSignsEvents } from './stores/signs'
+import { useDesignsEvents } from './stores/designs'
 import { useUiStore } from './stores/ui'
 import './styles/global.css'
 
@@ -39,7 +39,7 @@ function AppStateBridge() {
   useOpenScadEvents()
   usePrinterConfigEvents()
   useSettingsEvents()
-  useSignsEvents()
+  useDesignsEvents()
 
   useEffect(() => {
     const hydrate = async () => {

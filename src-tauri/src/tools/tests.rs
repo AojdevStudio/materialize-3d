@@ -123,3 +123,41 @@ fn the_build_schema_rejects_unknown_kinds_and_malformed_specs() {
         assert!(!validator.is_valid(&args), "schema accepted a spec with {why}");
     }
 }
+
+/// Where the frontend reads the types the chat and the designs view share with Rust.
+const GENERATED_TYPES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../src/types/generated.ts");
+
+/// src/types/generated.ts as these Rust types declare it.
+fn frontend_types() -> String {
+    use ts_rs::{Config, TS};
+    let cfg = Config::new();
+    let declarations = [
+        Actor::decl(&cfg),
+        BuildStep::decl(&cfg),
+        BuildStatus::decl(&cfg),
+        ApprovalStatus::decl(&cfg),
+        PrintStatus::decl(&cfg),
+        DesignSummary::decl(&cfg),
+        BuildResult::decl(&cfg),
+    ];
+    let mut out = String::from(
+        "// Generated from the Rust types by ts-rs. Do not edit; regenerate with\n\
+         // `cd src-tauri && UPDATE_GENERATED_TYPES=1 cargo test --lib generated_frontend_types`.\n",
+    );
+    for declaration in declarations {
+        out.push_str(&format!("\nexport {declaration}\n"));
+    }
+    out.lines().map(|line| format!("{}\n", line.trim_end())).collect()
+}
+
+/// The frontend's copies of these types are generated, never written by hand,
+/// so a change on either side fails here until the file is regenerated.
+#[test]
+fn generated_frontend_types_match_the_rust_types() {
+    let generated = frontend_types();
+    if std::env::var_os("UPDATE_GENERATED_TYPES").is_some() {
+        std::fs::write(GENERATED_TYPES, &generated).expect("write generated types");
+    }
+    let committed = std::fs::read_to_string(GENERATED_TYPES).expect("src/types/generated.ts");
+    assert_eq!(committed, generated, "src/types/generated.ts is stale; regenerate it");
+}

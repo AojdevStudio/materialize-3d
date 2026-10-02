@@ -236,6 +236,7 @@ fn hex(bytes: &[u8]) -> String {
 /// agents and external MCP callers can request builds and read state.
 /// Serialize-only: no request body or tool argument can deserialize into one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum Actor {
     Human,

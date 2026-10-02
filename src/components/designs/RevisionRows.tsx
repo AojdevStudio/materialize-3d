@@ -1,12 +1,12 @@
 import type { CSSProperties } from 'react'
-import type { RevisionId, SignRevision } from '../../types/signs'
-import { approvalWord, buildWord, formatTime, printWord, type StateWord } from './signFormat'
-import styles from './SignsView.module.css'
+import type { Revision, RevisionId } from '../../types/designs'
+import { approvalWord, buildWord, formatTime, printWord, type StateWord } from './designFormat'
+import styles from './DesignsView.module.css'
 
 interface RevisionRowsProps {
-  revisions: SignRevision[]
+  revisions: Revision[]
   currentId?: RevisionId | null
-  /** `recent` spans signs, so it adds Sign and Created columns; `lineage` fits the narrow preview column. */
+  /** `recent` spans designs, so it adds Sign and Created columns; `lineage` fits the narrow preview column. */
   variant: 'recent' | 'lineage'
   onOpen: (id: RevisionId) => void
 }

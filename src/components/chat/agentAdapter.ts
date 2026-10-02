@@ -12,7 +12,7 @@ type ToolArgs = ToolPart['args']
 
 /**
  * UI-only state carried on each tool-call part. `steps` lists completed
- * build_sign steps in order; `outcome` is set only for calls restored from
+ * build steps in order; `outcome` is set only for calls restored from
  * history that ended without a result (a live Stop is read from the part's
  * incomplete status instead).
  */
@@ -196,7 +196,7 @@ export function historyToMessages(entries: readonly HistoryEntry[]): ThreadMessa
         break
       case 'tool': {
         const outcome = HISTORY_OUTCOME[entry.status]
-        const finished = entry.status === 'completed' && entry.name === 'build_sign'
+        const finished = entry.status === 'completed' && entry.name === 'build'
         const artifact: ToolArtifact = { steps: finished ? [...BUILD_STEPS] : [], ...(outcome ? { outcome } : {}) }
         assistant(`tool-${entry.callId}`, entry.createdAt).content.push({
           ...toolPart(entry.callId, entry.name, entry.args, artifact),

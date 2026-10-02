@@ -5,7 +5,7 @@ import { ModelViewer } from './ModelViewer'
 import { PrintMonitor } from './PrintMonitor'
 import { PrintHistory } from './PrintHistory'
 import { ModelLibrary } from './ModelLibrary'
-import { SignsView } from './signs/SignsView'
+import { DesignsView } from './designs/DesignsView'
 import { useWorkspaceStore } from '../stores/workspace'
 import type { WorkspaceView } from '../stores/ui'
 
@@ -89,7 +89,7 @@ export function MainPanel() {
             <DesignTab />
           </Suspense>
         ) : activeTab === 'signs' ? (
-          <SignsView />
+          <DesignsView />
         ) : activeTab === 'monitor' ? (
           <PrintMonitor />
         ) : activeTab === 'history' ? (

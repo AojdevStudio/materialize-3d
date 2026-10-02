@@ -111,6 +111,7 @@ fn remove_dir_if_present(dir: &Path) -> std::io::Result<bool> {
 
 /// Coarse progress, in order. Each step is reported once it completes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum BuildStep {
     SpecValidated,

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { Artifacts, RecordedCheck, SignRevision } from '../types/signs'
+import type { Artifacts, RecordedCheck, Revision } from '../types/designs'
 
 type Listener = (event: { payload: unknown }) => void
 
@@ -26,18 +26,18 @@ vi.mock('@tauri-apps/api/event', () => ({
 
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn(), save: vi.fn() }))
 
-import { SignsView } from '../components/signs/SignsView'
-import { SIGNS_DEFAULT_STATE, useSignsEvents, useSignsStore } from '../stores/signs'
+import { DesignsView } from '../components/designs/DesignsView'
+import { DESIGNS_DEFAULT_STATE, useDesignsEvents, useDesignsStore } from '../stores/designs'
 
 const PACKAGE_SHA = 'abc123f09e2d7b41c8a5e6f2d3b4c5a6e7f8091a2b3c4d5e6f708192a3b4c4e7'
 const GCODE_SHA = '7f3a91c2e4d5b6a7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d0d1b'
 
 const PASSING: RecordedCheck[] = [
-  { id: 'geometry.closed_manifold.base', passed: true, detail: 'closed' },
-  { id: 'geometry.closed_manifold.navy', passed: true, detail: 'closed' },
-  { id: 'slice.slice_succeeded', passed: true, detail: 'exit 0, return_code 0, 1 plate(s)' },
-  { id: 'slice.placement_preserved', passed: true, detail: 'max deviation 0.48 mm' },
-  { id: 'handoff.settings_match_slice', passed: true, detail: 'package settings and colors match the verified slice' },
+  { id: 'geometry.closed_manifold.base', passed: true, advisory: false, detail: 'closed' },
+  { id: 'geometry.closed_manifold.navy', passed: true, advisory: false, detail: 'closed' },
+  { id: 'slice.slice_succeeded', passed: true, advisory: false, detail: 'exit 0, return_code 0, 1 plate(s)' },
+  { id: 'slice.placement_preserved', passed: true, advisory: false, detail: 'max deviation 0.48 mm' },
+  { id: 'handoff.settings_match_slice', passed: true, advisory: false, detail: 'package settings and colors match the verified slice' },
 ]
 
 function artifacts(checks: RecordedCheck[] = PASSING): Artifacts {
@@ -65,12 +65,13 @@ function artifacts(checks: RecordedCheck[] = PASSING): Artifacts {
   }
 }
 
-function revision(overrides: Partial<SignRevision> = {}): SignRevision {
+function revision(overrides: Partial<Revision> = {}): Revision {
   return {
     id: '11111111-1111-4111-8111-111111111111',
     lineage_id: '22222222-2222-4222-8222-222222222222',
     number: 2,
     parent_id: null,
+    kind: 'sign',
     title: 'Back Shortly',
     spec: {
       schema_version: 1,
@@ -81,6 +82,7 @@ function revision(overrides: Partial<SignRevision> = {}): SignRevision {
       elements: [],
     },
     spec_sha256: 'a'.repeat(64),
+    build_id: '33333333-3333-4333-8333-333333333333',
     build_key: 'b'.repeat(64),
     requested_by: 'agent',
     build: { status: 'verified', artifacts: artifacts() },
@@ -92,19 +94,19 @@ function revision(overrides: Partial<SignRevision> = {}): SignRevision {
   }
 }
 
-/** A backend holding one revision; `sign_approve` returns `approved` when given. */
-function backend(current: SignRevision, approved?: SignRevision) {
+/** A backend holding one revision; `design_approve` returns `approved` when given. */
+function backend(current: Revision, approved?: Revision) {
   invokeMock.mockImplementation(async (command: string) => {
     switch (command) {
-      case 'sign_list':
+      case 'design_list':
         return [current]
-      case 'sign_get':
+      case 'design_get':
         return current
-      case 'sign_lineage':
+      case 'design_lineage':
         return [current]
-      case 'sign_preview':
+      case 'design_preview':
         return new ArrayBuffer(8)
-      case 'sign_approve':
+      case 'design_approve':
         return approved
       case 'set_active_view':
         return {}
@@ -114,9 +116,9 @@ function backend(current: SignRevision, approved?: SignRevision) {
   })
 }
 
-async function openRevision(current: SignRevision, approved?: SignRevision) {
+async function openRevision(current: Revision, approved?: Revision) {
   backend(current, approved)
-  render(<SignsView />)
+  render(<DesignsView />)
   fireEvent.click(await screen.findByTestId('sign-revision-row'))
   return screen.findByTestId('sign-detail')
 }
@@ -128,16 +130,18 @@ const axis = (testId: string) => screen.getByTestId(testId).querySelector('td')?
 beforeEach(() => {
   invokeMock.mockReset()
   listeners.clear()
-  useSignsStore.setState(SIGNS_DEFAULT_STATE)
+  useDesignsStore.setState(DESIGNS_DEFAULT_STATE)
   URL.createObjectURL = vi.fn(() => 'blob:preview')
   URL.revokeObjectURL = vi.fn()
 })
 
 afterEach(() => cleanup())
 
-describe('Signs view', () => {
+const APPROVED = { status: 'approved', package_sha256: PACKAGE_SHA, acknowledged_warnings: [], at: '2026-09-25T14:20:00Z' } as const
+
+describe('Designs view', () => {
   it('disables Approve for a failed build and shows the failing check', async () => {
-    const failing = [...PASSING.slice(0, 3), { id: 'slice.placement_preserved', passed: false, detail: 'tool 1 off by 3.10 mm' }]
+    const failing = [...PASSING.slice(0, 3), { id: 'slice.placement_preserved', passed: false, advisory: false, detail: 'tool 1 off by 3.10 mm' }]
     await openRevision(
       revision({ build: { status: 'failed', reason: 'checks failed: slice.placement_preserved', artifacts: artifacts(failing) } }),
     )
@@ -150,15 +154,36 @@ describe('Signs view', () => {
     )
   })
 
-  it('approves with exactly the package hash the button displays', async () => {
+  it('approves with exactly the package hash the button displays and no warnings for a sign', async () => {
     const pending = revision()
-    await openRevision(pending, revision({ approval: { status: 'approved', package_sha256: PACKAGE_SHA, at: '2026-09-25T14:20:00Z' } }))
+    await openRevision(pending, revision({ approval: APPROVED }))
 
     const approve = screen.getByTestId('btn-approve') as HTMLButtonElement
     expect(approve.textContent).toBe('Approve r2 for abc123f…c4e7')
     fireEvent.click(approve)
 
-    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('sign_approve', { id: pending.id, packageSha256: PACKAGE_SHA }))
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith('design_approve', { id: pending.id, packageSha256: PACKAGE_SHA, acknowledgedWarnings: [] }),
+    )
+  })
+
+  it('shows a warning apart from the failures, keeps it out of the count, and acknowledges it on approval', async () => {
+    const overhang = { id: 'print.overhang.navy', passed: false, advisory: true, detail: '62 degrees unsupported' }
+    const pending = revision({ build: { status: 'verified', artifacts: artifacts([...PASSING, overhang]) } })
+    await openRevision(pending, revision({ approval: { ...APPROVED, acknowledged_warnings: [overhang.id] } }))
+
+    const row = screen.getByTestId('sign-checks').querySelector(`tr[data-check="${overhang.id}"]`)
+    expect(row?.querySelector('td')?.textContent).toBe('Warning')
+    expect(axis('axis-build')).toMatch(/^Yes 5 of 5 checks passed, 1 warning/)
+    fireEvent.click(screen.getByTestId('btn-approve'))
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith('design_approve', {
+        id: pending.id,
+        packageSha256: PACKAGE_SHA,
+        acknowledgedWarnings: [overhang.id],
+      }),
+    )
   })
 
   it('renders a void approval as void and offers no export', async () => {
@@ -173,7 +198,7 @@ describe('Signs view', () => {
   })
 
   it('keeps Print-tested at Not tested after approval', async () => {
-    await openRevision(revision(), revision({ approval: { status: 'approved', package_sha256: PACKAGE_SHA, at: '2026-09-25T14:20:00Z' } }))
+    await openRevision(revision(), revision({ approval: APPROVED }))
 
     fireEvent.click(screen.getByTestId('btn-approve'))
 
@@ -195,20 +220,34 @@ describe('Signs view', () => {
     expect(axis('axis-print')).toMatch(/^Passed .*clean first layer$/)
   })
 
-  it('opens the revision named by a signs:open event in the Signs view', async () => {
+  it('opens the revision named by a designs:open event in the Signs view', async () => {
     const target = revision()
     backend(target)
     function Harness() {
-      useSignsEvents()
-      return <SignsView />
+      useDesignsEvents()
+      return <DesignsView />
     }
     render(<Harness />)
-    await waitFor(() => expect(listeners.has('signs:open')).toBe(true))
+    await waitFor(() => expect(listeners.has('designs:open')).toBe(true))
 
-    act(() => listeners.get('signs:open')?.({ payload: { revisionId: target.id } }))
+    act(() => listeners.get('designs:open')?.({ payload: { revisionId: target.id } }))
 
     await screen.findByTestId('sign-detail')
     expect(invokeMock).toHaveBeenCalledWith('set_active_view', { view: 'signs' })
-    expect(invokeMock).toHaveBeenCalledWith('sign_get', { id: target.id })
+    expect(invokeMock).toHaveBeenCalledWith('design_get', { id: target.id })
+  })
+
+  it('shows an invalid build as not verified with its reason, and offers no approval', async () => {
+    const reason = 'package changed on disk (now 9f00…) after approval'
+    await openRevision(
+      revision({
+        build: { status: 'invalid', reason, artifacts: artifacts() },
+        approval: { status: 'void', reason, at: '2026-09-25T15:00:00Z' },
+      }),
+    )
+
+    expect(axis('axis-build')).toBe(`No ${reason}`)
+    expect(screen.queryByTestId('btn-approve')).toBeNull()
+    expect(screen.queryByTestId('btn-export')).toBeNull()
   })
 })

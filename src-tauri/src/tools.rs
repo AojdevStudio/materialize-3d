@@ -144,8 +144,12 @@ struct RevisionArgs {
 #[serde(deny_unknown_fields)]
 struct NoArgs {}
 
+// The summary types below are what the chat reads; `tests::frontend_types`
+// generates src/types/generated.ts from them.
+
 /// A revision's build, as one word.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum BuildStatus {
     Building,
@@ -156,6 +160,7 @@ pub enum BuildStatus {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum ApprovalStatus {
     Pending,
@@ -164,6 +169,7 @@ pub enum ApprovalStatus {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum PrintStatus {
     NotTested,
@@ -174,6 +180,7 @@ pub enum PrintStatus {
 /// A compact view of a revision for models and the chat: enough to reason
 /// about and to cite, without effective settings or file paths.
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 pub struct DesignSummary {
     pub revision_id: String,
     pub lineage_id: String,
@@ -240,6 +247,7 @@ impl From<&Revision> for DesignSummary {
 
 /// What `build` returns.
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 pub struct BuildResult {
     #[serde(flatten)]
     pub revision: DesignSummary,
