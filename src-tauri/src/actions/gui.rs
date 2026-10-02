@@ -18,7 +18,22 @@ use crate::fabrication::revisions::{Actor, SignRevision};
 
 /// Proof that a person at the GUI is acting. Its field is private to this
 /// module, so tools, the agent, and MCP cannot create one, and approving,
-/// exporting, or recording a print takes one.
+/// exporting, or recording a print takes one. That field's visibility is the
+/// whole compile-time proof, so never widen it: a `pub(crate)` field would not
+/// be caught by the doctests below, which compile outside the crate, and only
+/// the runtime `Actor::Human` check in `revisions::approve` would remain.
+///
+/// Code outside this module can name and use one it was given:
+///
+/// ```
+/// use materialize_3d_lib::actions::HumanActor;
+/// use materialize_3d_lib::fabrication::revisions::Actor;
+/// fn who(person: &HumanActor) -> Actor {
+///     person.actor()
+/// }
+/// ```
+///
+/// but cannot create one:
 ///
 /// ```compile_fail,E0423
 /// use materialize_3d_lib::actions::HumanActor;

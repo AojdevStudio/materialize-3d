@@ -103,6 +103,18 @@ pub type EventSink = Arc<dyn Fn(&str, Value) + Send + Sync>;
 /// [`Actions`] implements it for the running app; tests substitute the build
 /// pipeline without a window.
 ///
+/// A model-driven caller can read through it:
+///
+/// ```
+/// # use std::sync::Arc;
+/// # use materialize_3d_lib::actions::RequestActions;
+/// fn list_from_a_model(actions: Arc<dyn RequestActions>) {
+///     let _ = actions.list_signs(20);
+/// }
+/// ```
+///
+/// but cannot approve:
+///
 /// ```compile_fail,E0599
 /// # use std::sync::Arc;
 /// # use materialize_3d_lib::actions::RequestActions;
