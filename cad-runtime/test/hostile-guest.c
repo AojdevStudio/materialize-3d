@@ -122,6 +122,8 @@ int main(void) {
         uint32_t huge = 0x7fffffff;
         memcpy(buf + 12, &huge, 4); /* claims 2^31 vertices in a 200-byte payload */
         frame("MESH", buf, n);
+    } else if (strcmp(which, "empty-body") == 0) {
+        frame("MESH", buf, mesh(buf, v, 0, t, 0, 1)); /* one declared body with no vertices and no triangles */
     } else if (strcmp(which, "zero-bodies") == 0) {
         frame("MESH", buf, mesh(buf, v, 4, t, 4, 0) - (4 * 24 + 4 * 12 + 8));
     } else if (strcmp(which, "trailing") == 0) {

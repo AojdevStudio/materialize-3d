@@ -10,15 +10,18 @@
 //!
 //! Every command verifies the runtime files against the pinned sha256 digests before it boots anything, gives each
 //! guest a fresh job disk cloned from the template, and writes only host-named files into `--out`: `result.json`
-//! always, plus the accepted payloads. Exit codes: 0 accepted, 1 the job failed (a bounded, structured error),
-//! 2 the guest's output was rejected, 3 deadline or cancel, 4 runtime verification failed, 64 usage, 70 internal.
+//! always, plus the accepted payloads. `--out` must be absent or empty when the run starts, so every file in it
+//! belongs to this run, and a file that cannot be saved fails the run as internal. Exit codes: 0 accepted, 1 the job
+//! failed (a bounded, structured error), 2 the guest's output was rejected, 3 deadline or cancel, 4 runtime
+//! verification failed, 64 usage, 70 internal.
 //! In the shipped app the pins are compiled in; the spike reads them from a file so tests can point at copies.
 
 #[cfg(target_os = "macos")]
 mod vm;
 
+use std::cell::RefCell;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 use serde::Serialize;
@@ -52,6 +55,7 @@ impl Outcome {
 }
 
 /// A command's verdict: the outcome, a bounded error, and the facts collected on the way.
+#[derive(Debug)]
 struct Report {
     outcome: Outcome,
     error: Option<String>,
@@ -64,6 +68,52 @@ impl Report {
             outcome,
             error: Some(error.into()),
             fields: serde_json::Map::new(),
+        }
+    }
+
+    /// Fails the run as internal, keeping any earlier error after the new one.
+    fn fail_internal(&mut self, error: String) {
+        self.error = Some(match self.error.take() {
+            Some(earlier) => format!("{error} (after: {earlier})"),
+            None => error,
+        });
+        self.outcome = Outcome::Internal;
+    }
+}
+
+/// The helper's output directory. A run starts only with it absent or empty, so no earlier run's files can pass for
+/// this run's. Files are saved by host-chosen names through `save`, which records any failure; `finish` then fails
+/// the run as internal, whatever outcome it had reached.
+#[derive(Debug)]
+struct OutDir {
+    path: PathBuf,
+    unsaved: RefCell<Vec<String>>,
+}
+
+impl OutDir {
+    fn prepare(path: PathBuf) -> Result<Self, Report> {
+        let io = |e: std::io::Error| {
+            Report::fail(Outcome::Internal, format!("--out {}: {e}", path.display()))
+        };
+        std::fs::create_dir_all(&path).map_err(io)?;
+        if std::fs::read_dir(&path).map_err(io)?.next().is_some() {
+            let error = format!(
+                "--out {} must be absent or empty, so no earlier run's files can pass for this run's",
+                path.display()
+            );
+            return Err(Report::fail(Outcome::Usage, error));
+        }
+        Ok(Self {
+            path,
+            unsaved: RefCell::default(),
+        })
+    }
+
+    /// Saves one output file; a failure fails the run when it finishes.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    fn save(&self, name: &str, data: &[u8]) {
+        if let Err(e) = std::fs::write(self.path.join(name), data) {
+            self.unsaved.borrow_mut().push(format!("{name}: {e}"));
         }
     }
 }
@@ -108,35 +158,52 @@ fn main() -> ExitCode {
         Ok(args) => args,
         Err(e) => return finish(None, "usage", Report::fail(Outcome::Usage, e)),
     };
-    let out = args.path("out").ok();
-    if let Some(out) = &out
-        && let Err(e) = std::fs::create_dir_all(out)
-    {
-        return finish(
-            None,
-            &args.command,
-            Report::fail(Outcome::Internal, format!("--out: {e}")),
-        );
-    }
-    let report = run(&args).unwrap_or_else(|e| Report::fail(Outcome::Usage, e));
-    finish(out.as_deref(), &args.command, report)
+    let out = match args.path("out").map(OutDir::prepare) {
+        Ok(Ok(out)) => Some(out),
+        Ok(Err(report)) => return finish(None, &args.command, report),
+        Err(_) => None,
+    };
+    let report = run(&args, out.as_ref()).unwrap_or_else(|e| Report::fail(Outcome::Usage, e));
+    finish(out.as_ref(), &args.command, report)
 }
 
-fn finish(out: Option<&Path>, command: &str, report: Report) -> ExitCode {
-    let mut doc = json!({ "command": command, "outcome": report.outcome, "error": report.error });
-    doc.as_object_mut().expect("object").extend(report.fields);
-    let text = serde_json::to_string_pretty(&doc).expect("serializable");
-    if let Some(out) = out
-        && let Err(e) = std::fs::write(out.join("result.json"), &text)
-    {
-        eprintln!("could not write result.json: {e}");
-    }
+/// Prints the run's result and exits with its outcome's code.
+fn finish(out: Option<&OutDir>, command: &str, report: Report) -> ExitCode {
+    let (outcome, text) = conclude(out, command, report);
     println!("{text}");
-    ExitCode::from(report.outcome.code())
+    ExitCode::from(outcome.code())
+}
+
+/// Settles the final outcome and saves `result.json`. Any output file that could not be saved, `result.json`
+/// included, turns the outcome into internal. Returns the outcome and the JSON text to print.
+fn conclude(out: Option<&OutDir>, command: &str, mut report: Report) -> (Outcome, String) {
+    let render = |report: &Report| {
+        let mut doc =
+            json!({ "command": command, "outcome": report.outcome, "error": report.error });
+        doc.as_object_mut()
+            .expect("object")
+            .extend(report.fields.clone());
+        serde_json::to_string_pretty(&doc).expect("serializable")
+    };
+    let Some(out) = out else {
+        return (report.outcome, render(&report));
+    };
+    let unsaved = out.unsaved.take();
+    if !unsaved.is_empty() {
+        report.fail_internal(format!("could not save {}", unsaved.join("; ")));
+    }
+    let text = render(&report);
+    match std::fs::write(out.path.join("result.json"), &text) {
+        Ok(()) => (report.outcome, text),
+        Err(e) => {
+            report.fail_internal(format!("could not save result.json: {e}"));
+            (report.outcome, render(&report))
+        }
+    }
 }
 
 #[cfg(not(target_os = "macos"))]
-fn run(_args: &Args) -> Result<Report, String> {
+fn run(_args: &Args, _out: Option<&OutDir>) -> Result<Report, String> {
     Ok(Report::fail(
         Outcome::Internal,
         "the VM helper runs only on macOS; the protocol library is portable",
@@ -144,11 +211,11 @@ fn run(_args: &Args) -> Result<Report, String> {
 }
 
 #[cfg(target_os = "macos")]
-fn run(args: &Args) -> Result<Report, String> {
+fn run(args: &Args, out: Option<&OutDir>) -> Result<Report, String> {
     use cad_host::frame::{FrameLimits, Role};
 
+    let out = out.ok_or("--out is required")?;
     let runtime = Runtime::open(args)?;
-    let out = args.path("out")?;
     let limits = VmLimits::from_args(args)?;
     let job = match args.command.as_str() {
         "generate" | "build" => Some(generate_request(args)?),
@@ -167,14 +234,14 @@ fn run(args: &Args) -> Result<Report, String> {
         return Ok(report);
     }
     Ok(match (args.command.as_str(), job, step) {
-        ("generate", Some(job), _) => runtime.generate(job, &limits, &out).0,
-        ("inspect", _, Some(step)) => runtime.inspect(step, &limits, &out, None),
+        ("generate", Some(job), _) => runtime.generate(job, &limits, out).0,
+        ("inspect", _, Some(step)) => runtime.inspect(step, &limits, out, None),
         ("build", Some(job), _) => {
-            let (generated, accepted) = runtime.generate(job, &limits, &out);
+            let (generated, accepted) = runtime.generate(job, &limits, out);
             let Some((step, manifest)) = accepted else {
                 return Ok(generated);
             };
-            let mut inspected = runtime.inspect(step, &limits, &out, Some(&manifest));
+            let mut inspected = runtime.inspect(step, &limits, out, Some(&manifest));
             let guests = [generated.fields.get("guest"), inspected.fields.get("guest")]
                 .map(|g| g.cloned().unwrap_or(Value::Null));
             inspected.fields.remove("guest");
@@ -199,7 +266,7 @@ fn run(args: &Args) -> Result<Report, String> {
                 (*b"INPT", b"ISO-10303-21;".to_vec()),
             ];
             let outcome = vm::run_guest(&cfg, request, Role::Inspect, FrameLimits::SPIKE);
-            finish_inspect(outcome, &out, None, None)
+            finish_inspect(outcome, out, None, None)
         }
     })
 }
@@ -350,7 +417,7 @@ impl Runtime {
         &self,
         mut job: Value,
         limits: &VmLimits,
-        out: &Path,
+        out: &OutDir,
     ) -> (Report, Option<(Vec<u8>, cad_host::manifest::BodyManifest)>) {
         use cad_host::frame::{FrameLimits, Role};
         let disk = match self.job_disk() {
@@ -387,7 +454,7 @@ impl Runtime {
                 return (report, None);
             }
         };
-        let _ = std::fs::write(out.join("generated.step"), &step);
+        out.save("generated.step", &step);
         report.fields.insert(
             "manifest".into(),
             serde_json::to_value(&manifest).expect("json"),
@@ -401,7 +468,7 @@ impl Runtime {
         &self,
         step: Vec<u8>,
         limits: &VmLimits,
-        out: &Path,
+        out: &OutDir,
         manifest: Option<&cad_host::manifest::BodyManifest>,
     ) -> Report {
         use cad_host::frame::{FrameLimits, Role};
@@ -429,7 +496,7 @@ impl Runtime {
 #[cfg(target_os = "macos")]
 fn finish_inspect(
     outcome: vm::GuestOutcome,
-    out: &Path,
+    out: &OutDir,
     manifest: Option<&cad_host::manifest::BodyManifest>,
     disk: Option<&JobDisk>,
 ) -> Report {
@@ -475,9 +542,9 @@ fn finish_inspect(
         })
         .collect();
     if let Some(step) = &response.step {
-        let _ = std::fs::write(out.join("normalized.step"), step);
+        out.save("normalized.step", step);
     }
-    let _ = std::fs::write(out.join("mesh.bin"), &mesh);
+    out.save("mesh.bin", &mesh);
     report.fields.insert("mesh_bytes".into(), json!(mesh.len()));
     report.fields.insert("bodies".into(), Value::Array(reports));
     report
@@ -503,10 +570,10 @@ fn guest_report(
     role: &str,
     outcome: &vm::GuestOutcome,
     disk: Option<&JobDisk>,
-    out: &Path,
+    out: &OutDir,
 ) -> Report {
     use std::os::unix::fs::MetadataExt;
-    let _ = std::fs::write(out.join(format!("console-{role}.log")), &outcome.console);
+    out.save(&format!("console-{role}.log"), &outcome.console);
     let mut guest = json!({ "role": role, "timings": outcome.timings, "console_bytes": outcome.console_total_bytes });
     if let Some(meta) = disk.and_then(|d| std::fs::metadata(&d.path).ok()) {
         let path = disk.map(|d| d.path.display().to_string());
@@ -522,7 +589,7 @@ fn guest_report(
             guest["stats"] = stats;
         }
         if let Some(diag) = &response.diagnostics {
-            let _ = std::fs::write(out.join(format!("diagnostics-{role}.txt")), diag);
+            out.save(&format!("diagnostics-{role}.txt"), diag);
             guest["diagnostics_bytes"] = json!(diag.len());
         }
     }
@@ -541,4 +608,89 @@ fn guest_report(
     };
     report.fields.insert("guest".into(), guest);
     report
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A path under the temp dir that does not exist yet, unique to this test process and `name`.
+    fn scratch(name: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!("cad-host-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&path);
+        path
+    }
+
+    fn accepted() -> Report {
+        Report {
+            outcome: Outcome::Accepted,
+            error: None,
+            fields: serde_json::Map::new(),
+        }
+    }
+
+    fn saved_result(dir: &std::path::Path) -> Value {
+        serde_json::from_slice(&std::fs::read(dir.join("result.json")).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn a_reused_output_directory_is_refused_before_anything_runs() {
+        let dir = scratch("reused");
+        std::fs::create_dir_all(dir.join("mesh.bin")).unwrap();
+        let report = OutDir::prepare(dir.clone()).unwrap_err();
+        assert_eq!(report.outcome, Outcome::Usage);
+        assert!(report.error.unwrap().contains("must be absent or empty"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn an_artifact_that_cannot_be_saved_fails_an_accepted_run() {
+        let dir = scratch("artifact");
+        let out = OutDir::prepare(dir.clone()).unwrap();
+        // The required artifact's path is taken by a directory, so the save fails without relying on permissions.
+        std::fs::create_dir(dir.join("mesh.bin")).unwrap();
+        out.save("mesh.bin", b"M3DMESH1");
+        let (outcome, text) = conclude(Some(&out), "build", accepted());
+        assert_eq!((outcome, outcome.code()), (Outcome::Internal, 70));
+        let saved = saved_result(&dir);
+        assert_eq!(saved["outcome"], "internal");
+        assert!(
+            saved["error"]
+                .as_str()
+                .unwrap()
+                .starts_with("could not save mesh.bin: ")
+        );
+        assert_eq!(serde_json::from_str::<Value>(&text).unwrap(), saved);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_result_that_cannot_be_saved_fails_the_run() {
+        let dir = scratch("result");
+        let out = OutDir::prepare(dir.clone()).unwrap();
+        std::fs::create_dir(dir.join("result.json")).unwrap();
+        let (outcome, text) = conclude(Some(&out), "build", accepted());
+        assert_eq!(outcome, Outcome::Internal);
+        let printed: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(printed["outcome"], "internal");
+        assert!(
+            printed["error"]
+                .as_str()
+                .unwrap()
+                .starts_with("could not save result.json: ")
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn an_accepted_run_with_every_file_saved_stays_accepted() {
+        let dir = scratch("clean");
+        let out = OutDir::prepare(dir.clone()).unwrap();
+        out.save("mesh.bin", b"M3DMESH1");
+        let (outcome, _) = conclude(Some(&out), "build", accepted());
+        assert_eq!(outcome, Outcome::Accepted);
+        assert_eq!(saved_result(&dir)["outcome"], "accepted");
+        assert_eq!(std::fs::read(dir.join("mesh.bin")).unwrap(), b"M3DMESH1");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }

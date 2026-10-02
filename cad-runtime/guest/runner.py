@@ -10,14 +10,16 @@ import json
 import sys
 import traceback
 
+from m3d_text import failure_json
+
 MAX_BODIES = 16
 MAX_NAME = 64
 MAX_SLOT = 16
 
 
 def fail(message):
-    with open("/job/out/result.json", "w") as f:
-        json.dump({"ok": False, "error": message[:2000]}, f)
+    with open("/job/out/result.json", "wb") as f:
+        f.write(failure_json(message))  # bounded by encoded bytes, so the agent always reads it
     sys.exit(1)
 
 

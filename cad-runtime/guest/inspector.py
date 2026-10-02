@@ -17,6 +17,8 @@ import struct
 import sys
 from array import array
 
+from m3d_text import failure_json
+
 # Part of the build key: changing either changes every mesh. At 0.01 mm, BRepMesh reported success yet left six
 # cylindrical faces of the reference cable clip untriangulated; 0.02 mm (20 um chord error) meshes every face.
 LINEAR_DEFLECTION_MM = 0.02
@@ -25,8 +27,8 @@ MAX_BODIES = 16
 
 
 def fail(message):
-    with open("/job/out/result.json", "w") as f:
-        json.dump({"ok": False, "error": message[:2000]}, f)
+    with open("/job/out/result.json", "wb") as f:
+        f.write(failure_json(message))  # bounded by encoded bytes, so the agent always reads it
     sys.exit(1)
 
 

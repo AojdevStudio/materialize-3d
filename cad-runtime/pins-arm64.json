@@ -6,19 +6,19 @@
       "bytes": 7399432
     },
     "rootfs.img": {
-      "sha256": "6ed9ccded4e78aa69702592909b0a5778582e3b16ba9c7f237ad77a23fd07d30",
-      "bytes": 587833344
+      "sha256": "54bc27c15ede7e1578d66835144b12a32fe914621cbbfc2af94f5c962d864a39",
+      "bytes": 587837440
     },
     "job.img": {
       "sha256": "71045302f36c872d522346e3211a59ea4753d7708d28f438973cdfb43b3ed697",
       "bytes": 268435456
     },
     "hostile-initramfs.cpio": {
-      "sha256": "a2d0417ddc3b45ead057b711ab73d2939e35e1385b457643a8e74dd97cd92497",
+      "sha256": "7ad38e583db9ab57b08caa5adfda1cd6ed90e9703e7e175a266fa60e0df13212",
       "bytes": 776704
     }
   },
-  "rootfs_installed_bytes": 1204326271,
+  "rootfs_installed_bytes": 1204330935,
   "inputs": {
     "python_base": "python:3.13-slim-trixie@sha256:bb2988715db2cf7ace7b53f38f3cffbef7c7046a656bee66245eb0ed386e2e81",
     "kernel_version": "6.18.54",

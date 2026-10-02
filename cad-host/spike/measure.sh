@@ -25,10 +25,10 @@ rm -rf "$out" && mkdir -p "$out"
         sleep 0.05
       done ) &
     sampler=$!
-    /usr/bin/time -l "$HELPER" build --runtime "$RUNTIME" --source "$source" --params "$here/cable-clip.params.json" --out "$d" > /dev/null 2> "$d/stderr" || true
+    /usr/bin/time -l "$HELPER" build --runtime "$RUNTIME" --source "$source" --params "$here/cable-clip.params.json" --out "$d/helper" > /dev/null 2> "$d/stderr" || true
     kill "$sampler" 2>/dev/null || true
     wait "$sampler" 2>/dev/null || true
-    r="$d/result.json"
+    r="$d/helper/result.json"  # the helper needs an empty --out; the sampler and time write beside it
     test "$(jq -r .outcome "$r")" = accepted || { echo "run $i: $(jq -r .error "$r")"; exit 1; }
     test "$(jq -r '.bodies[0].mesh.closed_manifold' "$r")" = true || { echo "run $i: mesh not closed"; exit 1; }
     printf '%-4s %8s %8s %8s %8s %8s %8s %8s %9s %9s %9s\n' "$i" \
@@ -40,8 +40,8 @@ rm -rf "$out" && mkdir -p "$out"
       "$(($(awk '/maximum resident set size/{print $1}' "$d/stderr") >> 20))"
   done
   echo
-  echo "guest job memory peak (cgroup memory.peak, MiB): generate $(($(jq .guests[0].stats.memory_peak "$out/run-1/result.json") >> 20)), inspect $(($(jq .guests[1].stats.memory_peak "$out/run-1/result.json") >> 20))"
-  echo "guest start (framework start call to running, ms): $(jq -s 'map(.guests[].timings.start_ms) | "min \(min) max \(max)"' -r "$out"/run-*/result.json)"
+  echo "guest job memory peak (cgroup memory.peak, MiB): generate $(($(jq .guests[0].stats.memory_peak "$out/run-1/helper/result.json") >> 20)), inspect $(($(jq .guests[1].stats.memory_peak "$out/run-1/helper/result.json") >> 20))"
+  echo "guest start (framework start call to running, ms): $(jq -s 'map(.guests[].timings.start_ms) | "min \(min) max \(max)"' -r "$out"/run-*/helper/result.json)"
   echo
   echo "sizes (bytes):"
   for f in Image rootfs.img job.img; do printf '  %-12s %12s on disk, %12s allocated\n' "$f" "$(stat -f %z "$RUNTIME/$f")" "$(($(stat -f %b "$RUNTIME/$f") * 512))"; done

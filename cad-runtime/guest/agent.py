@@ -20,6 +20,8 @@ import socket
 import struct
 import time
 
+from m3d_text import fit_error
+
 PORT = 7000
 HOST_CID = 2
 JOB_UID = 1000
@@ -30,6 +32,9 @@ MEMORY_RESERVE = 320 << 20  # left for the kernel and this agent
 JOBS_MAX = 1 << 20
 INPT_MAX = 32 << 20
 DIAG_MAX = 16 << 10
+# The job's own verdict file. Read generously so an oversized error still yields a prefix; fit_error bounds what is
+# forwarded to the host.
+RESULT_MAX = 64 << 10
 OUTPUTS = {  # role -> (output file, frame tag, cap)
     "generate": [("model.step", b"STEP", 32 << 20), ("manifest.json", b"MANI", 64 << 10)],
     "inspect": [("normalized.step", b"STEP", 32 << 20), ("mesh.bin", b"MESH", 64 << 20)],
@@ -208,7 +213,7 @@ def serve(conn, connect_ms):
     status, diag, wall_ms, timed_out = run_job(role, timeout_s)
     events = read_cgroup("memory.events")
     oom_kills = next((int(l.split()[1]) for l in events.splitlines() if l.startswith("oom_kill ")), 0)
-    result = read_output("/job/out/result.json", 4096)
+    result = read_output("/job/out/result.json", RESULT_MAX)
     try:
         result = json.loads(result) if result else {}
     except ValueError:
@@ -243,8 +248,13 @@ def serve(conn, connect_ms):
     elif ok:
         error = None
     else:
-        error = str(result.get("error") or f"job exited with {exit_code}")[:2000]
-    send_frame(conn, b"DONE", json.dumps({"ok": ok, "error": error}).encode())
+        error = fit_error(result.get("error") or f"job exited with {exit_code}")
+    send_frame(conn, b"DONE", done_payload(ok, error))
+
+
+def done_payload(ok, error):
+    """DONE as UTF-8 JSON; every error passed here is already within the error budget."""
+    return json.dumps({"ok": ok, "error": error}, ensure_ascii=False).encode("utf-8")
 
 
 def main():
@@ -260,7 +270,7 @@ def main():
         serve(conn, connect_ms)
     except Exception as e:  # report a bounded, typed failure instead of hanging until the host deadline
         try:
-            send_frame(conn, b"DONE", json.dumps({"ok": False, "error": f"agent: {type(e).__name__}: {e}"[:2000]}).encode())
+            send_frame(conn, b"DONE", done_payload(False, fit_error(f"agent: {type(e).__name__}: {e}")))
         except OSError:
             pass
     finally:

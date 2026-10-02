@@ -48,6 +48,12 @@ pub enum MeshError {
         vertices: u32,
         triangles: u32,
     },
+    #[error("body {body} declares no geometry ({vertices} vertices, {triangles} triangles)")]
+    EmptyBody {
+        body: u32,
+        vertices: u32,
+        triangles: u32,
+    },
     #[error("body {body} claims more data than the mesh holds")]
     CountsExceedPayload { body: u32 },
     #[error("body {body} vertex {vertex} is not finite or is out of range")]
@@ -99,6 +105,13 @@ pub fn decode_mesh(bytes: &[u8], limits: &MeshLimits) -> Result<Vec<RawBody>, Me
         let (vertices, triangles) = (cur.u32()?, cur.u32()?);
         if vertices > limits.max_vertices || triangles > limits.max_triangles {
             return Err(MeshError::TooLarge {
+                body,
+                vertices,
+                triangles,
+            });
+        }
+        if vertices == 0 || triangles == 0 {
+            return Err(MeshError::EmptyBody {
                 body,
                 vertices,
                 triangles,
@@ -199,6 +212,7 @@ pub struct MeshReport {
 
 pub fn analyze(body: &WeldedBody) -> MeshReport {
     let v = &body.vertices;
+    let has_surface = !body.triangles.is_empty();
     let mut collapsed = 0;
     let mut zero_area = 0;
     // Undirected edge -> (uses as low->high, uses as high->low).
@@ -247,8 +261,9 @@ pub fn analyze(body: &WeldedBody) -> MeshReport {
         zero_area_triangles: zero_area,
         boundary_edges: boundary,
         non_manifold_edges: non_manifold,
-        closed_manifold: boundary == 0 && non_manifold == 0 && collapsed == 0,
-        non_degenerate: collapsed == 0 && zero_area == 0,
+        // A body with no triangles has no surface, so neither verdict can hold for it.
+        closed_manifold: has_surface && boundary == 0 && non_manifold == 0 && collapsed == 0,
+        non_degenerate: has_surface && collapsed == 0 && zero_area == 0,
         signed_volume_mm3,
         outward: signed_volume_mm3 > 0.0,
         bbox_min_mm: lo,
@@ -416,6 +431,46 @@ mod tests {
         assert_eq!(
             decode_mesh(&encode(&seventeen), &lim).unwrap_err(),
             MeshError::BodyCount(17)
+        );
+    }
+
+    #[test]
+    fn a_declared_body_with_no_geometry_is_rejected() {
+        let declared = |counts: [u32; 3], coords: &[f64]| {
+            let mut bytes = MAGIC.to_vec();
+            counts.iter().for_each(|n| bytes.extend(n.to_le_bytes()));
+            coords.iter().for_each(|c| bytes.extend(c.to_le_bytes()));
+            bytes
+        };
+        // One body, zero vertices, zero triangles: 20 bytes.
+        let empty = declared([1, 0, 0], &[]);
+        assert_eq!(empty.len(), 20);
+        assert_eq!(
+            decode_mesh(&empty, &MeshLimits::SPIKE).unwrap_err(),
+            MeshError::EmptyBody {
+                body: 0,
+                vertices: 0,
+                triangles: 0
+            }
+        );
+        // Vertices but no triangles is no geometry either.
+        let points = declared([1, 3, 0], &[0.0; 9]);
+        assert_eq!(
+            decode_mesh(&points, &MeshLimits::SPIKE).unwrap_err(),
+            MeshError::EmptyBody {
+                body: 0,
+                vertices: 3,
+                triangles: 0
+            }
+        );
+        // A body built by hand without the decoder still gets no passing verdict.
+        let r = analyze(&weld(&RawBody {
+            vertices: Vec::new(),
+            triangles: Vec::new(),
+        }));
+        assert!(
+            !r.closed_manifold && !r.non_degenerate && !r.outward,
+            "{r:?}"
         );
     }
 

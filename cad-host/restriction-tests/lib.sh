@@ -17,13 +17,15 @@ case_dir() {
   rm -rf "$dir" && mkdir -p "$dir" && printf '%s\n' "$dir"
 }
 
-# Runs the helper; records its exit code and wall time next to result.json.
+# Runs the helper; records its stderr, exit code, and wall time next to result.json. The helper requires an empty
+# --out, so its stderr goes beside the directory during the run and moves in afterwards.
 run_helper() {
   local out="${*: -1}" started ended code
   started=$(date +%s)
-  "$HELPER" "$@" --runtime "$RUNTIME" >/dev/null 2>"$out/helper.stderr"
+  "$HELPER" "$@" --runtime "$RUNTIME" >/dev/null 2>"$out.stderr"
   code=$?
   ended=$(date +%s)
+  mv "$out.stderr" "$out/helper.stderr"
   printf '%s\n' "$code" > "$out/exit"
   printf '%s\n' "$((ended - started))" > "$out/wall_s"
 }

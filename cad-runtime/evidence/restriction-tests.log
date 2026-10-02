@@ -1,10 +1,10 @@
-restriction tests, 2026-10-02T10:23:34Z
+restriction tests, 2026-10-02T11:01:28Z
 host: Apple M4, 24 GiB, macOS 26.7 (25G220)
-helper: sha256 f6c3aa7b8bc77ddaf411dcd6cc0f9d3621839d3a455a16135d5a79841baab3d3
-  CodeDirectory v=20500 size=1790 flags=0x10002(adhoc,runtime) hashes=44+7 location=embedded
+helper: sha256 c6baa9a899e46485411afb6d4886d830f7ee67095a267d446cf5c7a2050eb2e5
+  CodeDirectory v=20500 size=1822 flags=0x10002(adhoc,runtime) hashes=45+7 location=embedded
   Signature=adhoc
   	[Key] com.apple.security.virtualization
-runtime pins: sha256 105939ae715e9dd746f26de84ddf60560a283747e9074cf275692c7fa049c9de
+runtime pins: sha256 16d753f580ce0b48a1d01f4f30309111ad49c06579036ba3c424ec83a2c0d8e8
 
 == 01-host-canary
   ok    the job ran and reported (outcome job_failed)
@@ -56,7 +56,7 @@ PASS 04-fork-bomb
   ok    the job held at least 1 GiB before it was stopped
   ok    no VM is left running
 PASS 05-exhaust-memory
-   (3 s)
+   (2 s)
 
 == 06-exhaust-disk
   ok    the job disk filled to ENOSPC
@@ -66,7 +66,7 @@ PASS 05-exhaust-memory
   ok    the job disk was deleted
   ok    no VM is left running
 PASS 06-exhaust-disk
-   (2 s)
+   (3 s)
 
 == 07-ignore-cancel
   ok    cancel: outcome deadline (cancelled)
@@ -95,6 +95,7 @@ PASS 07-ignore-cancel
   ok    index: rejected (mesh rejected: body 0 triangle 3 indexes past its vertices)
   ok    huge-count: rejected (mesh rejected: body 0 claims 2147483647 vertices and 4 triangles, over the limits)
   ok    zero-bodies: rejected (mesh rejected: mesh has 0 bodies; 1 to the limit are allowed)
+  ok    empty-body: rejected (mesh rejected: body 0 declares no geometry (0 vertices, 0 triangles))
   ok    trailing: rejected (mesh rejected: 5 bytes follow the last body)
   ok    big-frame: rejected (guest protocol violation: guest announced 4294967295 bytes of Mesh; the cap is 67108864)
   ok    bad-tag: rejected (guest protocol violation: guest sent an unknown frame tag [2e, 2e, 2f, 78])
@@ -102,7 +103,7 @@ PASS 07-ignore-cancel
   ok    wrong-role: rejected (guest protocol violation: a Inspect guest may not send Manifest)
   ok    no VM is left running
 PASS 08-malformed-mesh
-   (23 s)
+   (24 s)
 
 == 09-inspector-tamper
   ok    inside: both writes to the inspector were blocked
@@ -118,4 +119,21 @@ PASS 08-malformed-mesh
 PASS 09-inspector-tamper
    (10 s)
 
-summary: 9 passed, 0 failed
+== 10-bounded-error
+  ok    cjk: the job failed with its own error
+  ok    cjk: the error starts with the job's text
+  ok    cjk: the error keeps a useful prefix (2047 bytes as JSON)
+  ok    cjk: the error fits the 2,048-byte budget
+  ok    control: the job failed with its own error
+  ok    control: the error starts with the job's text
+  ok    control: the error keeps a useful prefix (2047 bytes as JSON)
+  ok    control: the error fits the 2,048-byte budget
+  ok    planted: the job failed with its own error
+  ok    planted: the error starts with the job's text
+  ok    planted: the error keeps a useful prefix (2048 bytes as JSON)
+  ok    planted: the error fits the 2,048-byte budget
+  ok    no VM is left running
+PASS 10-bounded-error
+   (6 s)
+
+summary: 10 passed, 0 failed

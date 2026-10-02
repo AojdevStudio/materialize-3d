@@ -37,25 +37,26 @@
       "job_disk": {
         "allocated_bytes": 92700672,
         "bytes": 268435456,
-        "path": "/var/folders/ss/gw0_l93j6fjdclq372chrjz40000gn/T/m3d-job-66449-0/job.img"
+        "path": "/var/folders/ss/gw0_l93j6fjdclq372chrjz40000gn/T/m3d-job-48358-0/job.img"
       },
       "role": "generate",
       "stats": {
-        "connect_ms": 140,
+        "connect_ms": 130,
         "exit": 0,
-        "job_ms": 3496,
-        "memory_peak": 764239872,
+        "job_ms": 3347,
+        "memory_peak": 764190720,
         "oom_kills": 0,
         "pids_peak": 4
       },
       "timings": {
-        "boot_ms": 156,
+        "boot_ms": 143,
+        "final_state": "stopped",
         "forced_stop": false,
-        "job_ms": 3499,
+        "job_ms": 3354,
         "refused_connections": 0,
-        "start_ms": 76,
-        "stop_ms": 48,
-        "total_ms": 3881
+        "start_ms": 68,
+        "stop_ms": 46,
+        "total_ms": 3719
       }
     },
     {
@@ -64,25 +65,26 @@
       "job_disk": {
         "allocated_bytes": 93077504,
         "bytes": 268435456,
-        "path": "/var/folders/ss/gw0_l93j6fjdclq372chrjz40000gn/T/m3d-job-66449-1/job.img"
+        "path": "/var/folders/ss/gw0_l93j6fjdclq372chrjz40000gn/T/m3d-job-48358-1/job.img"
       },
       "role": "inspect",
       "stats": {
         "connect_ms": 130,
         "exit": 0,
-        "job_ms": 617,
-        "memory_peak": 376807424,
+        "job_ms": 583,
+        "memory_peak": 376856576,
         "oom_kills": 0,
         "pids_peak": 2
       },
       "timings": {
-        "boot_ms": 146,
+        "boot_ms": 148,
+        "final_state": "stopped",
         "forced_stop": false,
-        "job_ms": 621,
+        "job_ms": 593,
         "refused_connections": 0,
-        "start_ms": 82,
-        "stop_ms": 48,
-        "total_ms": 1003
+        "start_ms": 65,
+        "stop_ms": 41,
+        "total_ms": 956
       }
     }
   ],

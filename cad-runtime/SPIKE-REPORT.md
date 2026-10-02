@@ -1,6 +1,6 @@
 # CAD worker spike report (PR 5)
 
-A signed Rust helper boots a sealed arm64 Linux guest with Apple's Virtualization framework on the Mac mini. The guest runs one build123d script and returns STEP plus a body manifest over vsock. A second fresh guest runs only the pinned inspector and returns a bounded mesh, and the host decodes and checks it in Rust. All nine restriction tests held against the real VM. A whole uncached build (two cold guests) took 6.6 s on the M4. Two stop-line items stay open as gates for Ossie: notarization was not attempted, and a real Linux boot on macOS 13.0 cannot be tested on any hardware we have.
+A signed Rust helper boots a sealed arm64 Linux guest with Apple's Virtualization framework on the Mac mini. The guest runs one build123d script and returns STEP plus a body manifest over vsock. A second fresh guest runs only the pinned inspector and returns a bounded mesh, and the host decodes and checks it in Rust. All nine restriction tests from the brief held against the real VM, along with a tenth added in review for bounded errors. A whole uncached build (two cold guests) took 6.6 s on the M4. Two stop-line items stay open as gates for Ossie: notarization was not attempted, and a real Linux boot on macOS 13.0 cannot be tested on any hardware we have.
 
 Everything here was measured on the Mac mini (Apple M4, 10 cores, 24 GiB, macOS 26.7) and on aojdevlinux (x86_64) on 2026-10-02. The app does not use any of it yet.
 
@@ -10,7 +10,7 @@ Everything here was measured on the Mac mini (Apple M4, 10 cores, 24 GiB, macOS 
 |---|---|
 | Notarization | **Untested: blocked pending gate G2.** The Developer ID identity and the notarytool API key exist and are reachable (below), but the agent's permission classifier denied using the release keychain and the BWS Apple API values. The helper is signed ad hoc with the virtualization entitlement and the hardened runtime. |
 | Quarantined-DMG boot on macOS 13.0 | **Partly untestable: gate G1.** A macOS 13.0 (22A380) guest installs and boots on the M4 under the Virtualization framework. A Linux guest cannot boot inside any macOS guest, because Apple exposes nested virtualization only on `VZGenericPlatformConfiguration` (Linux guests, macOS 15 and later). A real Linux boot on macOS 13.0 needs a physical M1 or M2 Mac running 13.0. |
-| Restriction tests | **All nine held** on the real VM on the mini. Log: `cad-runtime/evidence/restriction-tests.log`, sha256 `caca8a08f6a3e86604040aad6cc6032a4d55562cc1f1b6410a4ef2899fbbddb0`. |
+| Restriction tests | **All nine held** on the real VM on the mini, and so did a tenth test added in review (bounded errors). Log: `cad-runtime/evidence/restriction-tests.log`, sha256 `682e9b03d6d1a907e7144f868c6b6172aea6e1864fc3d17eeeb9deb22995a4ee`. |
 
 ### Notarization (G2)
 
@@ -43,14 +43,14 @@ The installed guest is kept for PR 6, uncommitted, on the mini: `~/m3d-scratch/p
 | Path | What it is |
 |---|---|
 | `cad-host/src/frame.rs` | The guest channel: frames of a 4-byte tag, a u32 length, and a payload. Per-role allowlist, each tag at most once, every length checked against its cap before any read or allocation. |
-| `cad-host/src/mesh.rs` | `decode_mesh` (counts checked against the limits and against the bytes present before allocating, finite and bounded coordinates, indices in range, no trailing bytes), the 1 µm weld, and the geometry report (closed manifold, non-degenerate, outward, volume, bounds). |
+| `cad-host/src/mesh.rs` | `decode_mesh` (counts checked against the limits and against the bytes present before allocating, every declared body with at least one vertex and one triangle, finite and bounded coordinates, indices in range, no trailing bytes), the 1 µm weld, and the geometry report (closed manifold, non-degenerate, outward, volume, bounds). |
 | `cad-host/src/manifest.rs` | The body manifest: 1 to 16 bodies, names of 1 to 64 printable characters, slots 1 to 16, unknown fields refused. |
 | `cad-host/src/vm.rs` | macOS VM driver on `objc2-virtualization` 0.3.2. |
-| `cad-host/src/main.rs` | The spike CLI: `generate`, `inspect`, `build`, `hostile`. |
+| `cad-host/src/main.rs` | The spike CLI: `generate`, `inspect`, `build`, `hostile`. `--out` must be absent or empty when a run starts, and any output file that cannot be saved, `result.json` included, fails the run as internal (exit 70). |
 | `cad-runtime/build.sh` | One command that builds the kernel, rootfs, job disk template, test initramfs, and `pins.json` per architecture. |
 | `cad-runtime/lock/` | `build123d==0.13.0` resolved to hash-pinned wheel lock files for arm64 and amd64. |
 | `cad-runtime/kernel/` | Linux 6.18.54 (kernel.org sha256 pinned): `allnoconfig` plus `arm64.config`; the build fails if any requested option does not stick. |
-| `cad-runtime/guest/` | The guest's `init`, `agent.py`, `runner.py`, `inspector.py`, and `materialize.py`. |
+| `cad-runtime/guest/` | The guest's `init`, `agent.py`, `runner.py`, `inspector.py`, `materialize.py`, and `m3d_text.py` (error text bounded by encoded bytes). |
 | `cad-runtime/test/hostile-guest.c` | The restriction-test stand-in for a fully compromised inspection guest. |
 | `cad-runtime/pins-arm64.json`, `pins-amd64.json` | Digests and sizes of the built outputs and their pinned inputs. |
 | `cad-host/restriction-tests/` | One script per restriction, plus `run-all.sh`. |
@@ -73,7 +73,7 @@ It gets no network device, no directory share, no USB, and no graphics, and the 
 
 **Stopping.** The host's deadline and cancel force-stop the VM whatever the guest is doing. The helper waits, bounded, until the framework allows a stop (a VM that is still starting does not yet), checks the stop's completion error, and confirms the VM halted. `forced_stop` is recorded only from a confirmed stop, and `final_state` records the VM's state at the end. A stop it cannot confirm replaces the result with an error, because the VM may still be running.
 
-**Inside the guest.** The agent runs as PID 1 and execs the job as uid and gid 1000 with no supplementary groups, `no_new_privs`, and an empty environment. The job runs in a cgroup capped at memory.max (guest RAM minus 320 MiB, with no swap in the kernel) and 64 processes, with core dumps off, 256 file descriptors, and 64 MiB per file. Inputs are root-owned and read-only. The agent reads outputs by fixed name with `O_NOFOLLOW`, regular files only, under caps. Guest-to-host frames carry no paths, and the host writes accepted payloads only under names it chooses.
+**Inside the guest.** The agent runs as PID 1 and execs the job as uid and gid 1000 with no supplementary groups, `no_new_privs`, and an empty environment. The job runs in a cgroup capped at memory.max (guest RAM minus 320 MiB, with no swap in the kernel) and 64 processes, with core dumps off, 256 file descriptors, and 64 MiB per file. Inputs are root-owned and read-only. The agent reads outputs by fixed name with `O_NOFOLLOW`, regular files only, under caps. Guest-to-host frames carry no paths, and the host writes accepted payloads only under names it chooses. Every error the guest sends is cut to a 2,048-byte prefix measured as encoded JSON, on a character boundary, so a long or escape-heavy message (CJK text, control characters) keeps its start and never breaks the host's 4,096-byte DONE cap. The agent reads the job's own verdict file up to 64 KiB, so even a job that writes an oversized one leaves a usable prefix.
 
 **Two adjustments the real runs required:**
 - **Fixed guest clock.** The guest has no RTC, so it boots at 1970, and OpenCascade's STEP writer rejects that date (`Quantity_Date invalid parameters`). The agent sets the clock to 2000-01-01, which also makes STEP headers identical across builds of the same script.
@@ -91,7 +91,7 @@ The same clip with the fillet moved before the channel cut, `cable-clip-fillet-f
 
 ## Measurements
 
-Five cold builds of the fillet-first clip; every guest is a fresh VM (`cad-runtime/evidence/measurements.log`, from `HELPER=... RUNTIME=... cad-host/spike/measure.sh`).
+Five cold builds of the fillet-first clip; every guest is a fresh VM (`cad-runtime/evidence/measurements.log`, from `HELPER=... RUNTIME=... cad-host/spike/measure.sh`). These runs and the hobbyist run used the image build before the review fixes (root image sha256 `6ed9ccde…`). The fixes since then change only failure paths: error bounding, empty-body rejection, and output saving. The restriction tests and both clip builds were rerun on the current image.
 
 | Step | Median | Range |
 |---|---|---|
@@ -110,7 +110,7 @@ Memory:
 - **Job inside the guest:** peaked at 728 MiB (generation) and 359 MiB (inspection), from cgroup `memory.peak`.
 - **Helper:** 27 MiB.
 
-Sizes (`cad-runtime/pins-arm64.json`):
+Sizes (`cad-runtime/pins-arm64.json`, current image: root 587,837,440 bytes, 1,204,330,935 installed; the review fixes added one 4 KiB block):
 
 | Item | Size |
 |---|---|
@@ -125,7 +125,7 @@ Sizes (`cad-runtime/pins-arm64.json`):
 
 ## Restriction tests
 
-Run on the mini with `HELPER=<signed helper> RUNTIME=<runtime dir> cad-host/restriction-tests/run-all.sh`. Each test checks host-side facts, not only the guest's self-report. Final run: 9 passed, 0 failed (log above).
+Run on the mini with `HELPER=<signed helper> RUNTIME=<runtime dir> cad-host/restriction-tests/run-all.sh`. Each test checks host-side facts, not only the guest's self-report. Final run: 10 passed, 0 failed (log above).
 
 | Test | What it does | Result |
 |---|---|---|
@@ -136,8 +136,9 @@ Run on the mini with `HELPER=<signed helper> RUNTIME=<runtime dir> cad-host/rest
 | 05 exhaust memory | Allocates and touches 64 MiB chunks. | **Held.** The job held 1,664 MiB, then the guest OOM killer killed it at a 1,680 MiB peak, under its 1,728 MiB cgroup cap; the agent reported "job ran out of memory". |
 | 06 exhaust disk | Fills `/job/out` and `/tmp`. | **Held.** Both ended in ENOSPC (job disk after 221 MiB, tmpfs after 64 MiB). The job disk file kept its exact size, was never allocated beyond it, and was deleted. |
 | 07 ignore cancel | Ignores every catchable signal and spins (cancel at 10 s); the same job cancelled at 0 s, while the VM is still starting and the framework does not yet allow a stop; and a guest that never answers (deadline 15 s). | **Held.** The host force-stopped the VM in all three cases, and the framework confirmed each stop (final state `stopped`), with no VM process left. |
-| 08 malformed mesh | Boots `hostile-guest.c` as a fully compromised inspection guest and sends one hostile answer per case. | **Held.** All 11 rejected: NaN, infinite, and 1e300 coordinates, an out-of-range index, a 2³¹ vertex count, zero bodies, trailing bytes, a 4 GiB frame, a path-like tag, a duplicate frame, and a frame wrong for the role. A valid control mesh from the same guest was accepted. |
+| 08 malformed mesh | Boots `hostile-guest.c` as a fully compromised inspection guest and sends one hostile answer per case. | **Held.** All 12 rejected: NaN, infinite, and 1e300 coordinates, an out-of-range index, a 2³¹ vertex count, zero bodies, a declared body with no vertices or triangles (added in review), trailing bytes, a 4 GiB frame, a path-like tag, a duplicate frame, and a frame wrong for the role. A valid control mesh from the same guest was accepted. |
 | 09 inspector tamper | A generation job writes the inspector and its bytecode and plants a forged `mesh.bin` and verdict; separately, one byte of `rootfs.img` or `Image` is changed in a copy of the runtime. | **Held.** Both in-guest writes blocked; inspection returned the honest 10 mm cube, closed; pinned files unchanged. Both tampered runtimes were refused before any VM booted. |
+| 10 bounded error (added in review) | A job raises 3,000 CJK characters; another raises 3,000 control characters (six bytes each as JSON); a third writes its own 60 KB verdict and exits. | **Held.** Each came back as `job_failed` with an error that starts with the job's own text and encodes to 2,047 or 2,048 bytes, within the 2,048-byte budget. The previous image returned "job exited with 1" for all three. |
 
 A crafted STEP that makes the re-exported STEP differ from the mesh is covered two ways. The inspector tessellates the same in-memory shapes it re-exports, so an honest inspector cannot produce a mesh of different geometry. Test 08 models the case where a crafted STEP fully compromises the inspection guest, and the host rejects or bounds everything that guest can send.
 
@@ -201,6 +202,7 @@ Each failure needs at least one repair build. Allowing for one clarifying questi
 - Make `RawBody`'s fields private or validate in `weld` and `analyze`: built by hand with an out-of-range index or a non-finite coordinate, they can panic (`decode_mesh` is the only safe constructor today).
 - Refuse zero-width and bidirectional-control characters in manifest body names, not only control characters.
 - Close the console pipe's write end in `run_guest` when `configure` fails after `pipe()`; today that descriptor leaks.
+- Set `timings.final_state` on `run_guest`'s two early-return paths (console pipe or configuration failure, before any VM exists), where it is still empty.
 
 ## Reproduce
 
@@ -212,10 +214,11 @@ cad-runtime/build.sh arm64            # outputs in cad-runtime/out/arm64/, diges
 cd cad-host && cargo build --release --locked
 codesign -s - -f --options runtime --entitlements entitlements.plist target/release/materialize-cad-host
 export HELPER=$PWD/target/release/materialize-cad-host RUNTIME=$PWD/../runtime
+rm -rf out/clip   # --out must be absent or empty
 $HELPER build --runtime $RUNTIME --source spike/cable-clip-fillet-first.py --params spike/cable-clip.params.json --out out/clip
 restriction-tests/run-all.sh out/restriction-tests.log
 spike/measure.sh out/measurements.log
 spike/run-hobbyist.sh out/hobbyist.log
 ```
 
-Exit codes from the helper: 0 accepted, 1 the job failed with a bounded error, 2 the guest's output was rejected, 3 deadline or cancel, 4 runtime verification failed.
+Exit codes from the helper: 0 accepted, 1 the job failed with a bounded error, 2 the guest's output was rejected, 3 deadline or cancel, 4 runtime verification failed, 64 usage (including a non-empty `--out`), 70 internal (including an output file that could not be saved).
