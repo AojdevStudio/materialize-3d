@@ -416,7 +416,9 @@ fn run_pipeline(
     let (checks, verdict): (Vec<RecordedCheck>, Verdict) = match plan.finish(checked.geometry(), slice, handoff) {
         Ok(passed) => (passed.outcomes().iter().map(RecordedCheck::from).collect(), Verdict::Passed(passed)),
         Err(ChecksFailed::Failed(outcomes)) => (outcomes.iter().map(RecordedCheck::from).collect(), Verdict::Failed),
-        Err(mismatch @ ChecksFailed::Mismatch(_)) => return Err(BuildError::Failed(mismatch.to_string())),
+        Err(mismatch @ (ChecksFailed::Mismatch(_) | ChecksFailed::WrongPlan { .. })) => {
+            return Err(BuildError::Failed(mismatch.to_string()))
+        }
     };
     fs::write(partial.join("checks.json"), serde_json::to_vec_pretty(&checks)?)?;
 
@@ -546,7 +548,7 @@ mod tests {
             gcode_sha256: Sha256Hex::of_bytes(b"gcode"),
             slicer: SlicerIdentity { name: "Bambu Studio".into(), version: "02.08.02.61".into(), profile_version: "02.08.00.05".into() },
             effective_settings: Value::Null,
-            checks: vec![RecordedCheck { id: "slice.slice_succeeded".into(), passed: true, detail: "return_code 0".into() }],
+            checks: vec![RecordedCheck { id: "slice.slice_succeeded".into(), passed: true, advisory: false, detail: "return_code 0".into() }],
         }
     }
 

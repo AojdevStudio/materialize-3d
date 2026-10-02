@@ -180,17 +180,26 @@ pub struct SlicerIdentity {
 }
 
 /// One verification result. `id` is the check's stable name (for example
-/// `placement_preserved`); the producing module owns the vocabulary.
+/// `slice.placement_preserved`); the check plan owns the vocabulary.
+/// A failed advisory check is a warning, not a failure.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RecordedCheck {
     pub id: String,
     pub passed: bool,
+    /// Builds recorded before advisory checks existed have none.
+    #[serde(default)]
+    pub advisory: bool,
     pub detail: String,
 }
 
 impl From<&CheckOutcome> for RecordedCheck {
     fn from(outcome: &CheckOutcome) -> Self {
-        Self { id: outcome.id.to_string(), passed: outcome.passed, detail: outcome.detail.clone() }
+        Self {
+            id: outcome.id.to_string(),
+            passed: outcome.passed,
+            advisory: outcome.id.phase().is_advisory(),
+            detail: outcome.detail.clone(),
+        }
     }
 }
 
@@ -720,8 +729,8 @@ mod tests {
             slicer: SlicerIdentity { name: "Bambu Studio".into(), version: "02.08.02.61".into(), profile_version: "02.08.00.05".into() },
             effective_settings: serde_json::json!({}),
             checks: vec![
-                RecordedCheck { id: "slice_succeeded".into(), passed: true, detail: "return_code 0".into() },
-                RecordedCheck { id: "placement_preserved".into(), passed: checks_pass, detail: "max deviation".into() },
+                RecordedCheck { id: "slice_succeeded".into(), passed: true, advisory: false, detail: "return_code 0".into() },
+                RecordedCheck { id: "placement_preserved".into(), passed: checks_pass, advisory: false, detail: "max deviation".into() },
             ],
         }
     }
@@ -801,7 +810,7 @@ mod tests {
 
         let revision = started(claim_build(&mut conn, request("b", None, Actor::Agent)).expect("claim"));
         let mut claimed = artifacts(dir.path(), b"pkg", true);
-        claimed.checks.push(RecordedCheck { id: "slice.made_up".into(), passed: true, detail: String::new() });
+        claimed.checks.push(RecordedCheck { id: "slice.made_up".into(), passed: true, advisory: false, detail: String::new() });
         let finished = finish_verified(&conn, &revision.id, claimed, &passed()).expect("finish");
         let ids: Vec<&str> = finished.artifacts().expect("artifacts").checks.iter().map(|c| c.id.as_str()).collect();
         assert!(matches!(finished.build, BuildState::Verified { .. }));
