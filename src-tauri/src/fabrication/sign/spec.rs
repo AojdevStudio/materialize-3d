@@ -7,16 +7,14 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::{font, svg};
+use crate::fabrication::printer::{P2S_04, UM_PER_MM};
 
-/// Schema version this build accepts in `SignSpec::schema_version`.
-/// Filament slots in the P2S project template: base plus two inks.
-pub const FILAMENT_SLOTS: usize = 3;
-const UNUSED_SLOT_COLOUR: &str = "#808080";
 const MAX_TITLE_CHARS: usize = 80;
+/// Schema version this build accepts in `SignSpec::schema_version`.
 pub const SIGN_SCHEMA_VERSION: u32 = 1;
 
-/// Largest sign edge that fits the 256 mm P2S bed the package targets.
-const MAX_EDGE_MM: f64 = 256.0;
+/// Largest sign edge that fits the bed of the printer the package targets.
+const MAX_EDGE_MM: f64 = (P2S_04.max_edge() / UM_PER_MM) as f64;
 
 fn default_thickness() -> f64 {
     2.6
@@ -315,13 +313,6 @@ impl ValidSignSpec {
 
     pub fn title(&self) -> &str {
         &self.title
-    }
-
-    /// Uppercase `#RRGGBB` per filament slot; slots without an ink get a neutral gray.
-    pub fn slot_colours(&self) -> Vec<String> {
-        (0..FILAMENT_SLOTS)
-            .map(|i| self.palette.get(i).map_or(UNUSED_SLOT_COLOUR, |ink| ink.hex.as_str()).to_owned())
-            .collect()
     }
 
     pub fn width_mm(&self) -> f64 {

@@ -5,6 +5,8 @@ use serde_json::{json, Value};
 use super::geometry::{build_geometry_with, Dims, Shapes, P};
 use super::mesh::area2;
 use super::*;
+use crate::fabrication::package::{write_package, PackageError, PackageInfo};
+use crate::fabrication::printer::P2S_04;
 
 const FIXTURE: &str = include_str!("../../../tests/fixtures/signs/synthetic-back-shortly.json");
 
@@ -12,8 +14,13 @@ fn fixture() -> ValidSignSpec {
     ValidSignSpec::from_json(FIXTURE).expect("fixture validates")
 }
 
-fn template() -> Value {
-    serde_json::from_str(P2S_PROJECT_SETTINGS_TEMPLATE).expect("template parses")
+/// Certifies the sign's geometry against its check plan and writes its package,
+/// as the build pipeline does, with the title as the 3MF object name.
+fn package(spec: &ValidSignSpec, out: &std::path::Path) -> Result<PackageInfo, PackageError> {
+    let geometry = build_geometry(spec).unwrap();
+    let evidence = check_geometry(&geometry).iter().map(GeometryCheck::outcome).collect();
+    let checked = check_plan(spec).unwrap().certify(geometry.into_model(), evidence).unwrap();
+    write_package(&checked, spec.title(), &P2S_04, out)
 }
 
 fn failed(checks: &[GeometryCheck]) -> Vec<String> {
@@ -41,9 +48,10 @@ fn fixture_geometry_passes_every_check() {
     let checks = check_geometry(&geometry);
     assert_eq!(failed(&checks), Vec::<String>::new());
     let names: Vec<_> = geometry
-        .bodies
+        .model()
+        .bodies()
         .iter()
-        .map(|b| (b.name.as_str(), b.extruder))
+        .map(|b| (b.name.as_str(), b.slot.number()))
         .collect();
     assert_eq!(names, [("white", 1), ("navy", 2), ("teal", 3)]);
     for name in [
@@ -186,22 +194,16 @@ fn package_is_deterministic_and_never_overwrites() {
     let dir = tempfile::tempdir().unwrap();
     let infos: Vec<PackageInfo> = ["a.3mf", "b.3mf"]
         .iter()
-        .map(|name| {
-            let spec = fixture();
-            let geometry = build_geometry(&spec).unwrap();
-            write_package(&geometry, &spec, &template(), &dir.path().join(name)).unwrap()
-        })
+        .map(|name| package(&fixture(), &dir.path().join(name)).unwrap())
         .collect();
     assert_eq!(infos[0], infos[1]);
     assert_eq!(infos[0].part_names, ["white", "navy", "teal"]);
     let a = std::fs::read(dir.path().join("a.3mf")).unwrap();
     assert_eq!(a, std::fs::read(dir.path().join("b.3mf")).unwrap());
 
-    let spec = fixture();
-    let geometry = build_geometry(&spec).unwrap();
-    let err = write_package(&geometry, &spec, &template(), &dir.path().join("a.3mf")).unwrap_err();
+    let err = package(&fixture(), &dir.path().join("a.3mf")).unwrap_err();
     assert!(
-        matches!(&err, SignError::Io(e) if e.kind() == std::io::ErrorKind::AlreadyExists),
+        matches!(&err, PackageError::Io(e) if e.kind() == std::io::ErrorKind::AlreadyExists),
         "{err}"
     );
     assert_eq!(std::fs::read(dir.path().join("a.3mf")).unwrap(), a);
@@ -317,17 +319,17 @@ fn write_fixture_artifacts() {
         render_preview(&geometry, 5.0).unwrap(),
     )
     .unwrap();
-    let info = write_package(
-        &geometry,
-        &spec,
-        &template(),
-        &out.join("synthetic-back-shortly.3mf"),
-    )
-    .unwrap();
+    let triangles: Vec<(String, usize)> = geometry
+        .model()
+        .bodies()
+        .iter()
+        .map(|b| (b.name.clone(), b.mesh.triangles().len()))
+        .collect();
+    let info = package(&spec, &out.join("synthetic-back-shortly.3mf")).unwrap();
     let summary = json!({
         "spec_hash": spec_hash(&spec),
         "package": info,
-        "triangles": geometry.bodies.iter().map(|b| (b.name.clone(), b.triangles().len())).collect::<Vec<_>>(),
+        "triangles": triangles,
     });
     std::fs::write(
         out.join("summary.json"),
@@ -352,10 +354,29 @@ fn sign_packages_match_the_characterization_fixture() {
         ("synthetic-one-ink", include_str!("../../../tests/fixtures/signs/synthetic-one-ink.json")),
     ] {
         let spec = ValidSignSpec::from_json(json).unwrap();
-        let geometry = build_geometry(&spec).unwrap();
-        let info = write_package(&geometry, &spec, &template(), &dir.path().join(format!("{name}.3mf"))).unwrap();
+        let info = package(&spec, &dir.path().join(format!("{name}.3mf"))).unwrap();
         let want = &expected["packages"][name];
         assert_eq!(info.sha256, want["sha256"], "{name} package sha256");
         assert_eq!(info.bytes, want["bytes"], "{name} package size");
     }
+}
+
+#[test]
+fn the_sign_check_plan_names_the_characterized_checks_in_recorded_order() {
+    let expected: Value = serde_json::from_str(CHARACTERIZATION).unwrap();
+    let want: Vec<&str> = expected["synthetic_back_shortly_check_ids"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|id| id.as_str().unwrap())
+        .collect();
+    assert_eq!(want.len(), 27);
+    let plan = check_plan(&fixture()).unwrap();
+    let ids: Vec<&str> = plan.required().iter().map(|id| id.as_str()).collect();
+    assert_eq!(ids, want);
+    assert_eq!(plan.id(), SIGN_CHECK_PLAN);
+
+    let geometry = build_geometry(&fixture()).unwrap();
+    let measured: Vec<String> = check_geometry(&geometry).iter().map(|c| c.id().to_string()).collect();
+    assert_eq!(measured, want[..18], "the geometry checks measured are the ones planned, in order");
 }

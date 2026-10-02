@@ -8,9 +8,9 @@
 
 use std::collections::{HashMap, HashSet};
 
-use super::geometry::{Body, Dims, Shape, Shapes, P};
-use super::spec::ValidInk;
+use super::geometry::{Dims, Shape, Shapes, P};
 use super::{Result, SignError};
+use crate::fabrication::model::{Mesh, ModelError};
 
 const MAX_REPAIR_PASSES: usize = 64;
 
@@ -271,14 +271,8 @@ impl MeshBuilder {
         }
     }
 
-    pub(crate) fn into_body(self, ink: &ValidInk, extruder: u8) -> Body {
-        Body {
-            name: ink.name.clone(),
-            hex: ink.hex.clone(),
-            extruder,
-            vertices: self.vertices,
-            triangles: self.triangles,
-        }
+    pub(crate) fn into_mesh(self) -> Result<Mesh, ModelError> {
+        Mesh::new(self.vertices.into_iter().map(|v| v.map(i64::from)).collect(), self.triangles)
     }
 }
 

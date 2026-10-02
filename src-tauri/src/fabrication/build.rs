@@ -15,11 +15,15 @@ use serde::Serialize;
 use serde_json::{json, Value};
 
 use super::bambu::{self, BambuError, BambuStudio, Check, ResolvedPresets, SliceReport};
+use super::checks::{self, CheckOutcome, ChecksFailed};
+use super::model::Palette;
+use super::package::{self, PackageError};
+use super::printer::{PrinterProfile, P2S_04};
 use super::revisions::{
     self, Actor, Artifacts, BuildClaim, BuildState, LineageId, NewBuild, RecordedCheck, RevisionError, RevisionId,
     Sha256Hex, SignRevision, SlicerIdentity,
 };
-use super::sign::{self, GeometryCheck, SignError, ValidSignSpec, P2S_PROJECT_SETTINGS_TEMPLATE};
+use super::sign::{self, SignError, ValidSignSpec};
 use super::studio_choice;
 use crate::state::AppState;
 
@@ -166,6 +170,12 @@ impl From<SignError> for BuildError {
     }
 }
 
+impl From<PackageError> for BuildError {
+    fn from(err: PackageError) -> Self {
+        BuildError::Failed(err.to_string())
+    }
+}
+
 impl From<serde_json::Error> for BuildError {
     fn from(err: serde_json::Error) -> Self {
         BuildError::Failed(err.to_string())
@@ -208,12 +218,13 @@ pub fn build_sign(
 
     let chosen = studio_choice::chosen(state).map_err(BuildError::Failed)?;
     let studio = BambuStudio::locate(chosen.as_deref()).map_err(BuildError::Studio)?;
-    let template: Value = serde_json::from_str(P2S_PROJECT_SETTINGS_TEMPLATE)
+    let printer = &P2S_04;
+    let template: Value = serde_json::from_str(printer.template)
         .map_err(|e| BuildError::Failed(format!("project settings template: {e}")))?;
     let presets = bambu::resolve_presets(&studio, &template_selection(&template)?, &workspace.preset_cache)
         .map_err(BuildError::Slicer)?;
     let build_key = Sha256Hex::of_bytes(
-        [PIPELINE_VERSION, spec_sha256.as_str(), &presets.app_version, &presets.profile_version, P2S_PROJECT_SETTINGS_TEMPLATE]
+        [PIPELINE_VERSION, spec_sha256.as_str(), &presets.app_version, &presets.profile_version, printer.template]
             .join("\n")
             .as_bytes(),
     );
@@ -241,7 +252,7 @@ pub fn build_sign(
     let id = revision.id.to_string();
     let (partial, final_dir) = (workspace.partial_dir(&id), workspace.final_dir(&id));
     let mut unfinished = UnfinishedBuild::new(state, &revision.id, &partial, &final_dir);
-    let artifacts = run_pipeline(&spec, &template, &studio, &presets, &partial, &final_dir, progress, is_cancelled)
+    let artifacts = run_pipeline(&spec, printer, &template, &studio, &presets, &partial, &final_dir, progress, is_cancelled)
         .map_err(|err| unfinished.fail(err))?;
     let finished = unfinished.settle(artifacts)?;
     if matches!(finished.build, BuildState::Verified { .. }) {
@@ -344,9 +355,15 @@ fn template_selection(template: &Value) -> Result<bambu::PresetSelection, BuildE
     Ok(bambu::PresetSelection { machine: text("printer_settings_id")?, process: text("print_settings_id")?, filaments })
 }
 
+/// Builds the sign's model, certifies it against the sign's check plan, writes
+/// and slices the package, and records every planned check. A build is recorded
+/// as verified only from the plan's [`checks::PassedChecks`]; failed checks are
+/// recorded as evidence of a failed build, and checks that do not match the
+/// plan fail the build outright.
 #[allow(clippy::too_many_arguments)]
 fn run_pipeline(
     spec: &ValidSignSpec,
+    printer: &PrinterProfile,
     template: &Value,
     studio: &BambuStudio,
     presets: &ResolvedPresets,
@@ -359,15 +376,20 @@ fn run_pipeline(
     fs::create_dir_all(partial)?;
     fs::write(partial.join("spec.json"), serde_json::to_vec_pretty(spec)?)?;
 
+    let plan = sign::check_plan(spec).map_err(|e| BuildError::Failed(e.to_string()))?;
     let geometry = sign::build_geometry(spec)?;
-    let geometry_checks = sign::check_geometry(&geometry);
+    let evidence = sign::check_geometry(&geometry).iter().map(sign::GeometryCheck::outcome).collect();
     progress(BuildStep::GeometryBuilt);
     cancelled()?;
 
+    let preview = sign::render_preview(&geometry, PREVIEW_PX_PER_MM)?;
+    let checked = plan
+        .certify(geometry.into_model(), evidence)
+        .map_err(|e| BuildError::Failed(format!("geometry {e}")))?;
     let package = partial.join("sign.3mf");
-    let info = sign::write_package(&geometry, spec, template, &package)?;
+    let info = package::write_package(&checked, spec.title(), printer, &package)?;
     set_read_only(&package)?;
-    fs::write(partial.join("preview.png"), sign::render_preview(&geometry, PREVIEW_PX_PER_MM)?)?;
+    fs::write(partial.join("preview.png"), preview)?;
     progress(BuildStep::PackageWritten);
     cancelled()?;
 
@@ -376,9 +398,13 @@ fn run_pipeline(
     progress(BuildStep::Sliced);
 
     let footprints = bambu::part_footprints(&package)?;
-    let mut checks: Vec<RecordedCheck> = geometry_checks.iter().map(recorded_geometry).collect();
-    checks.extend(bambu::verify(&report, &footprints, presets).iter().map(recorded_slice));
-    checks.push(handoff_matches_slice(template, spec, &report));
+    let slice = bambu::verify(&report, &footprints, presets).iter().map(slice_outcome).collect();
+    let handoff = vec![handoff_matches_slice(template, checked.model().palette(), printer, &report)];
+    let checks: Vec<RecordedCheck> = match plan.finish(checked.geometry(), slice, handoff) {
+        Ok(passed) => passed.outcomes().iter().map(recorded).collect(),
+        Err(ChecksFailed::Failed(outcomes)) => outcomes.iter().map(recorded).collect(),
+        Err(mismatch @ ChecksFailed::Mismatch(_)) => return Err(BuildError::Failed(mismatch.to_string())),
+    };
     fs::write(partial.join("checks.json"), serde_json::to_vec_pretty(&checks)?)?;
 
     let gcode_sha256 = report
@@ -411,25 +437,21 @@ fn set_read_only(path: &Path) -> std::io::Result<()> {
     fs::set_permissions(path, permissions)
 }
 
-fn recorded_geometry(check: &GeometryCheck) -> RecordedCheck {
-    RecordedCheck {
-        id: format!("geometry.{}.{}", check.name, check.subject),
-        passed: check.passed,
-        detail: check.detail.clone(),
-    }
+fn recorded(outcome: &CheckOutcome) -> RecordedCheck {
+    RecordedCheck { id: outcome.id.to_string(), passed: outcome.passed, detail: outcome.detail.clone() }
 }
 
-fn recorded_slice(check: &Check) -> RecordedCheck {
-    let id = serde_json::to_value(check.id).ok().and_then(|v| v.as_str().map(str::to_owned)).unwrap_or_default();
-    RecordedCheck { id: format!("slice.{id}"), passed: check.passed, detail: check.detail.clone() }
+fn slice_outcome(check: &Check) -> CheckOutcome {
+    CheckOutcome { id: checks::slice_check_id(check.id), passed: check.passed, detail: check.detail.clone() }
 }
 
 /// The package a person opens in Bambu Studio embeds project settings. They
 /// must be the settings the verified slice actually used, or the handoff would
 /// print differently from what was checked.
-fn handoff_matches_slice(template: &Value, spec: &ValidSignSpec, report: &SliceReport) -> RecordedCheck {
+fn handoff_matches_slice(template: &Value, palette: &Palette, printer: &PrinterProfile, report: &SliceReport) -> CheckOutcome {
+    let id = checks::handoff_settings_match_slice();
     let Some(effective) = &report.effective else {
-        return RecordedCheck { id: "handoff.settings_match_slice".into(), passed: false, detail: "no effective settings exported".into() };
+        return CheckOutcome { id, passed: false, detail: "no effective settings exported".into() };
     };
     let embedded = |key: &str| template.get(key).cloned().unwrap_or(Value::Null);
     let mut mismatches = Vec::new();
@@ -447,13 +469,13 @@ fn handoff_matches_slice(template: &Value, spec: &ValidSignSpec, report: &SliceR
         embedded("enable_prime_tower"),
         json!(if effective.enable_prime_tower { "1" } else { "0" }),
     );
-    let expected_colours: Vec<String> = spec.slot_colours().into_iter().collect();
+    let expected_colours: Vec<String> = palette.slot_colours(printer);
     let effective_colours: Vec<String> = effective.filament_colour.iter().map(|c| c.to_uppercase()).collect();
     if expected_colours != effective_colours {
         mismatches.push(format!("filament_colour: spec {expected_colours:?}, slice {effective_colours:?}"));
     }
-    RecordedCheck {
-        id: "handoff.settings_match_slice".into(),
+    CheckOutcome {
+        id,
         passed: mismatches.is_empty(),
         detail: if mismatches.is_empty() {
             "package settings and colors match the verified slice".into()

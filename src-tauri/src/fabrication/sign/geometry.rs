@@ -14,6 +14,8 @@ use super::font;
 use super::mesh::{self, MeshBuilder};
 use super::spec::{Contour, FillRule, InkIndex, ValidElement, ValidInk, ValidSignSpec};
 use super::{Result, SignError};
+use crate::fabrication::model::{Body, Palette, PrintableModel};
+use crate::fabrication::printer::P2S_04;
 
 /// A point on the 1 µm grid.
 pub(crate) type P = IntPoint<i32>;
@@ -46,8 +48,8 @@ pub(crate) fn face_down(p: P, dims: Dims) -> P {
     P::new(dims.w - p.x, dims.h - p.y)
 }
 
-/// Built sign: finished-face regions (for preview and checks) and one closed
-/// mesh per filament, already in face-down model coordinates.
+/// Built sign: finished-face regions (for preview and checks) and the
+/// printable model, one closed body per filament in face-down bed coordinates.
 #[derive(Debug, Clone)]
 pub struct SignGeometry {
     pub(crate) dims: Dims,
@@ -59,8 +61,8 @@ pub struct SignGeometry {
     /// Finished-face region per palette index, µm, y down. Index 0 is the
     /// visible base (outline minus every ink); the rest are the inks.
     pub(crate) face: Vec<Shapes>,
-    /// One body per palette index, in the same order.
-    pub bodies: Vec<Body>,
+    /// One body per palette index, in the same order, named after its ink.
+    pub(crate) model: PrintableModel,
 }
 
 impl SignGeometry {
@@ -79,28 +81,14 @@ impl SignGeometry {
     pub fn inlay_depth_mm(&self) -> f64 {
         mm(self.dims.d)
     }
-}
 
-/// One printable part: a closed, outward-oriented triangle mesh on the µm grid.
-#[derive(Debug, Clone)]
-pub struct Body {
-    /// Ink name; also the 3MF part name.
-    pub name: String,
-    /// Uppercase `#RRGGBB`.
-    pub hex: String,
-    /// Filament slot, 1-based (base = 1).
-    pub extruder: u8,
-    pub(crate) vertices: Vec<[i32; 3]>,
-    pub(crate) triangles: Vec<[u32; 3]>,
-}
-
-impl Body {
-    pub fn vertices_mm(&self) -> impl Iterator<Item = [f64; 3]> + '_ {
-        self.vertices.iter().map(|v| v.map(mm))
+    pub fn model(&self) -> &PrintableModel {
+        &self.model
     }
 
-    pub fn triangles(&self) -> &[[u32; 3]] {
-        &self.triangles
+    /// The printable model, for the check plan to certify.
+    pub fn into_model(self) -> PrintableModel {
+        self.model
     }
 }
 
@@ -163,8 +151,7 @@ pub(crate) fn build_geometry_with(spec: &ValidSignSpec, to_model: ToModel) -> Re
     };
 
     let model = |shapes: &Shapes| to_model_space(shapes, dims, to_model);
-    let mut bodies = Vec::with_capacity(spec.palette.len());
-    let base = &spec.palette[0];
+    let mut meshes = Vec::with_capacity(spec.palette.len());
     let mut builder = MeshBuilder::default();
     mesh::base_body(
         &mut builder,
@@ -173,12 +160,11 @@ pub(crate) fn build_geometry_with(spec: &ValidSignSpec, to_model: ToModel) -> Re
         model(&outer),
         dims,
     )?;
-    bodies.push(builder.into_body(base, 1));
-    for (i, region) in inks.iter().enumerate() {
+    meshes.push(builder);
+    for region in &inks {
         let mut builder = MeshBuilder::default();
         mesh::inlay_body(&mut builder, &model(region), dims)?;
-        let slot = u8::try_from(i + 2).expect("at most three filaments");
-        bodies.push(builder.into_body(&spec.palette[i + 1], slot));
+        meshes.push(builder);
     }
 
     let mut face = Vec::with_capacity(spec.palette.len());
@@ -191,8 +177,26 @@ pub(crate) fn build_geometry_with(spec: &ValidSignSpec, to_model: ToModel) -> Re
         palette: spec.palette.clone(),
         outline,
         face,
-        bodies,
+        model: printable_model(spec, meshes)?,
     })
+}
+
+/// The sign as a printable model: body `i` is palette entry `i`, printed in
+/// filament slot `i + 1` (the base in slot 1).
+fn printable_model(spec: &ValidSignSpec, meshes: Vec<MeshBuilder>) -> Result<PrintableModel> {
+    let model_err = |e: crate::fabrication::model::ModelError| SignError::Geometry(e.to_string());
+    let palette = Palette::new(spec.palette.iter().map(|ink| ink.hex.clone()).collect(), &P2S_04).map_err(model_err)?;
+    let bodies = spec
+        .palette
+        .iter()
+        .zip(meshes)
+        .enumerate()
+        .map(|(i, (ink, builder))| {
+            let slot = palette.slot(i).ok_or_else(|| SignError::Geometry(format!("no filament slot for ink {:?}", ink.name)))?;
+            Ok(Body { name: ink.name.clone(), slot, mesh: builder.into_mesh().map_err(model_err)? })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    PrintableModel::new(spec.title().to_owned(), palette, bodies).map_err(model_err)
 }
 
 /// Applies `to_model` to every point and restores outer-CCW / hole-CW order,

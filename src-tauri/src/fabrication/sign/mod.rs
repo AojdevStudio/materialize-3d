@@ -2,7 +2,9 @@
 //!
 //! The pipeline is `SignSpec` (serde, untrusted) -> [`ValidSignSpec`] (parsed at
 //! the boundary) -> [`build_geometry`] -> [`check_geometry`] /
-//! [`render_preview`] / [`write_package`].
+//! [`render_preview`]. [`build_geometry`] ends by converting the sign into the
+//! shared [`PrintableModel`](crate::fabrication::model::PrintableModel), which
+//! [`check_plan`] certifies before the shared package writer takes it.
 //!
 //! Coordinates in a spec are finished-face coordinates: millimeters, origin at
 //! the top-left corner, y pointing down, as a person reads the sign. All planar
@@ -16,7 +18,6 @@ mod check;
 mod font;
 mod geometry;
 mod mesh;
-mod package;
 mod preview;
 mod spec;
 mod svg;
@@ -24,9 +25,8 @@ mod svg;
 #[cfg(test)]
 mod tests;
 
-pub use check::{check_geometry, GeometryCheck};
-pub use geometry::{build_geometry, Body, SignGeometry};
-pub use package::{write_package, PackageInfo, P2S_PROJECT_SETTINGS_TEMPLATE};
+pub use check::{check_geometry, check_plan, GeometryCheck, SIGN_CHECK_PLAN};
+pub use geometry::{build_geometry, SignGeometry};
 pub use preview::render_preview;
 pub use spec::{
     spec_hash, Align, Element, FontWeight, Ink, SignSpec, SpecError, ValidSignSpec,
@@ -42,10 +42,6 @@ pub enum SignError {
     Geometry(String),
     #[error("preview: {0}")]
     Preview(String),
-    #[error("package: {0}")]
-    Package(String),
-    #[error("geometry checks failed: {0}")]
-    ChecksFailed(String),
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }
