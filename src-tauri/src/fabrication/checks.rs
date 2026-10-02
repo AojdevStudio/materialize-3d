@@ -117,17 +117,22 @@ pub fn slice_and_handoff_checks() -> impl Iterator<Item = CheckId> {
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
-#[error("check plan {plan} names {id} twice")]
-pub struct DuplicatePlannedCheck {
-    pub plan: &'static str,
-    pub id: CheckId,
+pub enum InvalidPlan {
+    /// A plan with no checks would let a build pass on no evidence.
+    #[error("check plan {0} names no checks")]
+    Empty(&'static str),
+    #[error("check plan {plan} names {id} twice")]
+    Duplicate { plan: &'static str, id: CheckId },
 }
 
 impl CheckPlan {
-    pub fn new(id: CheckPlanId, required: Vec<CheckId>) -> Result<Self, DuplicatePlannedCheck> {
+    pub fn new(id: CheckPlanId, required: Vec<CheckId>) -> Result<Self, InvalidPlan> {
+        if required.is_empty() {
+            return Err(InvalidPlan::Empty(id.as_str()));
+        }
         let mut seen = BTreeSet::new();
         if let Some(dup) = required.iter().find(|check| !seen.insert(*check)) {
-            return Err(DuplicatePlannedCheck { plan: id.as_str(), id: dup.clone() });
+            return Err(InvalidPlan::Duplicate { plan: id.as_str(), id: dup.clone() });
         }
         Ok(Self { id, required })
     }
@@ -311,18 +316,41 @@ impl PassedChecks {
     }
 }
 
+/// Proof for tests that record builds without running geometry or a slicer.
+/// It goes through [`CheckPlan::certify`] and [`CheckPlan::finish`] like the
+/// pipeline; there is no other way to make one.
 #[cfg(test)]
-mod tests {
+pub(crate) mod test_support {
     use super::*;
     use crate::fabrication::model::{Body, Mesh, Palette};
     use crate::fabrication::printer::P2S_04;
 
-    fn model() -> PrintableModel {
+    pub(crate) fn model() -> PrintableModel {
         let palette = Palette::new(vec!["#FFFFFF".into()], &P2S_04).expect("palette");
         let mesh = Mesh::new(vec![[0, 0, 0], [1000, 0, 0], [0, 1000, 0]], vec![[0, 1, 2]]).expect("mesh");
         let slot = palette.slot(0).expect("slot");
         PrintableModel::new("t".into(), palette, vec![Body { name: "a".into(), slot, mesh }]).expect("model")
     }
+
+    /// A plan of exactly `ids`, every one passed.
+    pub(crate) fn passed(ids: &[CheckId]) -> PassedChecks {
+        let plan = CheckPlan::new(CheckPlanId::new("test-support-1"), ids.to_vec()).expect("plan");
+        let pass = |phase: fn(CheckPhase) -> bool| -> Vec<CheckOutcome> {
+            ids.iter()
+                .filter(|id| phase(id.phase()))
+                .map(|id| CheckOutcome { id: id.clone(), passed: true, detail: "ok".into() })
+                .collect()
+        };
+        let checked = plan.certify(model(), pass(CheckPhase::is_model_phase)).expect("certified");
+        plan.finish(checked.geometry(), pass(|p| p == CheckPhase::Slice), pass(|p| p == CheckPhase::Handoff))
+            .expect("passed")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::test_support::model;
+    use super::*;
 
     fn geometry(name: &str) -> CheckId {
         CheckId::new(CheckPhase::Geometry, name)
@@ -353,9 +381,10 @@ mod tests {
     }
 
     #[test]
-    fn a_plan_refuses_to_name_a_check_twice() {
+    fn a_plan_refuses_no_checks_and_a_check_named_twice() {
+        assert_eq!(CheckPlan::new(CheckPlanId::new("p"), vec![]).unwrap_err(), InvalidPlan::Empty("p"));
         let err = CheckPlan::new(CheckPlanId::new("p"), vec![geometry("x"), geometry("x")]).unwrap_err();
-        assert_eq!(err, DuplicatePlannedCheck { plan: "p", id: geometry("x") });
+        assert_eq!(err, InvalidPlan::Duplicate { plan: "p", id: geometry("x") });
     }
 
     #[test]

@@ -8,7 +8,7 @@ use serde::Serialize;
 use super::geometry::{mm, SignGeometry, UM_PER_MM};
 use super::spec::ValidSignSpec;
 use crate::fabrication::checks::{
-    slice_and_handoff_checks, CheckId, CheckOutcome, CheckPhase, CheckPlan, CheckPlanId, DuplicatePlannedCheck,
+    slice_and_handoff_checks, CheckId, CheckOutcome, CheckPhase, CheckPlan, CheckPlanId, InvalidPlan,
 };
 use crate::fabrication::model::Body;
 use crate::fabrication::printer::Um;
@@ -63,7 +63,7 @@ fn geometry_id(name: &str, subject: &str) -> CheckId {
 /// Every check a sign build must pass, in recorded order: what
 /// [`check_geometry`] measures for this spec's palette, then the shared slice
 /// and handoff checks.
-pub fn check_plan(spec: &ValidSignSpec) -> Result<CheckPlan, DuplicatePlannedCheck> {
+pub fn check_plan(spec: &ValidSignSpec) -> Result<CheckPlan, InvalidPlan> {
     let bodies: Vec<&str> = spec.palette.iter().map(|ink| ink.name.as_str()).collect();
     let inks = &bodies[1..];
     let per = |name: &'static str, subjects: &[&str]| -> Vec<CheckId> {

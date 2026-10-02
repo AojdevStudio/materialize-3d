@@ -14,9 +14,9 @@ use tauri::{Manager, WebviewWindow, WebviewWindowBuilder};
 use crate::actions::Actions;
 use crate::fabrication::build::Workspace;
 use crate::fabrication::revisions::{
-    self, Actor, Approval, Artifacts, BuildClaim, NewBuild, PrintValidation, RecordedCheck, Sha256Hex, SignRevision,
-    SlicerIdentity,
+    self, Actor, Approval, Artifacts, BuildClaim, NewBuild, PrintValidation, Sha256Hex, SignRevision, SlicerIdentity,
 };
+use crate::fabrication::{bambu, checks};
 use crate::state::AppState;
 
 struct Gui {
@@ -81,7 +81,7 @@ fn agent_built_revision(gui: &Gui, dir: &Path) -> SignRevision {
         else {
             unreachable!("fresh database")
         };
-        revisions::finish_build(
+        revisions::finish_verified(
             conn,
             &revision.id,
             Artifacts {
@@ -93,8 +93,9 @@ fn agent_built_revision(gui: &Gui, dir: &Path) -> SignRevision {
                 gcode_sha256: Sha256Hex::of_bytes(b"gcode"),
                 slicer: SlicerIdentity { name: "Bambu Studio".into(), version: "02.08.02.61".into(), profile_version: "02.08.00.05".into() },
                 effective_settings: json!({}),
-                checks: vec![RecordedCheck { id: "slice.slice_succeeded".into(), passed: true, detail: String::new() }],
+                checks: Vec::new(),
             },
+            &checks::test_support::passed(&[checks::slice_check_id(bambu::CheckId::SliceSucceeded)]),
         )
     })
     .expect("agent-built revision")

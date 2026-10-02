@@ -15,7 +15,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 
 use super::bambu::{self, BambuError, BambuStudio, Check, ResolvedPresets, SliceReport};
-use super::checks::{self, CheckOutcome, ChecksFailed};
+use super::checks::{self, CheckOutcome, ChecksFailed, PassedChecks};
 use super::model::Palette;
 use super::package::{self, PackageError};
 use super::printer::{PrinterProfile, P2S_04};
@@ -252,9 +252,10 @@ pub fn build_sign(
     let id = revision.id.to_string();
     let (partial, final_dir) = (workspace.partial_dir(&id), workspace.final_dir(&id));
     let mut unfinished = UnfinishedBuild::new(state, &revision.id, &partial, &final_dir);
-    let artifacts = run_pipeline(&spec, printer, &template, &studio, &presets, &partial, &final_dir, progress, is_cancelled)
-        .map_err(|err| unfinished.fail(err))?;
-    let finished = unfinished.settle(artifacts)?;
+    let (artifacts, verdict) =
+        run_pipeline(&spec, printer, &template, &studio, &presets, &partial, &final_dir, progress, is_cancelled)
+            .map_err(|err| unfinished.fail(err))?;
+    let finished = unfinished.settle(artifacts, verdict)?;
     if matches!(finished.build, BuildState::Verified { .. }) {
         progress(BuildStep::Verified);
     }
@@ -295,11 +296,16 @@ impl<'a> UnfinishedBuild<'a> {
         Self { state, id, partial, final_dir, placed: false, settled: false }
     }
 
-    /// Moves the finished partial directory into place and records the build.
-    fn settle(mut self, artifacts: Artifacts) -> Result<SignRevision, BuildError> {
+    /// Moves the finished partial directory into place and records the build:
+    /// verified only from the plan's proof, failed with its evidence otherwise.
+    fn settle(mut self, artifacts: Artifacts, verdict: Verdict) -> Result<SignRevision, BuildError> {
         fs::rename(self.partial, self.final_dir).map_err(|err| self.fail(err.into()))?;
         self.placed = true;
-        let finished = with_db(self.state, |conn| revisions::finish_build(conn, self.id, artifacts)).map_err(|err| self.fail(err))?;
+        let finished = with_db(self.state, |conn| match verdict {
+            Verdict::Passed(passed) => revisions::finish_verified(conn, self.id, artifacts, &passed),
+            Verdict::Failed => revisions::finish_failed(conn, self.id, artifacts),
+        })
+        .map_err(|err| self.fail(err))?;
         self.settled = true;
         Ok(finished)
     }
@@ -355,11 +361,18 @@ fn template_selection(template: &Value) -> Result<bambu::PresetSelection, BuildE
     Ok(bambu::PresetSelection { machine: text("printer_settings_id")?, process: text("print_settings_id")?, filaments })
 }
 
+/// What a finished build's checks proved.
+enum Verdict {
+    /// Every planned check passed; the build is recorded as verified from this.
+    Passed(PassedChecks),
+    /// Every planned check ran and at least one failed.
+    Failed,
+}
+
 /// Builds the sign's model, certifies it against the sign's check plan, writes
-/// and slices the package, and records every planned check. A build is recorded
-/// as verified only from the plan's [`checks::PassedChecks`]; failed checks are
-/// recorded as evidence of a failed build, and checks that do not match the
-/// plan fail the build outright.
+/// and slices the package, and judges every planned check. The artifacts carry
+/// every outcome in plan order. Checks that do not match the plan fail the
+/// build outright.
 #[allow(clippy::too_many_arguments)]
 fn run_pipeline(
     spec: &ValidSignSpec,
@@ -371,7 +384,7 @@ fn run_pipeline(
     final_dir: &Path,
     progress: &dyn Fn(BuildStep),
     is_cancelled: &dyn Fn() -> bool,
-) -> Result<Artifacts, BuildError> {
+) -> Result<(Artifacts, Verdict), BuildError> {
     let cancelled = || if is_cancelled() { Err(BuildError::Cancelled) } else { Ok(()) };
     fs::create_dir_all(partial)?;
     fs::write(partial.join("spec.json"), serde_json::to_vec_pretty(spec)?)?;
@@ -400,9 +413,9 @@ fn run_pipeline(
     let footprints = bambu::part_footprints(&package)?;
     let slice = bambu::verify(&report, &footprints, presets).iter().map(slice_outcome).collect();
     let handoff = vec![handoff_matches_slice(template, checked.model().palette(), printer, &report)];
-    let checks: Vec<RecordedCheck> = match plan.finish(checked.geometry(), slice, handoff) {
-        Ok(passed) => passed.outcomes().iter().map(recorded).collect(),
-        Err(ChecksFailed::Failed(outcomes)) => outcomes.iter().map(recorded).collect(),
+    let (checks, verdict): (Vec<RecordedCheck>, Verdict) = match plan.finish(checked.geometry(), slice, handoff) {
+        Ok(passed) => (passed.outcomes().iter().map(RecordedCheck::from).collect(), Verdict::Passed(passed)),
+        Err(ChecksFailed::Failed(outcomes)) => (outcomes.iter().map(RecordedCheck::from).collect(), Verdict::Failed),
         Err(mismatch @ ChecksFailed::Mismatch(_)) => return Err(BuildError::Failed(mismatch.to_string())),
     };
     fs::write(partial.join("checks.json"), serde_json::to_vec_pretty(&checks)?)?;
@@ -414,7 +427,7 @@ fn run_pipeline(
         .transpose()?
         .ok_or_else(|| BuildError::Failed("slice produced no G-code".into()))?;
     let rebase = |path: &Path| final_dir.join(path.strip_prefix(partial).unwrap_or(path));
-    Ok(Artifacts {
+    Ok((Artifacts {
         revision_dir: final_dir.to_path_buf(),
         package_path: rebase(&package),
         package_sha256: Sha256Hex::try_from(info.sha256)?,
@@ -428,17 +441,13 @@ fn run_pipeline(
         },
         effective_settings: serde_json::to_value(&report.effective)?,
         checks,
-    })
+    }, verdict))
 }
 
 fn set_read_only(path: &Path) -> std::io::Result<()> {
     let mut permissions = fs::metadata(path)?.permissions();
     permissions.set_readonly(true);
     fs::set_permissions(path, permissions)
-}
-
-fn recorded(outcome: &CheckOutcome) -> RecordedCheck {
-    RecordedCheck { id: outcome.id.to_string(), passed: outcome.passed, detail: outcome.detail.clone() }
 }
 
 fn slice_outcome(check: &Check) -> CheckOutcome {
@@ -519,6 +528,11 @@ mod tests {
         }
     }
 
+    /// Proof that the one check `staged` records passed.
+    fn passed() -> Verdict {
+        Verdict::Passed(checks::test_support::passed(&[checks::slice_check_id(bambu::CheckId::SliceSucceeded)]))
+    }
+
     /// A partial directory as the pipeline leaves it, and artifacts that pass every check.
     fn staged(partial: &Path, final_dir: &Path) -> Artifacts {
         fs::create_dir_all(partial).expect("partial dir");
@@ -554,7 +568,7 @@ mod tests {
         })
         .expect("trigger");
 
-        let result = UnfinishedBuild::new(&state, &revision.id, &partial, &final_dir).settle(artifacts);
+        let result = UnfinishedBuild::new(&state, &revision.id, &partial, &final_dir).settle(artifacts, passed());
         assert!(result.is_err());
         assert!(!final_dir.exists(), "the placed directory is removed with the failed build");
         assert!(!partial.exists());
@@ -572,7 +586,7 @@ mod tests {
         let id = verified.id.to_string();
         let (partial, verified_dir) = (workspace.partial_dir(&id), workspace.final_dir(&id));
         let finished = UnfinishedBuild::new(&state, &verified.id, &partial, &verified_dir)
-            .settle(staged(&partial, &verified_dir))
+            .settle(staged(&partial, &verified_dir), passed())
             .expect("settle");
         assert!(matches!(finished.build, BuildState::Verified { .. }));
 
