@@ -3,7 +3,7 @@
 //! agent (`agent::tools`) and the external MCP endpoint (`mcp`) both bind
 //! from [`Tool::on`], so the two surfaces cannot drift apart.
 //!
-//! Tools reach the app only through [`AgentActions`], which has no way to
+//! Tools reach the app only through [`RequestActions`], which has no way to
 //! approve, export, or record a print result. Those stay with people.
 
 use std::sync::{Arc, OnceLock};
@@ -15,58 +15,10 @@ use serde_json::{json, Value};
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
-use crate::actions::{ActionError, Actions, SignSummary};
-use crate::fabrication::build::{BuildOutcome, BuildStep};
-use crate::fabrication::revisions::{Actor, SignRevision};
+use crate::actions::{ActionError, RequestActions, SignSummary};
+use crate::fabrication::build::BuildStep;
+use crate::fabrication::revisions::Actor;
 use crate::fabrication::sign::SignSpec;
-use crate::state::PrinterState;
-
-/// What a model-driven caller may do in the app. [`Actions`] implements it for
-/// the running app; tests substitute the build pipeline without a window.
-pub trait AgentActions: Send + Sync + 'static {
-    /// Blocking; see [`Actions::build_sign`].
-    fn build_sign(
-        &self,
-        spec: Value,
-        lineage_id: Option<&str>,
-        actor: Actor,
-        progress: &dyn Fn(BuildStep),
-        is_cancelled: &dyn Fn() -> bool,
-    ) -> Result<BuildOutcome, ActionError>;
-    fn list_signs(&self, limit: u32) -> Result<Vec<SignRevision>, ActionError>;
-    fn get_sign(&self, id: &str) -> Result<SignRevision, ActionError>;
-    fn show_sign(&self, id: &str) -> Result<(), ActionError>;
-    fn printer_status(&self) -> Result<PrinterState, ActionError>;
-}
-
-impl AgentActions for Actions {
-    fn build_sign(
-        &self,
-        spec: Value,
-        lineage_id: Option<&str>,
-        actor: Actor,
-        progress: &dyn Fn(BuildStep),
-        is_cancelled: &dyn Fn() -> bool,
-    ) -> Result<BuildOutcome, ActionError> {
-        Actions::build_sign(self, spec, lineage_id, actor, progress, is_cancelled)
-    }
-
-    fn list_signs(&self, limit: u32) -> Result<Vec<SignRevision>, ActionError> {
-        Actions::list_signs(self, limit)
-    }
-
-    fn get_sign(&self, id: &str) -> Result<SignRevision, ActionError> {
-        Actions::get_sign(self, id)
-    }
-
-    fn show_sign(&self, id: &str) -> Result<(), ActionError> {
-        Actions::show_sign(self, id)
-    }
-
-    fn printer_status(&self) -> Result<PrinterState, ActionError> {
-        Actions::printer_status(self)
-    }
-}
 
 /// Where a model meets the tools. The surface fixes the caller's [`Actor`], so
 /// no argument can claim to be someone else.
@@ -101,7 +53,7 @@ pub enum Tool {
 /// One call's context, supplied by the surface that received it.
 pub struct ToolCall {
     pub surface: Surface,
-    pub actions: Arc<dyn AgentActions>,
+    pub actions: Arc<dyn RequestActions>,
     /// Build progress for this call; the in-app agent forwards it to the UI.
     pub progress: Arc<dyn Fn(BuildStep) + Send + Sync>,
     /// Checked by long builds so a cancelled turn stops slicing.
@@ -116,7 +68,7 @@ impl ToolCall {
     /// work never stalls an async task, and a panic stays inside this call.
     async fn run<T: Send + 'static>(
         &self,
-        work: impl FnOnce(&dyn AgentActions) -> Result<T, ActionError> + Send + 'static,
+        work: impl FnOnce(&dyn RequestActions) -> Result<T, ActionError> + Send + 'static,
     ) -> Result<T, ToolError> {
         let actions = self.actions.clone();
         Ok(self.blocking.spawn_blocking(move || work(actions.as_ref())).await??)
@@ -136,7 +88,7 @@ pub enum ToolError {
     Output(serde_json::Error),
 }
 
-/// `build_sign` arguments. `spec` goes to [`Actions::build_sign`] unparsed so
+/// `build_sign` arguments. `spec` goes to [`RequestActions::build_sign`] unparsed so
 /// the pipeline's own validation produces the error the model reads.
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -345,6 +297,9 @@ impl Tool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fabrication::build::BuildOutcome;
+    use crate::fabrication::revisions::SignRevision;
+    use crate::state::PrinterState;
 
     const FIXTURE: &str = include_str!("../tests/fixtures/signs/synthetic-back-shortly.json");
 
@@ -368,7 +323,7 @@ mod tests {
         limits: std::sync::Mutex<Vec<u32>>,
     }
 
-    impl AgentActions for ListingActions {
+    impl RequestActions for ListingActions {
         fn build_sign(
             &self,
             _spec: Value,

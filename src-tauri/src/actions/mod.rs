@@ -1,13 +1,20 @@
 //! Application actions shared by every caller: GUI commands, the in-app agent's
-//! tools, and external MCP clients. Each caller passes its [`Actor`]; policy
-//! (for example, only people approve) lives in the functions below and the
-//! modules they call, never in a caller.
+//! tools, and external MCP clients. Policy (for example, only people approve)
+//! lives in the functions below and the modules they call, never in a caller.
+//!
+//! Model-driven callers hold only a [`RequestActions`] trait object. Approving,
+//! exporting, and recording a print are inherent methods of [`Actions`] that
+//! take a [`HumanActor`], which only the GUI commands in [`gui`] can create.
 
+pub(crate) mod gui;
+
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde::Serialize;
 use serde_json::Value;
-use tauri::{AppHandle, Emitter, Runtime};
+
+pub use gui::HumanActor;
 
 use crate::fabrication::build::{self, BuildError, BuildOutcome, BuildRequest, BuildStep, Workspace};
 use crate::fabrication::revisions::{self, Actor, BuildState, LineageId, RevisionId, Sha256Hex, SignRevision};
@@ -86,7 +93,38 @@ impl From<&SignRevision> for SignSummary {
 
 /// Delivers an app event to the UI. A closed window is not an error, so
 /// delivery failures are logged by the sink and never fail an action.
-type EventSink = Arc<dyn Fn(&str, Value) + Send + Sync>;
+/// The running app sends events through [`gui::app_events`]; tests capture them.
+pub type EventSink = Arc<dyn Fn(&str, Value) + Send + Sync>;
+
+/// What any non-human caller may request: the in-app agent and MCP hold this
+/// trait object only. There is no way to approve, export, or record a print
+/// result through it; those take a [`HumanActor`].
+///
+/// [`Actions`] implements it for the running app; tests substitute the build
+/// pipeline without a window.
+///
+/// ```compile_fail,E0599
+/// # use std::sync::Arc;
+/// # use materialize_3d_lib::actions::RequestActions;
+/// fn approve_from_a_model(actions: Arc<dyn RequestActions>) {
+///     let _ = actions.approve(todo!(), "revision", String::new());
+/// }
+/// ```
+pub trait RequestActions: Send + Sync + 'static {
+    /// Blocking; see [`Actions::build_sign`].
+    fn build_sign(
+        &self,
+        spec: Value,
+        lineage_id: Option<&str>,
+        actor: Actor,
+        progress: &dyn Fn(BuildStep),
+        is_cancelled: &dyn Fn() -> bool,
+    ) -> Result<BuildOutcome, ActionError>;
+    fn list_signs(&self, limit: u32) -> Result<Vec<SignRevision>, ActionError>;
+    fn get_sign(&self, id: &str) -> Result<SignRevision, ActionError>;
+    fn show_sign(&self, id: &str) -> Result<(), ActionError>;
+    fn printer_status(&self) -> Result<PrinterState, ActionError>;
+}
 
 #[derive(Clone)]
 pub struct Actions {
@@ -96,12 +134,8 @@ pub struct Actions {
 }
 
 impl Actions {
-    pub fn new<R: Runtime>(app: AppHandle<R>, state: Arc<AppState>, workspace: Workspace) -> Self {
-        let emit: EventSink = Arc::new(move |event, payload| {
-            if let Err(err) = app.emit(event, payload) {
-                log::warn!("actions: could not emit {event}: {err}");
-            }
-        });
+    /// `emit` delivers [`SIGNS_CHANGED`] and [`SIGNS_OPEN`]; no Tauri runtime is needed.
+    pub fn new(emit: EventSink, state: Arc<AppState>, workspace: Workspace) -> Self {
         Self { emit, state, workspace }
     }
 
@@ -159,22 +193,32 @@ impl Actions {
         Ok(())
     }
 
-    pub fn approve_sign(&self, id: &str, package_sha256: String, actor: Actor) -> Result<SignRevision, ActionError> {
+    /// Approves the package a person saw, identified by its hash. `revisions::approve`
+    /// checks the actor again, so the rule holds in both the types and the transition.
+    pub fn approve(&self, who: &HumanActor, id: &str, package_sha256: String) -> Result<SignRevision, ActionError> {
         let id = RevisionId::parse(id)?;
         let expected = Sha256Hex::try_from(package_sha256)?;
-        let revision = build::with_db(&self.state, |conn| revisions::approve(conn, &id, &expected, actor))?;
+        let revision = build::with_db(&self.state, |conn| revisions::approve(conn, &id, &expected, who.actor()))?;
         self.notify(&revision.id);
         Ok(revision)
     }
 
-    pub fn export_sign(&self, id: &str, destination: &std::path::Path) -> Result<std::path::PathBuf, ActionError> {
+    /// Copies an approved package to `destination` for a person.
+    pub fn export(&self, _who: &HumanActor, id: &str, destination: &Path) -> Result<PathBuf, ActionError> {
         let id = RevisionId::parse(id)?;
         Ok(build::with_db(&self.state, |conn| revisions::export(conn, &id, destination))?)
     }
 
-    pub fn record_print_result(&self, id: &str, passed: bool, note: &str, actor: Actor) -> Result<SignRevision, ActionError> {
+    pub fn record_print_result(
+        &self,
+        who: &HumanActor,
+        id: &str,
+        passed: bool,
+        note: &str,
+    ) -> Result<SignRevision, ActionError> {
         let id = RevisionId::parse(id)?;
-        let revision = build::with_db(&self.state, |conn| revisions::record_print_result(conn, &id, passed, note, actor))?;
+        let revision =
+            build::with_db(&self.state, |conn| revisions::record_print_result(conn, &id, passed, note, who.actor()))?;
         self.notify(&revision.id);
         Ok(revision)
     }
@@ -185,5 +229,58 @@ impl Actions {
             .lock()
             .map(|printer| printer.clone())
             .map_err(|e| ActionError::State(format!("printer state lock: {e}")))
+    }
+}
+
+impl RequestActions for Actions {
+    fn build_sign(
+        &self,
+        spec: Value,
+        lineage_id: Option<&str>,
+        actor: Actor,
+        progress: &dyn Fn(BuildStep),
+        is_cancelled: &dyn Fn() -> bool,
+    ) -> Result<BuildOutcome, ActionError> {
+        Actions::build_sign(self, spec, lineage_id, actor, progress, is_cancelled)
+    }
+
+    fn list_signs(&self, limit: u32) -> Result<Vec<SignRevision>, ActionError> {
+        Actions::list_signs(self, limit)
+    }
+
+    fn get_sign(&self, id: &str) -> Result<SignRevision, ActionError> {
+        Actions::get_sign(self, id)
+    }
+
+    fn show_sign(&self, id: &str) -> Result<(), ActionError> {
+        Actions::show_sign(self, id)
+    }
+
+    fn printer_status(&self) -> Result<PrinterState, ActionError> {
+        Actions::printer_status(self)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+
+    use super::*;
+
+    #[test]
+    fn actions_emit_through_the_sink_they_are_given_without_a_tauri_app() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let emitted = Arc::new(Mutex::new(Vec::<(String, Value)>::new()));
+        let sink: EventSink = Arc::new({
+            let emitted = emitted.clone();
+            move |event, payload| emitted.lock().expect("emitted").push((event.to_owned(), payload))
+        });
+        let workspace = Workspace::new(&dir.path().join("data"), &dir.path().join("cache"));
+        let actions = Actions::new(sink, Arc::new(AppState::default()), workspace);
+
+        let id = "7d9f3c1e-2b4a-4c8e-9f10-123456789abc";
+        actions.show_sign(id).expect("show");
+
+        assert_eq!(*emitted.lock().expect("emitted"), [(SIGNS_OPEN.to_owned(), serde_json::json!({ "revisionId": id }))]);
     }
 }

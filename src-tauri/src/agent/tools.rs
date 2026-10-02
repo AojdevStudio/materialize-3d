@@ -18,7 +18,8 @@ use uuid::Uuid;
 use super::protocol::{AgentEvent, ToolCallStatus};
 use super::store;
 use crate::state::AppState;
-use crate::tools::{AgentActions, Surface, Tool, ToolCall, ToolError};
+use crate::actions::RequestActions;
+use crate::tools::{Surface, Tool, ToolCall, ToolError};
 
 /// Sends one event to the turn's listener.
 pub type Emit = Arc<dyn Fn(AgentEvent) + Send + Sync>;
@@ -28,7 +29,7 @@ pub struct TurnScope {
     pub conversation_id: String,
     pub turn_id: String,
     pub state: Arc<AppState>,
-    pub actions: Arc<dyn AgentActions>,
+    pub actions: Arc<dyn RequestActions>,
     pub emit: Emit,
     pub cancel: CancellationToken,
     /// Blocking work started by tools. Cancelling drops a tool's future but not
