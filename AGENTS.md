@@ -17,7 +17,7 @@ Every PR that changes user-visible behavior **must** include watchable proof in 
    ```
 
 3. **Verify before relying on it:** open the PR page and confirm each attachment renders, or `curl -sL -o /dev/null -w "%{http_code}" <attachment-url>` returns `200`. If the PR links any `pr-media` file, `pr-media check` must pass.
-4. GIFs embed inline with `![alt](url)` and autoplay; MP4s go in as plain links (click → plays in browser). Keep videos short (≤3 min, timelapse dead time), small (<5 MB), and 1600×900 or less.
+4. Files attached with `--attach` render inline: images and GIFs as images (GIFs autoplay), MP4s as a player. Files shipped through `pr-media` are plain links. Keep videos short (≤3 min, timelapse dead time), small (<5 MB), and 1600×900 or less.
 
 ## Recording on the Linux host
 
