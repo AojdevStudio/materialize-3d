@@ -96,7 +96,7 @@ A proof must meet these standards:
 - Capture the action and the resulting state with a screenshot before and after, plus `actions.log`. The final screen alone is not enough.
 - Verify the side effect as well as the pixels: the `settings` row, the file written, and the state after an app relaunch.
 - Report an unreachable path together with the unmet precondition. For example, a Design render needs `openscad`, and chat needs a provider credential. Never swap in a different path and call the feature verified.
-- For a PR, publish media per AGENTS.md: your R2 media bucket, `--remote`, and a `curl` 200 check before linking. Pull the files first with `scp <linux-host>:m3d-verify/<run>/evidence/<file> .`.
+- For a PR, attach media per AGENTS.md. Pull the files first with `scp <linux-host>:m3d-verify/<run>/evidence/<file> .`, then attach them with `gh pr create|edit|comment --attach <file>`, or ship them with `pr-media <files>` if GitHub refuses them. Confirm each attachment renders on the PR page, and run `pr-media check` if the PR links any `pr-media` file.
 
 ## Cleanup
 
