@@ -53,6 +53,9 @@ jobs:
       - name: Rust tests
         working-directory: src-tauri
         run: cargo test --lib --locked
+      - name: Rust doc tests (compile-time proofs)
+        working-directory: src-tauri
+        run: cargo test --doc --locked
       - name: Install Bambu Studio 02.08.02.61
         run: |
           sudo apt-get install -y --no-install-recommends \

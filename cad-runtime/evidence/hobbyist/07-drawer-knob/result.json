@@ -1,0 +1,91 @@
+{
+  "bodies": [
+    {
+      "mesh": {
+        "bbox_max_mm": [
+          15.999,
+          15.998,
+          28.0
+        ],
+        "bbox_min_mm": [
+          -15.997,
+          -15.995,
+          0.0
+        ],
+        "boundary_edges": 0,
+        "closed_manifold": true,
+        "collapsed_triangles": 0,
+        "non_degenerate": true,
+        "non_manifold_edges": 0,
+        "outward": true,
+        "signed_volume_mm3": 12215.39132579,
+        "triangles": 11940,
+        "vertices": 5972,
+        "zero_area_triangles": 0
+      },
+      "name": "knob",
+      "raw_vertices": 6329,
+      "slot": 1
+    }
+  ],
+  "command": "build",
+  "error": null,
+  "guests": [
+    {
+      "console_bytes": 0,
+      "diagnostics_bytes": 386,
+      "job_disk": {
+        "allocated_bytes": 92422144,
+        "bytes": 268435456,
+        "path": "/var/folders/ss/gw0_l93j6fjdclq372chrjz40000gn/T/m3d-job-66403-0/job.img"
+      },
+      "role": "generate",
+      "stats": {
+        "connect_ms": 130,
+        "exit": 0,
+        "job_ms": 3593,
+        "memory_peak": 763183104,
+        "oom_kills": 0,
+        "pids_peak": 4
+      },
+      "timings": {
+        "boot_ms": 147,
+        "forced_stop": false,
+        "job_ms": 3600,
+        "refused_connections": 0,
+        "start_ms": 65,
+        "stop_ms": 43,
+        "total_ms": 3961
+      }
+    },
+    {
+      "console_bytes": 0,
+      "diagnostics_bytes": 49,
+      "job_disk": {
+        "allocated_bytes": 92717056,
+        "bytes": 268435456,
+        "path": "/var/folders/ss/gw0_l93j6fjdclq372chrjz40000gn/T/m3d-job-66403-1/job.img"
+      },
+      "role": "inspect",
+      "stats": {
+        "connect_ms": 130,
+        "exit": 0,
+        "job_ms": 682,
+        "memory_peak": 381800448,
+        "oom_kills": 0,
+        "pids_peak": 2
+      },
+      "timings": {
+        "boot_ms": 149,
+        "forced_stop": false,
+        "job_ms": 691,
+        "refused_connections": 0,
+        "start_ms": 87,
+        "stop_ms": 43,
+        "total_ms": 1073
+      }
+    }
+  ],
+  "mesh_bytes": 295196,
+  "outcome": "accepted"
+}

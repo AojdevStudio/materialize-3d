@@ -1,0 +1,20 @@
+{
+  "arch": "amd64",
+  "files": {
+    "rootfs.img": {
+      "sha256": "7a43782563d6cdf68bc6647f3f0b677c98e3df5c34a1709fe9f9e86ee3d9fc2e",
+      "bytes": 606433280
+    },
+    "job.img": {
+      "sha256": "71045302f36c872d522346e3211a59ea4753d7708d28f438973cdfb43b3ed697",
+      "bytes": 268435456
+    }
+  },
+  "rootfs_installed_bytes": 1299548590,
+  "inputs": {
+    "python_base": "python:3.13-slim-trixie@sha256:bb2988715db2cf7ace7b53f38f3cffbef7c7046a656bee66245eb0ed386e2e81",
+    "kernel_version": "6.18.54",
+    "kernel_sha256": "9df30b02dd8102bbd0be52556288ef6889ddbe7f1ddb96fbf847d0becf3eacac",
+    "lock_sha256": "46f1b56a3f335ab9e697ca4892090489fe3e96e7365edfdeb5ca2eb4865fd0db"
+  }
+}

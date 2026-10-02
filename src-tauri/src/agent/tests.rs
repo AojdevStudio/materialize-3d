@@ -16,11 +16,11 @@ use super::protocol::{AgentErrorKind, AgentEvent, HistoryEntry, Provider, ToolCa
 use super::store;
 use super::tools::TurnScope;
 use super::turn::{run_turn, ModelChoice, TurnEnd};
-use crate::actions::ActionError;
+use crate::actions::{ActionError, RequestActions, RequestActor};
 use crate::fabrication::build::{self, BuildError, BuildOutcome, BuildRequest, BuildStep, Workspace};
-use crate::fabrication::revisions::{self, Actor, BuildState, LineageId, RevisionId, SignRevision};
+use crate::fabrication::revisions::{self, BuildState, LineageId, RevisionId, SignRevision};
 use crate::state::{AppState, PrinterState};
-use crate::tools::{AgentActions, Surface, Tool};
+use crate::tools::{Surface, Tool};
 
 const FIXTURE: &str = include_str!("../../tests/fixtures/signs/synthetic-back-shortly.json");
 
@@ -47,7 +47,7 @@ struct Turn {
 }
 
 impl Turn {
-    fn new(h: &Harness, turn_id: &str, actions: Arc<dyn AgentActions>, cancel_on_progress: Option<BuildStep>) -> Self {
+    fn new(h: &Harness, turn_id: &str, actions: Arc<dyn RequestActions>, cancel_on_progress: Option<BuildStep>) -> Self {
         let events = Arc::new(Mutex::new(Vec::new()));
         let cancel = CancellationToken::new();
         let sink = events.clone();
@@ -111,12 +111,12 @@ struct FakeActions {
     build_exited: AtomicBool,
 }
 
-impl AgentActions for FakeActions {
+impl RequestActions for FakeActions {
     fn build_sign(
         &self,
         _spec: Value,
         _lineage_id: Option<&str>,
-        _actor: Actor,
+        _requester: RequestActor,
         progress: &dyn Fn(BuildStep),
         is_cancelled: &dyn Fn() -> bool,
     ) -> Result<BuildOutcome, ActionError> {
@@ -159,16 +159,17 @@ impl PipelineActions {
     }
 }
 
-impl AgentActions for PipelineActions {
+impl RequestActions for PipelineActions {
     fn build_sign(
         &self,
         spec: Value,
         lineage_id: Option<&str>,
-        actor: Actor,
+        requester: RequestActor,
         progress: &dyn Fn(BuildStep),
         is_cancelled: &dyn Fn() -> bool,
     ) -> Result<BuildOutcome, ActionError> {
         let lineage_id = lineage_id.map(LineageId::parse).transpose()?;
+        let actor = requester.into();
         Ok(build::build_sign(&self.state, &self.workspace, BuildRequest { spec, lineage_id, actor }, progress, is_cancelled)?)
     }
 
@@ -352,7 +353,7 @@ async fn cancel_mid_build_sign_waits_for_the_build_and_marks_the_call_cancelled(
 #[ignore = "needs a validated Bambu Studio (BAMBU_STUDIO_CLI or a standard install)"]
 async fn cancelled_real_build_fails_its_revision_and_re_asking_builds_once_then_reuses() {
     let h = harness();
-    let actions: Arc<dyn AgentActions> = Arc::new(PipelineActions::new(&h));
+    let actions: Arc<dyn RequestActions> = Arc::new(PipelineActions::new(&h));
     let spec: Value = serde_json::from_str(FIXTURE).expect("fixture");
     let build_turn = || scripted(vec![tool_turn("build_sign", json!({ "spec": spec })), text_turn("Done.")]);
 
@@ -415,7 +416,7 @@ fn print_sequence(events: &[AgentEvent]) {
 async fn live_openai_turn_builds_a_verified_sign() {
     let api_key = std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY");
     let h = harness();
-    let actions: Arc<dyn AgentActions> = Arc::new(PipelineActions::new(&h));
+    let actions: Arc<dyn RequestActions> = Arc::new(PipelineActions::new(&h));
     let turn = Turn::new(&h, "live-1", actions, None);
     let model = default_model(Provider::Openai);
     println!("model: openai:{model}");

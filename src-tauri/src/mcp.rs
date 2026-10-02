@@ -1,6 +1,6 @@
 //! Local MCP endpoint so external agents (Claude Code, Codex, Cursor) can call
-//! the registry's tools ([`crate::tools`]) over the same [`Actions`] as the GUI
-//! and the in-app agent.
+//! the registry's tools ([`crate::tools`]) over the same actions as the GUI
+//! and the in-app agent, held only as a [`RequestActions`].
 //!
 //! Off by default. When enabled it binds 127.0.0.1 only and requires
 //! `Authorization: Bearer <token>`; the token lives in the OS keyring. There is
@@ -28,8 +28,8 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
-use crate::actions::Actions;
-use crate::tools::{AgentActions, Surface, Tool, ToolCall};
+use crate::actions::RequestActions;
+use crate::tools::{Surface, Tool, ToolCall};
 
 pub const DEFAULT_PORT: u16 = 45373;
 const TOKEN_KEY: &str = "mcp:token";
@@ -47,15 +47,15 @@ fn offered(name: &str) -> Option<Tool> {
 
 #[derive(Clone)]
 pub struct MaterializeMcp {
-    actions: Arc<dyn AgentActions>,
+    actions: Arc<dyn RequestActions>,
     /// Runs each call's action work off the serve task, so a stall or panic in
     /// its database or hashing work stays inside that one tool call.
     blocking: TaskTracker,
 }
 
 impl MaterializeMcp {
-    pub fn new(actions: Actions) -> Self {
-        Self { actions: Arc::new(actions), blocking: TaskTracker::new() }
+    pub fn new(actions: Arc<dyn RequestActions>) -> Self {
+        Self { actions, blocking: TaskTracker::new() }
     }
 }
 
@@ -160,7 +160,13 @@ pub struct McpStatus {
 impl McpServer {
     /// Turns the endpoint on (idempotent) or off. `token` is called only when
     /// the endpoint actually starts.
-    pub async fn set_enabled<F, Fut>(&self, actions: Actions, port: u16, enabled: bool, token: F) -> Result<McpStatus, String>
+    pub async fn set_enabled<F, Fut>(
+        &self,
+        actions: Arc<dyn RequestActions>,
+        port: u16,
+        enabled: bool,
+        token: F,
+    ) -> Result<McpStatus, String>
     where
         F: FnOnce() -> Fut,
         Fut: Future<Output = Result<String, String>>,
@@ -173,7 +179,7 @@ impl McpServer {
     /// so a failed enable is never remembered as on.
     pub async fn set_enabled_recording<F, Fut>(
         &self,
-        actions: Actions,
+        actions: Arc<dyn RequestActions>,
         port: u16,
         enabled: bool,
         token: F,
@@ -227,7 +233,7 @@ impl McpServer {
     }
 }
 
-async fn serve(actions: Actions, port: u16, token: String) -> std::io::Result<Running> {
+async fn serve(actions: Arc<dyn RequestActions>, port: u16, token: String) -> std::io::Result<Running> {
     let cancel = CancellationToken::new();
     let service = StreamableHttpService::new(
         move || Ok(MaterializeMcp::new(actions.clone())),
@@ -301,7 +307,7 @@ fn record_enabled(state: &crate::state::AppState, enabled: bool) -> Result<(), S
 /// Starts the endpoint at launch only when the person turned it on earlier.
 pub async fn start_if_enabled<F, Fut>(
     server: &McpServer,
-    actions: Actions,
+    actions: Arc<dyn RequestActions>,
     state: &crate::state::AppState,
     token: F,
 ) -> Result<McpStatus, String>
@@ -324,7 +330,7 @@ pub async fn mcp_status(server: tauri::State<'_, McpServer>) -> Result<McpStatus
 #[tauri::command]
 pub async fn mcp_set_enabled(
     server: tauri::State<'_, McpServer>,
-    actions: tauri::State<'_, Actions>,
+    actions: tauri::State<'_, Arc<dyn RequestActions>>,
     state: tauri::State<'_, Arc<crate::state::AppState>>,
     enabled: bool,
 ) -> Result<McpStatus, String> {
@@ -406,12 +412,12 @@ mod tests {
     }
 
     /// Actions over a fresh database in `dir`, plus the app state behind them.
-    pub(crate) fn test_actions(dir: &std::path::Path) -> (Actions, Arc<crate::state::AppState>) {
-        let app = tauri::test::mock_app();
+    pub(crate) fn test_actions(dir: &std::path::Path) -> (Arc<dyn RequestActions>, Arc<crate::state::AppState>) {
         let state = Arc::new(crate::state::AppState::default());
         *state.db.lock().expect("db") = Some(crate::database::init_db(&dir.join("t.db")).expect("db init"));
         let workspace = crate::fabrication::build::Workspace::new(&dir.join("data"), &dir.join("cache"));
-        (Actions::new(app.handle().clone(), state.clone(), workspace), state)
+        let actions = crate::actions::Actions::new(Arc::new(|_, _| {}), state.clone(), workspace);
+        (Arc::new(actions), state)
     }
 
     async fn fixed(token: &str) -> Result<String, String> {
@@ -613,7 +619,7 @@ mod tests {
             conversation_id: "c".into(),
             turn_id: "t".into(),
             state,
-            actions: Arc::new(actions),
+            actions,
             emit: Arc::new(|_| {}),
             cancel: CancellationToken::new(),
             blocking: TaskTracker::new(),

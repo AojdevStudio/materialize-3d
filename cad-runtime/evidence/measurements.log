@@ -1,0 +1,20 @@
+measurements, 2026-10-02T09:53:06Z
+host: Apple M4, 10 cores, 24 GiB, macOS 26.7
+part: cable-clip-fillet-first.py, guests: 2 vCPU and 2048 MiB each
+run    verify gen_boot  gen_job gen_total ins_boot  ins_job ins_total   wall_ms vm_rss_mib helper_mib
+1        1596      158     3774     4150      155      646     1019      6770      1240        27
+2        1578      153     3556     3931      141      604      968      6480      1236        27
+3        1592      168     3561     3955      155      696     1079      6630      1238        27
+4        1609      157     3676     4062      144      577      940      6620      1237        27
+5        1585      158     3619     3998      158      631     1011      6600      1236        27
+
+guest job memory peak (cgroup memory.peak, MiB): generate 728, inspect 359
+guest start (framework start call to running, ms): min 66 max 77
+
+sizes (bytes):
+  Image             7399432 on disk,      7401472 allocated
+  rootfs.img      587833344 on disk,    587833344 allocated
+  job.img         268435456 on disk,     92340224 allocated
+  rootfs installed (unpacked tree): 1204326271
+  rootfs.img      429398007 lzfse (what a compressed DMG would carry)
+  job.img            175450 lzfse (what a compressed DMG would carry)
