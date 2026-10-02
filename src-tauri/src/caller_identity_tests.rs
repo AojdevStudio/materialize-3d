@@ -173,8 +173,8 @@ async fn each_caller_records_its_own_identity() {
         cancel: tokio_util::sync::CancellationToken::new(),
         blocking: tokio_util::task::TaskTracker::new(),
     };
-    let from_agent = crate::agent::tools::AgentTool::BuildSign
-        .run(&scope, "call-1".into(), json!({ "spec": spec_titled("From the agent") }))
+    let from_agent = scope
+        .invoke(crate::tools::Tool::BuildSign, "call-1".into(), json!({ "spec": spec_titled("From the agent") }))
         .await
         .expect("agent build");
     assert_eq!(from_agent["requested_by"], "agent");
@@ -211,7 +211,7 @@ async fn each_caller_records_its_own_identity() {
     let data = text.lines().filter_map(|l| l.strip_prefix("data:")).map(str::trim).find(|l| !l.is_empty()).unwrap_or(&text);
     let response: Value = serde_json::from_str(data).expect("json-rpc");
     let output: Value = serde_json::from_str(response["result"]["content"][0]["text"].as_str().expect("tool text")).expect("output");
-    assert_eq!(output["revision"]["requested_by"], "external_mcp");
+    assert_eq!(output["requested_by"], "external_mcp");
     server.set_enabled(gui.actions.clone(), 0, false, || async { Ok(String::new()) }).await.expect("stop");
 
     let recorded: Vec<(String, Actor)> =

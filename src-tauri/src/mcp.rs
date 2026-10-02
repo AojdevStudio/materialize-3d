@@ -1,5 +1,6 @@
 //! Local MCP endpoint so external agents (Claude Code, Codex, Cursor) can call
-//! the same [`Actions`] as the GUI and the in-app agent.
+//! the registry's tools ([`crate::tools`]) over the same [`Actions`] as the GUI
+//! and the in-app agent.
 //!
 //! Off by default. When enabled it binds 127.0.0.1 only and requires
 //! `Authorization: Bearer <token>`; the token lives in the OS keyring. There is
@@ -12,125 +13,52 @@ use axum::extract::{Request, State};
 use axum::http::{header, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::Response;
-use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::{Implementation, ServerCapabilities, ServerConfig};
+use rmcp::model::{
+    CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, Implementation, ListToolsResult,
+    PaginatedRequestParams, ProtocolVersion, ResultType, ServerCapabilities, ServerConfig,
+};
+use rmcp::service::RequestContext;
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
-use rmcp::{tool, tool_handler, tool_router, ServerHandler};
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use rmcp::{ErrorData, RoleServer, ServerHandler};
+use serde::Serialize;
 use subtle::ConstantTimeEq;
 use tokio::sync::{watch, Mutex};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
+use tokio_util::task::TaskTracker;
 
-use crate::actions::{Actions, SignSummary};
-use crate::fabrication::revisions::Actor;
+use crate::actions::Actions;
+use crate::tools::{AgentActions, Surface, Tool, ToolCall};
 
 pub const DEFAULT_PORT: u16 = 45373;
 const TOKEN_KEY: &str = "mcp:token";
 pub const ENABLED_SETTING: &str = "mcp.enabled";
 
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct BuildSignArgs {
-    /// A Materialize 3D SignSpec (schema_version 1): width_mm, height_mm, base ink,
-    /// one or two inks, and painted elements (text, rect, svg) in finished-face
-    /// millimeters with the origin at the top-left and y pointing down.
-    pub spec: serde_json::Value,
-    /// Add the build as a new revision of this sign instead of starting a new sign.
-    pub lineage_id: Option<String>,
+/// The MCP definition of a registry tool: its name, description, and schema as declared once in [`Tool`].
+fn advertised(tool: Tool) -> rmcp::model::Tool {
+    let schema = tool.parameters().as_object().cloned().unwrap_or_default();
+    rmcp::model::Tool::new(tool.name(), tool.description(), Arc::new(schema))
 }
 
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct ListSignsArgs {
-    /// Most recent first; defaults to 20.
-    pub limit: Option<u32>,
-}
-
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct RevisionArgs {
-    pub revision_id: String,
-}
-
-#[derive(Serialize)]
-struct BuildSignOutput {
-    revision: SignSummary,
-    reused: bool,
-    next_step: &'static str,
-}
-
-fn json_text(value: &impl Serialize) -> Result<String, String> {
-    serde_json::to_string_pretty(value).map_err(|e| e.to_string())
-}
-
-/// Runs an action on the blocking pool so a stall or panic in its database or
-/// hashing work stays inside that one tool call instead of the serve task.
-async fn off_serve_task<T, E>(work: impl FnOnce() -> Result<T, E> + Send + 'static) -> Result<T, String>
-where
-    T: Send + 'static,
-    E: ToString + Send + 'static,
-{
-    tokio::task::spawn_blocking(work).await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())
+fn offered(name: &str) -> Option<Tool> {
+    Tool::on(Surface::ExternalMcp).find(|tool| tool.name() == name)
 }
 
 #[derive(Clone)]
 pub struct MaterializeMcp {
-    actions: Actions,
+    actions: Arc<dyn AgentActions>,
+    /// Runs each call's action work off the serve task, so a stall or panic in
+    /// its database or hashing work stays inside that one tool call.
+    blocking: TaskTracker,
 }
 
-#[tool_router]
 impl MaterializeMcp {
     pub fn new(actions: Actions) -> Self {
-        Self { actions }
-    }
-
-    #[tool(description = "Build, slice with Bambu Studio, and verify a face-down multicolor sign from a SignSpec. \
-        The result is a revision awaiting a person's approval in the Materialize 3D Signs view; this tool cannot approve it. \
-        An identical spec returns the existing revision.")]
-    async fn build_sign(&self, Parameters(args): Parameters<BuildSignArgs>) -> Result<String, String> {
-        let actions = self.actions.clone();
-        let outcome = off_serve_task(move || {
-            actions.build_sign(args.spec, args.lineage_id.as_deref(), Actor::ExternalMcp, &|_| {}, &|| false)
-        })
-        .await?;
-        json_text(&BuildSignOutput {
-            revision: SignSummary::from(&outcome.revision),
-            reused: outcome.reused,
-            next_step: "A person must review and approve this revision in the Materialize 3D Signs view.",
-        })
-    }
-
-    #[tool(description = "List recent sign revisions with build, approval, and print-test status.")]
-    async fn list_signs(&self, Parameters(args): Parameters<ListSignsArgs>) -> Result<String, String> {
-        let actions = self.actions.clone();
-        let revisions = off_serve_task(move || actions.list_signs(args.limit.unwrap_or(20))).await?;
-        json_text(&revisions.iter().map(SignSummary::from).collect::<Vec<_>>())
-    }
-
-    #[tool(description = "Read one sign revision, including any failed verification checks.")]
-    async fn get_sign(&self, Parameters(args): Parameters<RevisionArgs>) -> Result<String, String> {
-        let actions = self.actions.clone();
-        let revision = off_serve_task(move || actions.get_sign(&args.revision_id)).await?;
-        json_text(&SignSummary::from(&revision))
-    }
-
-    #[tool(description = "Open a sign revision in the Materialize 3D Signs view for the person at the computer.")]
-    async fn show_sign(&self, Parameters(args): Parameters<RevisionArgs>) -> Result<String, String> {
-        self.actions.show_sign(&args.revision_id).map_err(|e| e.to_string())?;
-        Ok("opened in the Signs view".into())
-    }
-
-    #[tool(description = "Read the connected printer's status: connection, temperatures, job state, and progress.")]
-    async fn printer_status(&self) -> Result<String, String> {
-        let actions = self.actions.clone();
-        json_text(&off_serve_task(move || actions.printer_status()).await?)
+        Self { actions: Arc::new(actions), blocking: TaskTracker::new() }
     }
 }
 
-#[tool_handler]
 impl ServerHandler for MaterializeMcp {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
@@ -140,6 +68,53 @@ impl ServerHandler for MaterializeMcp {
                  Builds you request wait for a person's approval in the app."
                     .to_string(),
             )
+    }
+
+    async fn list_tools(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<ListToolsResult, ErrorData> {
+        // The same cache hints rmcp's generated handler sends.
+        let supports_cache_hints = context.protocol_version().is_some_and(|version| version >= ProtocolVersion::V_2026_07_28);
+        Ok(ListToolsResult {
+            result_type: Some(ResultType::COMPLETE),
+            tools: Tool::on(Surface::ExternalMcp).map(advertised).collect(),
+            meta: None,
+            next_cursor: None,
+            ttl_ms: supports_cache_hints.then_some(0),
+            cache_scope: supports_cache_hints.then_some(CacheScope::Public),
+        })
+    }
+
+    fn get_tool(&self, name: &str) -> Option<rmcp::model::Tool> {
+        offered(name).map(advertised)
+    }
+
+    /// An unlisted name is refused before anything runs; a tool's own failure
+    /// (bad arguments included) comes back as an error result the agent reads.
+    async fn call_tool(
+        &self,
+        request: CallToolRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResponse, ErrorData> {
+        let tool = offered(&request.name).ok_or_else(|| ErrorData::invalid_params("tool not found", None))?;
+        let call = ToolCall {
+            surface: Surface::ExternalMcp,
+            actions: self.actions.clone(),
+            progress: Arc::new(|_| {}),
+            cancel: CancellationToken::new(),
+            blocking: self.blocking.clone(),
+        };
+        let args = serde_json::Value::Object(request.arguments.unwrap_or_default());
+        let result = match tool.invoke(&call, args).await {
+            Ok(output) => match serde_json::to_string_pretty(&output) {
+                Ok(text) => CallToolResult::success(vec![ContentBlock::text(text)]),
+                Err(err) => CallToolResult::error(vec![ContentBlock::text(err.to_string())]),
+            },
+            Err(err) => CallToolResult::error(vec![ContentBlock::text(err.to_string())]),
+        };
+        Ok(result.into())
     }
 }
 
@@ -373,7 +348,7 @@ mod tests {
     use super::*;
 
     fn tool_names() -> Vec<String> {
-        MaterializeMcp::tool_router().list_all().into_iter().map(|tool| tool.name.to_string()).collect()
+        Tool::on(Surface::ExternalMcp).map(advertised).map(|tool| tool.name.to_string()).collect()
     }
 
     #[test]
@@ -598,6 +573,75 @@ mod tests {
         assert_eq!(smuggled["result"]["isError"], true, "an actor argument is rejected, not ignored: {smuggled}");
         let reason = smuggled["result"]["content"][0]["text"].as_str().unwrap_or_default();
         assert!(reason.contains("unknown field `actor`"), "{reason}");
+        server.set_enabled(actions, 0, false, || fixed("unused")).await.expect("stop");
+    }
+
+    /// Lists the tools over HTTP, then calls `name`; returns the listed tools and the call's JSON-RPC reply.
+    async fn list_then_call(url: &str, token: &str, name: &str) -> (Vec<serde_json::Value>, serde_json::Value) {
+        let client = reqwest::Client::new();
+        let rpc = |session: Option<String>, body: serde_json::Value| {
+            let mut request = client
+                .post(url)
+                .header("Authorization", format!("Bearer {token}"))
+                .header("Accept", "application/json, text/event-stream")
+                .json(&body);
+            if let Some(id) = session {
+                request = request.header("Mcp-Session-Id", id);
+            }
+            request.send()
+        };
+        let init = rpc(None, initialize()).await.expect("initialize");
+        let session = init.headers().get("mcp-session-id").and_then(|v| v.to_str().ok()).map(str::to_owned);
+        rpc(session.clone(), serde_json::json!({"jsonrpc":"2.0","method":"notifications/initialized"})).await.expect("initialized");
+        let listed = sse_json(&rpc(session.clone(), serde_json::json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}))
+            .await.expect("list").text().await.expect("body"));
+        let called = sse_json(&rpc(session, serde_json::json!({"jsonrpc":"2.0","id":3,"method":"tools/call",
+            "params":{"name":name,"arguments":{}}})).await.expect("call").text().await.expect("body"));
+        (listed["result"]["tools"].as_array().expect("tools").clone(), called)
+    }
+
+    #[tokio::test]
+    async fn the_agent_and_mcp_advertise_identical_definitions_for_every_shared_tool() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (actions, state) = test_actions(dir.path());
+        let server = McpServer::default();
+        let url = server.set_enabled(actions.clone(), 0, true, || fixed("tok-same")).await.expect("start").url.expect("url");
+        let (listed, _) = list_then_call(&url, "tok-same", "list_signs").await;
+        server.set_enabled(actions.clone(), 0, false, || fixed("unused")).await.expect("stop");
+
+        let scope = Arc::new(crate::agent::tools::TurnScope {
+            conversation_id: "c".into(),
+            turn_id: "t".into(),
+            state,
+            actions: Arc::new(actions),
+            emit: Arc::new(|_| {}),
+            cancel: CancellationToken::new(),
+            blocking: TaskTracker::new(),
+        });
+        let agent: Vec<_> = crate::agent::tools::bind_all(&scope).iter().map(|tool| tool.definition()).collect();
+        let shared: Vec<Tool> =
+            Tool::on(Surface::InAppAgent).filter(|tool| Tool::on(Surface::ExternalMcp).any(|t| t == *tool)).collect();
+        assert!(!shared.is_empty());
+        for tool in shared {
+            let in_app = agent.iter().find(|d| d.name == tool.name()).unwrap_or_else(|| panic!("agent lacks {}", tool.name()));
+            let external =
+                listed.iter().find(|t| t["name"] == tool.name()).unwrap_or_else(|| panic!("MCP lacks {}", tool.name()));
+            assert_eq!(external["description"], in_app.description.as_str(), "{} description", tool.name());
+            assert_eq!(external["inputSchema"], in_app.parameters, "{} schema", tool.name());
+        }
+    }
+
+    #[tokio::test]
+    async fn a_tool_that_is_not_listed_cannot_be_called() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (actions, _state) = test_actions(dir.path());
+        let server = McpServer::default();
+        let url = server.set_enabled(actions.clone(), 0, true, || fixed("tok-unlisted")).await.expect("start").url.expect("url");
+        for name in ["approve_sign", "export_sign", "record_print_result"] {
+            let (_, called) = list_then_call(&url, "tok-unlisted", name).await;
+            assert!(called["result"].is_null(), "{name} ran: {called}");
+            assert_eq!(called["error"]["message"], "tool not found", "{name}: {called}");
+        }
         server.set_enabled(actions, 0, false, || fixed("unused")).await.expect("stop");
     }
 

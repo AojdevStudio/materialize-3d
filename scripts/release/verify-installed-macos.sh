@@ -443,7 +443,7 @@ unattended "build_sign"
 build_ok=0
 python3 - "$RUN/evidence/build_sign.json" <<'PY' | tee -a "$RUN/evidence/actions.log" || build_ok=$?
 import json,sys
-r=json.load(open(sys.argv[1]))["result"]; o=json.loads(r["content"][0]["text"]); s=o["revision"]
+r=json.load(open(sys.argv[1]))["result"]; s=json.loads(r["content"][0]["text"])
 print(f"  isError={r.get('isError')} r{s['number']} build={s['build']} checks={s['checks_passed']}/{s['checks_total']} approval={s['approval']} print={s['print_validation']} requested_by={s['requested_by']}")
 print(f"  package_sha256={s['package_sha256']}")
 if r.get("isError") or s["build"] != "verified" or s["approval"] != "pending" or s["checks_passed"] != s["checks_total"]:
@@ -458,7 +458,7 @@ printf '%s' "$refusal" | python3 -c 'import json,sys; sys.exit(0 if "error" in j
 row="$(sqlite3 "$DATA/materialize.db" "select number, build_status, approval_status, print_status, requested_by from sign_revisions")"
 log "db: $row"
 [[ "$row" == "1|verified|pending|not_tested|external_mcp" ]] || { log "FAIL the stored revision is not a verified build awaiting a person's approval"; exit 1; }
-REV=$(python3 -c 'import json,sys; print(json.loads(json.load(open(sys.argv[1]))["result"]["content"][0]["text"])["revision"]["revision_id"])' "$RUN/evidence/build_sign.json")
+REV=$(python3 -c 'import json,sys; print(json.loads(json.load(open(sys.argv[1]))["result"]["content"][0]["text"])["revision_id"])' "$RUN/evidence/build_sign.json")
 cp "$DATA/signs/$REV/preview.png" "$RUN/evidence/p2s-test-sign-preview.png" 2>/dev/null || true
 quit
 
