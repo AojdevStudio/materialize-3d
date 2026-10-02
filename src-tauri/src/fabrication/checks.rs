@@ -586,6 +586,25 @@ mod tests {
         assert_eq!(err, ChecksFailed::WrongPlan { certified: CheckPlanId::new("test-1"), finishing: CheckPlanId::new("test-2") });
     }
 
+    /// A declared measurement is a geometry check (`geometry.requirement.<n>`,
+    /// design.md), so it blocks: a failed one fails the build even beside a
+    /// print warning.
+    #[test]
+    fn a_failed_requirement_blocks_beside_a_print_warning() {
+        let requirement = CheckId::try_from("geometry.requirement.0".to_owned()).expect("a geometry check id");
+        assert_eq!((requirement.phase(), requirement.as_str()), (CheckPhase::Geometry, "geometry.requirement.0"));
+        assert!(!requirement.phase().is_advisory());
+        assert!(CheckId::try_from("requirement.0".to_owned()).is_err(), "requirements have no phase of their own");
+
+        let required = [requirement.clone(), print("overhang.a")].into_iter().chain(slice_and_handoff_checks()).collect();
+        let plan = CheckPlan::new(CheckPlanId::new("test-requirement-1"), required).expect("plan");
+        let err = plan
+            .certify(model(), vec![fail(&requirement, "opening 11.2 mm, want 12.0 ± 0.2"), fail(&print("overhang.a"), "62 degrees")])
+            .unwrap_err();
+        assert!(matches!(&err, ChecksFailed::Failed(_)), "{err}");
+        assert_eq!(err.to_string(), "checks failed: geometry.requirement.0: opening 11.2 mm, want 12.0 ± 0.2");
+    }
+
     #[test]
     fn a_check_id_parses_back_from_its_recorded_name() {
         for id in [geometry("closed_manifold.white"), print("overhang.a"), handoff_settings_match_slice()] {

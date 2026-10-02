@@ -2,7 +2,7 @@
 
 This checklist takes one small sign from a chat request to a physical print. It is the human acceptance for the sign workflow. Automated checks prove a verified slice; only this checklist proves a print.
 
-The sign is 80 × 50 × 2.6 mm: a white base with navy "HELLO", a teal rule, navy "3 COLOR TEST", a navy badge with "P2S" knocked out in white, and a teal dot. The finished face prints against the bed, so it reads normally from below and mirrored from above. The spec is `docs/acceptance/p2s-test-sign.json`; `fabrication::sign::tests::the_acceptance_sign_passes_every_geometry_check` keeps it valid.
+The sign is 80 × 50 × 2.6 mm: a white base with navy "HELLO", a teal rule, navy "3 COLOR TEST", a navy badge with "P2S" knocked out in white, and a teal dot. The finished face prints against the bed, so it reads normally from below and mirrored from above. The spec is `docs/acceptance/p2s-test-sign.json`; `fabrication::kinds::sign::tests::the_acceptance_sign_passes_every_geometry_check` keeps it valid.
 
 ## Before you start
 
@@ -17,7 +17,7 @@ Mark each box yourself. None of these steps is automated.
 
    > Make an 80 x 50 mm test sign for my P2S: white base, HELLO in large navy letters, a teal rule under it, "3 COLOR TEST" in smaller navy text, a small navy badge with P2S knocked out in white, and a teal dot in the top right.
 
-   - [ ] The `build_sign` card runs five steps and ends with `Verified N of N checks` and `Awaiting your approval (the assistant cannot approve)`.
+   - [ ] The `build` card runs five steps and ends with `Verified N of N checks` and `Awaiting your approval (the assistant cannot approve)`.
    - [ ] The Signs view opens on the new revision.
    - If the layout differs from the description, correct it in chat ("make HELLO bigger"). A new revision appears; an earlier approval never carries over. To use the exact reference layout instead, choose **Build from spec file** in the Signs view and pick `docs/acceptance/p2s-test-sign.json`.
 

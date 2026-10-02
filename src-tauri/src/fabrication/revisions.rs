@@ -585,7 +585,9 @@ enum Reusable {
 }
 
 /// The build a new revision with `build_key` can use without building again:
-/// the live build with that key, else the newest verified legacy build with it.
+/// the live build with that key, else the newest intact verified legacy build
+/// with it. Legacy builds may share a key with different packages, so each
+/// candidate whose package changed is invalidated and the next one is tried.
 fn reusable_build(conn: &Connection, build_key: &Sha256Hex) -> Result<Reusable> {
     let live: Option<(String, String, Option<String>)> = conn
         .query_row(
@@ -605,18 +607,19 @@ fn reusable_build(conn: &Connection, build_key: &Sha256Hex) -> Result<Reusable> 
         None => {}
     }
 
-    let legacy: Option<(String, Option<String>)> = conn
-        .query_row(
+    let legacy: Vec<(String, Option<String>)> = conn
+        .prepare(
             "SELECT id, artifacts_json FROM builds WHERE build_key = ?1 AND legacy = 1 AND build_status = 'verified'
-             ORDER BY updated_at DESC, rowid DESC LIMIT 1",
-            params![build_key.as_str()],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .optional()?;
-    Ok(match legacy {
-        Some((id, artifacts)) => intact_build(conn, BuildId(id), artifacts)?.map_or(Reusable::None, Reusable::Verified),
-        None => Reusable::None,
-    })
+             ORDER BY updated_at DESC, rowid DESC",
+        )?
+        .query_map(params![build_key.as_str()], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    for (id, artifacts) in legacy {
+        if let Some(id) = intact_build(conn, BuildId(id), artifacts)? {
+            return Ok(Reusable::Verified(id));
+        }
+    }
+    Ok(Reusable::None)
 }
 
 /// `build`, if its stored package still hashes to its record.

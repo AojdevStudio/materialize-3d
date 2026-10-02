@@ -254,6 +254,28 @@ fn a_build_fails_only_on_a_failed_blocking_check() {
     assert!(matches!(approve(&mut conn, &revision.id, &hash, &none(), Actor::Human), Err(RevisionError::ChecksFailed(_))));
 }
 
+/// A failed declared measurement (`geometry.requirement.<n>`) fails the build
+/// even when the only other failure is a warning.
+#[test]
+fn a_failed_requirement_fails_the_build_beside_a_warning() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut conn = db();
+    let revision = started(claim(&mut conn, &request("a", None, Actor::Agent)).expect("claim"));
+    let requirement = CheckId::try_from("geometry.requirement.0".to_owned()).expect("check id");
+    let judged = [
+        outcomes(true),
+        vec![
+            CheckOutcome { id: requirement, passed: false, detail: "opening 11.2 mm, want 12.0 ± 0.2".into() },
+            CheckOutcome { id: CheckId::new(CheckPhase::Print, "overhang.white"), passed: false, detail: "62 degrees".into() },
+        ],
+    ]
+    .concat();
+    finish_failed(&conn, &revision.build_id, files(dir.path(), b"pkg"), &judged).expect("a failed requirement fails the build");
+    let failed = get(&conn, &revision.id).expect("get");
+    assert!(matches!(failed.build, BuildState::Failed { ref reason, .. } if reason == "checks failed: geometry.requirement.0"));
+    assert_eq!(failed.artifacts().expect("artifacts").warnings(), BTreeSet::from(["print.overhang.white"]), "the warning is kept beside it");
+}
+
 #[test]
 fn a_proof_for_another_plan_cannot_verify_a_build() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -472,5 +494,30 @@ mod legacy {
         let old = get(&conn, &RevisionId("b-1".into())).expect("b-1");
         assert!(matches!(old.build, BuildState::Invalid { .. }));
         assert!(matches!(old.approval, Approval::Void { ref reason, .. } if reason.starts_with("package changed on disk")));
+    }
+
+    /// Legacy builds can share a key with different packages. When the newest
+    /// one's package changed, an older intact one is still reused.
+    #[test]
+    fn a_changed_legacy_build_does_not_hide_an_older_intact_one() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut conn = schema_4();
+        let key = sha("shared spec");
+        insert(&conn, "a-1", "a", 1, &key, "verified", "pending", Some(artifacts_json(dir.path(), b"older, intact")));
+        let tampered = artifacts_json(dir.path(), b"newer, before");
+        insert(&conn, "b-1", "b", 1, &key, "verified", "pending", Some(tampered.clone()));
+        insert(&conn, "c-1", "c", 1, &sha("another spec"), "verified", "pending", Some(artifacts_json(dir.path(), b"other")));
+        let path: String = serde_json::from_str::<serde_json::Value>(&tampered).expect("json")["package_path"].as_str().expect("path").into();
+        fs::write(path, b"newer, after").expect("tamper");
+        migrate_to_6(&mut conn);
+
+        let mut request = request("shared spec", Some(LineageId("c".into())), Actor::Agent);
+        request.build_key = key;
+        let revision = reused(claim(&mut conn, &request).expect("claim"));
+        assert_eq!((revision.number, revision.build_id.as_str()), (2, "a-1"), "the older intact legacy build is reused");
+        let newer = get(&conn, &RevisionId("b-1".into())).expect("b-1");
+        assert!(matches!(newer.build, BuildState::Invalid { .. }), "the changed one is invalidated");
+        assert!(matches!(newer.approval, Approval::Void { .. }));
+        assert_eq!(count(&conn, "builds"), 3, "nothing was built");
     }
 }
