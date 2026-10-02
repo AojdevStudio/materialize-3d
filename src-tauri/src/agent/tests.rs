@@ -16,9 +16,9 @@ use super::protocol::{AgentErrorKind, AgentEvent, HistoryEntry, Provider, ToolCa
 use super::store;
 use super::tools::TurnScope;
 use super::turn::{run_turn, ModelChoice, TurnEnd};
-use crate::actions::{ActionError, RequestActions};
+use crate::actions::{ActionError, RequestActions, RequestActor};
 use crate::fabrication::build::{self, BuildError, BuildOutcome, BuildRequest, BuildStep, Workspace};
-use crate::fabrication::revisions::{self, Actor, BuildState, LineageId, RevisionId, SignRevision};
+use crate::fabrication::revisions::{self, BuildState, LineageId, RevisionId, SignRevision};
 use crate::state::{AppState, PrinterState};
 use crate::tools::{Surface, Tool};
 
@@ -116,7 +116,7 @@ impl RequestActions for FakeActions {
         &self,
         _spec: Value,
         _lineage_id: Option<&str>,
-        _actor: Actor,
+        _requester: RequestActor,
         progress: &dyn Fn(BuildStep),
         is_cancelled: &dyn Fn() -> bool,
     ) -> Result<BuildOutcome, ActionError> {
@@ -164,11 +164,12 @@ impl RequestActions for PipelineActions {
         &self,
         spec: Value,
         lineage_id: Option<&str>,
-        actor: Actor,
+        requester: RequestActor,
         progress: &dyn Fn(BuildStep),
         is_cancelled: &dyn Fn() -> bool,
     ) -> Result<BuildOutcome, ActionError> {
         let lineage_id = lineage_id.map(LineageId::parse).transpose()?;
+        let actor = requester.into();
         Ok(build::build_sign(&self.state, &self.workspace, BuildRequest { spec, lineage_id, actor }, progress, is_cancelled)?)
     }
 

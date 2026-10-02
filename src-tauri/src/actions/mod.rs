@@ -96,6 +96,24 @@ impl From<&SignRevision> for SignSummary {
 /// The running app sends events through [`gui::app_events`]; tests capture them.
 pub type EventSink = Arc<dyn Fn(&str, Value) + Send + Sync>;
 
+/// Who asked for a build through [`RequestActions`]: never a person.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RequestActor {
+    /// The in-app agent.
+    Agent,
+    /// An external agent over MCP.
+    ExternalMcp,
+}
+
+impl From<RequestActor> for Actor {
+    fn from(requester: RequestActor) -> Self {
+        match requester {
+            RequestActor::Agent => Actor::Agent,
+            RequestActor::ExternalMcp => Actor::ExternalMcp,
+        }
+    }
+}
+
 /// What any non-human caller may request: the in-app agent and MCP hold this
 /// trait object only. There is no way to approve, export, or record a print
 /// result through it; those take a [`HumanActor`].
@@ -122,13 +140,35 @@ pub type EventSink = Arc<dyn Fn(&str, Value) + Send + Sync>;
 ///     let _ = actions.approve(todo!(), "revision", String::new());
 /// }
 /// ```
+///
+/// It builds as a model:
+///
+/// ```
+/// # use std::sync::Arc;
+/// # use materialize_3d_lib::actions::{RequestActions, RequestActor};
+/// fn build_as_a_model(actions: Arc<dyn RequestActions>) {
+///     let _ = actions.build_sign(serde_json::json!({}), None, RequestActor::Agent, &|_| {}, &|| false);
+/// }
+/// ```
+///
+/// but cannot build as a person:
+///
+/// ```compile_fail,E0308
+/// # use std::sync::Arc;
+/// # use materialize_3d_lib::actions::RequestActions;
+/// # use materialize_3d_lib::fabrication::revisions::Actor;
+/// fn build_as_a_person(actions: Arc<dyn RequestActions>) {
+///     let _ = actions.build_sign(serde_json::json!({}), None, Actor::Human, &|_| {}, &|| false);
+/// }
+/// ```
 pub trait RequestActions: Send + Sync + 'static {
-    /// Blocking; see [`Actions::build_sign`].
+    /// Blocking; see [`Actions::build_sign`]. The revision records `requester`
+    /// as `requested_by`, which can never be a person through this trait.
     fn build_sign(
         &self,
         spec: Value,
         lineage_id: Option<&str>,
-        actor: Actor,
+        requester: RequestActor,
         progress: &dyn Fn(BuildStep),
         is_cancelled: &dyn Fn() -> bool,
     ) -> Result<BuildOutcome, ActionError>;
@@ -249,11 +289,11 @@ impl RequestActions for Actions {
         &self,
         spec: Value,
         lineage_id: Option<&str>,
-        actor: Actor,
+        requester: RequestActor,
         progress: &dyn Fn(BuildStep),
         is_cancelled: &dyn Fn() -> bool,
     ) -> Result<BuildOutcome, ActionError> {
-        Actions::build_sign(self, spec, lineage_id, actor, progress, is_cancelled)
+        Actions::build_sign(self, spec, lineage_id, requester.into(), progress, is_cancelled)
     }
 
     fn list_signs(&self, limit: u32) -> Result<Vec<SignRevision>, ActionError> {

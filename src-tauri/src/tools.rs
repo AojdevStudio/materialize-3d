@@ -15,13 +15,12 @@ use serde_json::{json, Value};
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
-use crate::actions::{ActionError, RequestActions, SignSummary};
+use crate::actions::{ActionError, RequestActions, RequestActor, SignSummary};
 use crate::fabrication::build::BuildStep;
-use crate::fabrication::revisions::Actor;
 use crate::fabrication::sign::SignSpec;
 
-/// Where a model meets the tools. The surface fixes the caller's [`Actor`], so
-/// no argument can claim to be someone else.
+/// Where a model meets the tools. The surface fixes the caller's
+/// [`RequestActor`], so no argument can claim to be someone else.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Surface {
     /// The Rig agent in the app's chat panel.
@@ -31,10 +30,10 @@ pub enum Surface {
 }
 
 impl Surface {
-    fn actor(self) -> Actor {
+    fn actor(self) -> RequestActor {
         match self {
-            Surface::InAppAgent => Actor::Agent,
-            Surface::ExternalMcp => Actor::ExternalMcp,
+            Surface::InAppAgent => RequestActor::Agent,
+            Surface::ExternalMcp => RequestActor::ExternalMcp,
         }
     }
 }
@@ -229,7 +228,7 @@ impl Tool {
         }
     }
 
-    /// Parses `args`, runs the shared action as the surface's [`Actor`], and
+    /// Parses `args`, runs the shared action as the surface's [`RequestActor`], and
     /// returns the compact summary the model reads.
     pub async fn invoke(self, call: &ToolCall, args: Value) -> Result<Value, ToolError> {
         match self {
@@ -328,7 +327,7 @@ mod tests {
             &self,
             _spec: Value,
             _lineage_id: Option<&str>,
-            _actor: Actor,
+            _requester: RequestActor,
             _progress: &dyn Fn(BuildStep),
             _is_cancelled: &dyn Fn() -> bool,
         ) -> Result<BuildOutcome, ActionError> {
