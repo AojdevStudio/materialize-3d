@@ -4,9 +4,9 @@
 //! Migrations tracked via `PRAGMA user_version`.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OpenFlags};
 
 use crate::state::{LibraryModel, PrintHistoryRecord, PrinterConfig};
 
@@ -195,23 +195,73 @@ fn run_migrations(conn: &Connection) -> Result<(), String> {
 }
 
 /// Copies the database to `<database>.pre-schema-6` beside it before migration
-/// 006 drops `sign_revisions`. `VACUUM INTO` writes one consistent file that
-/// includes anything still in the WAL. A copy that already exists is kept, since
-/// it holds the older state from an earlier attempt. An in-memory database has
-/// no file to protect. A failed copy stops the migration.
+/// 006 drops `sign_revisions`.
+///
+/// The copy is written to `<backup>.partial` with `VACUUM INTO` (one consistent
+/// file that includes anything still in the WAL), checked against the live
+/// database, and only then published under its final name, which is never
+/// replaced. A backup that already exists is checked the same way before it is
+/// trusted. Anything that goes wrong stops the migration, so the database never
+/// reaches schema 6 without a good copy of its sign revisions. An in-memory
+/// database has no file to protect.
 fn backup_before_schema_6(conn: &Connection) -> Result<(), String> {
     let Some(path) = conn.path().filter(|path| !path.is_empty()) else {
         return Ok(());
     };
-    let backup = format!("{path}.pre-schema-6");
-    if Path::new(&backup).exists() {
-        log::info!("database: keeping the existing backup {backup}");
+    let backup = PathBuf::from(format!("{path}.pre-schema-6"));
+    let staged = PathBuf::from(format!("{path}.pre-schema-6.partial"));
+    let failed = |why: String| format!("could not back up the database to {} before migration 006: {why}", backup.display());
+
+    let expected = backup_shape(conn).map_err(|e| failed(e.to_string()))?;
+    remove_if_present(&staged).map_err(|e| failed(format!("could not remove the stale {}: {e}", staged.display())))?;
+    if backup.symlink_metadata().is_ok() {
+        verify_backup(&backup, expected).map_err(|why| {
+            format!(
+                "the existing backup {} is not a copy of this database ({why}); move it aside and launch again",
+                backup.display()
+            )
+        })?;
+        log::info!("database: keeping the existing backup {}", backup.display());
         return Ok(());
     }
-    conn.execute("VACUUM INTO ?1", [&backup])
-        .map_err(|e| format!("could not back up the database to {backup} before migration 006: {e}"))?;
-    log::info!("database: backed up the database to {backup} before migration 006");
+
+    conn.execute("VACUUM INTO ?1", [staged.to_string_lossy()]).map_err(|e| failed(e.to_string()))?;
+    #[cfg(test)]
+    tests::interrupt_backup_if_asked(&staged);
+    verify_backup(&staged, expected).map_err(failed)?;
+    // A hard link refuses an existing name, so publishing never replaces a backup.
+    std::fs::hard_link(&staged, &backup).map_err(|e| failed(format!("could not publish the checked copy: {e}")))?;
+    std::fs::remove_file(&staged).map_err(|e| failed(format!("could not remove {} after publishing it: {e}", staged.display())))?;
+    log::info!("database: backed up the database to {} before migration 006", backup.display());
     Ok(())
+}
+
+/// What a backup must match: the schema version and the number of sign revisions.
+fn backup_shape(conn: &Connection) -> rusqlite::Result<(i32, i64)> {
+    let version = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    let sign_revisions = conn.query_row("SELECT count(*) FROM sign_revisions", [], |row| row.get(0))?;
+    Ok((version, sign_revisions))
+}
+
+/// Opens the copy at `path` read-only and checks it holds what the live database holds.
+fn verify_backup(path: &Path, (version, sign_revisions): (i32, i64)) -> Result<(), String> {
+    let copy = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX)
+        .map_err(|e| format!("could not open the copy: {e}"))?;
+    let found = backup_shape(&copy).map_err(|e| format!("could not read the copy: {e}"))?;
+    if found != (version, sign_revisions) {
+        return Err(format!(
+            "the copy holds schema {} with {} sign revisions, not schema {version} with {sign_revisions}",
+            found.0, found.1
+        ));
+    }
+    Ok(())
+}
+
+fn remove_if_present(path: &Path) -> std::io::Result<()> {
+    match std::fs::remove_file(path) {
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        other => other,
+    }
 }
 
 /// Insert a print history record.
@@ -1120,34 +1170,79 @@ mod tests {
         let version: i32 = backup.pragma_query_value(None, "user_version", |row| row.get(0)).unwrap();
         assert_eq!(version, 5, "the backup is the database as it was before migration 006");
         assert_eq!(revision_columns(&backup, SIGN_REVISION_COLUMNS), before, "every sign revision, unchanged");
+        assert!(!staged_of(&path).exists(), "the staged copy is gone once published");
     }
 
+    thread_local! {
+        static INTERRUPT_BACKUP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    /// When a test asks, cuts the staged copy short, as a write that stopped
+    /// part way would leave it.
+    pub(super) fn interrupt_backup_if_asked(staged: &Path) {
+        if INTERRUPT_BACKUP.with(|ask| ask.replace(false)) {
+            let file = std::fs::OpenOptions::new().write(true).open(staged).unwrap();
+            let len = file.metadata().unwrap().len();
+            file.set_len(len / 2).unwrap();
+        }
+    }
+
+    fn staged_of(path: &Path) -> std::path::PathBuf {
+        path.with_file_name("materialize.db.pre-schema-6.partial")
+    }
+
+    fn version_of(path: &Path) -> i32 {
+        Connection::open(path).unwrap().pragma_query_value(None, "user_version", |row| row.get(0)).unwrap()
+    }
+
+    /// A copy cut short stops the migration without leaving anything under the
+    /// backup's name, and the next launch makes a good copy and migrates.
     #[test]
-    fn an_existing_backup_is_never_replaced() {
+    fn an_interrupted_backup_stops_the_migration_and_the_retry_backs_up_and_migrates() {
         let dir = tempfile::tempdir().unwrap();
         let path = schema_5_database(dir.path());
-        std::fs::write(backup_of(&path), b"an earlier attempt's copy").unwrap();
+        let before = revision_columns(&Connection::open(&path).unwrap(), SIGN_REVISION_COLUMNS);
+
+        INTERRUPT_BACKUP.with(|ask| ask.set(true));
+        let err = init_db(&path).err().expect("the migration stops");
+        assert!(err.contains("could not back up the database"), "{err}");
+        assert_eq!(version_of(&path), 5, "migration 006 did not run");
+        assert!(backup_of(&path).symlink_metadata().is_err(), "nothing was published under the backup's name");
+
+        init_db(&path).expect("the retry migrates");
+        assert_eq!(version_of(&path), 6);
+        let backup = Connection::open(backup_of(&path)).expect("backup");
+        assert_eq!(revision_columns(&backup, SIGN_REVISION_COLUMNS), before, "the backup holds every sign revision");
+        assert!(!staged_of(&path).exists(), "the stale staged copy is gone");
+    }
+
+    /// An empty database under the backup's name, as a failed copy used to
+    /// leave, is not trusted: the migration stops and the file is left alone.
+    #[test]
+    fn an_existing_backup_that_does_not_match_stops_the_migration() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = schema_5_database(dir.path());
+        drop(Connection::open(backup_of(&path)).unwrap());
+        let left = std::fs::read(backup_of(&path)).unwrap();
+
+        let err = init_db(&path).err().expect("the migration stops");
+        assert!(err.contains("is not a copy of this database"), "{err}");
+        assert_eq!(version_of(&path), 5, "migration 006 did not run");
+        assert_eq!(std::fs::read(backup_of(&path)).unwrap(), left, "the existing file is left alone");
+    }
+
+    /// A good copy from an earlier attempt is kept, never replaced.
+    #[test]
+    fn an_existing_backup_that_matches_is_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = schema_5_database(dir.path());
+        std::fs::copy(&path, backup_of(&path)).unwrap();
+        let earlier = std::fs::read(backup_of(&path)).unwrap();
 
         init_db(&path).expect("migrates");
 
-        assert_eq!(std::fs::read(backup_of(&path)).unwrap(), b"an earlier attempt's copy");
-    }
-
-    /// The backup path is a link into a folder that does not exist, so the copy cannot be written.
-    #[cfg(unix)]
-    #[test]
-    fn a_backup_that_fails_stops_migration_006() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = schema_5_database(dir.path());
-        std::os::unix::fs::symlink(dir.path().join("missing/copy.db"), backup_of(&path)).unwrap();
-
-        let err = init_db(&path).err().expect("the migration stops");
-        assert!(err.contains("could not back up the database"), "{err}");
-
-        let conn = Connection::open(&path).unwrap();
-        let version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0)).unwrap();
-        assert_eq!(version, 5, "migration 006 did not run");
-        assert_eq!(revision_columns(&conn, SIGN_REVISION_COLUMNS).len(), 5, "sign_revisions is still there");
+        assert_eq!(version_of(&path), 6);
+        assert_eq!(std::fs::read(backup_of(&path)).unwrap(), earlier, "the earlier copy is kept as it was");
     }
 
     #[test]
