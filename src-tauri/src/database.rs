@@ -227,41 +227,70 @@ fn backup_before_schema_6(conn: &Connection) -> Result<(), String> {
 
     conn.execute("VACUUM INTO ?1", [staged.to_string_lossy()]).map_err(|e| failed(e.to_string()))?;
     #[cfg(test)]
-    tests::interrupt_backup_if_asked(&staged);
+    if tests::faulted(tests::Fault::CutStaged) {
+        tests::cut_in_half(&staged);
+    }
     verify_backup(&staged, expected).map_err(failed)?;
-    publish_backup(&staged, &backup).map_err(|e| failed(format!("could not publish the checked copy: {e}")))?;
+    publish_backup(&staged, &backup, expected).map_err(|e| failed(format!("could not publish the checked copy: {e}")))?;
     log::info!("database: backed up the database to {} before migration 006", backup.display());
     Ok(())
 }
 
-/// Gives the checked copy its final name without replacing anything already
-/// there. A hard link refuses an existing name outright. Some filesystems
+/// Gives the checked copy its final name without ever replacing a file
+/// already there. Both ways of publishing refuse an existing name in the same
+/// step that creates the file. A hard link is tried first. Some filesystems
 /// cannot link at all (exFAT, FAT32, SMB, some FUSE mounts), so on any other
-/// link failure the name is checked again and the copy is renamed into place;
-/// both names are in one directory.
-fn publish_backup(staged: &Path, backup: &Path) -> std::io::Result<()> {
+/// link failure the copy is written to a file created exclusively under the
+/// final name and checked again there.
+fn publish_backup(staged: &Path, backup: &Path, expected: (i32, i64)) -> Result<(), String> {
     match hard_link(staged, backup) {
-        Ok(()) => std::fs::remove_file(staged),
-        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => Err(err),
-        Err(link) => {
-            if backup.symlink_metadata().is_ok() {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::AlreadyExists,
-                    format!("{} appeared while publishing", backup.display()),
-                ));
-            }
-            std::fs::rename(staged, backup)
-                .map_err(|e| std::io::Error::new(e.kind(), format!("hard link failed ({link}), then rename failed ({e})")))
-        }
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => return Err(err.to_string()),
+        Err(link) => copy_exclusively(staged, backup, expected).map_err(|e| format!("hard link failed ({link}), then {e}"))?,
     }
+    std::fs::remove_file(staged).map_err(|e| format!("could not remove {} after publishing it: {e}", staged.display()))
 }
 
 fn hard_link(staged: &Path, backup: &Path) -> std::io::Result<()> {
     #[cfg(test)]
-    if tests::hard_link_unsupported_if_asked() {
+    if tests::faulted(tests::Fault::HardLinkUnsupported) {
         return Err(std::io::Error::from(std::io::ErrorKind::Unsupported));
     }
     std::fs::hard_link(staged, backup)
+}
+
+/// Copies `staged` into a file that `create_new` makes under the final name,
+/// which fails if anything already has that name. Once created, the file is
+/// ours: if the copy or its check fails, it is removed, so a half-written
+/// backup never stands in the way of a later launch.
+fn copy_exclusively(staged: &Path, backup: &Path, expected: (i32, i64)) -> Result<(), String> {
+    #[cfg(test)]
+    if tests::faulted(tests::Fault::PlantBackup) {
+        tests::plant(backup);
+    }
+    let mut published = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(backup)
+        .map_err(|e| format!("could not create it: {e}"))?;
+    let written = (|| {
+        std::io::copy(&mut std::fs::File::open(staged)?, &mut published)?;
+        published.sync_all()
+    })()
+    .map_err(|e| format!("could not copy it: {e}"));
+    drop(published);
+    #[cfg(test)]
+    if tests::faulted(tests::Fault::CutPublished) {
+        tests::cut_in_half(backup);
+    }
+    let result = written.and_then(|()| verify_backup(backup, expected));
+    if let Err(why) = result {
+        return Err(match std::fs::remove_file(backup) {
+            Ok(()) => why,
+            Err(e) => format!("{why}; the incomplete {} could not be removed: {e}", backup.display()),
+        });
+    }
+    Ok(())
 }
 
 /// What a backup must match: the schema version and the number of sign revisions.
@@ -1201,47 +1230,102 @@ mod tests {
         assert!(!staged_of(&path).exists(), "the staged copy is gone once published");
     }
 
+    /// Failures a test injects into the backup, each taken once where it applies.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(super) enum Fault {
+        /// The staged copy is cut short, as a write that stopped part way leaves it.
+        CutStaged,
+        /// The hard link fails as on a filesystem without hard links.
+        HardLinkUnsupported,
+        /// Another writer creates a file under the backup's name just before the fallback publishes.
+        PlantBackup,
+        /// The fallback's published copy is cut short before it is checked.
+        CutPublished,
+    }
+
     thread_local! {
-        static INTERRUPT_BACKUP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        static FAULTS: std::cell::RefCell<Vec<Fault>> = const { std::cell::RefCell::new(Vec::new()) };
     }
 
-    /// When a test asks, cuts the staged copy short, as a write that stopped
-    /// part way would leave it.
-    pub(super) fn interrupt_backup_if_asked(staged: &Path) {
-        if INTERRUPT_BACKUP.with(|ask| ask.replace(false)) {
-            let file = std::fs::OpenOptions::new().write(true).open(staged).unwrap();
-            let len = file.metadata().unwrap().len();
-            file.set_len(len / 2).unwrap();
-        }
+    fn inject(faults: &[Fault]) {
+        FAULTS.with(|injected| injected.borrow_mut().extend_from_slice(faults));
     }
 
-    thread_local! {
-        static HARD_LINK_UNSUPPORTED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// True once for each injected `fault`.
+    pub(super) fn faulted(fault: Fault) -> bool {
+        FAULTS.with(|injected| {
+            let mut injected = injected.borrow_mut();
+            let found = injected.iter().position(|f| *f == fault);
+            found.map(|i| injected.remove(i)).is_some()
+        })
     }
 
-    /// When a test asks, the next hard link fails as a filesystem without hard links would.
-    pub(super) fn hard_link_unsupported_if_asked() -> bool {
-        HARD_LINK_UNSUPPORTED.with(|ask| ask.replace(false))
+    pub(super) fn cut_in_half(path: &Path) {
+        let file = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+        let len = file.metadata().unwrap().len();
+        file.set_len(len / 2).unwrap();
     }
 
-    /// On a filesystem that cannot hard-link, the checked copy is renamed into
-    /// place instead, and the migration proceeds.
+    const PLANTED: &[u8] = b"another writer's backup";
+
+    pub(super) fn plant(path: &Path) {
+        std::fs::write(path, PLANTED).unwrap();
+    }
+
+    /// On a filesystem that cannot hard-link, the checked copy is written to a
+    /// file created exclusively under the final name, and the migration proceeds.
     #[test]
-    fn without_hard_links_the_checked_copy_is_renamed_into_place() {
+    fn without_hard_links_the_checked_copy_is_copied_into_place() {
         let dir = tempfile::tempdir().unwrap();
         let path = schema_5_database(dir.path());
         let before = revision_columns(&Connection::open(&path).unwrap(), SIGN_REVISION_COLUMNS);
 
-        HARD_LINK_UNSUPPORTED.with(|ask| ask.set(true));
+        inject(&[Fault::HardLinkUnsupported]);
         init_db(&path).expect("migrates");
 
-        assert!(!HARD_LINK_UNSUPPORTED.with(|ask| ask.get()), "the hard link was tried and failed");
+        assert!(!faulted(Fault::HardLinkUnsupported), "the hard link was tried and failed");
         assert_eq!(version_of(&path), 6);
-        let backup = Connection::open(backup_of(&path)).expect("the renamed backup");
+        let backup = Connection::open(backup_of(&path)).expect("the published backup");
         let version: i32 = backup.pragma_query_value(None, "user_version", |row| row.get(0)).unwrap();
         assert_eq!(version, 5);
         assert_eq!(revision_columns(&backup, SIGN_REVISION_COLUMNS), before, "the backup holds every sign revision");
-        assert!(!staged_of(&path).exists(), "the staged copy became the backup");
+        assert!(!staged_of(&path).exists(), "the staged copy is removed once published");
+    }
+
+    /// A file that appears under the backup's name after every earlier check
+    /// is still never replaced: the fallback's exclusive create refuses it.
+    #[test]
+    fn the_fallback_never_replaces_a_backup_that_appears_while_it_publishes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = schema_5_database(dir.path());
+
+        inject(&[Fault::HardLinkUnsupported, Fault::PlantBackup]);
+        let err = init_db(&path).err().expect("the migration stops");
+
+        assert!(!faulted(Fault::PlantBackup), "the file was planted just before publishing");
+        assert!(err.contains("could not publish the checked copy"), "{err}");
+        assert_eq!(std::fs::read(backup_of(&path)).unwrap(), PLANTED, "the planted file is untouched");
+        assert_eq!(version_of(&path), 5, "migration 006 did not run");
+    }
+
+    /// A fallback copy that fails its check is removed, so the next launch
+    /// publishes a good one instead of stopping on a broken backup.
+    #[test]
+    fn a_fallback_copy_that_fails_its_check_is_removed_and_the_retry_migrates() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = schema_5_database(dir.path());
+        let before = revision_columns(&Connection::open(&path).unwrap(), SIGN_REVISION_COLUMNS);
+
+        inject(&[Fault::HardLinkUnsupported, Fault::CutPublished]);
+        let err = init_db(&path).err().expect("the migration stops");
+        assert!(err.contains("could not publish the checked copy"), "{err}");
+        assert!(backup_of(&path).symlink_metadata().is_err(), "the broken copy was removed");
+        assert_eq!(version_of(&path), 5, "migration 006 did not run");
+
+        init_db(&path).expect("the retry migrates");
+        assert_eq!(version_of(&path), 6);
+        let backup = Connection::open(backup_of(&path)).expect("backup");
+        assert_eq!(revision_columns(&backup, SIGN_REVISION_COLUMNS), before, "the backup holds every sign revision");
     }
 
     fn staged_of(path: &Path) -> std::path::PathBuf {
@@ -1260,7 +1344,7 @@ mod tests {
         let path = schema_5_database(dir.path());
         let before = revision_columns(&Connection::open(&path).unwrap(), SIGN_REVISION_COLUMNS);
 
-        INTERRUPT_BACKUP.with(|ask| ask.set(true));
+        inject(&[Fault::CutStaged]);
         let err = init_db(&path).err().expect("the migration stops");
         assert!(err.contains("could not back up the database"), "{err}");
         assert_eq!(version_of(&path), 5, "migration 006 did not run");
