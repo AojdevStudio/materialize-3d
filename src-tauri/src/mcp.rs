@@ -415,7 +415,7 @@ mod tests {
     pub(crate) fn test_actions(dir: &std::path::Path) -> (Arc<dyn RequestActions>, Arc<crate::state::AppState>) {
         let state = Arc::new(crate::state::AppState::default());
         *state.db.lock().expect("db") = Some(crate::database::init_db(&dir.join("t.db")).expect("db init"));
-        let workspace = crate::fabrication::build::Workspace::new(&dir.join("data"), &dir.join("cache"));
+        let workspace = crate::fabrication::pipeline::Workspace::new(&dir.join("data"), &dir.join("cache"));
         let actions = crate::actions::Actions::new(Arc::new(|_, _| {}), state.clone(), workspace);
         (Arc::new(actions), state)
     }

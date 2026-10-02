@@ -13,7 +13,7 @@ use tauri::ipc::{Channel, Response};
 use tauri::{AppHandle, Emitter, Runtime, State};
 
 use super::{Actions, EventSink};
-use crate::fabrication::build::{BuildOutcome, BuildStep};
+use crate::fabrication::pipeline::{BuildOutcome, BuildStep};
 use crate::fabrication::revisions::{Actor, SignRevision};
 
 /// Proof that a person at the GUI is acting. Its field is private to this

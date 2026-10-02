@@ -64,7 +64,7 @@ jobs:
           scripts/ci/install-bambu-linux.sh
       - name: Sign fabrication with real Bambu Studio (input immutability, multicolor, placement, revision integrity)
         working-directory: src-tauri
-        run: cargo test --lib --locked fabrication::build -- --ignored --nocapture --test-threads=1
+        run: cargo test --lib --locked fabrication::pipeline -- --ignored --nocapture --test-threads=1
       - name: Caller identity, approval enforcement, app ACL, and MCP boundary
         working-directory: src-tauri
         run: >
@@ -108,7 +108,7 @@ jobs:
         run: scripts/ci/install-bambu-macos.sh
       - name: Sign fabrication with real Bambu Studio (input immutability, multicolor, placement, revision integrity)
         working-directory: src-tauri
-        run: cargo test --lib --locked fabrication::build -- --ignored --nocapture --test-threads=1
+        run: cargo test --lib --locked fabrication::pipeline -- --ignored --nocapture --test-threads=1
       - name: Caller identity, approval enforcement, app ACL, and MCP boundary
         working-directory: src-tauri
         run: >

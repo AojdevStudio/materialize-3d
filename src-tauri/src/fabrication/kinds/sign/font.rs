@@ -5,9 +5,9 @@ use ttf_parser::{Face, OutlineBuilder};
 use super::geometry::ContourBuilder;
 use super::spec::{Align, Contour, FontWeight};
 
-static LATO_BLACK: &[u8] = include_bytes!("../../../resources/fonts/Lato-Black.ttf");
-static LATO_BOLD: &[u8] = include_bytes!("../../../resources/fonts/Lato-Bold.ttf");
-static LATO_REGULAR: &[u8] = include_bytes!("../../../resources/fonts/Lato-Regular.ttf");
+static LATO_BLACK: &[u8] = include_bytes!("../../../../resources/fonts/Lato-Black.ttf");
+static LATO_BOLD: &[u8] = include_bytes!("../../../../resources/fonts/Lato-Bold.ttf");
+static LATO_REGULAR: &[u8] = include_bytes!("../../../../resources/fonts/Lato-Regular.ttf");
 
 fn face(weight: FontWeight) -> Face<'static> {
     let data = match weight {

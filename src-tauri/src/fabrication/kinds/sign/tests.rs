@@ -8,7 +8,7 @@ use super::*;
 use crate::fabrication::package::{write_package, PackageError, PackageInfo};
 use crate::fabrication::printer::P2S_04;
 
-const FIXTURE: &str = include_str!("../../../tests/fixtures/signs/synthetic-back-shortly.json");
+const FIXTURE: &str = include_str!("../../../../tests/fixtures/signs/synthetic-back-shortly.json");
 
 fn fixture() -> ValidSignSpec {
     ValidSignSpec::from_json(FIXTURE).expect("fixture validates")
@@ -69,7 +69,7 @@ fn fixture_geometry_passes_every_check() {
 
 #[test]
 fn the_acceptance_sign_passes_every_geometry_check() {
-    let spec = ValidSignSpec::from_json(include_str!("../../../../docs/acceptance/p2s-test-sign.json")).expect("valid spec");
+    let spec = ValidSignSpec::from_json(include_str!("../../../../../docs/acceptance/p2s-test-sign.json")).expect("valid spec");
     let geometry = build_geometry(&spec, &P2S_04).expect("geometry");
     assert_eq!(failed(&check_geometry(&geometry)), Vec::<String>::new());
     if let Some(out) = std::env::var_os("ACCEPTANCE_PREVIEW_OUT") {
@@ -342,7 +342,7 @@ fn write_fixture_artifacts() {
 
 /// Package hashes captured from `canonical/main` before signs moved onto the
 /// shared printable model. Any change to sign package bytes fails here.
-const CHARACTERIZATION: &str = include_str!("../../../tests/fixtures/signs/characterization.json");
+const CHARACTERIZATION: &str = include_str!("../../../../tests/fixtures/signs/characterization.json");
 
 #[test]
 fn sign_packages_match_the_characterization_fixture() {
@@ -350,8 +350,8 @@ fn sign_packages_match_the_characterization_fixture() {
     let dir = tempfile::tempdir().unwrap();
     for (name, json) in [
         ("synthetic-back-shortly", FIXTURE),
-        ("p2s-test-sign", include_str!("../../../../docs/acceptance/p2s-test-sign.json")),
-        ("synthetic-one-ink", include_str!("../../../tests/fixtures/signs/synthetic-one-ink.json")),
+        ("p2s-test-sign", include_str!("../../../../../docs/acceptance/p2s-test-sign.json")),
+        ("synthetic-one-ink", include_str!("../../../../tests/fixtures/signs/synthetic-one-ink.json")),
     ] {
         let spec = ValidSignSpec::from_json(json).unwrap();
         let info = package(&spec, &dir.path().join(format!("{name}.3mf"))).unwrap();

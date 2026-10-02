@@ -17,7 +17,7 @@ use super::store;
 use super::tools::TurnScope;
 use super::turn::{run_turn, ModelChoice, TurnEnd};
 use crate::actions::{ActionError, RequestActions, RequestActor};
-use crate::fabrication::build::{self, BuildError, BuildOutcome, BuildRequest, BuildStep, Workspace};
+use crate::fabrication::pipeline::{self, BuildError, BuildOutcome, BuildRequest, BuildStep, Workspace};
 use crate::fabrication::revisions::{self, BuildState, LineageId, RevisionId, SignRevision};
 use crate::state::{AppState, PrinterState};
 use crate::tools::{Surface, Tool};
@@ -170,16 +170,16 @@ impl RequestActions for PipelineActions {
     ) -> Result<BuildOutcome, ActionError> {
         let lineage_id = lineage_id.map(LineageId::parse).transpose()?;
         let actor = requester.into();
-        Ok(build::build_sign(&self.state, &self.workspace, BuildRequest { spec, lineage_id, actor }, progress, is_cancelled)?)
+        Ok(pipeline::build_sign(&self.state, &self.workspace, BuildRequest { spec, lineage_id, actor }, progress, is_cancelled)?)
     }
 
     fn list_signs(&self, limit: u32) -> Result<Vec<SignRevision>, ActionError> {
-        Ok(build::with_db(&self.state, |conn| revisions::list_recent(conn, limit))?)
+        Ok(pipeline::with_db(&self.state, |conn| revisions::list_recent(conn, limit))?)
     }
 
     fn get_sign(&self, id: &str) -> Result<SignRevision, ActionError> {
         let id = RevisionId::parse(id)?;
-        Ok(build::with_db(&self.state, |conn| revisions::check_integrity(conn, &id))?)
+        Ok(pipeline::with_db(&self.state, |conn| revisions::check_integrity(conn, &id))?)
     }
 
     fn show_sign(&self, id: &str) -> Result<(), ActionError> {

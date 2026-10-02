@@ -4,7 +4,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::fabrication::build::BuildStep;
+use crate::fabrication::pipeline::BuildStep;
 
 /// Streamed over a Tauri `Channel` for one turn, in order. Every turn ends with
 /// exactly one of `TurnFinished`, `TurnCancelled`, or `Error`.

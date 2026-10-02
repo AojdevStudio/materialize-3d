@@ -16,8 +16,8 @@ use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
 use crate::actions::{ActionError, RequestActions, RequestActor, SignSummary};
-use crate::fabrication::build::BuildStep;
-use crate::fabrication::sign::SignSpec;
+use crate::fabrication::pipeline::BuildStep;
+use crate::fabrication::kinds::sign::SignSpec;
 
 /// Where a model meets the tools. The surface fixes the caller's
 /// [`RequestActor`], so no argument can claim to be someone else.
@@ -296,7 +296,7 @@ impl Tool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fabrication::build::BuildOutcome;
+    use crate::fabrication::pipeline::BuildOutcome;
     use crate::fabrication::revisions::SignRevision;
     use crate::state::PrinterState;
 

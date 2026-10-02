@@ -16,7 +16,7 @@ use serde_json::Value;
 
 pub use gui::HumanActor;
 
-use crate::fabrication::build::{self, BuildError, BuildOutcome, BuildRequest, BuildStep, Workspace};
+use crate::fabrication::pipeline::{self, BuildError, BuildOutcome, BuildRequest, BuildStep, Workspace};
 use crate::fabrication::revisions::{self, Actor, BuildState, LineageId, RevisionId, Sha256Hex, SignRevision};
 use crate::state::{AppState, PrinterState};
 
@@ -206,7 +206,7 @@ impl Actions {
         is_cancelled: &dyn Fn() -> bool,
     ) -> Result<BuildOutcome, ActionError> {
         let lineage_id = lineage_id.map(LineageId::parse).transpose()?;
-        let outcome = build::build_sign(
+        let outcome = pipeline::build_sign(
             &self.state,
             &self.workspace,
             BuildRequest { spec, lineage_id, actor },
@@ -218,18 +218,18 @@ impl Actions {
     }
 
     pub fn list_signs(&self, limit: u32) -> Result<Vec<SignRevision>, ActionError> {
-        Ok(build::with_db(&self.state, |conn| revisions::list_recent(conn, limit))?)
+        Ok(pipeline::with_db(&self.state, |conn| revisions::list_recent(conn, limit))?)
     }
 
     pub fn sign_lineage(&self, lineage_id: &str) -> Result<Vec<SignRevision>, ActionError> {
         let lineage = LineageId::parse(lineage_id)?;
-        Ok(build::with_db(&self.state, |conn| revisions::list_lineage(conn, &lineage))?)
+        Ok(pipeline::with_db(&self.state, |conn| revisions::list_lineage(conn, &lineage))?)
     }
 
     /// Re-hashes an approved package first, so a changed file reads as void.
     pub fn get_sign(&self, id: &str) -> Result<SignRevision, ActionError> {
         let id = RevisionId::parse(id)?;
-        Ok(build::with_db(&self.state, |conn| revisions::check_integrity(conn, &id))?)
+        Ok(pipeline::with_db(&self.state, |conn| revisions::check_integrity(conn, &id))?)
     }
 
     pub fn sign_preview_png(&self, id: &str) -> Result<Vec<u8>, ActionError> {
@@ -250,7 +250,7 @@ impl Actions {
     pub fn approve(&self, who: &HumanActor, id: &str, package_sha256: String) -> Result<SignRevision, ActionError> {
         let id = RevisionId::parse(id)?;
         let expected = Sha256Hex::try_from(package_sha256)?;
-        let revision = build::with_db(&self.state, |conn| revisions::approve(conn, &id, &expected, who.actor()))?;
+        let revision = pipeline::with_db(&self.state, |conn| revisions::approve(conn, &id, &expected, who.actor()))?;
         self.notify(&revision.id);
         Ok(revision)
     }
@@ -258,7 +258,7 @@ impl Actions {
     /// Copies an approved package to `destination` for a person.
     pub fn export(&self, _who: &HumanActor, id: &str, destination: &Path) -> Result<PathBuf, ActionError> {
         let id = RevisionId::parse(id)?;
-        Ok(build::with_db(&self.state, |conn| revisions::export(conn, &id, destination))?)
+        Ok(pipeline::with_db(&self.state, |conn| revisions::export(conn, &id, destination))?)
     }
 
     pub fn record_print_result(
@@ -270,7 +270,7 @@ impl Actions {
     ) -> Result<SignRevision, ActionError> {
         let id = RevisionId::parse(id)?;
         let revision =
-            build::with_db(&self.state, |conn| revisions::record_print_result(conn, &id, passed, note, who.actor()))?;
+            pipeline::with_db(&self.state, |conn| revisions::record_print_result(conn, &id, passed, note, who.actor()))?;
         self.notify(&revision.id);
         Ok(revision)
     }

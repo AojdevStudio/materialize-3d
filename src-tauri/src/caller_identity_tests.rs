@@ -12,7 +12,7 @@ use tauri::webview::InvokeRequest;
 use tauri::{Manager, WebviewWindow, WebviewWindowBuilder};
 
 use crate::actions::Actions;
-use crate::fabrication::build::Workspace;
+use crate::fabrication::pipeline::Workspace;
 use crate::fabrication::revisions::{
     self, Actor, Approval, Artifacts, BuildClaim, NewBuild, PrintValidation, Sha256Hex, SignRevision, SlicerIdentity,
 };
@@ -66,7 +66,7 @@ fn agent_built_revision(gui: &Gui, dir: &Path) -> SignRevision {
     let package = dir.join("sign.3mf");
     std::fs::write(&package, b"package bytes").expect("package");
     let key = Sha256Hex::of_bytes(b"agent build");
-    crate::fabrication::build::with_db(&gui.state, |conn| {
+    crate::fabrication::pipeline::with_db(&gui.state, |conn| {
         let BuildClaim::Started(revision) = revisions::claim_build(
             conn,
             NewBuild {

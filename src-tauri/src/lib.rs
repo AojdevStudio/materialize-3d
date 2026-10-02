@@ -173,8 +173,8 @@ pub fn run() {
             let app_cache_dir = std::env::var_os("M3D_E2E_DATA_DIR")
                 .map(|dir| std::path::PathBuf::from(dir).join("cache"))
                 .unwrap_or(app_cache_dir);
-            let workspace = fabrication::build::Workspace::new(&app_data_dir, &app_cache_dir);
-            let cleanup = fabrication::build::reconcile_startup(&app_state, &workspace)
+            let workspace = fabrication::pipeline::Workspace::new(&app_data_dir, &app_cache_dir);
+            let cleanup = fabrication::pipeline::reconcile_startup(&app_state, &workspace)
                 .map_err(|e| format!("sign build reconcile failed: {e}"))?;
             log::info!(
                 "setup: signs reconciled ({} interrupted builds, {} unfinished build dirs removed)",

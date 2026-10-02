@@ -330,7 +330,7 @@ mod tests {
 
     use super::*;
     use crate::fabrication::printer::P2S_04;
-    use crate::fabrication::sign::{build_geometry, check_geometry, check_plan, GeometryCheck, ValidSignSpec};
+    use crate::fabrication::kinds::sign::{build_geometry, check_geometry, check_plan, GeometryCheck, ValidSignSpec};
 
     fn checked() -> CheckedModel {
         let spec = ValidSignSpec::from_json(include_str!("../../tests/fixtures/signs/synthetic-one-ink.json")).expect("spec");

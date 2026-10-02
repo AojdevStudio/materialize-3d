@@ -23,7 +23,7 @@ use super::revisions::{
     self, Actor, Artifacts, BuildClaim, BuildState, LineageId, NewBuild, RecordedCheck, RevisionError, RevisionId,
     Sha256Hex, SignRevision, SlicerIdentity,
 };
-use super::sign::{self, SignError, ValidSignSpec};
+use super::kinds::sign::{self, SignError, ValidSignSpec};
 use super::studio_choice;
 use crate::state::AppState;
 
