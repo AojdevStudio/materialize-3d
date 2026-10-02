@@ -4,7 +4,7 @@ import type { BuildStep } from '../../types/agent'
 import { BUILD_STEPS, type ToolArtifact } from './agentAdapter'
 import styles from './ChatPanel.module.css'
 
-/** build_sign's output: mirror of `SignSummary` in src-tauri/src/actions.rs (fields the chat reads). */
+/** build_sign's output: mirror of `SignSummary` in src-tauri/src/actions/mod.rs (fields the chat reads). */
 interface SignSummary {
   revision_id: string
   number: number

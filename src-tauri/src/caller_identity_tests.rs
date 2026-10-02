@@ -29,17 +29,18 @@ struct Gui {
 fn gui(dir: &Path) -> Gui {
     let app = mock_builder()
         .invoke_handler(tauri::generate_handler![
-            crate::sign_commands::sign_build,
-            crate::sign_commands::sign_approve,
-            crate::sign_commands::sign_record_print,
+            crate::actions::gui::sign_build,
+            crate::actions::gui::sign_approve,
+            crate::actions::gui::sign_record_print,
         ])
         .build(mock_context(noop_assets()))
         .expect("mock app");
     let state = Arc::new(AppState::default());
     *state.db.lock().expect("db") = Some(crate::database::init_db(&dir.join("t.db")).expect("db"));
-    let actions = Actions::new(app.handle().clone(), state.clone(), Workspace::new(&dir.join("data"), &dir.join("cache")));
+    let events = crate::actions::gui::app_events(app.handle().clone());
+    let actions = Actions::new(events, state.clone(), Workspace::new(&dir.join("data"), &dir.join("cache")));
     app.manage(actions.clone());
-    app.manage(crate::sign_commands::GuiBuilds::default());
+    app.manage(crate::actions::gui::GuiBuilds::default());
     let webview = WebviewWindowBuilder::new(&app, "main", Default::default()).build().expect("webview");
     Gui { _app: app, webview, actions, state }
 }
@@ -173,15 +174,15 @@ async fn each_caller_records_its_own_identity() {
         cancel: tokio_util::sync::CancellationToken::new(),
         blocking: tokio_util::task::TaskTracker::new(),
     };
-    let from_agent = crate::agent::tools::AgentTool::BuildSign
-        .run(&scope, "call-1".into(), json!({ "spec": spec_titled("From the agent") }))
+    let from_agent = scope
+        .invoke(crate::tools::Tool::BuildSign, "call-1".into(), json!({ "spec": spec_titled("From the agent") }))
         .await
         .expect("agent build");
     assert_eq!(from_agent["requested_by"], "agent");
 
     let server = crate::mcp::McpServer::default();
     let url = server
-        .set_enabled(gui.actions.clone(), 0, true, || async { Ok("identity-token".to_owned()) })
+        .set_enabled(Arc::new(gui.actions.clone()), 0, true, || async { Ok("identity-token".to_owned()) })
         .await
         .expect("mcp")
         .url
@@ -211,8 +212,8 @@ async fn each_caller_records_its_own_identity() {
     let data = text.lines().filter_map(|l| l.strip_prefix("data:")).map(str::trim).find(|l| !l.is_empty()).unwrap_or(&text);
     let response: Value = serde_json::from_str(data).expect("json-rpc");
     let output: Value = serde_json::from_str(response["result"]["content"][0]["text"].as_str().expect("tool text")).expect("output");
-    assert_eq!(output["revision"]["requested_by"], "external_mcp");
-    server.set_enabled(gui.actions.clone(), 0, false, || async { Ok(String::new()) }).await.expect("stop");
+    assert_eq!(output["requested_by"], "external_mcp");
+    server.set_enabled(Arc::new(gui.actions.clone()), 0, false, || async { Ok(String::new()) }).await.expect("stop");
 
     let recorded: Vec<(String, Actor)> =
         gui.actions.list_signs(10).expect("list").into_iter().map(|r| (r.title, r.requested_by)).collect();

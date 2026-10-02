@@ -1,5 +1,6 @@
 //! Tauri commands for the Signs view: the GUI's caller of [`Actions`]. These
-//! are the only callers that act as `Actor::Human`.
+//! are the only callers that act as `Actor::Human`, and the only code that can
+//! create a [`HumanActor`].
 
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
@@ -9,11 +10,55 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
 use tauri::ipc::{Channel, Response};
-use tauri::State;
+use tauri::{AppHandle, Emitter, Runtime, State};
 
-use crate::actions::Actions;
+use super::{Actions, EventSink};
 use crate::fabrication::build::{BuildOutcome, BuildStep};
 use crate::fabrication::revisions::{Actor, SignRevision};
+
+/// Proof that a person at the GUI is acting. Its field is private to this
+/// module, so tools, the agent, and MCP cannot create one, and approving,
+/// exporting, or recording a print takes one. That field's visibility is the
+/// whole compile-time proof, so never widen it: a `pub(crate)` field would not
+/// be caught by the doctests below, which compile outside the crate, and only
+/// the runtime `Actor::Human` check in `revisions::approve` would remain.
+///
+/// Code outside this module can name and use one it was given:
+///
+/// ```
+/// use materialize_3d_lib::actions::HumanActor;
+/// use materialize_3d_lib::fabrication::revisions::Actor;
+/// fn who(person: &HumanActor) -> Actor {
+///     person.actor()
+/// }
+/// ```
+///
+/// but cannot create one:
+///
+/// ```compile_fail,E0423
+/// use materialize_3d_lib::actions::HumanActor;
+/// let _forged = HumanActor(());
+/// ```
+pub struct HumanActor(());
+
+impl HumanActor {
+    /// The identity recorded for what this person does.
+    pub fn actor(&self) -> Actor {
+        Actor::Human
+    }
+}
+
+/// The person using the window, behind every command below that needs one.
+const PERSON: HumanActor = HumanActor(());
+
+/// Sends [`Actions`] events to the app's windows.
+pub(crate) fn app_events<R: Runtime>(app: AppHandle<R>) -> EventSink {
+    Arc::new(move |event, payload| {
+        if let Err(err) = app.emit(event, payload) {
+            log::warn!("actions: could not emit {event}: {err}");
+        }
+    })
+}
 
 /// Cancel flags for builds started from the GUI, keyed by the caller's build id.
 #[derive(Default)]
@@ -103,13 +148,13 @@ pub fn sign_preview(actions: State<'_, Actions>, id: String) -> Result<Response,
 
 #[tauri::command]
 pub fn sign_approve(actions: State<'_, Actions>, id: String, package_sha256: String) -> Result<SignRevision, String> {
-    actions.approve_sign(&id, package_sha256, Actor::Human).map_err(error)
+    actions.approve(&PERSON, &id, package_sha256).map_err(error)
 }
 
 #[tauri::command]
 pub fn sign_export(actions: State<'_, Actions>, id: String, destination: String) -> Result<String, String> {
     actions
-        .export_sign(&id, &PathBuf::from(destination))
+        .export(&PERSON, &id, &PathBuf::from(destination))
         .map(|written| written.display().to_string())
         .map_err(error)
 }
@@ -121,7 +166,7 @@ pub fn sign_record_print(
     passed: bool,
     note: String,
 ) -> Result<SignRevision, String> {
-    actions.record_print_result(&id, passed, &note, Actor::Human).map_err(error)
+    actions.record_print_result(&PERSON, &id, passed, &note).map_err(error)
 }
 
 #[cfg(test)]

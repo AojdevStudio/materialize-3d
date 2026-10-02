@@ -14,9 +14,9 @@ use tokio_util::task::TaskTracker;
 
 use super::protocol::{AgentErrorKind, AgentEvent, AgentStatus, HistoryEntry, Provider};
 use super::store;
-use super::tools::{AgentActions, TurnScope};
+use super::tools::TurnScope;
 use super::turn::{self, ModelChoice, TurnEnd};
-use crate::actions::Actions;
+use crate::actions::RequestActions;
 use crate::credentials;
 use crate::database;
 use crate::state::AppState;
@@ -182,7 +182,7 @@ pub fn agent_new_conversation(state: State<'_, Arc<AppState>>) -> Result<NewConv
 #[tauri::command]
 pub async fn agent_send(
     state: State<'_, Arc<AppState>>,
-    actions: State<'_, Actions>,
+    actions: State<'_, Arc<dyn RequestActions>>,
     turns: State<'_, AgentTurns>,
     conversation_id: String,
     turn_id: String,
@@ -202,7 +202,7 @@ pub async fn agent_send(
         conversation_id,
         turn_id: turn_id.clone(),
         state: state.inner().clone(),
-        actions: Arc::new(actions.inner().clone()) as Arc<dyn AgentActions>,
+        actions: actions.inner().clone(),
         // A closed window drops the channel; the turn still runs to its end and is stored.
         emit: Arc::new(move |event| {
             let _ = on_event.send(event);

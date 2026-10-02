@@ -9,8 +9,8 @@ pub mod fabrication;
 #[cfg(feature = "e2e")]
 mod e2e;
 mod mcp;
-mod sign_commands;
 mod studio_commands;
+pub mod tools;
 mod makerworld;
 pub mod openscad;
 pub mod platform;
@@ -97,15 +97,15 @@ pub fn run() {
             mcp::mcp_set_enabled,
             mcp::mcp_token,
             mcp::mcp_rotate_token,
-            sign_commands::sign_build,
-            sign_commands::sign_cancel,
-            sign_commands::sign_list,
-            sign_commands::sign_lineage,
-            sign_commands::sign_get,
-            sign_commands::sign_preview,
-            sign_commands::sign_approve,
-            sign_commands::sign_export,
-            sign_commands::sign_record_print,
+            actions::gui::sign_build,
+            actions::gui::sign_cancel,
+            actions::gui::sign_list,
+            actions::gui::sign_lineage,
+            actions::gui::sign_get,
+            actions::gui::sign_preview,
+            actions::gui::sign_approve,
+            actions::gui::sign_export,
+            actions::gui::sign_record_print,
             agent::commands::agent_status,
             agent::commands::agent_set_api_key,
             agent::commands::agent_clear_api_key,
@@ -189,14 +189,18 @@ pub fn run() {
             log::info!("setup: agent reconciled ({interrupted_calls} interrupted tool calls)");
             #[cfg(feature = "e2e")]
             e2e::start(app.handle())?;
-            app.manage(actions::Actions::new(app.handle().clone(), app_state.inner().clone(), workspace));
-            app.manage(sign_commands::GuiBuilds::default());
+            let app_actions =
+                actions::Actions::new(actions::gui::app_events(app.handle().clone()), app_state.inner().clone(), workspace);
+            // The GUI commands use `Actions`; the agent and MCP get only what a model may request.
+            app.manage::<Arc<dyn actions::RequestActions>>(Arc::new(app_actions.clone()));
+            app.manage(app_actions);
+            app.manage(actions::gui::GuiBuilds::default());
             app.manage(mcp::McpServer::default());
             {
                 let handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
                     let server = handle.state::<mcp::McpServer>();
-                    let actions = handle.state::<actions::Actions>().inner().clone();
+                    let actions = handle.state::<Arc<dyn actions::RequestActions>>().inner().clone();
                     let state = handle.state::<Arc<AppState>>();
                     if let Err(err) = mcp::start_if_enabled(&server, actions, &state, mcp::token).await {
                         log::error!("mcp: failed to start at launch: {err}");

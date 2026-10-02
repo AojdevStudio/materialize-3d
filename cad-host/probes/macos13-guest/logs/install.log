@@ -1,0 +1,11 @@
+host: Version 26.7 (Build 25G220), VZVirtualMachine.isSupported=true
+install 10% at 53s
+install 20% at 63s
+install 30% at 72s
+install 40% at 89s
+install 50% at 116s
+install 60% at 119s
+install 70% at 121s
+install 100% at 318s
+install: ok in 318s
+exit 0

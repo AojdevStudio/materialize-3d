@@ -1,0 +1,12 @@
+hobbyist first-try run, 2026-10-02T09:53:44Z, one attempt each, no edits after writing
+01-phone-stand: ok
+02-gridfinity-bin: ok
+03-wall-hook: ok
+04-cable-comb: ok
+05-bottle-cap: FAIL (job_failed): line 10: RuntimeError: BuildPart doesn't have a Helix object or operation (Helix applies to ['BuildLine'])
+06-plant-pot: ok
+07-drawer-knob: ok
+08-hex-key-holder: ok
+09-shelf-bracket: ok
+10-keychain-tag: FAIL (geometry): tag: closed true, boundary edges 0, non-degenerate true; label: closed false, boundary edges 132, non-degenerate false
+first-try success: 8 of 10

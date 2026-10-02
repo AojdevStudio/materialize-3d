@@ -18,7 +18,7 @@ use serde_json::json;
 
 use super::protocol::{AgentErrorKind, AgentEvent, Provider, ToolCallStatus};
 use super::store::{self, StoreError, TextSegment};
-use super::tools::{AgentTool, TurnScope};
+use super::tools::{bind_all, TurnScope};
 
 /// Model calls per turn, including the call after each tool batch.
 pub const MAX_TURNS: usize = 8;
@@ -106,7 +106,7 @@ fn build_agent(model: ModelChoice, scope: &Arc<TurnScope>) -> Result<rig::Agent,
     };
     Ok(builder
         .preamble(SYSTEM_PROMPT)
-        .dynamic_tools(AgentTool::ALL.iter().map(|tool| tool.bind(scope.clone())).collect())
+        .dynamic_tools(bind_all(scope))
         .default_max_turns(MAX_TURNS)
         .build())
 }
