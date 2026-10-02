@@ -1,5 +1,9 @@
 pub mod bambu;
 pub mod build;
+pub mod checks;
+pub mod model;
+pub mod package;
+pub mod printer;
 pub mod revisions;
 pub mod sign;
 pub mod studio_choice;

@@ -16,6 +16,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+use super::checks::{CheckOutcome, PassedChecks};
+
 pub const MIGRATION_004: &str = "
 CREATE TABLE IF NOT EXISTS sign_revisions (
     id TEXT PRIMARY KEY,
@@ -186,6 +188,12 @@ pub struct RecordedCheck {
     pub detail: String,
 }
 
+impl From<&CheckOutcome> for RecordedCheck {
+    fn from(outcome: &CheckOutcome) -> Self {
+        Self { id: outcome.id.to_string(), passed: outcome.passed, detail: outcome.detail.clone() }
+    }
+}
+
 /// Everything a finished build produced. Paths are absolute and live inside the
 /// revision's own directory.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -199,12 +207,6 @@ pub struct Artifacts {
     pub slicer: SlicerIdentity,
     pub effective_settings: serde_json::Value,
     pub checks: Vec<RecordedCheck>,
-}
-
-impl Artifacts {
-    pub fn all_checks_passed(&self) -> bool {
-        !self.checks.is_empty() && self.checks.iter().all(|check| check.passed)
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -376,19 +378,45 @@ pub fn claim_build(conn: &mut Connection, build: NewBuild) -> Result<BuildClaim>
     Ok(BuildClaim::Started(revision))
 }
 
-/// Records a finished build. Verification outcome decides the state: every check
-/// must pass for `Verified`; otherwise the revision is `Failed` with its evidence kept.
-pub fn finish_build(conn: &Connection, id: &RevisionId, artifacts: Artifacts) -> Result<SignRevision> {
-    let (status, reason) = if artifacts.all_checks_passed() {
-        ("verified", None)
-    } else {
-        let failed: Vec<&str> = artifacts.checks.iter().filter(|c| !c.passed).map(|c| c.id.as_str()).collect();
-        ("failed", Some(format!("checks failed: {}", failed.join(", "))))
-    };
+/// Records a build whose every planned check passed. Only a check plan makes a
+/// [`PassedChecks`], so this is the one way a build becomes `Verified`. The
+/// recorded checks are always the proof's outcomes; `artifacts.checks` is
+/// replaced with them.
+///
+/// ```
+/// use materialize_3d_lib::fabrication::checks::PassedChecks;
+/// use materialize_3d_lib::fabrication::revisions::{self, Artifacts, Result, RevisionId, SignRevision};
+/// fn record(conn: &rusqlite::Connection, id: &RevisionId, artifacts: Artifacts, passed: &PassedChecks) -> Result<SignRevision> {
+///     revisions::finish_verified(conn, id, artifacts, passed)
+/// }
+/// ```
+///
+/// A plain list of passing checks is not proof and does not compile:
+///
+/// ```compile_fail,E0308
+/// use materialize_3d_lib::fabrication::revisions::{self, Artifacts, RecordedCheck, Result, RevisionId, SignRevision};
+/// fn record(conn: &rusqlite::Connection, id: &RevisionId, artifacts: Artifacts, checks: Vec<RecordedCheck>) -> Result<SignRevision> {
+///     revisions::finish_verified(conn, id, artifacts, checks)
+/// }
+/// ```
+pub fn finish_verified(conn: &Connection, id: &RevisionId, artifacts: Artifacts, passed: &PassedChecks) -> Result<SignRevision> {
+    let checks = passed.outcomes().iter().map(RecordedCheck::from).collect();
+    record_finish(conn, id, "verified", None, &Artifacts { checks, ..artifacts })
+}
+
+/// Records a build whose checks ran and did not all pass. The revision is
+/// `Failed` with its evidence kept, whatever `artifacts.checks` holds.
+pub fn finish_failed(conn: &Connection, id: &RevisionId, artifacts: Artifacts) -> Result<SignRevision> {
+    let failed: Vec<&str> = artifacts.checks.iter().filter(|c| !c.passed).map(|c| c.id.as_str()).collect();
+    let reason = format!("checks failed: {}", failed.join(", "));
+    record_finish(conn, id, "failed", Some(reason), &artifacts)
+}
+
+fn record_finish(conn: &Connection, id: &RevisionId, status: &str, reason: Option<String>, artifacts: &Artifacts) -> Result<SignRevision> {
     let changed = conn.execute(
         "UPDATE sign_revisions SET build_status = ?2, failure_reason = ?3, artifacts_json = ?4, updated_at = ?5
          WHERE id = ?1 AND build_status = 'building'",
-        params![id.as_str(), status, reason, serde_json::to_string(&artifacts)?, now()],
+        params![id.as_str(), status, reason, serde_json::to_string(artifacts)?, now()],
     )?;
     ensure_transition(conn, id, changed, "finish the build of")?;
     get(conn, id)
@@ -698,9 +726,18 @@ mod tests {
         }
     }
 
+    /// Proof that both checks `artifacts` records passed.
+    fn passed() -> PassedChecks {
+        let slice = |check| crate::fabrication::checks::slice_check_id(check);
+        crate::fabrication::checks::test_support::passed(&[
+            slice(crate::fabrication::bambu::CheckId::SliceSucceeded),
+            slice(crate::fabrication::bambu::CheckId::PlacementPreserved),
+        ])
+    }
+
     fn verified(conn: &mut Connection, dir: &Path, key: &str) -> SignRevision {
         let revision = started(claim_build(conn, request(key, None, Actor::Agent)).expect("claim"));
-        finish_build(conn, &revision.id, artifacts(dir, key.as_bytes(), true)).expect("finish")
+        finish_verified(conn, &revision.id, artifacts(dir, key.as_bytes(), true), &passed()).expect("finish")
     }
 
     #[test]
@@ -752,12 +789,31 @@ mod tests {
         assert!(matches!(approved.approval, Approval::Approved { ref package_sha256, .. } if *package_sha256 == hash));
     }
 
+    /// A list of passing checks is not proof: without `PassedChecks` the build
+    /// is recorded as failed, and the recorded checks are the proof's, not the caller's.
+    #[test]
+    fn only_passed_checks_record_a_verified_build() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut conn = db();
+        let revision = started(claim_build(&mut conn, request("a", None, Actor::Agent)).expect("claim"));
+        let finished = finish_failed(&conn, &revision.id, artifacts(dir.path(), b"pkg", true)).expect("finish");
+        assert!(matches!(finished.build, BuildState::Failed { .. }), "a plain passing list does not verify");
+
+        let revision = started(claim_build(&mut conn, request("b", None, Actor::Agent)).expect("claim"));
+        let mut claimed = artifacts(dir.path(), b"pkg", true);
+        claimed.checks.push(RecordedCheck { id: "slice.made_up".into(), passed: true, detail: String::new() });
+        let finished = finish_verified(&conn, &revision.id, claimed, &passed()).expect("finish");
+        let ids: Vec<&str> = finished.artifacts().expect("artifacts").checks.iter().map(|c| c.id.as_str()).collect();
+        assert!(matches!(finished.build, BuildState::Verified { .. }));
+        assert_eq!(ids, ["slice.slice_succeeded", "slice.placement_preserved"]);
+    }
+
     #[test]
     fn a_revision_with_a_failing_check_cannot_be_approved() {
         let dir = tempfile::tempdir().expect("tempdir");
         let mut conn = db();
         let revision = started(claim_build(&mut conn, request("a", None, Actor::Agent)).expect("claim"));
-        let finished = finish_build(&conn, &revision.id, artifacts(dir.path(), b"pkg", false)).expect("finish");
+        let finished = finish_failed(&conn, &revision.id, artifacts(dir.path(), b"pkg", false)).expect("finish");
         assert!(matches!(finished.build, BuildState::Failed { ref reason, .. } if reason.contains("placement_preserved")));
         let hash = finished.artifacts().expect("artifacts").package_sha256.clone();
         assert!(matches!(approve(&conn, &revision.id, &hash, Actor::Human), Err(RevisionError::ChecksFailed(_))));
@@ -828,7 +884,7 @@ mod tests {
         let reloaded = get(&conn, &revision.id).expect("get");
         assert!(matches!(reloaded.build, BuildState::Failed { ref reason, .. } if reason.starts_with("interrupted")));
         assert!(matches!(
-            finish_build(&conn, &revision.id, artifacts(dir.path(), b"late", true)),
+            finish_verified(&conn, &revision.id, artifacts(dir.path(), b"late", true), &passed()),
             Err(RevisionError::InvalidTransition { .. })
         ));
     }

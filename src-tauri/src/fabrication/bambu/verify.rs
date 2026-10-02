@@ -38,6 +38,34 @@ pub enum CheckId {
     Layer1Coverage,
 }
 
+impl CheckId {
+    /// Every slice check, in the order [`verify`] returns them.
+    pub const ALL: [CheckId; 8] = [
+        CheckId::SliceSucceeded,
+        CheckId::NoWarnings,
+        CheckId::PresetsApplied,
+        CheckId::StartGcodeIntact,
+        CheckId::InputUnchanged,
+        CheckId::FilamentsPreserved,
+        CheckId::PlacementPreserved,
+        CheckId::Layer1Coverage,
+    ];
+
+    /// The serialized name, which slice check ids are recorded under.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CheckId::SliceSucceeded => "slice_succeeded",
+            CheckId::NoWarnings => "no_warnings",
+            CheckId::PresetsApplied => "presets_applied",
+            CheckId::StartGcodeIntact => "start_gcode_intact",
+            CheckId::InputUnchanged => "input_unchanged",
+            CheckId::FilamentsPreserved => "filaments_preserved",
+            CheckId::PlacementPreserved => "placement_preserved",
+            CheckId::Layer1Coverage => "layer1_coverage",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Check {
     pub id: CheckId,
@@ -658,6 +686,16 @@ mod tests {
         let checks = verify(&report, &parts, &presets);
         assert_eq!(checks.len(), 8);
         assert_eq!(failed(&checks), vec![], "{checks:#?}");
+    }
+
+    #[test]
+    fn verify_returns_every_check_once_in_declared_order_under_its_serialized_name() {
+        let (report, parts, presets) = passing();
+        let ids: Vec<CheckId> = verify(&report, &parts, &presets).iter().map(|c| c.id).collect();
+        assert_eq!(ids, CheckId::ALL);
+        for id in CheckId::ALL {
+            assert_eq!(serde_json::to_value(id).expect("serialize"), id.as_str());
+        }
     }
 
     #[test]

@@ -1,10 +1,22 @@
-//! Geometry checks that must pass before a sign is packaged.
+//! Geometry checks that must pass before a sign is packaged, and the sign's
+//! check plan, which names every one of them before anything is built.
 
 use std::collections::HashMap;
 
 use serde::Serialize;
 
-use super::geometry::{mm, Body, SignGeometry, UM_PER_MM};
+use super::geometry::{mm, SignGeometry, UM_PER_MM};
+use super::spec::ValidSignSpec;
+use crate::fabrication::checks::{
+    slice_and_handoff_checks, CheckId, CheckOutcome, CheckPhase, CheckPlan, CheckPlanId, InvalidPlan,
+};
+use crate::fabrication::model::Body;
+use crate::fabrication::printer::Um;
+
+/// Version of the sign's check plan: 6n + 9 checks for a palette of n filaments.
+pub const SIGN_CHECK_PLAN: CheckPlanId = CheckPlanId::new("sign-checks-1");
+/// Subject of the checks that judge the whole sign.
+const WHOLE_SIGN: &str = "sign";
 
 /// Bounds tolerance, µm (0.01 mm).
 const BOUNDS_TOLERANCE_UM: i32 = 10;
@@ -33,22 +45,58 @@ impl GeometryCheck {
             detail,
         }
     }
+
+    /// `geometry.<name>.<subject>`, as the check plan names it.
+    pub fn id(&self) -> CheckId {
+        geometry_id(self.name, &self.subject)
+    }
+
+    pub fn outcome(&self) -> CheckOutcome {
+        CheckOutcome { id: self.id(), passed: self.passed, detail: self.detail.clone() }
+    }
+}
+
+fn geometry_id(name: &str, subject: &str) -> CheckId {
+    CheckId::new(CheckPhase::Geometry, &format!("{name}.{subject}"))
+}
+
+/// Every check a sign build must pass, in recorded order: what
+/// [`check_geometry`] measures for this spec's palette, then the shared slice
+/// and handoff checks.
+pub fn check_plan(spec: &ValidSignSpec) -> Result<CheckPlan, InvalidPlan> {
+    let bodies: Vec<&str> = spec.palette.iter().map(|ink| ink.name.as_str()).collect();
+    let inks = &bodies[1..];
+    let per = |name: &'static str, subjects: &[&str]| -> Vec<CheckId> {
+        subjects.iter().map(|subject| geometry_id(name, subject)).collect()
+    };
+    let mut required: Vec<CheckId> = bodies
+        .iter()
+        .flat_map(|body| ["closed_manifold", "non_degenerate", "outward_orientation"].map(|name| geometry_id(name, body)))
+        .collect();
+    required.push(geometry_id("bounds", WHOLE_SIGN));
+    required.extend(per("inlay_z_range", inks));
+    required.push(geometry_id("area_partition", WHOLE_SIGN));
+    required.extend(per("ink_present", inks));
+    required.extend(per("orientation_oracle", &bodies));
+    required.extend(slice_and_handoff_checks());
+    CheckPlan::new(SIGN_CHECK_PLAN, required)
 }
 
 /// Runs every check. A sign is packageable only when all of them pass.
 pub fn check_geometry(geometry: &SignGeometry) -> Vec<GeometryCheck> {
+    let bodies = geometry.model.bodies();
     let mut checks = Vec::new();
-    for body in &geometry.bodies {
+    for body in bodies {
         checks.push(closed_manifold(body));
         checks.push(non_degenerate(body));
         checks.push(outward_orientation(body));
     }
     checks.push(bounds(geometry));
-    for body in &geometry.bodies[1..] {
+    for body in &bodies[1..] {
         checks.push(inlay_z_range(body, geometry.dims.d));
     }
     checks.push(area_partition(geometry));
-    for body in &geometry.bodies[1..] {
+    for body in &bodies[1..] {
         let area = bottom_area_mm2(body);
         checks.push(GeometryCheck::new(
             "ink_present",
@@ -62,8 +110,9 @@ pub fn check_geometry(geometry: &SignGeometry) -> Vec<GeometryCheck> {
 }
 
 fn closed_manifold(body: &Body) -> GeometryCheck {
-    let mut directed: HashMap<(u32, u32), u32> = HashMap::with_capacity(body.triangles.len() * 3);
-    for t in &body.triangles {
+    let triangles = body.mesh.triangles();
+    let mut directed: HashMap<(u32, u32), u32> = HashMap::with_capacity(triangles.len() * 3);
+    for t in triangles {
         for (a, b) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
             *directed.entry((a, b)).or_default() += 1;
         }
@@ -75,17 +124,17 @@ fn closed_manifold(body: &Body) -> GeometryCheck {
     GeometryCheck::new(
         "closed_manifold",
         &body.name,
-        !body.triangles.is_empty() && bad == 0,
+        !triangles.is_empty() && bad == 0,
         format!(
             "{} triangles, {} directed edges, {bad} without exactly one opposite twin",
-            body.triangles.len(),
+            triangles.len(),
             directed.len()
         ),
     )
 }
 
 fn corners(body: &Body, t: [u32; 3]) -> [[i64; 3]; 3] {
-    t.map(|i| body.vertices[i as usize].map(i64::from))
+    t.map(|i| body.mesh.vertices()[i as usize])
 }
 
 fn sub3(a: [i64; 3], b: [i64; 3]) -> [i64; 3] {
@@ -102,7 +151,8 @@ fn cross3(a: [i64; 3], b: [i64; 3]) -> [i64; 3] {
 
 fn non_degenerate(body: &Body) -> GeometryCheck {
     let degenerate = body
-        .triangles
+        .mesh
+        .triangles()
         .iter()
         .filter(|t| {
             let [a, b, c] = corners(body, **t);
@@ -119,7 +169,8 @@ fn non_degenerate(body: &Body) -> GeometryCheck {
 
 fn outward_orientation(body: &Body) -> GeometryCheck {
     let six_volume: i128 = body
-        .triangles
+        .mesh
+        .triangles()
         .iter()
         .map(|t| {
             let [a, b, c] = corners(body, *t);
@@ -138,44 +189,40 @@ fn outward_orientation(body: &Body) -> GeometryCheck {
     )
 }
 
+fn mm_of(um: Um) -> f64 {
+    um as f64 / UM_PER_MM
+}
+
 fn bounds(geometry: &SignGeometry) -> GeometryCheck {
-    let mut lo = [i32::MAX; 3];
-    let mut hi = [i32::MIN; 3];
-    for v in geometry.bodies.iter().flat_map(|b| &b.vertices) {
-        for k in 0..3 {
-            lo[k] = lo[k].min(v[k]);
-            hi[k] = hi[k].max(v[k]);
-        }
-    }
+    let [lo, hi] = geometry.model.bounds();
     let d = geometry.dims;
-    let want = [d.w, d.h, d.t];
-    let passed = (0..3).all(|k| {
-        lo[k].abs() <= BOUNDS_TOLERANCE_UM && (hi[k] - want[k]).abs() <= BOUNDS_TOLERANCE_UM
-    });
+    let want = [d.w, d.h, d.t].map(Um::from);
+    let tolerance = Um::from(BOUNDS_TOLERANCE_UM);
+    let passed = (0..3).all(|k| lo[k].abs() <= tolerance && (hi[k] - want[k]).abs() <= tolerance);
     GeometryCheck::new(
         "bounds",
-        "sign",
+        WHOLE_SIGN,
         passed,
         format!(
             "min {:?} max {:?} mm, expected 0 to {:?} mm",
-            lo.map(mm),
-            hi.map(mm),
-            want.map(mm)
+            lo.map(mm_of),
+            hi.map(mm_of),
+            want.map(mm_of)
         ),
     )
 }
 
 fn inlay_z_range(body: &Body, depth: i32) -> GeometryCheck {
-    let lo = body.vertices.iter().map(|v| v[2]).min();
-    let hi = body.vertices.iter().map(|v| v[2]).max();
+    let lo = body.mesh.vertices().iter().map(|v| v[2]).min();
+    let hi = body.mesh.vertices().iter().map(|v| v[2]).max();
     GeometryCheck::new(
         "inlay_z_range",
         &body.name,
-        lo == Some(0) && hi == Some(depth),
+        lo == Some(0) && hi == Some(Um::from(depth)),
         format!(
             "z {:?} to {:?} mm, expected 0 to {}",
-            lo.map(mm),
-            hi.map(mm),
+            lo.map(mm_of),
+            hi.map(mm_of),
             mm(depth)
         ),
     )
@@ -183,7 +230,8 @@ fn inlay_z_range(body: &Body, depth: i32) -> GeometryCheck {
 
 /// Triangles lying in z = 0: the faces printed against the bed.
 fn bed_triangles(body: &Body) -> impl Iterator<Item = [[i64; 3]; 3]> + '_ {
-    body.triangles
+    body.mesh
+        .triangles()
         .iter()
         .map(|t| corners(body, *t))
         .filter(|c| c.iter().all(|v| v[2] == 0))
@@ -197,13 +245,13 @@ fn bottom_area_mm2(body: &Body) -> f64 {
 }
 
 fn area_partition(geometry: &SignGeometry) -> GeometryCheck {
-    let parts: Vec<f64> = geometry.bodies.iter().map(bottom_area_mm2).collect();
+    let parts: Vec<f64> = geometry.model.bodies().iter().map(bottom_area_mm2).collect();
     let total: f64 = parts.iter().sum();
     let outline = geometry.outline_area_mm2;
     let gap = (total - outline).abs() / outline;
     GeometryCheck::new(
         "area_partition",
-        "sign",
+        WHOLE_SIGN,
         gap <= AREA_TOLERANCE,
         format!(
             "bed faces {parts:.2?} sum {total:.3} mm², outline {outline:.3} mm², gap {:.4}%",
@@ -236,7 +284,8 @@ fn orientation_oracle(geometry: &SignGeometry) -> Vec<GeometryCheck> {
     };
 
     geometry
-        .bodies
+        .model
+        .bodies()
         .iter()
         .zip(&geometry.face)
         .map(|(body, face)| {
