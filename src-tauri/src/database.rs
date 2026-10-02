@@ -175,6 +175,11 @@ fn run_migrations(conn: &Connection) -> Result<(), String> {
     }
 
     if version < 6 {
+        // A database that held sign revisions before this run keeps a copy of
+        // them: migration 006 is the first one that drops a table.
+        if version >= 4 {
+            backup_before_schema_6(conn)?;
+        }
         log::info!("database: applying migration 006 — separate builds from revisions");
         // It moves rows between tables, so all of it lands or none of it does.
         let tx = conn.unchecked_transaction().map_err(|e| format!("migration 006 failed to start: {e}"))?;
@@ -186,6 +191,26 @@ fn run_migrations(conn: &Connection) -> Result<(), String> {
         log::info!("database: migration 006 applied — schema version now 6");
     }
 
+    Ok(())
+}
+
+/// Copies the database to `<database>.pre-schema-6` beside it before migration
+/// 006 drops `sign_revisions`. `VACUUM INTO` writes one consistent file that
+/// includes anything still in the WAL. A copy that already exists is kept, since
+/// it holds the older state from an earlier attempt. An in-memory database has
+/// no file to protect. A failed copy stops the migration.
+fn backup_before_schema_6(conn: &Connection) -> Result<(), String> {
+    let Some(path) = conn.path().filter(|path| !path.is_empty()) else {
+        return Ok(());
+    };
+    let backup = format!("{path}.pre-schema-6");
+    if Path::new(&backup).exists() {
+        log::info!("database: keeping the existing backup {backup}");
+        return Ok(());
+    }
+    conn.execute("VACUUM INTO ?1", [&backup])
+        .map_err(|e| format!("could not back up the database to {backup} before migration 006: {e}"))?;
+    log::info!("database: backed up the database to {backup} before migration 006");
     Ok(())
 }
 
@@ -1067,6 +1092,62 @@ mod tests {
         drop(conn);
         let reopened = init_db(&path).expect("reopening is a no-op");
         assert_eq!(crate::fabrication::revisions::list_recent(&reopened, 10).unwrap().len(), 5);
+    }
+
+    const SIGN_REVISION_COLUMNS: &str = "SELECT id, lineage_id, number, parent_id, title, spec_json, spec_sha256,
+        requested_by, approval_status, approved_sha256, print_status, void_reason FROM sign_revisions ORDER BY id";
+
+    /// A schema-5 database from the fixture at `dir/materialize.db`.
+    fn schema_5_database(dir: &Path) -> std::path::PathBuf {
+        let path = dir.join("materialize.db");
+        Connection::open(&path).unwrap().execute_batch(include_str!("../tests/fixtures/db/main-schema-v5-signs.sql")).unwrap();
+        path
+    }
+
+    fn backup_of(path: &Path) -> std::path::PathBuf {
+        path.with_file_name("materialize.db.pre-schema-6")
+    }
+
+    #[test]
+    fn migrating_a_schema_5_database_keeps_a_backup_with_its_sign_revisions() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = schema_5_database(dir.path());
+        let before = revision_columns(&Connection::open(&path).unwrap(), SIGN_REVISION_COLUMNS);
+
+        init_db(&path).expect("migrates");
+
+        let backup = Connection::open(backup_of(&path)).expect("the backup beside the database");
+        let version: i32 = backup.pragma_query_value(None, "user_version", |row| row.get(0)).unwrap();
+        assert_eq!(version, 5, "the backup is the database as it was before migration 006");
+        assert_eq!(revision_columns(&backup, SIGN_REVISION_COLUMNS), before, "every sign revision, unchanged");
+    }
+
+    #[test]
+    fn an_existing_backup_is_never_replaced() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = schema_5_database(dir.path());
+        std::fs::write(backup_of(&path), b"an earlier attempt's copy").unwrap();
+
+        init_db(&path).expect("migrates");
+
+        assert_eq!(std::fs::read(backup_of(&path)).unwrap(), b"an earlier attempt's copy");
+    }
+
+    /// The backup path is a link into a folder that does not exist, so the copy cannot be written.
+    #[cfg(unix)]
+    #[test]
+    fn a_backup_that_fails_stops_migration_006() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = schema_5_database(dir.path());
+        std::os::unix::fs::symlink(dir.path().join("missing/copy.db"), backup_of(&path)).unwrap();
+
+        let err = init_db(&path).err().expect("the migration stops");
+        assert!(err.contains("could not back up the database"), "{err}");
+
+        let conn = Connection::open(&path).unwrap();
+        let version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0)).unwrap();
+        assert_eq!(version, 5, "migration 006 did not run");
+        assert_eq!(revision_columns(&conn, SIGN_REVISION_COLUMNS).len(), 5, "sign_revisions is still there");
     }
 
     #[test]
