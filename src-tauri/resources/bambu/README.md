@@ -3,7 +3,7 @@
 ## p2s-0.4-pla-basic-x3.project_settings.json
 
 Embedded as `Metadata/project_settings.config` in every sign package that
-`fabrication::sign::write_package` produces.
+`fabrication::package::write_package` produces.
 
 Provenance: Bambu Studio 02.08.02.61 (Linux AppImage), system profile bundle
 version 02.08.00.05, written by the slicer's `--export-settings` option during a
