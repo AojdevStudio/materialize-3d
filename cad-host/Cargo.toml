@@ -1,0 +1,35 @@
+# PR 5 spike: the CAD worker helper. A standalone workspace, never a member of src-tauri's, so the app's CI jobs
+# do not build or test it. The protocol library is portable and its tests run anywhere; the VM driver is macOS-only.
+[package]
+name = "materialize-cad-host"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "MIT"
+
+[workspace]
+
+[lib]
+name = "cad_host"
+path = "src/lib.rs"
+
+[[bin]]
+name = "materialize-cad-host"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6"
+libc = "0.2"
+objc2 = "0.6"
+objc2-foundation = "0.3"
+objc2-virtualization = "0.3"
+
+[profile.release]
+debug = false
+strip = true

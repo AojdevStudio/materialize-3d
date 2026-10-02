@@ -1,0 +1,28 @@
+{
+  "arch": "arm64",
+  "files": {
+    "Image": {
+      "sha256": "98a25f711b7a5eb898509d0dd5508352d9cdd03fdc30dc72a860f38eecd0e783",
+      "bytes": 7399432
+    },
+    "rootfs.img": {
+      "sha256": "6ed9ccded4e78aa69702592909b0a5778582e3b16ba9c7f237ad77a23fd07d30",
+      "bytes": 587833344
+    },
+    "job.img": {
+      "sha256": "71045302f36c872d522346e3211a59ea4753d7708d28f438973cdfb43b3ed697",
+      "bytes": 268435456
+    },
+    "hostile-initramfs.cpio": {
+      "sha256": "a2d0417ddc3b45ead057b711ab73d2939e35e1385b457643a8e74dd97cd92497",
+      "bytes": 776704
+    }
+  },
+  "rootfs_installed_bytes": 1204326271,
+  "inputs": {
+    "python_base": "python:3.13-slim-trixie@sha256:bb2988715db2cf7ace7b53f38f3cffbef7c7046a656bee66245eb0ed386e2e81",
+    "kernel_version": "6.18.54",
+    "kernel_sha256": "9df30b02dd8102bbd0be52556288ef6889ddbe7f1ddb96fbf847d0becf3eacac",
+    "lock_sha256": "59f86f3501763c583759ffbe9ebf93328306e10cd574d141e23feb42721eceb4"
+  }
+}

@@ -1,0 +1,114 @@
+restriction tests, 2026-10-02T09:51:48Z
+host: Apple M4, 24 GiB, macOS 26.7 (25G220)
+helper: sha256 6e185ee3e69a549713d98a1be68b10c838afdce339a586225ed2abae32a13f8a
+  CodeDirectory v=20500 size=1790 flags=0x10002(adhoc,runtime) hashes=44+7 location=embedded
+  Signature=adhoc
+  	[Key] com.apple.security.virtualization
+runtime pins: sha256 105939ae715e9dd746f26de84ddf60560a283747e9074cf275692c7fa049c9de
+
+== 01-host-canary
+  ok    the job ran and reported (outcome job_failed)
+  ok    the job scanned the guest filesystem
+  ok    the guest found no canary
+  ok    the guest sees no virtiofs, 9p, FUSE, NFS, or CIFS mount
+  ok    the guest has only its two disks
+  ok    the token is in nothing the host received
+  ok    no VM is left running
+PASS 01-host-canary
+   (4 s)
+
+== 02-network
+  ok    the job ran and reported (outcome job_failed)
+  ok    the guest has only a loopback interface
+  ok    all nine attempts were blocked
+  ok    nothing connected
+  ok    the host refused the job's vsock connection
+  ok    no VM is left running
+PASS 02-network
+   (2 s)
+
+== 03-write-outside-output
+  ok    the job ran and reported no breach
+  ok    all ten outside writes were blocked
+  ok    remounting the root read-write was blocked
+  ok    setuid(0) and chown were blocked
+  ok    the job ran unprivileged with an empty environment
+  ok    the runtime files still match their pins
+  ok    the job disk was deleted
+  ok    no VM is left running
+PASS 03-write-outside-output
+   (4 s)
+
+== 04-fork-bomb
+  ok    the job failed with a bounded error
+  ok    forks were refused
+  ok    the process count peaked at the cap of 64
+  ok    the guest answered well inside the deadline
+  ok    no VM is left running
+PASS 04-fork-bomb
+   (2 s)
+
+== 05-exhaust-memory
+  ok    the job failed with 'ran out of memory'
+  ok    the guest's OOM killer acted
+  ok    the job's peak stayed under the 2 GiB guest
+  ok    the job held at least 1 GiB before it was stopped
+  ok    no VM is left running
+PASS 05-exhaust-memory
+   (3 s)
+
+== 06-exhaust-disk
+  ok    the job disk filled to ENOSPC
+  ok    the 64 MiB tmpfs filled to ENOSPC
+  ok    the job disk file kept its fixed size
+  ok    the job disk allocated no more than its size
+  ok    the job disk was deleted
+  ok    no VM is left running
+PASS 06-exhaust-disk
+   (2 s)
+
+== 07-ignore-cancel
+  ok    cancel: outcome deadline (cancelled)
+  ok    cancel: the VM was force-stopped
+  ok    cancel: the helper returned within 13 s
+  ok    cancel: no VM is left running
+  ok    deadline: outcome deadline
+  ok    deadline: the VM was force-stopped
+  ok    deadline: the helper returned within 18 s
+  ok    deadline: no VM is left running
+PASS 07-ignore-cancel
+   (29 s)
+
+== 08-malformed-mesh
+  ok    control: a valid mesh from the same guest is accepted
+  ok    control: and it is a closed manifold
+  ok    nan: rejected (mesh rejected: body 0 vertex 1 is not finite or is out of range)
+  ok    inf: rejected (mesh rejected: body 0 vertex 1 is not finite or is out of range)
+  ok    far: rejected (mesh rejected: body 0 vertex 1 is not finite or is out of range)
+  ok    index: rejected (mesh rejected: body 0 triangle 3 indexes past its vertices)
+  ok    huge-count: rejected (mesh rejected: body 0 claims 2147483647 vertices and 4 triangles, over the limits)
+  ok    zero-bodies: rejected (mesh rejected: mesh has 0 bodies; 1 to the limit are allowed)
+  ok    trailing: rejected (mesh rejected: 5 bytes follow the last body)
+  ok    big-frame: rejected (guest protocol violation: guest announced 4294967295 bytes of Mesh; the cap is 67108864)
+  ok    bad-tag: rejected (guest protocol violation: guest sent an unknown frame tag [2e, 2e, 2f, 78])
+  ok    duplicate: rejected (guest protocol violation: guest sent Mesh twice)
+  ok    wrong-role: rejected (guest protocol violation: a Inspect guest may not send Manifest)
+  ok    no VM is left running
+PASS 08-malformed-mesh
+   (22 s)
+
+== 09-inspector-tamper
+  ok    inside: both writes to the inspector were blocked
+  ok    inside: the build was accepted
+  ok    inside: inspection returned the honest 10 mm cube
+  ok    inside: and it is closed
+  ok    inside: the runtime files still match their pins
+  ok    outside: a one-byte change to rootfs.img is refused
+  ok    outside: refused before any VM booted (rootfs.img)
+  ok    outside: a one-byte change to Image is refused
+  ok    outside: refused before any VM booted (Image)
+  ok    no VM is left running
+PASS 09-inspector-tamper
+   (10 s)
+
+summary: 9 passed, 0 failed

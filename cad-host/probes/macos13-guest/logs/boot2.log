@@ -1,0 +1,6 @@
+host: Version 26.7 (Build 25G220), VZVirtualMachine.isSupported=true
+lease before boot: ip_address=192.168.64.4 lease=0x6abf7421
+vm started, state=1
+DHCP lease changed at 4s after start: ip_address=192.168.64.4 lease=0x6abf75c7
+final: state=1 leaseChangedDuringBoot=true
+boot exit 0

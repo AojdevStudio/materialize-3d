@@ -1,0 +1,10 @@
+#!/bin/sh
+# PID 1 of every CAD guest. The root filesystem is a read-only erofs image; the only writable places are the
+# fresh job disk (/dev/vdb, mounted noexec) and small tmpfs mounts. Then the agent takes over as PID 1.
+set -e
+mount -t proc proc /proc -o nosuid,nodev,noexec
+mount -t sysfs sys /sys -o nosuid,nodev,noexec
+mount -t cgroup2 cgroup2 /sys/fs/cgroup -o nosuid,nodev,noexec
+mount -t tmpfs tmp /tmp -o nosuid,nodev,size=64m,mode=1777
+mount -t ext4 /dev/vdb /job -o nosuid,nodev,noexec
+exec /usr/local/bin/python3 -I /opt/m3d/agent.py

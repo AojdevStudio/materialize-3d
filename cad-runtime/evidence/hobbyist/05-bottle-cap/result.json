@@ -1,0 +1,32 @@
+{
+  "command": "build",
+  "error": "line 10: RuntimeError: BuildPart doesn't have a Helix object or operation (Helix applies to ['BuildLine'])",
+  "guest": {
+    "console_bytes": 0,
+    "diagnostics_bytes": 386,
+    "job_disk": {
+      "allocated_bytes": 92405760,
+      "bytes": 268435456,
+      "path": "/var/folders/ss/gw0_l93j6fjdclq372chrjz40000gn/T/m3d-job-66384-0/job.img"
+    },
+    "role": "generate",
+    "stats": {
+      "connect_ms": 130,
+      "exit": 1,
+      "job_ms": 3577,
+      "memory_peak": 763285504,
+      "oom_kills": 0,
+      "pids_peak": 4
+    },
+    "timings": {
+      "boot_ms": 147,
+      "forced_stop": false,
+      "job_ms": 3579,
+      "refused_connections": 0,
+      "start_ms": 65,
+      "stop_ms": 48,
+      "total_ms": 3944
+    }
+  },
+  "outcome": "job_failed"
+}
