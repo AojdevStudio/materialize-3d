@@ -14,12 +14,13 @@ use tokio_util::task::TaskTracker;
 use super::commands::{choose_model, default_model};
 use super::protocol::{AgentErrorKind, AgentEvent, HistoryEntry, Provider, ToolCallStatus};
 use super::store;
-use super::tools::{AgentActions, AgentTool, TurnScope};
+use super::tools::TurnScope;
 use super::turn::{run_turn, ModelChoice, TurnEnd};
 use crate::actions::ActionError;
 use crate::fabrication::build::{self, BuildError, BuildOutcome, BuildRequest, BuildStep, Workspace};
 use crate::fabrication::revisions::{self, Actor, BuildState, LineageId, RevisionId, SignRevision};
 use crate::state::{AppState, PrinterState};
+use crate::tools::{AgentActions, Surface, Tool};
 
 const FIXTURE: &str = include_str!("../../tests/fixtures/signs/synthetic-back-shortly.json");
 
@@ -225,7 +226,7 @@ async fn the_model_is_offered_exactly_the_registry_and_no_approval_tool() {
 
     let mut offered: Vec<String> = model.requests()[0].tools.iter().map(|tool| tool.name.clone()).collect();
     offered.sort();
-    let mut registry: Vec<String> = AgentTool::ALL.iter().map(|tool| tool.name().to_owned()).collect();
+    let mut registry: Vec<String> = Tool::on(Surface::InAppAgent).map(|tool| tool.name().to_owned()).collect();
     registry.sort();
     assert_eq!(offered, registry);
     for name in &offered {

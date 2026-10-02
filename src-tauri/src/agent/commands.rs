@@ -14,12 +14,13 @@ use tokio_util::task::TaskTracker;
 
 use super::protocol::{AgentErrorKind, AgentEvent, AgentStatus, HistoryEntry, Provider};
 use super::store;
-use super::tools::{AgentActions, TurnScope};
+use super::tools::TurnScope;
 use super::turn::{self, ModelChoice, TurnEnd};
 use crate::actions::Actions;
 use crate::credentials;
 use crate::database;
 use crate::state::AppState;
+use crate::tools::AgentActions;
 
 const MODEL_SETTING: &str = "agent.model";
 
