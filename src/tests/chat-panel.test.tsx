@@ -195,6 +195,21 @@ describe('ChatPanel', () => {
     expect(result.textContent).toContain('Warning: print.overhang.navy: 62 degrees unsupported')
   })
 
+  it('labels a build whose package changed as Invalid, not Failed', async () => {
+    render(<ChatPanel />)
+    const turn = await sendMessage('Show r2')
+    const reason = 'package changed on disk (now 9f00) after approval'
+    const invalid: BuildResult = { ...SIGN, build: 'invalid', failure_reason: reason, approval: 'void' }
+    turn.emit({ type: 'toolCall', callId: 'c1', name: 'build', args: {} })
+    turn.emit({ type: 'toolResult', callId: 'c1', ok: true, output: invalid })
+    turn.emit({ type: 'turnFinished' })
+    await act(async () => turn.finish())
+
+    const result = await screen.findByTestId('tool-result')
+    expect(result.textContent).toContain(`Invalid: ${reason}`)
+    expect(result.textContent).not.toContain('Failed')
+  })
+
   it('shows a missing key error that opens Settings', async () => {
     render(<ChatPanel />)
     const turn = await sendMessage('Retry that')

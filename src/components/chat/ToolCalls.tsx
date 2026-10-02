@@ -70,7 +70,10 @@ function BuildResultTable({ result }: { result: BuildResult }) {
         {result.build === 'failed' || result.build === 'invalid' ? (
           <tr>
             <th>Build</th>
-            <td className={styles.bad}>Failed{result.failure_reason ? `: ${result.failure_reason}` : ''}</td>
+            <td className={styles.bad}>
+              {result.build === 'invalid' ? 'Invalid' : 'Failed'}
+              {result.failure_reason ? `: ${result.failure_reason}` : ''}
+            </td>
           </tr>
         ) : (
           <tr>
