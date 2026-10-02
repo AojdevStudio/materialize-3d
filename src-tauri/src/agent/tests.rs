@@ -105,24 +105,24 @@ fn tool_turn(name: &str, args: Value) -> Vec<MockStreamEvent> {
     vec![MockStreamEvent::tool_call("tc-1", name, args), MockStreamEvent::final_response_with_default_usage()]
 }
 
-/// No signs; `build_sign` reports its first step and then blocks until the
-/// turn is cancelled, like a long slice.
+/// No designs; `build` reports its first step and then blocks until the turn
+/// is cancelled, like a long slice.
 #[derive(Default)]
 struct FakeActions {
     build_exited: AtomicBool,
 }
 
 impl RequestActions for FakeActions {
-    fn build_sign(
+    fn build(
         &self,
+        _kind: &str,
         _spec: Value,
         _lineage_id: Option<&str>,
         _requester: RequestActor,
-        progress: &dyn Fn(BuildStep),
-        is_cancelled: &dyn Fn() -> bool,
+        control: &BuildControl<'_>,
     ) -> Result<BuildOutcome, ActionError> {
-        progress(BuildStep::SpecValidated);
-        while !is_cancelled() {
+        control.report(BuildStep::SpecValidated);
+        while !control.is_cancelled() {
             std::thread::sleep(Duration::from_millis(5));
         }
         std::thread::sleep(Duration::from_millis(50));
@@ -130,15 +130,15 @@ impl RequestActions for FakeActions {
         Err(ActionError::Build(BuildError::Cancelled))
     }
 
-    fn list_signs(&self, _limit: u32) -> Result<Vec<Revision>, ActionError> {
+    fn list(&self, _limit: u32) -> Result<Vec<Revision>, ActionError> {
         Ok(Vec::new())
     }
 
-    fn get_sign(&self, id: &str) -> Result<Revision, ActionError> {
-        Err(ActionError::State(format!("no sign {id}")))
+    fn get(&self, id: &str) -> Result<Revision, ActionError> {
+        Err(ActionError::State(format!("no design {id}")))
     }
 
-    fn show_sign(&self, _id: &str) -> Result<(), ActionError> {
+    fn show(&self, _id: &str) -> Result<(), ActionError> {
         Ok(())
     }
 
@@ -161,30 +161,29 @@ impl PipelineActions {
 }
 
 impl RequestActions for PipelineActions {
-    fn build_sign(
+    fn build(
         &self,
+        kind: &str,
         spec: Value,
         lineage_id: Option<&str>,
         requester: RequestActor,
-        progress: &dyn Fn(BuildStep),
-        is_cancelled: &dyn Fn() -> bool,
+        control: &BuildControl<'_>,
     ) -> Result<BuildOutcome, ActionError> {
         let lineage_id = lineage_id.map(LineageId::parse).transpose()?;
-        let actor = requester.into();
-        let request = BuildRequest { kind: "sign".into(), spec, lineage_id, actor };
-        Ok(pipeline::build(&self.state, &self.workspace, request, &BuildControl::new(progress, is_cancelled))?)
+        let request = BuildRequest { kind: kind.into(), spec, lineage_id, actor: requester.into() };
+        Ok(pipeline::build(&self.state, &self.workspace, request, control)?)
     }
 
-    fn list_signs(&self, limit: u32) -> Result<Vec<Revision>, ActionError> {
+    fn list(&self, limit: u32) -> Result<Vec<Revision>, ActionError> {
         Ok(pipeline::with_db(&self.state, |conn| revisions::list_recent(conn, limit))?)
     }
 
-    fn get_sign(&self, id: &str) -> Result<Revision, ActionError> {
+    fn get(&self, id: &str) -> Result<Revision, ActionError> {
         let id = RevisionId::parse(id)?;
         Ok(pipeline::with_db(&self.state, |conn| revisions::check_integrity(conn, &id))?)
     }
 
-    fn show_sign(&self, id: &str) -> Result<(), ActionError> {
+    fn show(&self, id: &str) -> Result<(), ActionError> {
         RevisionId::parse(id)?;
         Ok(())
     }
@@ -259,7 +258,7 @@ async fn a_tool_turn_reports_call_then_result_and_the_next_turn_sees_the_exchang
     opening.run("hello", Ok(ModelChoice::Scripted(scripted(vec![text_turn("Hi.")])))).await;
 
     let turn = Turn::new(&h, "t1", Arc::new(FakeActions::default()), None);
-    let model = scripted(vec![tool_turn("list_signs", json!({ "limit": 5 })), text_turn("No signs yet.")]);
+    let model = scripted(vec![tool_turn("list", json!({ "limit": 5 })), text_turn("No signs yet.")]);
     let events = turn.run("what signs exist?", Ok(ModelChoice::Scripted(model))).await;
 
     assert_framed(&events);
@@ -267,7 +266,7 @@ async fn a_tool_turn_reports_call_then_result_and_the_next_turn_sees_the_exchang
         events.iter().map(kind).collect::<Vec<_>>(),
         ["turnStarted", "toolCall", "toolResult", "textDelta", "turnFinished"]
     );
-    let call_id = tool_call_id(&events, "list_signs");
+    let call_id = tool_call_id(&events, "list");
     assert!(matches!(&events[2], AgentEvent::ToolResult { call_id: id, ok: true, output } if *id == call_id && *output == json!([])));
     assert_eq!(call_status(&h, &call_id), "completed");
     assert!(matches!(
@@ -280,7 +279,7 @@ async fn a_tool_turn_reports_call_then_result_and_the_next_turn_sees_the_exchang
     let events = turn.run("and now?", Ok(ModelChoice::Scripted(next.clone()))).await;
     assert_framed(&events);
     let seen = serde_json::to_string(&next.requests()[0].chat_history).expect("json");
-    for said in ["hello", "Hi.", "what signs exist?", "list_signs", "No signs yet.", "and now?"] {
+    for said in ["hello", "Hi.", "what signs exist?", "\"list\"", "No signs yet.", "and now?"] {
         assert!(seen.contains(said), "next turn's model input lacks {said:?}: {seen}");
     }
 }
@@ -289,12 +288,12 @@ async fn a_tool_turn_reports_call_then_result_and_the_next_turn_sees_the_exchang
 async fn a_bad_tool_argument_goes_back_as_a_failed_result_without_ending_the_turn() {
     let h = harness();
     let turn = Turn::new(&h, "t1", Arc::new(FakeActions::default()), None);
-    let model = scripted(vec![tool_turn("get_sign", json!({ "id": "x" })), text_turn("Sorry.")]);
+    let model = scripted(vec![tool_turn("get", json!({ "id": "x" })), text_turn("Sorry.")]);
     let events = turn.run("show sign x", Ok(ModelChoice::Scripted(model))).await;
 
     assert_framed(&events);
     assert!(matches!(events.last(), Some(AgentEvent::TurnFinished)));
-    let call_id = tool_call_id(&events, "get_sign");
+    let call_id = tool_call_id(&events, "get");
     assert!(events.iter().any(|e| matches!(e, AgentEvent::ToolResult { call_id: id, ok: false, output }
         if *id == call_id && output["error"].as_str().is_some_and(|m| m.contains("invalid arguments")))));
     assert_eq!(call_status(&h, &call_id), "failed");
@@ -326,12 +325,12 @@ async fn a_missing_api_key_fails_before_anything_is_sent_or_stored() {
 }
 
 #[tokio::test]
-async fn cancel_mid_build_sign_waits_for_the_build_and_marks_the_call_cancelled() {
+async fn cancel_mid_build_waits_for_the_build_and_marks_the_call_cancelled() {
     let h = harness();
     let actions = Arc::new(FakeActions::default());
     let turn = Turn::new(&h, "t1", actions.clone(), Some(BuildStep::SpecValidated));
     let spec: Value = serde_json::from_str(FIXTURE).expect("fixture");
-    let model = scripted(vec![tool_turn("build_sign", json!({ "spec": spec })), text_turn("Built it.")]);
+    let model = scripted(vec![tool_turn("build", json!({ "kind": "sign", "spec": spec })), text_turn("Built it.")]);
     let events = turn.run("make the sign", Ok(ModelChoice::Scripted(model))).await;
 
     assert_framed(&events);
@@ -340,7 +339,7 @@ async fn cancel_mid_build_sign_waits_for_the_build_and_marks_the_call_cancelled(
         events.iter().map(kind).collect::<Vec<_>>(),
         ["turnStarted", "toolCall", "toolProgress", "toolResult", "turnCancelled"]
     );
-    let call_id = tool_call_id(&events, "build_sign");
+    let call_id = tool_call_id(&events, "build");
     assert!(matches!(&events[3], AgentEvent::ToolResult { call_id: id, ok: false, .. } if *id == call_id));
     assert_eq!(call_status(&h, &call_id), "cancelled");
 
@@ -357,14 +356,14 @@ async fn cancelled_real_build_fails_its_revision_and_re_asking_builds_once_then_
     let h = harness();
     let actions: Arc<dyn RequestActions> = Arc::new(PipelineActions::new(&h));
     let spec: Value = serde_json::from_str(FIXTURE).expect("fixture");
-    let build_turn = || scripted(vec![tool_turn("build_sign", json!({ "spec": spec })), text_turn("Done.")]);
+    let build_turn = || scripted(vec![tool_turn("build", json!({ "kind": "sign", "spec": spec })), text_turn("Done.")]);
 
     let cancelled = Turn::new(&h, "t1", actions.clone(), Some(BuildStep::GeometryBuilt));
     let events = cancelled.run("make the sign", Ok(ModelChoice::Scripted(build_turn()))).await;
     assert_framed(&events);
     assert!(matches!(events.last(), Some(AgentEvent::TurnCancelled)));
-    assert_eq!(call_status(&h, &tool_call_id(&events, "build_sign")), "cancelled");
-    let listed = actions.list_signs(10).expect("list");
+    assert_eq!(call_status(&h, &tool_call_id(&events, "build")), "cancelled");
+    let listed = actions.list(10).expect("list");
     assert!(matches!(&listed[..], [r] if matches!(&r.build, BuildState::Failed { reason, .. } if reason == "build cancelled")));
 
     let mut revisions = Vec::new();
@@ -385,7 +384,7 @@ async fn cancelled_real_build_fails_its_revision_and_re_asking_builds_once_then_
     }
     assert_eq!(revisions[0].0, revisions[1].0, "re-asking reuses the verified revision");
     assert_eq!((revisions[0].1.clone(), revisions[1].1.clone()), (json!(false), json!(true)));
-    assert_eq!(actions.list_signs(10).expect("list").len(), 2, "one cancelled and one verified revision, no duplicate");
+    assert_eq!(actions.list(10).expect("list").len(), 2, "one cancelled and one verified revision, no duplicate");
 }
 
 /// Prints the event sequence with text deltas merged and truncated.
@@ -432,7 +431,7 @@ async fn live_openai_turn_builds_a_verified_sign() {
 
     assert_framed(&events);
     assert!(matches!(events.last(), Some(AgentEvent::TurnFinished)), "{:?}", events.last());
-    tool_call_id(&events, "build_sign");
+    tool_call_id(&events, "build");
     let steps: Vec<BuildStep> = events
         .iter()
         .filter_map(|e| match e {
@@ -443,6 +442,6 @@ async fn live_openai_turn_builds_a_verified_sign() {
     assert!(steps.contains(&BuildStep::Sliced), "build progress reported: {steps:?}");
     assert!(
         events.iter().any(|e| matches!(e, AgentEvent::ToolResult { ok: true, output, .. } if output["build"] == "verified")),
-        "a build_sign result carries a verified revision"
+        "a build result carries a verified revision"
     );
 }

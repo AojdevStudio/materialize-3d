@@ -15,9 +15,10 @@ use serde_json::{json, Value};
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
-use crate::actions::{ActionError, RequestActions, RequestActor, SignSummary};
+use crate::actions::{ActionError, RequestActions, RequestActor};
+use crate::fabrication::kind::{self, inlined_schema, BuildControl};
 use crate::fabrication::pipeline::BuildStep;
-use crate::fabrication::kinds::sign::SignSpec;
+use crate::fabrication::revisions::{Actor, Approval, Artifacts, BuildState, PrintValidation, RecordedCheck, Revision};
 
 /// Where a model meets the tools. The surface fixes the caller's
 /// [`RequestActor`], so no argument can claim to be someone else.
@@ -42,10 +43,10 @@ impl Surface {
 /// print-result tool.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tool {
-    BuildSign,
-    ListSigns,
-    GetSign,
-    ShowSign,
+    Build,
+    Get,
+    List,
+    Show,
     PrinterStatus,
 }
 
@@ -87,29 +88,30 @@ pub enum ToolError {
     Output(serde_json::Error),
 }
 
-/// `build_sign` arguments. `spec` goes to [`RequestActions::build_sign`] unparsed so
-/// the pipeline's own validation produces the error the model reads.
+/// `build` arguments. `spec` goes to [`RequestActions::build`] unparsed so
+/// the kind's own validation produces the error the model reads.
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-struct BuildSignArgs {
-    /// The complete sign to build.
-    #[schemars(with = "SignSpec")]
+struct BuildArgs {
+    /// What to build; each kind takes its own spec.
+    kind: String,
+    /// The complete spec for that kind.
     spec: Value,
-    /// Build a new revision of this existing sign (its `lineage_id`); omit for a new sign.
+    /// Build a new revision of this existing design (its `lineage_id`); omit for a new design.
     #[serde(default)]
     lineage_id: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-struct ListSignsArgs {
+struct ListArgs {
     /// Most recent first; default 20, at most 100.
     #[serde(default)]
     #[schemars(range(min = 1, max = 100))]
     limit: Option<ListLimit>,
 }
 
-/// How many revisions `list_signs` returns. Out of range is refused, never
+/// How many revisions `list` returns. Out of range is refused, never
 /// clamped, so the caller learns its request was not honored.
 #[derive(Deserialize, JsonSchema)]
 #[serde(try_from = "u32")]
@@ -134,7 +136,7 @@ impl TryFrom<u32> for ListLimit {
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct RevisionArgs {
-    /// A sign revision id (`revision_id` from build_sign or list_signs).
+    /// A design revision id (`revision_id` from build or list).
     revision_id: String,
 }
 
@@ -142,25 +144,117 @@ struct RevisionArgs {
 #[serde(deny_unknown_fields)]
 struct NoArgs {}
 
-#[derive(Serialize)]
-struct BuildResult {
-    #[serde(flatten)]
-    revision: SignSummary,
-    /// True when an identical build already existed and was reused.
-    reused: bool,
+/// A revision's build, as one word.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BuildStatus {
+    Building,
+    Verified,
+    Failed,
+    /// Verified once, but its package changed on disk.
+    Invalid,
 }
 
-/// JSON Schema for `T` with every subschema inlined; providers differ in `$ref` support.
-fn inlined_schema<T: JsonSchema>() -> Value {
-    let generator = schemars::generate::SchemaSettings::draft2020_12()
-        .with(|settings| settings.inline_subschemas = true)
-        .into_generator();
-    let mut schema = generator.into_root_schema_for::<T>().to_value();
-    if let Some(object) = schema.as_object_mut() {
-        object.remove("$schema");
-        object.remove("title");
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalStatus {
+    Pending,
+    Approved,
+    Void,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PrintStatus {
+    NotTested,
+    Passed,
+    Failed,
+}
+
+/// A compact view of a revision for models and the chat: enough to reason
+/// about and to cite, without effective settings or file paths.
+#[derive(Debug, Clone, Serialize)]
+pub struct DesignSummary {
+    pub revision_id: String,
+    pub lineage_id: String,
+    pub kind: String,
+    pub number: u32,
+    pub title: String,
+    pub build: BuildStatus,
+    pub failure_reason: Option<String>,
+    /// Blocking checks only; a failed advisory check is a warning.
+    pub checks_passed: usize,
+    pub checks_total: usize,
+    pub failed_checks: Vec<String>,
+    /// Failed advisory checks, which a person acknowledges when approving.
+    pub warnings: Vec<String>,
+    pub package_sha256: Option<String>,
+    pub approval: ApprovalStatus,
+    pub print_validation: PrintStatus,
+    pub requested_by: Actor,
+    pub created_at: String,
+}
+
+impl From<&Revision> for DesignSummary {
+    fn from(revision: &Revision) -> Self {
+        let artifacts = revision.artifacts();
+        let checks = artifacts.map(Artifacts::checks).unwrap_or_default();
+        let blocking = || checks.iter().filter(|c| !c.advisory);
+        let described = |c: &RecordedCheck| format!("{}: {}", c.id, c.detail);
+        Self {
+            revision_id: revision.id.to_string(),
+            lineage_id: revision.lineage_id.to_string(),
+            kind: revision.kind.clone(),
+            number: revision.number,
+            title: revision.title.clone(),
+            build: match revision.build {
+                BuildState::Building => BuildStatus::Building,
+                BuildState::Verified { .. } => BuildStatus::Verified,
+                BuildState::Failed { .. } => BuildStatus::Failed,
+                BuildState::Invalid { .. } => BuildStatus::Invalid,
+            },
+            failure_reason: match &revision.build {
+                BuildState::Failed { reason, .. } | BuildState::Invalid { reason, .. } => Some(reason.clone()),
+                BuildState::Building | BuildState::Verified { .. } => None,
+            },
+            checks_passed: blocking().filter(|c| c.passed).count(),
+            checks_total: blocking().count(),
+            failed_checks: blocking().filter(|c| !c.passed).map(described).collect(),
+            warnings: checks.iter().filter(|c| c.advisory && !c.passed).map(described).collect(),
+            package_sha256: artifacts.map(|a| a.files().package_sha256.to_string()),
+            approval: match revision.approval {
+                Approval::Pending => ApprovalStatus::Pending,
+                Approval::Approved { .. } => ApprovalStatus::Approved,
+                Approval::Void { .. } => ApprovalStatus::Void,
+            },
+            print_validation: match revision.print_validation {
+                PrintValidation::NotTested => PrintStatus::NotTested,
+                PrintValidation::Passed { .. } => PrintStatus::Passed,
+                PrintValidation::Failed { .. } => PrintStatus::Failed,
+            },
+            requested_by: revision.requested_by,
+            created_at: revision.created_at.clone(),
+        }
     }
-    schema
+}
+
+/// What `build` returns.
+#[derive(Debug, Clone, Serialize)]
+pub struct BuildResult {
+    #[serde(flatten)]
+    pub revision: DesignSummary,
+    /// True when nothing was built: the revision already existed, or it uses
+    /// an identical build that was already verified.
+    pub reused: bool,
+}
+
+/// What `show` returns.
+#[derive(Debug, Clone, Serialize)]
+pub struct Shown {
+    pub shown: bool,
+    pub revision_id: String,
+    pub kind: String,
+    pub number: u32,
 }
 
 fn parse<T: DeserializeOwned>(args: Value) -> Result<T, ToolError> {
@@ -171,8 +265,27 @@ fn encode(value: impl Serialize) -> Result<Value, ToolError> {
     serde_json::to_value(value).map_err(ToolError::Output)
 }
 
+/// [`BuildArgs`]' schema with `kind` limited to the registered kinds and
+/// `spec` to their specs, so a model sees each kind's exact shape.
+fn build_parameters() -> Value {
+    let mut schema = inlined_schema::<BuildArgs>();
+    let kinds: Vec<&str> = kind::KINDS.iter().map(|kind| kind.id().as_str()).collect();
+    let summaries: Vec<String> = kind::KINDS.iter().map(|kind| format!("{}: {}", kind.id(), kind.summary())).collect();
+    let specs: Vec<Value> = kind::KINDS.iter().map(|kind| kind.spec_schema()).collect();
+    schema["properties"]["kind"] = json!({
+        "type": "string",
+        "enum": kinds,
+        "description": format!("What to build; each kind takes its own spec. {}.", summaries.join("; ")),
+    });
+    schema["properties"]["spec"] = json!({
+        "description": "The complete spec for that kind.",
+        "anyOf": specs,
+    });
+    schema
+}
+
 impl Tool {
-    pub const ALL: [Tool; 5] = [Tool::BuildSign, Tool::ListSigns, Tool::GetSign, Tool::ShowSign, Tool::PrinterStatus];
+    pub const ALL: [Tool; 5] = [Tool::Build, Tool::Get, Tool::List, Tool::Show, Tool::PrinterStatus];
 
     /// The tools offered on `surface`, in [`Tool::ALL`] order.
     pub fn on(surface: Surface) -> impl Iterator<Item = Tool> {
@@ -181,49 +294,50 @@ impl Tool {
 
     fn offered_on(self, surface: Surface) -> bool {
         match (self, surface) {
-            (Tool::BuildSign | Tool::ListSigns | Tool::GetSign | Tool::ShowSign | Tool::PrinterStatus, _) => true,
+            (Tool::Build | Tool::Get | Tool::List | Tool::Show | Tool::PrinterStatus, _) => true,
         }
     }
 
     pub fn name(self) -> &'static str {
         match self {
-            Tool::BuildSign => "build_sign",
-            Tool::ListSigns => "list_signs",
-            Tool::GetSign => "get_sign",
-            Tool::ShowSign => "show_sign",
+            Tool::Build => "build",
+            Tool::Get => "get",
+            Tool::List => "list",
+            Tool::Show => "show",
             Tool::PrinterStatus => "printer_status",
         }
     }
 
     pub fn description(self) -> &'static str {
         match self {
-            Tool::BuildSign => {
-                "Build a sign from a spec: validates it, builds the face-down multicolor geometry, writes a Bambu 3MF, \
-                 slices it with Bambu Studio for the P2S, and runs verification checks. Returns the revision summary \
-                 (revision_id, number, build: verified or failed, checks, approval). An identical spec reuses the \
-                 existing revision (reused: true) instead of building again. A rejected spec returns an error that \
+            Tool::Build => {
+                "Build a design from a spec of one kind: validates the spec, builds the geometry, writes a Bambu 3MF, \
+                 slices it with Bambu Studio for the P2S, and runs every verification check. Returns the revision \
+                 summary (revision_id, kind, number, build: verified or failed, checks, warnings, approval). Repeating \
+                 a design's latest revision returns it, and a spec that builds the same as an earlier verified build \
+                 reuses that build (reused: true) instead of building again. A rejected spec returns an error that \
                  names the field to fix. The revision then waits for a person to approve it in the Materialize 3D \
-                 Signs view; this tool cannot approve it."
+                 app; this tool cannot approve it."
             }
-            Tool::ListSigns => "List recent sign revisions, newest first, with build, approval, and print-test status.",
-            Tool::GetSign => "Get one sign revision, including any failed verification checks.",
-            Tool::ShowSign => {
-                "Open a sign revision in the Materialize 3D Signs view so the person can review and approve it."
+            Tool::Get => "Get one design revision, including any failed verification checks and warnings.",
+            Tool::List => {
+                "List recent design revisions of every kind, newest first, with kind, build, approval, and print-test status."
             }
+            Tool::Show => "Open a design revision in the Materialize 3D app so the person can review and approve it.",
             Tool::PrinterStatus => "Read the printer: connection, temperatures, G-code state, and job progress.",
         }
     }
 
     /// The inlined JSON Schema of this tool's arguments, built once.
     pub fn parameters(self) -> &'static Value {
-        static BUILD_SIGN: OnceLock<Value> = OnceLock::new();
-        static LIST_SIGNS: OnceLock<Value> = OnceLock::new();
+        static BUILD: OnceLock<Value> = OnceLock::new();
+        static LIST: OnceLock<Value> = OnceLock::new();
         static REVISION: OnceLock<Value> = OnceLock::new();
         static NO_ARGS: OnceLock<Value> = OnceLock::new();
         match self {
-            Tool::BuildSign => BUILD_SIGN.get_or_init(inlined_schema::<BuildSignArgs>),
-            Tool::ListSigns => LIST_SIGNS.get_or_init(inlined_schema::<ListSignsArgs>),
-            Tool::GetSign | Tool::ShowSign => REVISION.get_or_init(inlined_schema::<RevisionArgs>),
+            Tool::Build => BUILD.get_or_init(build_parameters),
+            Tool::List => LIST.get_or_init(inlined_schema::<ListArgs>),
+            Tool::Get | Tool::Show => REVISION.get_or_init(inlined_schema::<RevisionArgs>),
             Tool::PrinterStatus => NO_ARGS.get_or_init(inlined_schema::<NoArgs>),
         }
     }
@@ -232,39 +346,41 @@ impl Tool {
     /// returns the compact summary the model reads.
     pub async fn invoke(self, call: &ToolCall, args: Value) -> Result<Value, ToolError> {
         match self {
-            Tool::BuildSign => {
-                let BuildSignArgs { spec, lineage_id } = parse(args)?;
+            Tool::Build => {
+                let BuildArgs { kind, spec, lineage_id } = parse(args)?;
                 let actor = call.surface.actor();
                 let progress = call.progress.clone();
                 let cancel = call.cancel.clone();
                 let outcome = call
                     .run(move |actions| {
-                        actions.build_sign(spec, lineage_id.as_deref(), actor, &*progress, &|| cancel.is_cancelled())
+                        let cancelled = || cancel.is_cancelled();
+                        let control = BuildControl::new(&*progress, &cancelled);
+                        actions.build(&kind, spec, lineage_id.as_deref(), actor, &control)
                     })
                     .await?;
-                encode(BuildResult { revision: SignSummary::from(&outcome.revision), reused: outcome.reused })
+                encode(BuildResult { revision: DesignSummary::from(&outcome.revision), reused: outcome.reused })
             }
-            Tool::ListSigns => {
-                let ListSignsArgs { limit } = parse(args)?;
+            Tool::List => {
+                let ListArgs { limit } = parse(args)?;
                 let ListLimit(limit) = limit.unwrap_or(ListLimit::DEFAULT);
-                let signs = call.run(move |actions| actions.list_signs(limit)).await?;
-                encode(signs.iter().map(SignSummary::from).collect::<Vec<_>>())
+                let revisions = call.run(move |actions| actions.list(limit)).await?;
+                encode(revisions.iter().map(DesignSummary::from).collect::<Vec<_>>())
             }
-            Tool::GetSign => {
+            Tool::Get => {
                 let RevisionArgs { revision_id } = parse(args)?;
-                let revision = call.run(move |actions| actions.get_sign(&revision_id)).await?;
-                encode(SignSummary::from(&revision))
+                let revision = call.run(move |actions| actions.get(&revision_id)).await?;
+                encode(DesignSummary::from(&revision))
             }
-            Tool::ShowSign => {
+            Tool::Show => {
                 let RevisionArgs { revision_id } = parse(args)?;
                 let revision = call
                     .run(move |actions| {
-                        let revision = actions.get_sign(&revision_id)?;
-                        actions.show_sign(&revision_id)?;
+                        let revision = actions.get(&revision_id)?;
+                        actions.show(&revision_id)?;
                         Ok(revision)
                     })
                     .await?;
-                Ok(json!({ "shown": true, "revision_id": revision.id.to_string(), "number": revision.number }))
+                encode(Shown { shown: true, revision_id: revision.id.to_string(), kind: revision.kind, number: revision.number })
             }
             Tool::PrinterStatus => {
                 let NoArgs {} = parse(args)?;
@@ -294,124 +410,4 @@ impl Tool {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::fabrication::pipeline::BuildOutcome;
-    use crate::fabrication::revisions::Revision;
-    use crate::state::PrinterState;
-
-    const FIXTURE: &str = include_str!("../tests/fixtures/signs/synthetic-back-shortly.json");
-
-    fn build_sign_validator() -> jsonschema::Validator {
-        jsonschema::validator_for(Tool::BuildSign.parameters()).expect("build_sign parameters are a valid schema")
-    }
-
-    #[test]
-    fn no_tool_can_approve_export_or_record_a_print() {
-        for tool in Tool::ALL {
-            for forbidden in ["approve", "export", "print_result", "record_print"] {
-                assert!(!tool.name().contains(forbidden), "{} must stay human-only", tool.name());
-            }
-        }
-        assert!(Tool::ALL.iter().any(|tool| tool.name() == "printer_status"), "reading the printer stays legal");
-    }
-
-    /// Lists nothing and remembers each limit it was asked for; nothing else is reachable.
-    #[derive(Default)]
-    struct ListingActions {
-        limits: std::sync::Mutex<Vec<u32>>,
-    }
-
-    impl RequestActions for ListingActions {
-        fn build_sign(
-            &self,
-            _spec: Value,
-            _lineage_id: Option<&str>,
-            _requester: RequestActor,
-            _progress: &dyn Fn(BuildStep),
-            _is_cancelled: &dyn Fn() -> bool,
-        ) -> Result<BuildOutcome, ActionError> {
-            Err(ActionError::State("not in this test".into()))
-        }
-
-        fn list_signs(&self, limit: u32) -> Result<Vec<Revision>, ActionError> {
-            self.limits.lock().expect("limits").push(limit);
-            Ok(Vec::new())
-        }
-
-        fn get_sign(&self, _id: &str) -> Result<Revision, ActionError> {
-            Err(ActionError::State("not in this test".into()))
-        }
-
-        fn show_sign(&self, _id: &str) -> Result<(), ActionError> {
-            Err(ActionError::State("not in this test".into()))
-        }
-
-        fn printer_status(&self) -> Result<PrinterState, ActionError> {
-            Err(ActionError::State("not in this test".into()))
-        }
-    }
-
-    #[tokio::test]
-    async fn list_signs_refuses_a_limit_outside_1_to_100_on_both_surfaces() {
-        let schema = jsonschema::validator_for(Tool::ListSigns.parameters()).expect("list_signs schema");
-        for surface in [Surface::InAppAgent, Surface::ExternalMcp] {
-            let actions = Arc::new(ListingActions::default());
-            let call = ToolCall {
-                surface,
-                actions: actions.clone(),
-                progress: Arc::new(|_| {}),
-                cancel: CancellationToken::new(),
-                blocking: TaskTracker::new(),
-            };
-            for limit in [0, 101] {
-                let args = json!({ "limit": limit });
-                assert!(!schema.is_valid(&args), "{surface:?}: schema advertises limit {limit}");
-                let refused = Tool::ListSigns.invoke(&call, args).await;
-                assert!(
-                    matches!(&refused, Err(ToolError::InvalidArguments(e)) if e.to_string().contains("1 to 100")),
-                    "{surface:?}: limit {limit} gave {refused:?}"
-                );
-            }
-            for limit in [1, 100] {
-                let args = json!({ "limit": limit });
-                assert!(schema.is_valid(&args), "{surface:?}: schema refuses limit {limit}");
-                Tool::ListSigns.invoke(&call, args).await.expect("in-range limit");
-            }
-            Tool::ListSigns.invoke(&call, json!({})).await.expect("default limit");
-            assert_eq!(*actions.limits.lock().expect("limits"), [1, 100, 20], "{surface:?}: limits passed through unchanged");
-        }
-    }
-
-    #[test]
-    fn build_sign_schema_accepts_the_fixture_spec() {
-        let fixture: Value = serde_json::from_str(FIXTURE).expect("fixture json");
-        let validator = build_sign_validator();
-        let args = json!({ "spec": fixture });
-        let errors: Vec<String> = validator.iter_errors(&args).map(|e| e.to_string()).collect();
-        assert!(errors.is_empty(), "fixture rejected: {errors:?}");
-    }
-
-    #[test]
-    fn build_sign_schema_rejects_malformed_specs() {
-        let fixture: Value = serde_json::from_str(FIXTURE).expect("fixture json");
-        let validator = build_sign_validator();
-        let mutate = |f: &dyn Fn(&mut Value)| {
-            let mut spec = fixture.clone();
-            f(&mut spec);
-            json!({ "spec": spec })
-        };
-        let bad = [
-            ("missing inks", mutate(&|s| drop(s.as_object_mut().expect("object").remove("inks")))),
-            ("unknown field", mutate(&|s| s["colour"] = json!("navy"))),
-            ("unknown element type", mutate(&|s| s["elements"][1]["type"] = json!("circle"))),
-            ("width as text", mutate(&|s| s["width_mm"] = json!("150"))),
-            ("bad font weight", mutate(&|s| s["elements"][1]["font"] = json!("black"))),
-            ("text without baseline", mutate(&|s| drop(s["elements"][1].as_object_mut().expect("text").remove("y_mm")))),
-            ("no spec", json!({ "lineage_id": "x" })),
-        ];
-        for (why, args) in bad {
-            assert!(!validator.is_valid(&args), "schema accepted a spec with {why}");
-        }
-    }
-}
+mod tests;

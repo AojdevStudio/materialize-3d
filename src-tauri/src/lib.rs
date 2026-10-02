@@ -97,15 +97,15 @@ pub fn run() {
             mcp::mcp_set_enabled,
             mcp::mcp_token,
             mcp::mcp_rotate_token,
-            actions::gui::sign_build,
-            actions::gui::sign_cancel,
-            actions::gui::sign_list,
-            actions::gui::sign_lineage,
-            actions::gui::sign_get,
-            actions::gui::sign_preview,
-            actions::gui::sign_approve,
-            actions::gui::sign_export,
-            actions::gui::sign_record_print,
+            actions::gui::design_build,
+            actions::gui::design_cancel,
+            actions::gui::design_list,
+            actions::gui::design_lineage,
+            actions::gui::design_get,
+            actions::gui::design_preview,
+            actions::gui::design_approve,
+            actions::gui::design_export,
+            actions::gui::design_record_print,
             agent::commands::agent_status,
             agent::commands::agent_set_api_key,
             agent::commands::agent_clear_api_key,
@@ -175,9 +175,9 @@ pub fn run() {
                 .unwrap_or(app_cache_dir);
             let workspace = fabrication::pipeline::Workspace::new(&app_data_dir, &app_cache_dir);
             let cleanup = fabrication::pipeline::reconcile_startup(&app_state, &workspace)
-                .map_err(|e| format!("sign build reconcile failed: {e}"))?;
+                .map_err(|e| format!("build reconcile failed: {e}"))?;
             log::info!(
-                "setup: signs reconciled ({} interrupted builds, {} unfinished build dirs removed)",
+                "setup: builds reconciled ({} interrupted builds, {} unfinished build dirs removed)",
                 cleanup.interrupted,
                 cleanup.removed_dirs
             );

@@ -64,8 +64,8 @@ impl ServerHandler for MaterializeMcp {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("materialize-3d", env!("CARGO_PKG_VERSION")))
             .with_instructions(
-                "Materialize 3D designs and verifies multicolor signs for a Bambu P2S. \
-                 Builds you request wait for a person's approval in the app."
+                "Materialize 3D designs and verifies printable objects for a Bambu P2S; build takes a kind \
+                 and that kind's spec. Builds you request wait for a person's approval in the app."
                     .to_string(),
             )
     }
@@ -361,7 +361,7 @@ mod tests {
     fn exposes_the_shared_actions_and_no_approval_path() {
         let mut names = tool_names();
         names.sort();
-        assert_eq!(names, ["build_sign", "get_sign", "list_signs", "printer_status", "show_sign"]);
+        assert_eq!(names, ["build", "get", "list", "printer_status", "show"]);
         for forbidden in ["approve", "export", "print_result", "record_print"] {
             assert!(names.iter().all(|name| !name.contains(forbidden)), "{forbidden} must stay human-only");
         }
@@ -566,15 +566,15 @@ mod tests {
         let mut names: Vec<String> = listed["result"]["tools"].as_array().expect("tools").iter()
             .map(|t| t["name"].as_str().expect("name").to_owned()).collect();
         names.sort();
-        assert_eq!(names, ["build_sign", "get_sign", "list_signs", "printer_status", "show_sign"]);
+        assert_eq!(names, ["build", "get", "list", "printer_status", "show"]);
 
         let called = sse_json(&rpc(session.clone(), serde_json::json!({"jsonrpc":"2.0","id":3,"method":"tools/call",
-            "params":{"name":"list_signs","arguments":{}}})).await.expect("call").text().await.expect("body"));
+            "params":{"name":"list","arguments":{}}})).await.expect("call").text().await.expect("body"));
         assert_eq!(called["result"]["isError"], false);
         assert_eq!(called["result"]["content"][0]["text"], "[]");
 
         let smuggled = sse_json(&rpc(session, serde_json::json!({"jsonrpc":"2.0","id":4,"method":"tools/call",
-            "params":{"name":"build_sign","arguments":{"spec":{},"actor":"human","requested_by":"human"}}}))
+            "params":{"name":"build","arguments":{"kind":"sign","spec":{},"actor":"human","requested_by":"human"}}}))
             .await.expect("call").text().await.expect("body"));
         assert_eq!(smuggled["result"]["isError"], true, "an actor argument is rejected, not ignored: {smuggled}");
         let reason = smuggled["result"]["content"][0]["text"].as_str().unwrap_or_default();
@@ -612,7 +612,7 @@ mod tests {
         let (actions, state) = test_actions(dir.path());
         let server = McpServer::default();
         let url = server.set_enabled(actions.clone(), 0, true, || fixed("tok-same")).await.expect("start").url.expect("url");
-        let (listed, _) = list_then_call(&url, "tok-same", "list_signs").await;
+        let (listed, _) = list_then_call(&url, "tok-same", "list").await;
         server.set_enabled(actions.clone(), 0, false, || fixed("unused")).await.expect("stop");
 
         let scope = Arc::new(crate::agent::tools::TurnScope {
@@ -643,7 +643,8 @@ mod tests {
         let (actions, _state) = test_actions(dir.path());
         let server = McpServer::default();
         let url = server.set_enabled(actions.clone(), 0, true, || fixed("tok-unlisted")).await.expect("start").url.expect("url");
-        for name in ["approve_sign", "export_sign", "record_print_result"] {
+        // Human-only actions, and the sign-only names the generic tools replaced: there are no aliases.
+        for name in ["approve_sign", "export_sign", "record_print_result", "build_sign", "get_sign", "list_signs", "show_sign"] {
             let (_, called) = list_then_call(&url, "tok-unlisted", name).await;
             assert!(called["result"].is_null(), "{name} ran: {called}");
             assert_eq!(called["error"]["message"], "tool not found", "{name}: {called}");
