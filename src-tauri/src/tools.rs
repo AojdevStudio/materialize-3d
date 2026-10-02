@@ -154,7 +154,30 @@ struct BuildSignArgs {
 struct ListSignsArgs {
     /// Most recent first; default 20, at most 100.
     #[serde(default)]
-    limit: Option<u32>,
+    #[schemars(range(min = 1, max = 100))]
+    limit: Option<ListLimit>,
+}
+
+/// How many revisions `list_signs` returns. Out of range is refused, never
+/// clamped, so the caller learns its request was not honored.
+#[derive(Deserialize, JsonSchema)]
+#[serde(try_from = "u32")]
+struct ListLimit(u32);
+
+impl ListLimit {
+    const DEFAULT: ListLimit = ListLimit(20);
+}
+
+impl TryFrom<u32> for ListLimit {
+    type Error = String;
+
+    fn try_from(limit: u32) -> Result<Self, Self::Error> {
+        if (1..=100).contains(&limit) {
+            Ok(ListLimit(limit))
+        } else {
+            Err(format!("limit must be from 1 to 100, got {limit}"))
+        }
+    }
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -272,7 +295,7 @@ impl Tool {
             }
             Tool::ListSigns => {
                 let ListSignsArgs { limit } = parse(args)?;
-                let limit = limit.unwrap_or(20).clamp(1, 100);
+                let ListLimit(limit) = limit.unwrap_or(ListLimit::DEFAULT);
                 let signs = call.run(move |actions| actions.list_signs(limit)).await?;
                 encode(signs.iter().map(SignSummary::from).collect::<Vec<_>>())
             }
@@ -337,6 +360,73 @@ mod tests {
             }
         }
         assert!(Tool::ALL.iter().any(|tool| tool.name() == "printer_status"), "reading the printer stays legal");
+    }
+
+    /// Lists nothing and remembers each limit it was asked for; nothing else is reachable.
+    #[derive(Default)]
+    struct ListingActions {
+        limits: std::sync::Mutex<Vec<u32>>,
+    }
+
+    impl AgentActions for ListingActions {
+        fn build_sign(
+            &self,
+            _spec: Value,
+            _lineage_id: Option<&str>,
+            _actor: Actor,
+            _progress: &dyn Fn(BuildStep),
+            _is_cancelled: &dyn Fn() -> bool,
+        ) -> Result<BuildOutcome, ActionError> {
+            Err(ActionError::State("not in this test".into()))
+        }
+
+        fn list_signs(&self, limit: u32) -> Result<Vec<SignRevision>, ActionError> {
+            self.limits.lock().expect("limits").push(limit);
+            Ok(Vec::new())
+        }
+
+        fn get_sign(&self, _id: &str) -> Result<SignRevision, ActionError> {
+            Err(ActionError::State("not in this test".into()))
+        }
+
+        fn show_sign(&self, _id: &str) -> Result<(), ActionError> {
+            Err(ActionError::State("not in this test".into()))
+        }
+
+        fn printer_status(&self) -> Result<PrinterState, ActionError> {
+            Err(ActionError::State("not in this test".into()))
+        }
+    }
+
+    #[tokio::test]
+    async fn list_signs_refuses_a_limit_outside_1_to_100_on_both_surfaces() {
+        let schema = jsonschema::validator_for(Tool::ListSigns.parameters()).expect("list_signs schema");
+        for surface in [Surface::InAppAgent, Surface::ExternalMcp] {
+            let actions = Arc::new(ListingActions::default());
+            let call = ToolCall {
+                surface,
+                actions: actions.clone(),
+                progress: Arc::new(|_| {}),
+                cancel: CancellationToken::new(),
+                blocking: TaskTracker::new(),
+            };
+            for limit in [0, 101] {
+                let args = json!({ "limit": limit });
+                assert!(!schema.is_valid(&args), "{surface:?}: schema advertises limit {limit}");
+                let refused = Tool::ListSigns.invoke(&call, args).await;
+                assert!(
+                    matches!(&refused, Err(ToolError::InvalidArguments(e)) if e.to_string().contains("1 to 100")),
+                    "{surface:?}: limit {limit} gave {refused:?}"
+                );
+            }
+            for limit in [1, 100] {
+                let args = json!({ "limit": limit });
+                assert!(schema.is_valid(&args), "{surface:?}: schema refuses limit {limit}");
+                Tool::ListSigns.invoke(&call, args).await.expect("in-range limit");
+            }
+            Tool::ListSigns.invoke(&call, json!({})).await.expect("default limit");
+            assert_eq!(*actions.limits.lock().expect("limits"), [1, 100, 20], "{surface:?}: limits passed through unchanged");
+        }
     }
 
     #[test]
