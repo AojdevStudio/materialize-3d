@@ -606,6 +606,33 @@ mod tests {
         println!("revision {} package {}", first.revision.id, artifacts.package_sha256);
     }
 
+    /// The fixture sign records exactly the 27 checks it recorded before signs
+    /// moved onto the shared model, in the same order, on a byte-identical package.
+    #[test]
+    #[ignore = "needs a validated Bambu Studio (BAMBU_STUDIO_CLI or a standard install)"]
+    fn a_fixture_build_records_the_characterized_checks_and_package() {
+        let expected: Value =
+            serde_json::from_str(include_str!("../../tests/fixtures/signs/characterization.json")).expect("fixture json");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = app_state(dir.path());
+        let workspace = Workspace::new(&dir.path().join("data"), &dir.path().join("cache"));
+        let request = BuildRequest { spec: fixture(), lineage_id: None, actor: Actor::Human };
+
+        let built = build_sign(&state, &workspace, request, &|_| {}, &|| false).expect("build");
+        assert!(matches!(built.revision.build, BuildState::Verified { .. }), "every check passes");
+        let artifacts = built.revision.artifacts().expect("artifacts");
+        let ids: Vec<&str> = artifacts.checks.iter().map(|c| c.id.as_str()).collect();
+        let want: Vec<&str> = expected["synthetic_back_shortly_check_ids"]
+            .as_array()
+            .expect("check ids")
+            .iter()
+            .map(|id| id.as_str().expect("check id"))
+            .collect();
+        assert_eq!(want.len(), 27);
+        assert_eq!(ids, want);
+        assert_eq!(artifacts.package_sha256.as_str(), expected["packages"]["synthetic-back-shortly"]["sha256"]);
+    }
+
     #[test]
     fn a_missing_bambu_studio_tells_the_person_to_choose_one_in_settings() {
         let dir = tempfile::tempdir().expect("tempdir");

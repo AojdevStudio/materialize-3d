@@ -336,3 +336,26 @@ fn write_fixture_artifacts() {
     .unwrap();
     println!("{summary:#}");
 }
+
+
+/// Package hashes captured from `canonical/main` before signs moved onto the
+/// shared printable model. Any change to sign package bytes fails here.
+const CHARACTERIZATION: &str = include_str!("../../../tests/fixtures/signs/characterization.json");
+
+#[test]
+fn sign_packages_match_the_characterization_fixture() {
+    let expected: Value = serde_json::from_str(CHARACTERIZATION).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    for (name, json) in [
+        ("synthetic-back-shortly", FIXTURE),
+        ("p2s-test-sign", include_str!("../../../../docs/acceptance/p2s-test-sign.json")),
+        ("synthetic-one-ink", include_str!("../../../tests/fixtures/signs/synthetic-one-ink.json")),
+    ] {
+        let spec = ValidSignSpec::from_json(json).unwrap();
+        let geometry = build_geometry(&spec).unwrap();
+        let info = write_package(&geometry, &spec, &template(), &dir.path().join(format!("{name}.3mf"))).unwrap();
+        let want = &expected["packages"][name];
+        assert_eq!(info.sha256, want["sha256"], "{name} package sha256");
+        assert_eq!(info.bytes, want["bytes"], "{name} package size");
+    }
+}
