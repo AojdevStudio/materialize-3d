@@ -1,0 +1,4 @@
+Cannot create cache home directory: '/nonexistent/.cache/ezdxf', cache files will not be saved.
+See also issue https://github.com/mozman/ezdxf/issues/923.
+/usr/local/lib/python3.13/site-packages/joblib/_multiprocessing_helpers.py:44: UserWarning: [Errno 2] No such file or directory.  joblib will operate in serial mode
+  warnings.warn("%s.  joblib will operate in serial mode" % (e,))

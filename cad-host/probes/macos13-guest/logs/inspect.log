@@ -1,0 +1,4 @@
+host: Version 26.7 (Build 25G220), VZVirtualMachine.isSupported=true
+image: macOS 13.0.0 build 22A380 isSupported=true
+hardwareModel.isSupported=true minCPU=2 minMemoryMiB=4096
+exit 0

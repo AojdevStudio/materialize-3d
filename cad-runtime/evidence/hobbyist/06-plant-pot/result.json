@@ -1,0 +1,118 @@
+{
+  "bodies": [
+    {
+      "mesh": {
+        "bbox_max_mm": [
+          40.0,
+          39.998,
+          70.0
+        ],
+        "bbox_min_mm": [
+          -39.99,
+          -39.998,
+          0.0
+        ],
+        "boundary_edges": 0,
+        "closed_manifold": true,
+        "collapsed_triangles": 0,
+        "non_degenerate": true,
+        "non_manifold_edges": 0,
+        "outward": true,
+        "signed_volume_mm3": 41544.87484819534,
+        "triangles": 5994,
+        "vertices": 2991,
+        "zero_area_triangles": 0
+      },
+      "name": "pot",
+      "raw_vertices": 4045,
+      "slot": 1
+    },
+    {
+      "mesh": {
+        "bbox_max_mm": [
+          144.0,
+          44.0,
+          8.4
+        ],
+        "bbox_min_mm": [
+          56.0,
+          -44.0,
+          0.0
+        ],
+        "boundary_edges": 0,
+        "closed_manifold": true,
+        "collapsed_triangles": 0,
+        "non_degenerate": true,
+        "non_manifold_edges": 0,
+        "outward": true,
+        "signed_volume_mm3": 18464.5083864,
+        "triangles": 1164,
+        "vertices": 584,
+        "zero_area_triangles": 0
+      },
+      "name": "saucer",
+      "raw_vertices": 1172,
+      "slot": 2
+    }
+  ],
+  "command": "build",
+  "error": null,
+  "guests": [
+    {
+      "console_bytes": 0,
+      "diagnostics_bytes": 386,
+      "job_disk": {
+        "allocated_bytes": 92438528,
+        "bytes": 268435456,
+        "path": "/var/folders/ss/gw0_l93j6fjdclq372chrjz40000gn/T/m3d-job-66390-0/job.img"
+      },
+      "role": "generate",
+      "stats": {
+        "connect_ms": 130,
+        "exit": 0,
+        "job_ms": 3237,
+        "memory_peak": 764534784,
+        "oom_kills": 0,
+        "pids_peak": 4
+      },
+      "timings": {
+        "boot_ms": 149,
+        "forced_stop": false,
+        "job_ms": 3241,
+        "refused_connections": 0,
+        "start_ms": 67,
+        "stop_ms": 48,
+        "total_ms": 3608
+      }
+    },
+    {
+      "console_bytes": 0,
+      "diagnostics_bytes": 98,
+      "job_disk": {
+        "allocated_bytes": 92684288,
+        "bytes": 268435456,
+        "path": "/var/folders/ss/gw0_l93j6fjdclq372chrjz40000gn/T/m3d-job-66390-1/job.img"
+      },
+      "role": "inspect",
+      "stats": {
+        "connect_ms": 150,
+        "exit": 0,
+        "job_ms": 688,
+        "memory_peak": 384479232,
+        "oom_kills": 0,
+        "pids_peak": 2
+      },
+      "timings": {
+        "boot_ms": 168,
+        "forced_stop": false,
+        "job_ms": 696,
+        "refused_connections": 0,
+        "start_ms": 85,
+        "stop_ms": 45,
+        "total_ms": 1098
+      }
+    }
+  ],
+  "mesh_bytes": 211132,
+  "outcome": "accepted"
+}
