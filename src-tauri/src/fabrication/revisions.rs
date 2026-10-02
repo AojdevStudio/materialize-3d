@@ -342,7 +342,8 @@ pub enum BuildState {
     Verified { artifacts: Box<Artifacts> },
     Failed { reason: String, artifacts: Option<Box<Artifacts>> },
     /// Was verified, but its package changed or went missing on disk. Every
-    /// approval of it is void, and the same spec builds fresh.
+    /// approval of it is void, nothing can approve it, and the same spec
+    /// builds fresh.
     Invalid { reason: String, artifacts: Box<Artifacts> },
 }
 
@@ -447,6 +448,8 @@ pub enum RevisionError {
     WarningsMismatch { recorded: Vec<String>, acknowledged: Vec<String> },
     #[error("approval for revision {0} is void: {1}")]
     ApprovalVoid(String, String),
+    #[error("revision {0} cannot be approved: its build is invalid ({1})")]
+    BuildInvalid(String, String),
     #[error("revision {0} is not approved")]
     NotApproved(String),
     #[error("design {lineage} is a {kind}; it cannot take a {requested} revision")]
@@ -803,7 +806,7 @@ pub fn approve(
         BuildState::Verified { artifacts } => artifacts,
         BuildState::Failed { .. } => return Err(RevisionError::ChecksFailed(id.to_string())),
         BuildState::Building => return Err(RevisionError::NotVerified(id.to_string())),
-        BuildState::Invalid { reason, .. } => return Err(RevisionError::ApprovalVoid(id.to_string(), reason.clone())),
+        BuildState::Invalid { reason, .. } => return Err(RevisionError::BuildInvalid(id.to_string(), reason.clone())),
     };
     let files = artifacts.files();
     if &files.package_sha256 != expected {
@@ -823,7 +826,7 @@ pub fn approve(
         let reason = format!("{change} before approval");
         invalidate(&tx, &revision.build_id, &reason)?;
         tx.commit()?;
-        return Err(RevisionError::ApprovalVoid(id.to_string(), reason));
+        return Err(RevisionError::BuildInvalid(id.to_string(), reason));
     }
     match &revision.approval {
         Approval::Approved { package_sha256, .. } if package_sha256 == expected => return Ok(revision),
@@ -861,8 +864,10 @@ pub fn check_integrity(conn: &mut Connection, id: &RevisionId) -> Result<Revisio
     Ok(voided)
 }
 
-/// Marks a verified build invalid and voids the approval of every revision
-/// that uses it. Callers run it inside their transaction.
+/// Marks a verified build invalid and voids every approval a person gave a
+/// revision that uses it. A revision nobody approved stays pending, so no
+/// record claims a decision that was never made; its invalid build already
+/// keeps it from being approved. Callers run it inside their transaction.
 fn invalidate(conn: &Connection, build: &BuildId, reason: &str) -> Result<()> {
     let stamp = now();
     conn.execute(
@@ -872,7 +877,7 @@ fn invalidate(conn: &Connection, build: &BuildId, reason: &str) -> Result<()> {
     )?;
     conn.execute(
         "UPDATE revisions SET approval_status = 'void', void_reason = ?2, approval_at = ?3, updated_at = ?3
-         WHERE build_id = ?1 AND approval_status != 'void'",
+         WHERE build_id = ?1 AND approval_status = 'approved'",
         params![build.as_str(), reason, stamp],
     )?;
     Ok(())

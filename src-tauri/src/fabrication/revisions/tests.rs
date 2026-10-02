@@ -304,7 +304,11 @@ fn changing_the_file_after_approval_invalidates_the_build_and_blocks_export() {
 }
 
 #[test]
-fn an_invalid_build_voids_every_revision_that_uses_it() {
+/// Invalidating a build voids the approval a person gave, and only that: a
+/// revision on the same build that nobody approved stays pending, with no
+/// approval time, and cannot be approved because its build is invalid.
+#[test]
+fn an_invalid_build_voids_its_approvals_and_leaves_pending_revisions_pending() {
     let dir = tempfile::tempdir().expect("tempdir");
     let mut conn = db();
     let first = verified(&mut conn, dir.path(), "60");
@@ -315,11 +319,21 @@ fn an_invalid_build_voids_every_revision_that_uses_it() {
 
     fs::remove_file(&first.artifacts().expect("artifacts").files().package_path).expect("package lost");
     check_integrity(&mut conn, &third.id).expect("integrity");
-    for id in [&first.id, &third.id] {
-        let revision = get(&conn, id).expect("get");
-        assert!(matches!(revision.approval, Approval::Void { ref reason, .. } if reason == "package file is missing after approval"));
-        assert!(matches!(revision.build, BuildState::Invalid { .. }));
-    }
+    let approved = get(&conn, &third.id).expect("get");
+    assert!(matches!(approved.approval, Approval::Void { ref reason, .. } if reason == "package file is missing after approval"));
+    assert!(matches!(approved.build, BuildState::Invalid { .. }));
+
+    let pending = get(&conn, &first.id).expect("get");
+    assert!(matches!(pending.build, BuildState::Invalid { .. }), "it shares the invalid build");
+    assert_eq!(pending.approval, Approval::Pending, "nobody approved it, so nothing is voided");
+    let approval_at: Option<String> = conn
+        .query_row("SELECT approval_at FROM revisions WHERE id = ?1", [first.id.as_str()], |row| row.get(0))
+        .expect("approval_at");
+    assert_eq!(approval_at, None, "no approval time for a decision nobody made");
+    let refused = approve(&mut conn, &first.id, &package_hash(&first), &none(), Actor::Human);
+    assert!(matches!(refused, Err(RevisionError::BuildInvalid(..))), "{refused:?}");
+    assert_eq!(get(&conn, &first.id).expect("get").approval, Approval::Pending);
+
     assert_eq!(get(&conn, &second.id).expect("get").approval, Approval::Pending, "another build's revision is untouched");
 }
 
@@ -517,7 +531,7 @@ mod legacy {
         assert_eq!((revision.number, revision.build_id.as_str()), (2, "a-1"), "the older intact legacy build is reused");
         let newer = get(&conn, &RevisionId("b-1".into())).expect("b-1");
         assert!(matches!(newer.build, BuildState::Invalid { .. }), "the changed one is invalidated");
-        assert!(matches!(newer.approval, Approval::Void { .. }));
+        assert_eq!(newer.approval, Approval::Pending, "nobody approved it, so nothing is voided");
         assert_eq!(count(&conn, "builds"), 3, "nothing was built");
     }
 }
