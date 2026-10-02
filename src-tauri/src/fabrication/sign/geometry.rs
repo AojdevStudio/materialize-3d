@@ -15,7 +15,7 @@ use super::mesh::{self, MeshBuilder};
 use super::spec::{Contour, FillRule, InkIndex, ValidElement, ValidInk, ValidSignSpec};
 use super::{Result, SignError};
 use crate::fabrication::model::{Body, Palette, PrintableModel};
-use crate::fabrication::printer::P2S_04;
+use crate::fabrication::printer::PrinterProfile;
 
 /// A point on the 1 µm grid.
 pub(crate) type P = IntPoint<i32>;
@@ -106,11 +106,12 @@ fn um(mm: f64) -> i32 {
 /// of another ink or of the base, clipped to the outline. The base body is the
 /// visible base (outline minus all inks) from 0 to the inlay depth plus the
 /// full outline from the inlay depth to the thickness, as one closed mesh.
-pub fn build_geometry(spec: &ValidSignSpec) -> Result<SignGeometry> {
-    build_geometry_with(spec, face_down)
+/// Body `i` prints in `printer`'s filament slot `i + 1`.
+pub fn build_geometry(spec: &ValidSignSpec, printer: &PrinterProfile) -> Result<SignGeometry> {
+    build_geometry_with(spec, printer, face_down)
 }
 
-pub(crate) fn build_geometry_with(spec: &ValidSignSpec, to_model: ToModel) -> Result<SignGeometry> {
+pub(crate) fn build_geometry_with(spec: &ValidSignSpec, printer: &PrinterProfile, to_model: ToModel) -> Result<SignGeometry> {
     let dims = Dims {
         w: um(spec.width_mm),
         h: um(spec.height_mm),
@@ -177,15 +178,15 @@ pub(crate) fn build_geometry_with(spec: &ValidSignSpec, to_model: ToModel) -> Re
         palette: spec.palette.clone(),
         outline,
         face,
-        model: printable_model(spec, meshes)?,
+        model: printable_model(spec, printer, meshes)?,
     })
 }
 
 /// The sign as a printable model: body `i` is palette entry `i`, printed in
 /// filament slot `i + 1` (the base in slot 1).
-fn printable_model(spec: &ValidSignSpec, meshes: Vec<MeshBuilder>) -> Result<PrintableModel> {
+fn printable_model(spec: &ValidSignSpec, printer: &PrinterProfile, meshes: Vec<MeshBuilder>) -> Result<PrintableModel> {
     let model_err = |e: crate::fabrication::model::ModelError| SignError::Geometry(e.to_string());
-    let palette = Palette::new(spec.palette.iter().map(|ink| ink.hex.clone()).collect(), &P2S_04).map_err(model_err)?;
+    let palette = Palette::new(spec.palette.iter().map(|ink| ink.hex.clone()).collect(), printer).map_err(model_err)?;
     let bodies = spec
         .palette
         .iter()

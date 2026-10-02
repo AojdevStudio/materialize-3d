@@ -13,13 +13,13 @@ use std::path::Path;
 
 use serde::Serialize;
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, DateTime, ZipWriter};
 
 use super::checks::CheckedModel;
 use super::model::PrintableModel;
 use super::printer::{PrinterProfile, Um};
+use super::revisions::Sha256Hex;
 
 /// The Bambu Studio release the printer templates were exported from.
 const APPLICATION: &str = "BambuStudio-02.08.02.61";
@@ -106,7 +106,7 @@ pub fn write_package(
         .map_err(|e| PackageError::Io(e.error))?;
 
     Ok(PackageInfo {
-        sha256: Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect(),
+        sha256: Sha256Hex::of_bytes(&bytes).into(),
         bytes: bytes.len() as u64,
         part_names: model.bodies().iter().map(|b| b.name.clone()).collect(),
     })
@@ -334,7 +334,7 @@ mod tests {
 
     fn checked() -> CheckedModel {
         let spec = ValidSignSpec::from_json(include_str!("../../tests/fixtures/signs/synthetic-one-ink.json")).expect("spec");
-        let geometry = build_geometry(&spec).expect("geometry");
+        let geometry = build_geometry(&spec, &P2S_04).expect("geometry");
         let evidence = check_geometry(&geometry).iter().map(GeometryCheck::outcome).collect();
         check_plan(&spec).expect("plan").certify(geometry.into_model(), evidence).expect("certified")
     }

@@ -390,7 +390,7 @@ fn run_pipeline(
     fs::write(partial.join("spec.json"), serde_json::to_vec_pretty(spec)?)?;
 
     let plan = sign::check_plan(spec).map_err(|e| BuildError::Failed(e.to_string()))?;
-    let geometry = sign::build_geometry(spec)?;
+    let geometry = sign::build_geometry(spec, printer)?;
     let evidence = sign::check_geometry(&geometry).iter().map(sign::GeometryCheck::outcome).collect();
     progress(BuildStep::GeometryBuilt);
     cancelled()?;
@@ -398,7 +398,7 @@ fn run_pipeline(
     let preview = sign::render_preview(&geometry, PREVIEW_PX_PER_MM)?;
     let checked = plan
         .certify(geometry.into_model(), evidence)
-        .map_err(|e| BuildError::Failed(format!("geometry {e}")))?;
+        .map_err(|e| BuildError::Failed(e.to_string()))?;
     let package = partial.join("sign.3mf");
     let info = package::write_package(&checked, spec.title(), printer, &package)?;
     set_read_only(&package)?;

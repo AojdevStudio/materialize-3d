@@ -17,7 +17,7 @@ fn fixture() -> ValidSignSpec {
 /// Certifies the sign's geometry against its check plan and writes its package,
 /// as the build pipeline does, with the title as the 3MF object name.
 fn package(spec: &ValidSignSpec, out: &std::path::Path) -> Result<PackageInfo, PackageError> {
-    let geometry = build_geometry(spec).unwrap();
+    let geometry = build_geometry(spec, &P2S_04).unwrap();
     let evidence = check_geometry(&geometry).iter().map(GeometryCheck::outcome).collect();
     let checked = check_plan(spec).unwrap().certify(geometry.into_model(), evidence).unwrap();
     write_package(&checked, spec.title(), &P2S_04, out)
@@ -44,7 +44,7 @@ fn fixture_with(edit: impl FnOnce(&mut Value)) -> Result<ValidSignSpec, SpecErro
 
 #[test]
 fn fixture_geometry_passes_every_check() {
-    let geometry = build_geometry(&fixture()).unwrap();
+    let geometry = build_geometry(&fixture(), &P2S_04).unwrap();
     let checks = check_geometry(&geometry);
     assert_eq!(failed(&checks), Vec::<String>::new());
     let names: Vec<_> = geometry
@@ -70,7 +70,7 @@ fn fixture_geometry_passes_every_check() {
 #[test]
 fn the_acceptance_sign_passes_every_geometry_check() {
     let spec = ValidSignSpec::from_json(include_str!("../../../../docs/acceptance/p2s-test-sign.json")).expect("valid spec");
-    let geometry = build_geometry(&spec).expect("geometry");
+    let geometry = build_geometry(&spec, &P2S_04).expect("geometry");
     assert_eq!(failed(&check_geometry(&geometry)), Vec::<String>::new());
     if let Some(out) = std::env::var_os("ACCEPTANCE_PREVIEW_OUT") {
         std::fs::write(out, render_preview(&geometry, 10.0).expect("preview")).expect("write preview");
@@ -250,7 +250,7 @@ fn orientation_oracle_rejects_an_unmirrored_face() {
     fn wrong(p: P, dims: Dims) -> P {
         P::new(p.x, dims.h - p.y)
     }
-    let checks = check_geometry(&build_geometry_with(&fixture(), wrong).unwrap());
+    let checks = check_geometry(&build_geometry_with(&fixture(), &P2S_04, wrong).unwrap());
     let failures = failed(&checks);
     assert!(!failures.is_empty());
     assert!(
@@ -283,7 +283,7 @@ fn base_paint_knocks_out_and_later_ink_paints_over() {
         .to_string(),
     )
     .unwrap();
-    let geometry = build_geometry(&spec).unwrap();
+    let geometry = build_geometry(&spec, &P2S_04).unwrap();
     assert_eq!(failed(&check_geometry(&geometry)), Vec::<String>::new());
     let [base, navy, teal] = [0, 1, 2].map(|i| area_mm2(&geometry.face[i]));
     // Navy: 40x40 minus the teal overlap (10x40) minus the knockout (10x10), plus 10x10.
@@ -307,7 +307,7 @@ fn write_fixture_artifacts() {
         std::path::PathBuf::from(std::env::var("SIGN_FIXTURE_OUT").expect("set SIGN_FIXTURE_OUT"));
     std::fs::create_dir_all(&out).unwrap();
     let spec = fixture();
-    let geometry = build_geometry(&spec).unwrap();
+    let geometry = build_geometry(&spec, &P2S_04).unwrap();
     let checks = check_geometry(&geometry);
     std::fs::write(
         out.join("checks.json"),
@@ -376,7 +376,7 @@ fn the_sign_check_plan_names_the_characterized_checks_in_recorded_order() {
     assert_eq!(ids, want);
     assert_eq!(plan.id(), SIGN_CHECK_PLAN);
 
-    let geometry = build_geometry(&fixture()).unwrap();
+    let geometry = build_geometry(&fixture(), &P2S_04).unwrap();
     let measured: Vec<String> = check_geometry(&geometry).iter().map(|c| c.id().to_string()).collect();
     assert_eq!(measured, want[..18], "the geometry checks measured are the ones planned, in order");
 }

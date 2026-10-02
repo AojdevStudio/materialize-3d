@@ -4,10 +4,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 use super::{font, svg};
 use crate::fabrication::printer::{P2S_04, UM_PER_MM};
+use crate::fabrication::revisions::Sha256Hex;
 
 const MAX_TITLE_CHARS: usize = 80;
 /// Schema version this build accepts in `SignSpec::schema_version`.
@@ -500,14 +500,7 @@ pub fn spec_hash(spec: &ValidSignSpec) -> String {
     let value = serde_json::to_value(spec).expect("ValidSignSpec always serializes");
     let mut canonical = String::new();
     write_canonical(&value, &mut canonical);
-    hex_digest(canonical.as_bytes())
-}
-
-pub(crate) fn hex_digest(bytes: &[u8]) -> String {
-    Sha256::digest(bytes)
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
+    Sha256Hex::of_bytes(canonical.as_bytes()).into()
 }
 
 fn write_canonical(value: &serde_json::Value, out: &mut String) {
