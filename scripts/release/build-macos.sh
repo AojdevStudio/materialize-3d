@@ -110,10 +110,11 @@ if grep -qE 'M3D_E2E_(TOKEN|PORT|DATA_DIR)' "$workdir/strings.txt"; then die "th
 if grep -qF "$HOME" "$workdir/strings.txt"; then die "the binary embeds the build machine's home path"; fi
 if grep -rlq __M3D_E2E_DIALOGS__ dist; then die "the scripted file dialog is in the frontend"; fi
 
-# The bundle holds the binary, its icon, the license notices, and signing data.
+# The bundle holds the binary, its icons (Assets.car for macOS 26, icon.icns
+# for earlier releases), the license notices, and signing data.
 expected="$(printf '%s\n' \
   Contents/CodeResources Contents/Info.plist Contents/MacOS/materialize-3d \
-  Contents/Resources/AGPL-3.0.txt Contents/Resources/LICENSE \
+  Contents/Resources/AGPL-3.0.txt Contents/Resources/Assets.car Contents/Resources/LICENSE \
   Contents/Resources/THIRD_PARTY_NOTICES.md Contents/Resources/icon.icns \
   Contents/_CodeSignature/CodeResources | sort)"
 actual="$(cd "$app" && find . -type f | sed 's|^\./||' | sort)"
