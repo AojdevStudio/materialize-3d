@@ -29,41 +29,126 @@ mkdir -p "$HOME/m3d-verify"
 mkdir "$evidence" || die "$evidence already exists"
 shared="/Users/Shared/m3d-clean-$run"
 
-# Reserve a name, home, and UID that nothing on this Mac uses yet. Teardown removes only what this run created.
-user="m3dclean$(date +%s)$$"
-home="/Users/$user"
-if dscl . -read "/Users/$user" >/dev/null 2>&1; then die "an account named $user already exists"; fi
-if sudo -n test -e "$home"; then die "$home already exists"; fi
-uid_owner() { dscl . -list /Users UniqueID | awk -v id="$1" '$2 == id { print $1 }'; }
-uid=601
-while [[ -n "$(uid_owner "$uid")" ]]; do uid=$((uid + 1)); done
-(( uid < 1000 )) || die "no free UID between 601 and 999"
-created_account=0 created_shared=0
+# Every lookup below answers present or absent, or fails: an error from dscl, sudo, or hdiutil never reads as
+# "absent", so neither the reservation nor the teardown can mistake a failed check for a clean state.
+# dscl reports a missing record as eDSRecordNotFound (exit 56); any other failure is a lookup error.
+account_state() { # <name>
+  local out rc=0
+  out="$(dscl . -read "/Users/$1" RecordName 2>&1)" || rc=$?
+  if (( rc == 0 )); then echo present; return 0; fi
+  if (( rc == 56 )) && [[ "$out" == *eDSRecordNotFound* ]]; then echo absent; return 0; fi
+  echo "clean-install: dscl . -read /Users/$1 failed (exit $rc): $out" >&2
+  return 1
+}
 
-# Every teardown step runs, the result lands in teardown.txt, and a teardown that leaves the account, its home, the
-# staged files, or a mounted image behind fails the run, even one whose checks passed.
-cleanup() {
-  local rc=$? failed=()
-  if [[ "$(mount)" == *" on $home/mnt "* ]]; then
-    sudo -n hdiutil detach "$home/mnt" -force >/dev/null 2>&1 || failed+=("could not detach the DMG at $home/mnt")
+# Anything at the path counts as present, a dangling symlink included, as root sees it.
+path_state() { # <path>
+  local out
+  out="$(sudo -n /bin/sh -c 'if [ -e "$1" ] || [ -L "$1" ]; then echo present; else echo absent; fi' sh "$1")" \
+    || return 1
+  [[ "$out" == present || "$out" == absent ]] || return 1
+  echo "$out"
+}
+
+# The account that holds a UID, if any.
+uid_owner() { # <uid>
+  local list
+  list="$(dscl . -list /Users UniqueID)" || return 1
+  awk -v id="$1" '$2 == id { print $1 }' <<<"$list"
+}
+
+# Whether this run's DMG, or anything at its mount point, is still attached.
+image_state() {
+  local info
+  info="$(sudo -n hdiutil info)" || return 1
+  if [[ "$info" == *"$home/Downloads/Materialize-3D.dmg"* || "$info" == *"$home/mnt"* ]]; then
+    echo present
+  else
+    echo absent
   fi
+}
+
+# Picks a name, home, and UID that nothing on this Mac uses, or stops the run.
+reserve_account() {
+  local state owner
+  user="m3dclean$(date +%s)$$"
+  home="/Users/$user"
+  state="$(account_state "$user")" || die "could not look up account $user"
+  [[ "$state" == absent ]] || die "an account named $user already exists"
+  state="$(path_state "$home")" || die "could not check $home"
+  [[ "$state" == absent ]] || die "something already exists at $home"
+  uid=601
+  while :; do
+    owner="$(uid_owner "$uid")" || die "could not list the UIDs in use"
+    [[ -z "$owner" ]] && break
+    uid=$((uid + 1))
+  done
+  (( uid < 1000 )) || die "no free UID between 601 and 999"
+}
+
+# Teardown bookkeeping: each check's result goes to teardown.txt, and any check that did not pass fails the run.
+failed=() teardown_log=()
+step() { # <description> <command...>
+  local what="$1" rc=0
+  shift
+  "$@" >/dev/null 2>&1 || rc=$?
+  teardown_log+=("$what: exit $rc")
+  (( rc == 0 )) || failed+=("$what (exit $rc)")
+}
+expect_absent() { # <description> <state command...>
+  local what="$1" state rc=0
+  shift
+  state="$("$@")" || rc=$?
+  if (( rc != 0 )); then
+    teardown_log+=("$what: the check failed (exit $rc)")
+    failed+=("$what: the check failed (exit $rc)")
+  elif [[ "$state" != absent ]]; then
+    teardown_log+=("$what: still $state")
+    failed+=("$what: still $state")
+  else
+    teardown_log+=("$what: absent")
+  fi
+}
+
+# Every teardown step runs, and only for what this run created. A teardown that leaves the account, its home, the
+# staged files, or an attached image behind, or that cannot check one of them, fails the run, even one whose checks
+# passed.
+cleanup() {
+  local rc=$? state check_rc
   if [[ "$created_account" == 1 ]]; then
-    if sudo -n test -d "$home/evidence"; then
-      { sudo -n cp -R "$home/evidence/." "$evidence/" && sudo -n chown -R "$(id -u):$(id -g)" "$evidence"; } \
-        || failed+=("could not copy the account's evidence")
+    check_rc=0
+    state="$(image_state)" || check_rc=$?
+    if (( check_rc != 0 )); then
+      teardown_log+=("this run's DMG attached: the check failed (exit $check_rc)")
+      failed+=("this run's DMG attached: the check failed (exit $check_rc)")
+    elif [[ "$state" == present ]]; then
+      step "detach $home/mnt" sudo -n hdiutil detach "$home/mnt" -force
     fi
-    sudo -n dscl . -delete "/Users/$user" >/dev/null 2>&1 || failed+=("dscl could not delete account $user")
-    sudo -n rm -rf "$home" || failed+=("could not delete $home")
-    if dscl . -read "/Users/$user" >/dev/null 2>&1; then failed+=("account $user still exists"); fi
-    if sudo -n test -e "$home"; then failed+=("$home still exists"); fi
+    expect_absent "this run's DMG attached" image_state
+    check_rc=0
+    state="$(path_state "$home/evidence")" || check_rc=$?
+    if (( check_rc != 0 )); then
+      failed+=("the account's evidence: the check failed (exit $check_rc)")
+    elif [[ "$state" == present ]]; then
+      step "copy the account's evidence" sudo -n cp -R "$home/evidence/." "$evidence/"
+      step "hand the evidence to $(id -un)" sudo -n chown -R "$(id -u):$(id -g)" "$evidence"
+    fi
+    step "delete account $user" sudo -n dscl . -delete "/Users/$user"
+    expect_absent "account $user" account_state "$user"
+  fi
+  if [[ "$created_home" == 1 ]]; then
+    step "delete $home" sudo -n rm -rf "$home"
+    expect_absent "$home" path_state "$home"
   fi
   if [[ "$created_shared" == 1 ]]; then
-    sudo -n rm -rf "$shared" || failed+=("could not delete $shared")
-    if [[ -e "$shared" ]]; then failed+=("$shared still exists"); fi
+    step "delete $shared" sudo -n rm -rf "$shared"
+    expect_absent "$shared" path_state "$shared"
   fi
   {
     echo "account $user (uid $uid) created by this run: $([[ "$created_account" == 1 ]] && echo yes || echo no)"
+    echo "home $home created by this run: $([[ "$created_home" == 1 ]] && echo yes || echo no)"
     echo "staged files $shared created by this run: $([[ "$created_shared" == 1 ]] && echo yes || echo no)"
+    if (( ${#teardown_log[@]} > 0 )); then printf 'check: %s\n' "${teardown_log[@]}"; fi
     if (( ${#failed[@]} > 0 )); then
       printf 'teardown FAILED: %s\n' "${failed[@]}"
     else
@@ -73,7 +158,11 @@ cleanup() {
   if (( ${#failed[@]} > 0 )) && [[ "$rc" == 0 ]]; then rc=1; fi
   exit "$rc"
 }
+
+created_account=0 created_home=0 created_shared=0
+user="" home="" uid=""
 trap cleanup EXIT
+reserve_account
 
 # What the account receives, readable by it: the DMG, the spike script, and the bundle check.
 sudo -n mkdir "$shared" || die "could not create $shared"
@@ -92,11 +181,21 @@ for field in "UserShell /bin/zsh" "RealName Materialize-3D-clean-install-test" "
   sudo -n dscl . -create "/Users/$user" $field
 done
 sudo -n dscl . -create "/Users/$user" Password '*'
+# reserve_account found nothing at $home, so whatever is there from here on is this run's.
+created_home=1
 sudo -n createhomedir -c -u "$user" >/dev/null
-[[ "$(uid_owner "$uid")" == "$user" ]] || die "UID $uid is not this run's alone"
-dseditgroup -o checkmember -m "$user" admin >/dev/null 2>&1 && die "$user is an admin"
+owner="$(uid_owner "$uid")" || die "could not list the UIDs in use"
+[[ "$owner" == "$user" ]] || die "UID $uid is not this run's alone"
+# dseditgroup exits 0 for a member and 67 for a non-member; anything else is a failed check.
+admin_rc=0
+dseditgroup -o checkmember -m "$user" admin >/dev/null 2>&1 || admin_rc=$?
+(( admin_rc == 67 )) || die "$user is an admin, or the check failed (dseditgroup exit $admin_rc)"
 # The account template may not create ~/Applications at all; either way nothing may be installed yet.
-[[ -z "$(sudo -n ls -A "$home/Applications" 2>/dev/null)" ]] || die "$home/Applications is not empty"
+state="$(path_state "$home/Applications")" || die "could not check $home/Applications"
+if [[ "$state" == present ]]; then
+  listing="$(sudo -n ls -A "$home/Applications")" || die "could not list $home/Applications"
+  [[ -z "$listing" ]] || die "$home/Applications is not empty"
+fi
 
 started="$(date '+%Y-%m-%d %H:%M:%S')"
 set +e
