@@ -1,29 +1,32 @@
-//! `materialize-cad-host`: the PR 5 spike's signed helper.
+//! `materialize-cad-host`: the signed helper, bundled at `Contents/MacOS/materialize-cad-host`.
 //!
 //! ```text
 //! materialize-cad-host generate --runtime DIR --source FILE --params FILE --out DIR [options]
 //! materialize-cad-host inspect  --runtime DIR --step FILE --out DIR [options]
 //! materialize-cad-host build    --runtime DIR --source FILE --params FILE --out DIR [options]
 //! materialize-cad-host hostile  --runtime DIR --case NAME --out DIR [options]
-//! options: --pins FILE (default DIR/pins.json) --deadline-s N --cancel-after-s N --cpus N --memory-mib N
+//! materialize-cad-host verify   --runtime DIR
+//! materialize-cad-host pins
+//! options: --deadline-s N --cancel-after-s N --cpus N --memory-mib N
 //! ```
 //!
-//! Every command verifies the runtime files against the pinned sha256 digests before it boots anything, gives each
-//! guest a fresh job disk cloned from the template, and writes only host-named files into `--out`: `result.json`
-//! always, plus the accepted payloads. `--out` must be absent or empty when the run starts, so every file in it
-//! belongs to this run, and a file that cannot be saved fails the run as internal. Exit codes: 0 accepted, 1 the job
-//! failed (a bounded, structured error), 2 the guest's output was rejected, 3 deadline or cancel, 4 runtime
-//! verification failed, 64 usage, 70 internal.
-//! In the shipped app the pins are compiled in; the spike reads them from a file so tests can point at copies.
+//! Every command that boots verifies the runtime files it uses against the sha256 digests compiled into this binary
+//! (see [`cad_host::runtime`]) before it boots anything, gives each guest a fresh job disk cloned from the template,
+//! and writes only host-named files into `--out`: `result.json` always, plus the accepted payloads. `--out` must be
+//! absent or empty when the run starts, so every file in it belongs to this run, and a file that cannot be saved
+//! fails the run as internal. `verify` runs only that check on the shipped files, and `pins` prints the compiled-in
+//! pins; both also run off macOS. Exit codes: 0 accepted, 1 the job failed (a bounded, structured error), 2 the
+//! guest's output was rejected, 3 deadline or cancel, 4 runtime verification failed, 64 usage, 70 internal.
 
 #[cfg(target_os = "macos")]
 mod vm;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use cad_host::runtime::{PINS_JSON, Pins, SHIPPED};
 use serde::Serialize;
 use serde_json::{Value, json};
 
@@ -158,6 +161,10 @@ fn main() -> ExitCode {
         Ok(args) => args,
         Err(e) => return finish(None, "usage", Report::fail(Outcome::Usage, e)),
     };
+    if args.command == "pins" {
+        println!("{PINS_JSON}");
+        return ExitCode::SUCCESS;
+    }
     let out = match args.path("out").map(OutDir::prepare) {
         Ok(Ok(out)) => Some(out),
         Ok(Err(report)) => return finish(None, &args.command, report),
@@ -202,8 +209,33 @@ fn conclude(out: Option<&OutDir>, command: &str, mut report: Report) -> (Outcome
     }
 }
 
+fn run(args: &Args, out: Option<&OutDir>) -> Result<Report, String> {
+    if args.command == "verify" {
+        return Ok(verify_runtime(&args.path("runtime")?, &SHIPPED));
+    }
+    run_guests(args, out)
+}
+
+/// Checks the named runtime files against the pins compiled into this binary.
+fn verify_runtime(dir: &Path, names: &[&str]) -> Report {
+    let started = std::time::Instant::now();
+    match Pins::compiled().verify(dir, names) {
+        Ok(()) => {
+            eprintln!("runtime verified in {} ms", started.elapsed().as_millis());
+            let mut report = Report {
+                outcome: Outcome::Accepted,
+                error: None,
+                fields: serde_json::Map::new(),
+            };
+            report.fields.insert("verified".into(), json!(names));
+            report
+        }
+        Err(e) => Report::fail(Outcome::Unverified, e.to_string()),
+    }
+}
+
 #[cfg(not(target_os = "macos"))]
-fn run(_args: &Args, _out: Option<&OutDir>) -> Result<Report, String> {
+fn run_guests(_args: &Args, _out: Option<&OutDir>) -> Result<Report, String> {
     Ok(Report::fail(
         Outcome::Internal,
         "the VM helper runs only on macOS; the protocol library is portable",
@@ -211,11 +243,14 @@ fn run(_args: &Args, _out: Option<&OutDir>) -> Result<Report, String> {
 }
 
 #[cfg(target_os = "macos")]
-fn run(args: &Args, out: Option<&OutDir>) -> Result<Report, String> {
+fn run_guests(args: &Args, out: Option<&OutDir>) -> Result<Report, String> {
     use cad_host::frame::{FrameLimits, Role};
+    use cad_host::runtime::HOSTILE_INITRAMFS;
 
     let out = out.ok_or("--out is required")?;
-    let runtime = Runtime::open(args)?;
+    let runtime = Runtime {
+        dir: args.path("runtime")?,
+    };
     let limits = VmLimits::from_args(args)?;
     let job = match args.command.as_str() {
         "generate" | "build" => Some(generate_request(args)?),
@@ -230,8 +265,14 @@ fn run(args: &Args, out: Option<&OutDir>) -> Result<Report, String> {
     if args.command == "hostile" && case.is_none() {
         return Err("--case is required".into());
     }
-    if let Err(report) = runtime.verify() {
-        return Ok(report);
+    // Each command boots only the files it names, and each must match its compiled-in pin first.
+    let used: &[&str] = match args.command.as_str() {
+        "hostile" => &["Image", HOSTILE_INITRAMFS],
+        _ => &SHIPPED,
+    };
+    let verified = verify_runtime(&runtime.dir, used);
+    if verified.outcome != Outcome::Accepted {
+        return Ok(verified);
     }
     Ok(match (args.command.as_str(), job, step) {
         ("generate", Some(job), _) => runtime.generate(job, &limits, out).0,
@@ -254,7 +295,7 @@ fn run(args: &Args, out: Option<&OutDir>) -> Result<Report, String> {
             // A stand-in for a fully compromised inspection guest; see cad-runtime/test/hostile-guest.c.
             let cfg = vm::GuestConfig {
                 kernel: runtime.file("Image"),
-                initrd: Some(runtime.file("hostile-initramfs.cpio")),
+                initrd: Some(runtime.file(HOSTILE_INITRAMFS)),
                 cmdline: format!(
                     "console=hvc0 rdinit=/init panic=1 m3d.case={}",
                     case.expect("checked")
@@ -325,64 +366,16 @@ impl VmLimits {
     }
 }
 
-/// The runtime directory and the digests it must match.
+/// The runtime directory; `run_guests` checks the files it uses against the compiled-in pins before any boot.
 #[cfg(target_os = "macos")]
 struct Runtime {
     dir: PathBuf,
-    pins: Vec<(String, String)>,
 }
 
 #[cfg(target_os = "macos")]
 impl Runtime {
-    fn open(args: &Args) -> Result<Self, String> {
-        let dir = args.path("runtime")?;
-        let pins_path = args
-            .opts
-            .get("pins")
-            .map_or_else(|| dir.join("pins.json"), PathBuf::from);
-        let pins = std::fs::read(&pins_path).map_err(|e| format!("pins: {e}"))?;
-        let pins: Value = serde_json::from_slice(&pins).map_err(|e| format!("pins: {e}"))?;
-        let pins = pins["files"]
-            .as_object()
-            .ok_or("pins: no files")?
-            .iter()
-            .map(|(name, v)| {
-                Ok((
-                    name.clone(),
-                    v["sha256"]
-                        .as_str()
-                        .ok_or("pins: missing sha256")?
-                        .to_owned(),
-                ))
-            })
-            .collect::<Result<_, String>>()?;
-        Ok(Self { dir, pins })
-    }
-
     fn file(&self, name: &str) -> PathBuf {
         self.dir.join(name)
-    }
-
-    /// Hashes every pinned file; any mismatch or missing file refuses the whole runtime.
-    fn verify(&self) -> Result<(), Report> {
-        use sha2::{Digest, Sha256};
-        let started = std::time::Instant::now();
-        for (name, want) in &self.pins {
-            let unverified =
-                |e: std::io::Error| Report::fail(Outcome::Unverified, format!("{name}: {e}"));
-            let mut file = std::fs::File::open(self.file(name)).map_err(unverified)?;
-            let mut hasher = Sha256::new();
-            std::io::copy(&mut file, &mut hasher).map_err(unverified)?;
-            let got = format!("{:x}", hasher.finalize());
-            if &got != want {
-                return Err(Report::fail(
-                    Outcome::Unverified,
-                    format!("{name}: sha256 {got} does not match the pin {want}"),
-                ));
-            }
-        }
-        eprintln!("runtime verified in {} ms", started.elapsed().as_millis());
-        Ok(())
     }
 
     /// A fresh job disk cloned from the template; dropping the guard deletes it.
