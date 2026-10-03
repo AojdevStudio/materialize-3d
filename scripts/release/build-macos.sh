@@ -50,16 +50,33 @@ commit="$(git rev-parse HEAD)"
 # session makes other apps raise unlock prompts, but codesign finds identities
 # only through that list. So each codesign call appends the keychain to the
 # list for the seconds it runs, and the caller's list is restored right after.
+original_list="$(security list-keychains -d user)"
 original_keychains=()
 while IFS= read -r line; do
   line="${line#"${line%%[![:space:]]*}"}"; line="${line#\"}"; line="${line%\"}"
   [[ -n "$line" ]] && original_keychains+=("$line")
-done < <(security list-keychains -d user)
+done <<<"$original_list"
 workdir="$(mktemp -d "${TMPDIR:-/tmp}/m3d-release.XXXXXX")"
+# Every step runs even when an earlier one fails, and each failure is reported
+# and fails the build: a release keychain left on the search list or unlocked,
+# or an API key left on disk, must not pass as a successful run.
 cleanup() {
-  security list-keychains -d user -s "${original_keychains[@]}" >/dev/null 2>&1 || true
-  security lock-keychain "$RELEASE_KEYCHAIN" >/dev/null 2>&1 || true
-  rm -rf "$workdir"
+  local rc=$? failed=0
+  if ! security list-keychains -d user -s "${original_keychains[@]}" >/dev/null 2>&1 \
+    || [[ "$(security list-keychains -d user 2>/dev/null)" != "$original_list" ]]; then
+    echo "release: cleanup could not restore the keychain search list" >&2
+    failed=1
+  fi
+  if ! security lock-keychain "$RELEASE_KEYCHAIN" >/dev/null 2>&1; then
+    echo "release: cleanup could not lock $RELEASE_KEYCHAIN" >&2
+    failed=1
+  fi
+  if ! rm -rf "$workdir" || [[ -e "$workdir" ]]; then
+    echo "release: cleanup could not delete $workdir, which holds the API key" >&2
+    failed=1
+  fi
+  if [[ "$failed" == 1 && "$rc" == 0 ]]; then rc=1; fi
+  exit "$rc"
 }
 trap cleanup EXIT
 security unlock-keychain -p "$RELEASE_KEYCHAIN_PASSWORD" "$RELEASE_KEYCHAIN"
