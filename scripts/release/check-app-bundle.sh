@@ -11,6 +11,12 @@ die() { echo "bundle: $*" >&2; exit 1; }
 app="$1" team="$2"
 [[ -f "$app/Contents/Info.plist" ]] || die "no app bundle at $app"
 
+# The list below compares one path per line, so a newline inside a file or directory name could split one path
+# into two lines that pass for two allowlisted files. Any such name fails first, before anything in the bundle runs.
+newline=$'\n'
+odd="$(cd "$app" && find . -name "*$newline*" -print -quit)"
+[[ -z "$odd" ]] || die "a path in the app bundle contains a newline: $(printf '%q' "$odd")"
+
 # The app binary, the CAD helper and its runtime, the icons (Assets.car for macOS 26, icon.icns as the
 # CFBundleIconFile), the license notices, the signature, and the stapled ticket (Contents/CodeResources). Every
 # entry that is not a directory counts, symlinks included.
