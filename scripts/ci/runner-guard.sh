@@ -5,7 +5,7 @@
 #
 # Reads the repository's fork approval policy with this host's own gh login for the repository owner. A policy
 # other than all_external_contributors stops the runner service at once. A read that fails (gh exits non-zero, or
-# prints nothing or something that is not a policy name) is retried 5 times over about 75 seconds, because GitHub's
+# prints anything but one of GitHub's documented values) is retried 5 times over about 75 seconds, because GitHub's
 # API has brief outages; only when every attempt fails does the guard stop the runner. Either way it then exits 1,
 # so the timer that runs it records a failure. It never starts a runner: after it trips, a person reads the policy
 # and restarts the service (docs/ci-runners.md). A CI job cannot do this check itself: GITHUB_TOKEN cannot read the
@@ -21,9 +21,11 @@ case "$kind" in
   *) echo "usage: $0 linux <unit> | macos <plist>" >&2; exit 2 ;;
 esac
 
-# One read of the policy into $policy. Returns 0 when gh answered with a policy name, whatever it is, and 1 when
-# the read itself failed, with the reason in $policy. The owner's token comes from gh's own store for this one
-# call and is never printed or written anywhere.
+# One read of the policy into $policy. Returns 0 when gh answered with one of the values GitHub documents for
+# approval_policy (REST "Get fork PR contributor approval permissions": first_time_contributors_new_to_github,
+# first_time_contributors, all_external_contributors), and 1 for anything else, with the reason in $policy: a gh
+# failure, no answer, or any other text, an unknown word included, counts as a failed read. The owner's token
+# comes from gh's own store for this one call and is never printed or written anywhere.
 read_policy() {
   local token out rc=0
   if ! token="$(gh auth token --user "${repo%%/*}" 2>/dev/null)" || [[ -z "$token" ]]; then
@@ -37,11 +39,15 @@ read_policy() {
     policy="gh exit $rc: ${out:0:200}"
     return 1
   fi
-  if [[ ! "$out" =~ ^[a-z_]+$ || "$out" == null ]]; then
-    policy="unreadable answer: ${out:0:200}"
-    return 1
-  fi
-  policy="$out"
+  case "$out" in
+    first_time_contributors_new_to_github | first_time_contributors | all_external_contributors)
+      policy="$out"
+      ;;
+    *)
+      policy="unreadable answer: ${out:0:200}"
+      return 1
+      ;;
+  esac
 }
 
 # The first read plus 5 retries, waiting 5, 10, 15, 20, and 25 seconds between them.
