@@ -10,6 +10,13 @@
 #   2. Each job's `if:` admits only a push to main, a manual dispatch, or a pull
 #      request whose head branch is in this repository, so an approved fork run
 #      that leaves this file alone still skips these jobs.
+# A third guard sits outside the jobs: scripts/ci/runner-guard.sh on each runner
+# host stops that host's runner if the policy ever reads differently.
+#
+# Both jobs run on every event, so their check-runs exist on every pull request.
+# On a pull request that changes nothing the runtime is built, bundled, or tested
+# from (scripts/ci/cad-runtime-scope.sh), they skip the heavy steps and succeed
+# in seconds. Pushes to main and manual runs always do the full work.
 name: CAD runtime
 
 on:
@@ -33,15 +40,34 @@ jobs:
       (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: [self-hosted, Linux, X64, m3d-linux-kvm]
     timeout-minutes: 150
+    outputs:
+      relevant: ${{ steps.scope.outputs.relevant }}
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+          fetch-depth: 0
+      - name: Does this change touch the CAD runtime?
+        id: scope
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: scripts/ci/cad-runtime-scope.sh "$EVENT" "$BASE" "$HEAD" >> "$GITHUB_OUTPUT"
+      - name: Nothing the CAD runtime is built, bundled, or tested from changed
+        if: steps.scope.outputs.relevant != 'true'
+        run: echo "No CAD runtime path changed; the image builds are skipped and this check passes." >> "$GITHUB_STEP_SUMMARY"
+      - name: The runner host has Docker, buildx, and arm64 binfmt
+        if: steps.scope.outputs.relevant == 'true'
+        run: scripts/ci/check-image-host.sh
       - name: Two clean arm64 builds match each other and pins-arm64.json
+        if: steps.scope.outputs.relevant == 'true'
         run: cad-runtime/reproduce.sh arm64
       - name: Two clean amd64 builds match each other and pins-amd64.json
+        if: steps.scope.outputs.relevant == 'true'
         run: cad-runtime/reproduce.sh amd64
       - name: Record the digests
+        if: steps.scope.outputs.relevant == 'true'
         run: |
           {
             echo "### CAD runtime digests"
@@ -50,6 +76,7 @@ jobs:
             done
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Hand the arm64 runtime to the Mac job
+        if: steps.scope.outputs.relevant == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: cad-runtime-arm64
@@ -73,36 +100,48 @@ jobs:
     defaults:
       run:
         working-directory: cad-host
+    env:
+      RELEVANT: ${{ needs.images.outputs.relevant }}
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - name: Nothing the CAD runtime is built, bundled, or tested from changed
+        if: env.RELEVANT != 'true'
+        run: echo "No CAD runtime path changed; the restriction tests are skipped and this check passes." >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/download-artifact@v4
+        if: env.RELEVANT == 'true'
         with:
           name: cad-runtime-arm64
           path: cad-runtime/out/arm64
       - name: Library tests
+        if: env.RELEVANT == 'true'
         run: cargo test --locked
       - name: Clippy, including the macOS VM driver
+        if: env.RELEVANT == 'true'
         run: cargo clippy --locked --all-targets -- -D warnings
       - name: Build the helper and sign it ad hoc with the virtualization entitlement
+        if: env.RELEVANT == 'true'
         run: |
           cargo build --release --locked
           codesign -s - -f --options runtime --entitlements entitlements.plist target/release/materialize-cad-host
       - name: The runtime matches the pins compiled into the helper
+        if: env.RELEVANT == 'true'
         run: target/release/materialize-cad-host verify --runtime ../cad-runtime/out/arm64
       - name: Ten restriction tests on the real Virtualization framework
+        if: env.RELEVANT == 'true'
         run: >
           HELPER="$PWD/target/release/materialize-cad-host" RUNTIME="$PWD/../cad-runtime/out/arm64"
           restriction-tests/run-all.sh out/restriction-tests.log
       - name: The cable clip builds through both guests into a closed mesh
+        if: env.RELEVANT == 'true'
         run: |
           target/release/materialize-cad-host build --runtime ../cad-runtime/out/arm64 \
             --source spike/cable-clip-fillet-first.py --params spike/cable-clip.params.json --out out/clip
           jq -e '.outcome == "accepted" and (.bodies | length) == 1 and .bodies[0].mesh.closed_manifold
             and .bodies[0].mesh.non_degenerate and .bodies[0].mesh.outward' out/clip/result.json
       - name: Keep the logs
-        if: always()
+        if: always() && env.RELEVANT == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: cad-helper-logs

@@ -11,6 +11,8 @@
 #   2. Every self-hosted job runs only on a push to main, a manual dispatch, or
 #      a pull request whose head branch is in this repository
 #      (github.event.pull_request.head.repo.full_name == github.repository).
+# Outside the jobs, scripts/ci/runner-guard.sh on each runner host reads the
+# policy every 5 minutes and stops that host's runner if it ever changes.
 name: CI
 
 on:
