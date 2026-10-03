@@ -18,11 +18,13 @@ The repository is public, so a pull request from a fork could try to run code on
 
    ```yaml
    if: >-
+     github.actor != 'dependabot[bot]' && (
      github.event_name == 'push' || github.event_name == 'workflow_dispatch' ||
-     (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
+     (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+     && github.event.pull_request.user.login != 'dependabot[bot]'))
    ```
 
-   An approved fork run that leaves the workflow alone still skips both jobs. A new self-hosted job must carry the same condition.
+   An approved fork run that leaves the workflow alone still skips both jobs. The same `if:` also refuses Dependabot, both as the event's actor and as the pull request's author (`github.actor != 'dependabot[bot]'` and `github.event.pull_request.user.login != 'dependabot[bot]'`). The runners run as a host user whose `gh` login the runner guard reads, so code from a dependency update must not run there. A Dependabot pull request therefore never gets these two check-runs. For a bump under `cad-runtime/lock/`, a person takes the change onto their own branch, regenerates `pins-<arch>.json` with `cad-runtime/build.sh`, and opens that pull request, where both jobs run. A new self-hosted job must carry the same condition.
 3. **The runner guard.** `scripts/ci/runner-guard.sh` runs on each runner host every 5 minutes and stops that host's runner unless the policy reads `all_external_contributors`; a failed read stops it too. It reads the policy with the host's own `gh` login for `AojdevStudio`. A job cannot run this check: `GITHUB_TOKEN` cannot read the policy (that takes administration read), and putting the owner's credential into a job would hand it to the job exactly when the policy has changed and a fork's job might be the one running. The guard never starts a runner. After it trips, read the policy, then restart the runner by hand (`sudo systemctl start <unit>` on dev-substrate, `launchctl bootstrap gui/$(id -u) <plist>` on the mini). Two limits: a runner is unguarded for up to 5 minutes after the policy changes and for 30 seconds after dev-substrate boots, and a job runs as the same user as the guard, so it could tamper with the guard while it runs; the guard keeps fork jobs from starting, it cannot contain one that already has.
 
 The policy, read back on 2026-10-03:
@@ -32,7 +34,7 @@ gh api repos/AojdevStudio/materialize-3d/actions/permissions/fork-pr-contributor
 # {"approval_policy":"all_external_contributors"}
 ```
 
-Read it again before trusting these notes; nothing in CI changes it. Same-repository pull requests, Dependabot's included, do run on these machines. Only people and bots with write access can open one.
+Read it again before trusting these notes; nothing in CI changes it. Same-repository pull requests from people with write access do run on these machines; Dependabot's do not.
 
 ## Host setup
 

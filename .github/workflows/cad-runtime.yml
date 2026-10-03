@@ -9,7 +9,11 @@
 #      file, because a pull request runs the workflow files from its own head.
 #   2. Each job's `if:` admits only a push to main, a manual dispatch, or a pull
 #      request whose head branch is in this repository, so an approved fork run
-#      that leaves this file alone still skips these jobs.
+#      that leaves this file alone still skips these jobs. It also refuses
+#      Dependabot, as the actor and as a pull request's author: the runners run
+#      as a host user whose gh login the runner guard uses, so a dependency
+#      update's code must not run there. A person regenerates the pins for a
+#      Dependabot lock bump on their own branch, where these jobs run.
 # A third guard sits outside the jobs: scripts/ci/runner-guard.sh on each runner
 # host stops that host's runner if the policy ever reads differently.
 #
@@ -36,8 +40,10 @@ jobs:
   images:
     name: CAD runtime images reproduce
     if: >-
+      github.actor != 'dependabot[bot]' && (
       github.event_name == 'push' || github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
+      (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+      && github.event.pull_request.user.login != 'dependabot[bot]'))
     runs-on: [self-hosted, Linux, X64, m3d-linux-kvm]
     timeout-minutes: 150
     outputs:
@@ -93,8 +99,10 @@ jobs:
     name: CAD helper restriction tests
     needs: images
     if: >-
+      github.actor != 'dependabot[bot]' && (
       github.event_name == 'push' || github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
+      (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+      && github.event.pull_request.user.login != 'dependabot[bot]'))
     runs-on: [self-hosted, macOS, ARM64, m3d-mac-vz]
     timeout-minutes: 60
     defaults:
