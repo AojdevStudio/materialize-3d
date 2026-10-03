@@ -7,7 +7,8 @@
 # would set it, Gatekeeper assesses the DMG and the app, the app is copied into ~/Applications (a standard account
 # cannot write /Applications), check-app-bundle.sh checks it, and the bundled helper, still quarantined, verifies
 # its runtime, boots both guests, and builds the cable clip (cad-host/spike/cable-clip-fillet-first.py). Any failure
-# fails the run. The account and its home are deleted on exit; evidence stays in ~/m3d-verify/clean-install-<run>/.
+# fails the run. The account and its home are deleted on exit, and a teardown that leaves anything behind fails the
+# run too; evidence, teardown.txt included, stays in ~/m3d-verify/clean-install-<run>/.
 #
 # Needs Apple Silicon, macOS 26 or later, and sudo without a password prompt (to create and delete the account).
 # What "clean" covers and what it does not is in docs/releasing.md.
@@ -21,38 +22,70 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 dmg="$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"
 [[ -f "$dmg" ]] || die "no DMG at $1"
 
-run="$(date +%Y%m%dT%H%M%S)"
-user="m3dclean$(date +%s)"
-uid=$(( $(dscl . -list /Users UniqueID | awk '$2 >= 600 && $2 < 1000 { print $2 }' | sort -n | tail -1) + 1 ))
-(( uid >= 601 )) || uid=601
+# One run per process: the PID keeps two runs that start in the same second apart.
+run="$(date +%Y%m%dT%H%M%S)-$$"
 evidence="$HOME/m3d-verify/clean-install-$run"
+mkdir -p "$HOME/m3d-verify"
+mkdir "$evidence" || die "$evidence already exists"
 shared="/Users/Shared/m3d-clean-$run"
-home="/Users/$user"
-mkdir -p "$evidence"
 
+# Reserve a name, home, and UID that nothing on this Mac uses yet. Teardown removes only what this run created.
+user="m3dclean$(date +%s)$$"
+home="/Users/$user"
+if dscl . -read "/Users/$user" >/dev/null 2>&1; then die "an account named $user already exists"; fi
+if sudo -n test -e "$home"; then die "$home already exists"; fi
+uid_owner() { dscl . -list /Users UniqueID | awk -v id="$1" '$2 == id { print $1 }'; }
+uid=601
+while [[ -n "$(uid_owner "$uid")" ]]; do uid=$((uid + 1)); done
+(( uid < 1000 )) || die "no free UID between 601 and 999"
+created_account=0 created_shared=0
+
+# Every teardown step runs, the result lands in teardown.txt, and a teardown that leaves the account, its home, the
+# staged files, or a mounted image behind fails the run, even one whose checks passed.
 cleanup() {
-  sudo -n hdiutil detach "$home/mnt" -force >/dev/null 2>&1 || true
-  if [[ -d "$home/evidence" ]]; then
-    sudo -n cp -R "$home/evidence/." "$evidence/" && sudo -n chown -R "$(id -u):$(id -g)" "$evidence" || true
+  local rc=$? failed=()
+  if [[ "$(mount)" == *" on $home/mnt "* ]]; then
+    sudo -n hdiutil detach "$home/mnt" -force >/dev/null 2>&1 || failed+=("could not detach the DMG at $home/mnt")
   fi
-  sudo -n dscl . -delete "/Users/$user" >/dev/null 2>&1 || true
-  sudo -n rm -rf "$home" "$shared"
-  if dscl . -read "/Users/$user" >/dev/null 2>&1 || [[ -e "$home" ]]; then
-    echo "clean-install: the test account $user was not fully removed" >&2
-  else
-    echo "clean-install: test account $user and its home deleted"
+  if [[ "$created_account" == 1 ]]; then
+    if sudo -n test -d "$home/evidence"; then
+      { sudo -n cp -R "$home/evidence/." "$evidence/" && sudo -n chown -R "$(id -u):$(id -g)" "$evidence"; } \
+        || failed+=("could not copy the account's evidence")
+    fi
+    sudo -n dscl . -delete "/Users/$user" >/dev/null 2>&1 || failed+=("dscl could not delete account $user")
+    sudo -n rm -rf "$home" || failed+=("could not delete $home")
+    if dscl . -read "/Users/$user" >/dev/null 2>&1; then failed+=("account $user still exists"); fi
+    if sudo -n test -e "$home"; then failed+=("$home still exists"); fi
   fi
+  if [[ "$created_shared" == 1 ]]; then
+    sudo -n rm -rf "$shared" || failed+=("could not delete $shared")
+    if [[ -e "$shared" ]]; then failed+=("$shared still exists"); fi
+  fi
+  {
+    echo "account $user (uid $uid) created by this run: $([[ "$created_account" == 1 ]] && echo yes || echo no)"
+    echo "staged files $shared created by this run: $([[ "$created_shared" == 1 ]] && echo yes || echo no)"
+    if (( ${#failed[@]} > 0 )); then
+      printf 'teardown FAILED: %s\n' "${failed[@]}"
+    else
+      echo "teardown complete: nothing this run created is left"
+    fi
+  } | tee "$evidence/teardown.txt"
+  if (( ${#failed[@]} > 0 )) && [[ "$rc" == 0 ]]; then rc=1; fi
+  exit "$rc"
 }
 trap cleanup EXIT
 
 # What the account receives, readable by it: the DMG, the spike script, and the bundle check.
-sudo -n mkdir -p "$shared"
+sudo -n mkdir "$shared" || die "could not create $shared"
+created_shared=1
 sudo -n cp "$dmg" "$shared/release.dmg"
 sudo -n cp "$root/cad-host/spike/cable-clip-fillet-first.py" "$root/cad-host/spike/cable-clip.params.json" \
   "$root/scripts/release/check-app-bundle.sh" "$shared/"
 sudo -n chmod -R a+rX "$shared"
 
 echo "clean-install: creating standard account $user (uid $uid, staff, no password, not an admin)"
+sudo -n dscl . -create "/Users/$user" || die "could not create account $user"
+created_account=1
 for field in "UserShell /bin/zsh" "RealName Materialize-3D-clean-install-test" "UniqueID $uid" \
   "PrimaryGroupID 20" "NFSHomeDirectory $home"; do
   # shellcheck disable=SC2086 # each entry is a key and its value
@@ -60,6 +93,7 @@ for field in "UserShell /bin/zsh" "RealName Materialize-3D-clean-install-test" "
 done
 sudo -n dscl . -create "/Users/$user" Password '*'
 sudo -n createhomedir -c -u "$user" >/dev/null
+[[ "$(uid_owner "$uid")" == "$user" ]] || die "UID $uid is not this run's alone"
 dseditgroup -o checkmember -m "$user" admin >/dev/null 2>&1 && die "$user is an admin"
 # The account template may not create ~/Applications at all; either way nothing may be installed yet.
 [[ -z "$(sudo -n ls -A "$home/Applications" 2>/dev/null)" ]] || die "$home/Applications is not empty"
