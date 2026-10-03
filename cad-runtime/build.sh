@@ -24,15 +24,13 @@ user=(--user "$(id -u):$(id -g)" -e HOME=/tmp)
 nocache=()
 [[ "${M3D_CAD_NO_CACHE:-}" == 1 ]] && nocache=(--no-cache)
 
-docker build -q "${nocache[@]}" -t m3d-cad-tools --build-arg TOOLS_BASE="$TOOLS_BASE" \
-  --build-arg DEBIAN_SNAPSHOT="$DEBIAN_SNAPSHOT" -f "$here/image/tools.Dockerfile" "$here/image" >/dev/null
+tools_image="$(docker build -q "${nocache[@]}" -t m3d-cad-tools --build-arg TOOLS_BASE="$TOOLS_BASE" \
+  --build-arg DEBIAN_SNAPSHOT="$DEBIAN_SNAPSHOT" -f "$here/image/tools.Dockerfile" "$here/image")"
 
-# The kernel rebuilds only when its inputs change.
+# The kernel rebuilds only when an input that decides its bytes changes (kernel/stamp.sh lists them).
 kernel=Image
 [[ "$arch" == amd64 ]] && kernel=vmlinux
-stamp="$(cat "$here/kernel/pins.env" "$here/kernel/$arch.config" "$here/kernel/build-kernel.sh" \
-  "$here/kernel/kernel-signing-keys.asc" "$here/image/tools.Dockerfile" "$here/image/snapshot.sources" \
-  | sha256sum | cut -d' ' -f1)"
+stamp="$("$here/kernel/stamp.sh" "$arch" "$DEBIAN_SNAPSHOT" "$tools_image")"
 if [[ ! -f "$out/$kernel" || "$(cat "$out/kernel.stamp" 2>/dev/null)" != "$stamp" ]]; then
   tarball="$cache/linux-$KERNEL_VERSION.tar.xz" signature="$cache/linux-$KERNEL_VERSION.tar.sign"
   mkdir -p "$cache"
