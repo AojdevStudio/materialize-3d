@@ -10,8 +10,10 @@ ARG DEBIAN_SNAPSHOT
 # useradd stamps /etc/shadow's last-change day from this instead of today's date.
 ARG SOURCE_DATE_EPOCH
 COPY --chmod=0644 lock/requirements-${TARGETARCH}.txt /tmp/requirements.txt
-RUN PYTHONDONTWRITEBYTECODE=1 pip install --no-cache-dir --no-compile --require-hashes --only-binary :all: --no-deps \
-      -r /tmp/requirements.txt \
+# The wheels come from build.sh's hash-checked cache (the `wheels` build context), never from the network here.
+RUN --mount=type=bind,from=wheels,target=/wheels \
+    PYTHONDONTWRITEBYTECODE=1 pip install --no-cache-dir --no-compile --no-index --find-links /wheels \
+      --require-hashes --only-binary :all: --no-deps -r /tmp/requirements.txt \
  && rm /tmp/requirements.txt
 # OCP links libGL and libX11 but never renders: the glvnd stub without a Mesa driver is enough.
 COPY --chmod=0644 image/snapshot.sources /tmp/snapshot.sources
