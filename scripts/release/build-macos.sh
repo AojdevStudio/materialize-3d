@@ -61,10 +61,15 @@ workdir="$(mktemp -d "${TMPDIR:-/tmp}/m3d-release.XXXXXX")"
 # and fails the build: a release keychain left on the search list or unlocked,
 # or an API key left on disk, must not pass as a successful run.
 cleanup() {
-  local rc=$? failed=0
-  if ! security list-keychains -d user -s "${original_keychains[@]}" >/dev/null 2>&1 \
-    || [[ "$(security list-keychains -d user 2>/dev/null)" != "$original_list" ]]; then
+  local rc=$? failed=0 now
+  if ! security list-keychains -d user -s "${original_keychains[@]}" >/dev/null 2>&1; then
     echo "release: cleanup could not restore the keychain search list" >&2
+    failed=1
+  elif ! now="$(security list-keychains -d user 2>/dev/null)"; then
+    echo "release: cleanup could not read back the keychain search list" >&2
+    failed=1
+  elif [[ "$now" != "$original_list" ]]; then
+    echo "release: the keychain search list differs from the one the run started with" >&2
     failed=1
   fi
   if ! security lock-keychain "$RELEASE_KEYCHAIN" >/dev/null 2>&1; then
