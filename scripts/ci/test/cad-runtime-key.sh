@@ -123,7 +123,8 @@ cat > "$work/bin/curl" <<'STUB'
 [[ "$(cat)" == "Authorization: Bearer test-token" ]] || exit 22
 url="${*: -1}"
 case "$url" in
-  "https://api.github.com/repos/o/r/actions/artifacts?name=$EXPECTED_NAME&per_page=100") answer=artifacts.json ;;
+  "https://api.github.com/repos/o/r/actions/artifacts?name=$EXPECTED_NAME&per_page=100&page="*)
+    answer="artifacts-${url##*page=}.json" ;;
   https://api.github.com/repos/o/r/actions/runs/*) answer="run-${url##*/}.json" ;;
   *) exit 22 ;;
 esac
@@ -131,12 +132,14 @@ esac
 cat "$STUB/$answer"
 STUB
 chmod +x "$work/bin/curl"
-artifacts() { # <name>:<run id> ...
-  local pair list=()
+page() { # <page> <total_count> <name>:<run id> ...
+  local number="$1" total="$2" pair list=()
+  shift 2
   for pair in "$@"; do list+=("{\"name\":\"${pair%%:*}\",\"workflow_run\":{\"id\":${pair##*:}}}"); done
   local IFS=,
-  echo "{\"artifacts\":[${list[*]}]}" > "$stub/artifacts.json"
+  echo "{\"total_count\":$total,\"artifacts\":[${list[*]}]}" > "$stub/artifacts-$number.json"
 }
+artifacts() { page 1 "$#" "$@"; } # one page holding every <name>:<run id>
 run() { # <id> [jq edit applied to a passed same-repo pull_request run]
   jq -n --argjson id "$1" '{id: $id, path: ".github/workflows/cad-runtime.yml", status: "completed",
     conclusion: "success", event: "pull_request", repository: {full_name: "o/r"}, head_repository: {full_name: "o/r"},
@@ -162,14 +165,35 @@ run 11 '.actor.login = "dependabot[bot]"'; no_hit "a record from a run Dependabo
 run 11 '.triggering_actor.login = "dependabot[bot]"'; no_hit "a record from a run Dependabot triggered was a hit"
 run 11 '.event = "pull_request_target"'; no_hit "a pull_request_target run's record was a hit"
 run 11 '.id = 99'; no_hit "a run answer for another id was a hit"
+run 11 'del(.actor)'; no_hit "a run without an actor was a hit"
+run 11 'del(.triggering_actor)'; no_hit "a run without a triggering actor was a hit"
+run 11 '.actor.login = ""'; no_hit "a run with an empty actor login was a hit"
+run 11 '.triggering_actor.login = null'; no_hit "a run with a null triggering actor login was a hit"
 run 11 '.conclusion = "success"'
 artifacts "cad-runtime-pass-$(printf '0%.0s' {1..64}):11"; no_hit "an artifact for another key was a hit"
 artifacts; no_hit "an empty artifact list was a hit"
-echo '{"artifacts": nul' > "$stub/artifacts.json"; no_hit "an unreadable artifact list was a hit"
-rm -f "$stub/artifacts.json"; no_hit "a failed artifact list request was a hit"
+echo '{"artifacts": nul' > "$stub/artifacts-1.json"; no_hit "an unreadable artifact list was a hit"
+echo '{"artifacts": []}' > "$stub/artifacts-1.json"; no_hit "an artifact list without total_count was a hit"
+rm -f "$stub/artifacts-1.json"; no_hit "a failed artifact list request was a hit"
 artifacts "$name:11"; rm -f "$stub/run-11.json"; no_hit "a run that did not load was a hit"
 reset_stub
 artifacts "$name:11" "$name:12"; run 11; run 12 '.conclusion = "failure"'
 hit 11 "a passed run behind a failed one with the same record was not a hit"
+
+# Every candidate and every page counts: a passed run behind ten newer failed ones, and a record on page 2.
+reset_stub
+candidates=("$name:11")
+for id in {101..110}; do candidates+=("$name:$id"); run "$id" '.conclusion = "failure"'; done
+artifacts "${candidates[@]}"; run 11
+hit 11 "a passed run behind ten failed ones was not a hit"
+reset_stub
+other="cad-runtime-pass-$(printf '0%.0s' {1..64})" first=()
+for id in {5000..5099}; do first+=("$other:$id"); done
+page 1 101 "${first[@]}"; page 2 101 "$name:11"; run 11
+hit 11 "a record on the second page of the artifact list was not a hit"
+first=("$name:11")
+for id in {5001..5099}; do first+=("$other:$id"); done
+page 1 150 "${first[@]}"; rm -f "$stub/artifacts-2.json"
+no_hit "a lookup whose second page failed was a hit"
 
 echo "cad-runtime key: ok"

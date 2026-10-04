@@ -19,7 +19,7 @@ Both jobs run on every push to `main`, every manual dispatch, and every same-rep
 
 The key is the sha256 of `git ls-files -s -z` over the listed paths (`scripts/ci/cad-runtime-key.sh`), taken from the commit the run checks out: for a pull request, its merge commit with `main`. Each entry carries the mode, the blob id, and the path, so changed content, a changed mode, or an added or deleted file under a listed path gives a new key. A change anywhere else does not. The scope and key scripts read the same list, as literal git pathspecs. `scripts/ci/test/cad-runtime-key.sh` checks all of this in a scratch repository, and the images job runs it before the scope step on every event.
 
-**Where the record lives.** In the run that passed, as the artifact `cad-runtime-pass-<key>`, kept 90 days. It holds one file with two lines, `run_id=<id>` and `hash=<key>`. GitHub binds every artifact to the run that uploaded it, and only that run's own jobs can upload into it. The lookup therefore reads no record content: it asks the API which runs carry an artifact with this name, then checks each run.
+**Where the record lives.** In the run that passed, as the artifact `cad-runtime-pass-<key>`, kept 90 days. It holds one file with two lines, `run_id=<id>` and `hash=<key>`. GitHub binds every artifact to the run that uploaded it, and only that run's own jobs can upload into it. The lookup therefore reads no record content: it reads every page of the API's list of artifacts with this name, then checks every run that carries one.
 
 **When a record is written.** Only by the `CAD runtime pass record` job, which `needs` both jobs and carries their `if:` guard. GitHub runs it only when both jobs passed. It writes only when both jobs set `done`, which each job does in a step after its last heavy step, so the step runs only when every step before it passed. A failed, cancelled, skipped, or reused run writes nothing. The job recomputes the key from its own checkout and refuses to write when it differs from the images job's key. It is the one job in the workflow on a GitHub-hosted runner (`ubuntu-latest`): it builds nothing, holds no secret, and so does not wait behind a long build on the Linux runner.
 
@@ -29,7 +29,7 @@ The key is the sha256 of `git ls-files -s -z` over the listed paths (`scripts/ci
 - The run is of `.github/workflows/cad-runtime.yml`, and its event is `pull_request`, `push`, or `workflow_dispatch`.
 - The run is completed with the conclusion `success`, so both jobs and the record job passed.
 - The run's repository and head repository are both this repository.
-- Neither the run's actor nor its triggering actor is `dependabot[bot]`.
+- The run names both its actor and its triggering actor, and neither of them is `dependabot[bot]`.
 
 A failed API call, an answer that is not the JSON expected, or no run that passes every check is a miss, and the run does the full work. It never passes on a record it could not read.
 

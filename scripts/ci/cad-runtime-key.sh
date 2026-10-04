@@ -10,8 +10,9 @@
 # matches no tracked file is an error, not an empty contribution.
 # The record is the artifact cad-runtime-pass-<key>, which cad-runtime.yml uploads only after both CAD jobs did their
 # full work and passed. Only the run's own jobs can upload into a run, so `lookup` trusts an artifact only through its
-# run: a completed, successful run of .github/workflows/cad-runtime.yml whose head is in this repository and that
-# Dependabot did not start. Any failure to read or check that is a miss, never a hit. `lookup` reads GH_TOKEN, which
+# run: a completed, successful run of .github/workflows/cad-runtime.yml whose head is in this repository, whose actor
+# and triggering actor are both named, and neither of them Dependabot. It reads every page of the artifact list and
+# checks every candidate run. Any failure to read or check that is a miss, never a hit. `lookup` reads GH_TOKEN, which
 # needs actions: read (docs/ci-runners.md).
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -41,10 +42,25 @@ case "${1:-}" in
       curl -fsS --retry 3 --max-time 30 -H @- -H "Accept: application/vnd.github+json" \
         "https://api.github.com/repos/$repo/$1" <<< "Authorization: Bearer $GH_TOKEN"
     }
-    artifacts="$(api "actions/artifacts?name=$name&per_page=100")" || miss "the artifact list for $name did not load"
-    runs_text="$(jq -r --arg name "$name" \
-      '[.artifacts[] | select(.name == $name) | .workflow_run.id] | unique | reverse | .[:10][]' <<< "$artifacts")" \
-      || miss "the artifact list for $name is not the JSON expected"
+    # Every page is read before any run is checked, so a page that fails is a miss and never a partial answer.
+    page=1 ids=()
+    while :; do
+      artifacts="$(api "actions/artifacts?name=$name&per_page=100&page=$page")" \
+        || miss "page $page of the artifact list for $name did not load"
+      page_text="$(jq -r --arg name "$name" '
+        if (.total_count | type) == "number" and (.artifacts | type) == "array" then
+          (.total_count | tostring), (.artifacts | length | tostring),
+          (.artifacts[] | select(.name == $name) | .workflow_run.id | tostring)
+        else error("not an artifact list") end' <<< "$artifacts")" \
+        || miss "page $page of the artifact list for $name is not the JSON expected"
+      mapfile -t lines <<< "$page_text"
+      total="${lines[0]}" count="${lines[1]}"
+      ids+=("${lines[@]:2}")
+      (( count == 100 && page * 100 < total )) || break
+      page=$((page + 1))
+    done
+    # Newest run first; every candidate is checked.
+    runs_text="$(printf '%s\n' "${ids[@]}" | { grep -E '^[0-9]+$' || true; } | sort -rnu)"
     mapfile -t runs <<< "$runs_text"
     for run_id in "${runs[@]}"; do
       [[ "$run_id" =~ ^[0-9]+$ ]] || continue
@@ -54,7 +70,8 @@ case "${1:-}" in
         and .status == "completed" and .conclusion == "success"
         and (.event == "pull_request" or .event == "push" or .event == "workflow_dispatch")
         and .repository.full_name == $repo and .head_repository.full_name == $repo
-        and .actor.login != "dependabot[bot]" and .triggering_actor.login != "dependabot[bot]"' <<< "$run" > /dev/null
+        and ([.actor.login, .triggering_actor.login]
+          | all(type == "string" and . != "" and . != "dependabot[bot]"))' <<< "$run" > /dev/null
       then
         echo "source_run=$run_id"
         echo "key=$key"
