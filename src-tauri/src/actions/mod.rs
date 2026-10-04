@@ -229,6 +229,12 @@ impl Actions {
         Self { emit, state, workspace, approvals: Arc::new(watch::Sender::new(0)) }
     }
 
+    /// How many callers wait on [`RequestActions::approvals`] now.
+    #[cfg(test)]
+    pub(crate) fn approval_waiters(&self) -> usize {
+        self.approvals.receiver_count()
+    }
+
     fn notify(&self, id: &RevisionId) {
         (self.emit)(DESIGNS_CHANGED, Value::String(id.to_string()));
     }

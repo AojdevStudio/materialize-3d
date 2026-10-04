@@ -343,3 +343,57 @@ async fn a_waiting_get_returns_at_the_timeout_with_approval_still_pending() {
     assert!(waited >= std::time::Duration::from_secs(2) && waited < std::time::Duration::from_secs(8), "{waited:?}");
     server.set_enabled(Arc::new(gui.actions.clone()), 0, false, || async { Ok(String::new()) }).await.expect("stop");
 }
+
+/// `true` once `ready` holds, checking every 20 ms for up to `within`.
+async fn eventually(within: std::time::Duration, ready: impl Fn() -> bool) -> bool {
+    let until = std::time::Instant::now() + within;
+    while std::time::Instant::now() < until {
+        if ready() {
+            return true;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    ready()
+}
+
+/// A client that cancels its waiting `get` (MCP `notifications/cancelled`)
+/// ends the wait at once, not at `wait_s`.
+#[tokio::test(flavor = "multi_thread")]
+async fn cancelling_a_waiting_get_over_mcp_ends_the_wait() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let gui = gui(dir.path());
+    let id = agent_built_revision(&gui, dir.path()).id.to_string();
+    let (server, url) = mcp_over(&gui, "tok-cancel").await;
+    let client = reqwest::Client::new();
+    let post = |session: Option<String>, body: Value| {
+        let mut request = client
+            .post(&url)
+            .header("Authorization", "Bearer tok-cancel")
+            .header("Accept", "application/json, text/event-stream")
+            .json(&body);
+        if let Some(session) = session {
+            request = request.header("Mcp-Session-Id", session);
+        }
+        request.send()
+    };
+    let init = post(None, json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}))
+        .await
+        .expect("initialize");
+    let session = init.headers().get("mcp-session-id").and_then(|v| v.to_str().ok()).map(str::to_owned);
+    post(session.clone(), json!({"jsonrpc":"2.0","method":"notifications/initialized"})).await.expect("initialized");
+
+    let waiting = tokio::spawn(post(
+        session.clone(),
+        json!({"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"get","arguments":{"revision_id": id, "wait_s": 120}}}),
+    ));
+    assert!(eventually(std::time::Duration::from_secs(5), || gui.actions.approval_waiters() == 1).await, "get is waiting");
+    post(session, json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":7,"reason":"the skill moved on"}}))
+        .await
+        .expect("cancel");
+    assert!(
+        eventually(std::time::Duration::from_secs(3), || gui.actions.approval_waiters() == 0).await,
+        "the wait ended when the client cancelled it"
+    );
+    waiting.abort();
+    server.set_enabled(Arc::new(gui.actions.clone()), 0, false, || async { Ok(String::new()) }).await.expect("stop");
+}

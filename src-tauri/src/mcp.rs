@@ -119,17 +119,20 @@ impl ServerHandler for MaterializeMcp {
 
     /// An unlisted name is refused before anything runs; a tool's own failure
     /// (bad arguments included) comes back as an error result the agent reads.
+    /// The call stops when its client cancels it: rmcp cancels `context.ct`
+    /// on the client's cancelled notification, which ends a waiting `get` and
+    /// stops a build at its next check.
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
         let tool = offered(&request.name).ok_or_else(|| ErrorData::invalid_params("tool not found", None))?;
         let call = ToolCall {
             surface: Surface::ExternalMcp,
             actions: self.actions.clone(),
             progress: Arc::new(|_| {}),
-            cancel: CancellationToken::new(),
+            cancel: context.ct.clone(),
             blocking: self.blocking.clone(),
         };
         let args = serde_json::Value::Object(request.arguments.unwrap_or_default());
