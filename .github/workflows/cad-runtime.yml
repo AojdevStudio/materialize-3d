@@ -72,6 +72,9 @@ jobs:
       - name: Two clean amd64 builds match each other and pins-amd64.json
         if: steps.scope.outputs.relevant == 'true'
         run: cad-runtime/reproduce.sh amd64
+      - name: A rebuild from the same inputs reuses the tools image and the kernel
+        if: steps.scope.outputs.relevant == 'true'
+        run: cad-runtime/test/kernel-stamp.sh amd64
       - name: Record the digests
         if: steps.scope.outputs.relevant == 'true'
         run: |

@@ -39,9 +39,12 @@ logged() { # <log name> <command...>
   fi
 }
 
-logged tools-build.log docker build --progress=plain "${nocache[@]}" --iidfile "$out/tools.iid" -t m3d-cad-tools \
-  --build-arg TOOLS_BASE="$TOOLS_BASE" --build-arg DEBIAN_SNAPSHOT="$DEBIAN_SNAPSHOT" \
-  -f "$here/image/tools.Dockerfile" "$here/image"
+# The tools image's id goes into the kernel stamp, so it must be the same on every build from the same inputs.
+# buildx attaches a provenance attestation that records the build's start and finish times, which gives every
+# build a new id; it is off here. SOURCE_DATE_EPOCH fixes the image's own timestamps.
+logged tools-build.log docker build --progress=plain "${nocache[@]}" --provenance=false --iidfile "$out/tools.iid" \
+  -t m3d-cad-tools --build-arg TOOLS_BASE="$TOOLS_BASE" --build-arg DEBIAN_SNAPSHOT="$DEBIAN_SNAPSHOT" \
+  --build-arg SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" -f "$here/image/tools.Dockerfile" "$here/image"
 tools_image="$(cat "$out/tools.iid")"
 
 # The kernel rebuilds only when an input that decides its bytes changes (kernel/stamp.sh lists them).
