@@ -554,7 +554,7 @@ fn run_pipeline(
     let package = partial.join(format!("{}.3mf", parsed.kind()));
     let info = package::write_package(&checked, object_name, printer, &package)?;
     set_read_only(&package)?;
-    fs::write(partial.join("preview.png"), prepared.views.preview())?;
+    fs::write(partial.join(PREVIEW_FILE), prepared.views.preview())?;
     for (view, png) in prepared.views.views() {
         fs::write(partial.join(view.file_name()), png)?;
     }
@@ -597,7 +597,7 @@ fn run_pipeline(
         revision_dir: final_dir.to_path_buf(),
         package_path: rebase(&package),
         package_sha256: Sha256Hex::try_from(info.sha256)?,
-        preview_path: final_dir.join("preview.png"),
+        preview_path: final_dir.join(PREVIEW_FILE),
         slice_dir: rebase(&slice_dir),
         gcode_sha256,
         slicer: SlicerIdentity {
@@ -660,8 +660,17 @@ fn read_view_files(root: &Path, build: &str, expected: &[View]) -> KeptViews {
     };
     let mut kept = KeptViews::default();
     let mut budget = MAX_VIEWS_BYTES;
-    for &view in expected {
-        match views::read_view(&directory, view, budget) {
+    for (index, &view) in expected.iter().enumerate() {
+        let mut read = views::read_view(&directory, &view.file_name(), budget);
+        // A build from before view sets kept its first view only as its preview,
+        // the same render under another name. It is read the same guarded way.
+        if index == 0 && matches!(&read, Err(why) if why == NOT_FOUND) {
+            read = views::read_view(&directory, PREVIEW_FILE, budget).map_err(|why| match why.as_str() {
+                NOT_FOUND => why,
+                _ => format!("{why} ({PREVIEW_FILE})"),
+            });
+        }
+        match read {
             Ok(png) => {
                 budget -= png.len() as u64;
                 kept.views.push((view, png));
@@ -671,6 +680,11 @@ fn read_view_files(root: &Path, build: &str, expected: &[View]) -> KeptViews {
     }
     kept
 }
+
+/// The file a build keeps its preview in, the first of its views.
+const PREVIEW_FILE: &str = "preview.png";
+/// Why a view that is not in its build directory is left out.
+const NOT_FOUND: &str = "not found";
 
 /// Why a view of `bytes` bytes cannot ride in a result with `budget` left.
 fn over_cap(bytes: u64, budget: u64) -> Option<String> {
@@ -714,7 +728,7 @@ mod views {
     use std::os::unix::ffi::OsStrExt;
     use std::path::Path;
 
-    use super::{read_capped, View};
+    use super::{read_capped, NOT_FOUND};
 
     pub(super) struct BuildDirectory(OwnedFd);
 
@@ -754,15 +768,15 @@ mod views {
         }
     }
 
-    pub(super) fn read_view(directory: &BuildDirectory, view: View, budget: u64) -> Result<Vec<u8>, String> {
-        let name = view.file_name();
+    /// Reads the file `name` (one path component) in `directory`.
+    pub(super) fn read_view(directory: &BuildDirectory, name: &str, budget: u64) -> Result<Vec<u8>, String> {
         assert!(!name.contains('/'), "a view's file name is one path component: {name}");
         let name = c_string(name.as_bytes())?;
         let flags = libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC;
         // SAFETY: `directory` is an open directory and `name` a NUL-terminated name in it.
         let file = match owned(unsafe { libc::openat(directory.0.as_raw_fd(), name.as_ptr(), flags) }) {
             Ok(fd) => File::from(fd),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Err("not found".into()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Err(NOT_FOUND.into()),
             Err(err) if refused_link(&err) => return Err("not a regular file".into()),
             Err(err) => return Err(err.to_string()),
         };
@@ -776,7 +790,7 @@ mod views {
     use std::fs;
     use std::path::{Path, PathBuf};
 
-    use super::{read_capped, View};
+    use super::{read_capped, NOT_FOUND};
 
     pub(super) struct BuildDirectory(PathBuf);
 
@@ -790,12 +804,12 @@ mod views {
         }
     }
 
-    pub(super) fn read_view(directory: &BuildDirectory, view: View, budget: u64) -> Result<Vec<u8>, String> {
-        let path = directory.0.join(view.file_name());
+    pub(super) fn read_view(directory: &BuildDirectory, name: &str, budget: u64) -> Result<Vec<u8>, String> {
+        let path = directory.0.join(name);
         match fs::symlink_metadata(&path) {
             Ok(meta) if meta.file_type().is_file() => {}
             Ok(_) => return Err("not a regular file".into()),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Err("not found".into()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Err(NOT_FOUND.into()),
             Err(err) => return Err(err.to_string()),
         }
         read_capped(fs::File::open(&path).map_err(|e| e.to_string())?, budget)
@@ -1319,6 +1333,36 @@ mod tests {
         std::os::unix::fs::symlink(&dir, linked.path().join(BUILD)).expect("symlink");
         let kept = read_view_files(linked.path(), BUILD, &[View::Isometric]);
         assert_eq!(kept.missing, ["isometric: its build directory is not a directory"]);
+    }
+
+    /// A sign built before view sets kept its face only as `preview.png`. That
+    /// file stands in for the first declared view, read the same guarded way.
+    #[test]
+    fn a_legacy_build_s_preview_stands_in_for_its_first_view() {
+        let root = view_root(&[]);
+        fs::write(root.path().join(BUILD).join(PREVIEW_FILE), [5u8; 12]).expect("preview");
+        let kept = read_view_files(root.path(), BUILD, &[View::Face]);
+        assert_eq!((kept.views, kept.missing), (vec![(View::Face, vec![5; 12])], Vec::<String>::new()));
+
+        let kept = read_view_files(root.path(), BUILD, &PART_VIEWS);
+        assert_eq!(kept.views, [(View::Isometric, vec![5; 12])], "only the first view falls back");
+        assert_eq!(kept.missing, ["front: not found", "top: not found"]);
+
+        let empty = view_root(&[]);
+        assert_eq!(read_view_files(empty.path(), BUILD, &[View::Face]).missing, ["face: not found"]);
+    }
+
+    /// A `preview.png` that is a symlink is refused like any view.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_preview_is_not_read_in_place_of_a_view() {
+        let outside = tempfile::tempdir().expect("tempdir");
+        fs::write(outside.path().join("secret.png"), OUTSIDE).expect("secret");
+        let root = view_root(&[]);
+        std::os::unix::fs::symlink(outside.path().join("secret.png"), root.path().join(BUILD).join(PREVIEW_FILE)).expect("symlink");
+        let kept = read_view_files(root.path(), BUILD, &[View::Face]);
+        no_outside_bytes(&kept);
+        assert_eq!((kept.views.len(), kept.missing), (0, vec![format!("face: not a regular file ({PREVIEW_FILE})")]));
     }
 
     /// `read` on its own thread, failing the test if it does not return in
