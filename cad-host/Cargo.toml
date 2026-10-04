@@ -1,5 +1,6 @@
-# PR 5 spike: the CAD worker helper. A standalone workspace, never a member of src-tauri's, so the app's CI jobs
-# do not build or test it. The protocol library is portable and its tests run anywhere; the VM driver is macOS-only.
+# The CAD worker helper (PR 5 spike), which scripts/release/build-macos.sh bundles into the app. A standalone
+# workspace, never a member of src-tauri's: the CAD runtime workflow builds and tests it on the self-hosted Mac, and
+# the app's CI jobs do not. The protocol library is portable and its tests run anywhere; the VM driver is macOS-only.
 [package]
 name = "materialize-cad-host"
 version = "0.0.0"

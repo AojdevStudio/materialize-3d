@@ -4,7 +4,7 @@ Materialize 3D ships as a disk image for Macs with Apple Silicon. You do not nee
 
 ## Requirements
 
-- **Mac:** Apple Silicon (M1 or later). Version 0.1.0 is tested on macOS 26.7. The app declares macOS 13 as its minimum, but macOS 13 to 15 are untested. Intel Macs are not supported.
+- **Mac:** Apple Silicon (M1 or later) with macOS 26.0 or later. Releases after 0.1.0 require macOS 26.0; 0.1.0 itself declared macOS 13 but is tested only on macOS 26.7. Intel Macs are not supported.
 - **Bambu Studio 02.08.02.61:** free from [Bambu Lab's release page](https://github.com/bambulab/BambuStudio/releases/tag/v02.08.02.61). Materialize 3D uses it to slice signs. The app does not install or bundle it.
 - **An Anthropic or OpenAI API key:** the in-app assistant uses it. The provider bills each request at its own rates. Materialize 3D is free and adds no charge. Building, checking, and exporting a sign run on your Mac.
 - **To print:** a Bambu Lab P2S with an AMS and three filaments. The P2S with a 0.4 mm nozzle is the only validated printer.

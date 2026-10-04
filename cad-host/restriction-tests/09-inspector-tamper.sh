@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # The inspector cannot be tampered with. From inside, a generation job cannot write it and its planted mesh and
 # verdict never reach the host, because the inspection guest boots the read-only image with a fresh job disk.
-# From outside, a runtime whose image or kernel changed by one byte is refused before any VM boots.
+# From outside, a runtime whose image or kernel changed by one byte is refused before any VM boots, even with a
+# pins.json beside it that names the changed image's digest: the helper checks only the pins compiled into it.
 # PASS when the in-guest writes fail, the honest cube comes back from inspection, the pinned files are unchanged,
-# and both tampered copies are refused with no VM started.
+# and all three tampered copies are refused with no VM started.
 source "$(dirname "$0")/lib.sh"
 out="$(case_dir from-inside)"
 run_helper build --source "$JOBS/plant-inspector.py" --params "$JOBS/empty.json" --deadline-s 120 --out "$out"
@@ -22,5 +23,15 @@ for name in rootfs.img Image; do
   check "outside: refused before any VM booted ($name)" test "$(field "$out" .guest)" = null
   rm -rf "$copy"
 done
+copy="$OUT_ROOT/$test_name/tampered-with-pins"
+rm -rf "$copy" && mkdir -p "$copy" && cp -c "$RUNTIME"/* "$copy/"
+printf '\x01' | dd of="$copy/rootfs.img" bs=1 seek=4096 conv=notrunc status=none
+"$HELPER" pins | jq --arg d "$(shasum -a 256 "$copy/rootfs.img" | cut -d' ' -f1)" '.files["rootfs.img"].sha256 = $d' \
+  > "$copy/pins.json"
+out="$(case_dir outside-rewritten-pins)"
+RUNTIME="$copy" run_helper generate --source "$JOBS/plant-inspector.py" --params "$JOBS/empty.json" --deadline-s 60 --out "$out"
+check "outside: a changed rootfs.img is refused with a pins.json that names it" test "$(field "$out" .outcome)" = unverified
+check "outside: refused before any VM booted (rewritten pins)" test "$(field "$out" .guest)" = null
+rm -rf "$copy"
 check "no VM is left running" no_vm_running
 finish

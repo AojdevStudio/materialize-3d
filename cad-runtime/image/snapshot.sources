@@ -1,0 +1,16 @@
+# Debian archive for the CAD runtime images, frozen at one snapshot.debian.org timestamp so every build installs the
+# same package versions. build.sh passes the timestamp (DEBIAN_SNAPSHOT), the one the pinned base images were
+# themselves built from; each Dockerfile writes this file over the base image's debian.sources.
+Types: deb
+URIs: http://snapshot.debian.org/archive/debian/@SNAPSHOT@
+Suites: trixie trixie-updates
+Components: main
+Signed-By: /usr/share/keyrings/debian-archive-keyring.pgp
+Check-Valid-Until: no
+
+Types: deb
+URIs: http://snapshot.debian.org/archive/debian-security/@SNAPSHOT@
+Suites: trixie-security
+Components: main
+Signed-By: /usr/share/keyrings/debian-archive-keyring.pgp
+Check-Valid-Until: no

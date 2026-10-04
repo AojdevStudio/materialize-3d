@@ -1,7 +1,7 @@
 # Shared helpers for the restriction tests. Each test sources this, runs the signed helper against the real VM,
 # checks host-side facts, and ends with `finish`, which prints PASS or FAIL and exits 0 or 1.
 #   HELPER   signed materialize-cad-host binary
-#   RUNTIME  runtime directory (Image, rootfs.img, job.img, hostile-initramfs.cpio, pins.json)
+#   RUNTIME  runtime directory (Image, rootfs.img, job.img, hostile-initramfs.cpio), as cad-runtime/build.sh writes it
 #   OUT_ROOT where each test writes its outputs
 set -uo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -46,15 +46,8 @@ check() {
 
 no_vm_running() { ! pgrep -q -f com.apple.Virtualization.VirtualMachine; }
 
-# The runtime files still match their pins after the run (nothing the guest did reached them).
-runtime_unchanged() {
-  local name want got
-  for name in Image rootfs.img job.img; do
-    want="$(jq -r --arg n "$name" '.files[$n].sha256' "$RUNTIME/pins.json")"
-    got="$(shasum -a 256 "$RUNTIME/$name" | cut -d' ' -f1)"
-    [[ "$want" == "$got" ]] || return 1
-  done
-}
+# The runtime files still match the helper's compiled-in pins after the run (nothing the guest did reached them).
+runtime_unchanged() { "$HELPER" verify --runtime "$RUNTIME" >/dev/null 2>&1; }
 
 finish() {
   if ((${#failures[@]} == 0)); then

@@ -10,6 +10,10 @@
 #   APPLE_API_KEY_ID            App Store Connect API key id (notarytool)
 #   APPLE_API_ISSUER_ID         its issuer id
 #   APPLE_API_PRIVATE_KEY       the .p8 key content
+# CAD_RUNTIME_DIR names the arm64 CAD runtime to bundle: the Image, rootfs.img,
+# and job.img that cad-runtime/build.sh arm64 writes (or the cad-runtime-arm64
+# artifact of the CAD runtime workflow). They must match the pins the helper
+# compiles in from cad-runtime/pins-arm64.json, or the build stops.
 # ALLOW_UNTAGGED=1 permits a rehearsal build from a commit without the tag.
 #
 # Output: dist-release/Materialize-3D-<version>-macos-arm64.dmg and a .sha256
@@ -21,10 +25,12 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$root"
 
 [[ "$(uname -s)/$(uname -m)" == Darwin/arm64 ]] || die "run on an Apple Silicon Mac"
-for var in RELEASE_KEYCHAIN RELEASE_KEYCHAIN_PASSWORD APPLE_API_KEY_ID APPLE_API_ISSUER_ID APPLE_API_PRIVATE_KEY; do
+for var in RELEASE_KEYCHAIN RELEASE_KEYCHAIN_PASSWORD APPLE_API_KEY_ID APPLE_API_ISSUER_ID APPLE_API_PRIVATE_KEY \
+  CAD_RUNTIME_DIR; do
   [[ -n "${!var:-}" ]] || die "$var is not set"
 done
 [[ -f "$RELEASE_KEYCHAIN" ]] || die "no keychain at $RELEASE_KEYCHAIN"
+[[ -d "$CAD_RUNTIME_DIR" ]] || die "no CAD runtime at $CAD_RUNTIME_DIR"
 
 # One version everywhere, and the tree is exactly the tagged commit.
 version="$(bun -p "require('./package.json').version")"
@@ -44,16 +50,38 @@ commit="$(git rev-parse HEAD)"
 # session makes other apps raise unlock prompts, but codesign finds identities
 # only through that list. So each codesign call appends the keychain to the
 # list for the seconds it runs, and the caller's list is restored right after.
+original_list="$(security list-keychains -d user)"
 original_keychains=()
 while IFS= read -r line; do
   line="${line#"${line%%[![:space:]]*}"}"; line="${line#\"}"; line="${line%\"}"
   [[ -n "$line" ]] && original_keychains+=("$line")
-done < <(security list-keychains -d user)
+done <<<"$original_list"
 workdir="$(mktemp -d "${TMPDIR:-/tmp}/m3d-release.XXXXXX")"
+# Every step runs even when an earlier one fails, and each failure is reported
+# and fails the build: a release keychain left on the search list or unlocked,
+# or an API key left on disk, must not pass as a successful run.
 cleanup() {
-  security list-keychains -d user -s "${original_keychains[@]}" >/dev/null 2>&1 || true
-  security lock-keychain "$RELEASE_KEYCHAIN" >/dev/null 2>&1 || true
-  rm -rf "$workdir"
+  local rc=$? failed=0 now
+  if ! security list-keychains -d user -s "${original_keychains[@]}" >/dev/null 2>&1; then
+    echo "release: cleanup could not restore the keychain search list" >&2
+    failed=1
+  elif ! now="$(security list-keychains -d user 2>/dev/null)"; then
+    echo "release: cleanup could not read back the keychain search list" >&2
+    failed=1
+  elif [[ "$now" != "$original_list" ]]; then
+    echo "release: the keychain search list differs from the one the run started with" >&2
+    failed=1
+  fi
+  if ! security lock-keychain "$RELEASE_KEYCHAIN" >/dev/null 2>&1; then
+    echo "release: cleanup could not lock $RELEASE_KEYCHAIN" >&2
+    failed=1
+  fi
+  if ! rm -rf "$workdir" || [[ -e "$workdir" ]]; then
+    echo "release: cleanup could not delete $workdir, which holds the API key" >&2
+    failed=1
+  fi
+  if [[ "$failed" == 1 && "$rc" == 0 ]]; then rc=1; fi
+  exit "$rc"
 }
 trap cleanup EXIT
 security unlock-keychain -p "$RELEASE_KEYCHAIN_PASSWORD" "$RELEASE_KEYCHAIN"
@@ -77,7 +105,16 @@ notarize() {
   grep -q "status: Accepted" "$workdir/notary.txt" || die "notarization of $1 was not accepted"
 }
 
-# Tauri builds the app bundle; this script signs, notarizes, and packages it.
+# The CAD helper boots only the runtime whose digests it compiles in, so a
+# runtime that does not match its own commit's pins stops the build here.
+echo "release: building the CAD helper"
+RUSTFLAGS="--remap-path-prefix=$HOME=~" cargo build --release --locked --manifest-path cad-host/Cargo.toml
+helper_bin="${CARGO_TARGET_DIR:-$root/cad-host/target}/release/materialize-cad-host"
+"$helper_bin" verify --runtime "$CAD_RUNTIME_DIR" >/dev/null \
+  || die "the CAD runtime in $CAD_RUNTIME_DIR does not match the pins in cad-runtime/pins-arm64.json"
+
+# Tauri builds the app bundle; this script adds the CAD helper and runtime,
+# then signs, notarizes, and packages it.
 target="${CARGO_TARGET_DIR:-$root/src-tauri/target}"
 rm -rf "$target/release/bundle"
 bun install --frozen-lockfile
@@ -85,8 +122,20 @@ RUSTFLAGS="--remap-path-prefix=$HOME=~" env -u VITE_M3D_E2E -u APPLE_SIGNING_IDE
   bun tauri build --bundles app
 app="$target/release/bundle/macos/Materialize 3D.app"
 bin="$app/Contents/MacOS/materialize-3d"
+helper="$app/Contents/MacOS/materialize-cad-host"
+install -m 0755 "$helper_bin" "$helper"
+mkdir -p "$app/Contents/Resources/cad-runtime"
+for file in Image rootfs.img job.img; do
+  install -m 0644 "$CAD_RUNTIME_DIR/$file" "$app/Contents/Resources/cad-runtime/$file"
+done
 
 echo "release: signing and notarizing the app"
+# Inside out: the helper gets its own signature with the virtualization
+# entitlement, then the app's signature seals it with the rest of the bundle.
+# One notarization covers both, and the staple on the app covers the helper,
+# which as a bare executable could not carry a staple of its own.
+sign --options runtime --identifier com.aojdevstudio.materialize3d.cad-host \
+  --entitlements cad-host/entitlements.plist "$helper"
 sign --options runtime "$app"
 ditto -c -k --keepParent "$app" "$workdir/app.zip"
 notarize "$workdir/app.zip"
@@ -102,24 +151,17 @@ spctl --assess --type execute "$app"
 [[ "$(lipo -archs "$bin")" == arm64 ]] || die "binary is not arm64-only"
 plist="$app/Contents/Info.plist"
 [[ "$(plutil -extract CFBundleShortVersionString raw "$plist")" == "$version" ]] || die "Info.plist version is not $version"
-[[ "$(plutil -extract LSMinimumSystemVersion raw "$plist")" == 13.0 ]] || die "unexpected minimum macOS"
 # grep reads a saved copy: piping strings into grep -q would fail on SIGPIPE
 # under pipefail exactly when a match is found.
-strings "$bin" > "$workdir/strings.txt"
-if grep -qE 'M3D_E2E_(TOKEN|PORT|DATA_DIR)' "$workdir/strings.txt"; then die "the e2e harness is in the binary"; fi
-if grep -qF "$HOME" "$workdir/strings.txt"; then die "the binary embeds the build machine's home path"; fi
+for exe in "$bin" "$helper"; do
+  strings "$exe" > "$workdir/strings.txt"
+  if grep -qE 'M3D_E2E_(TOKEN|PORT|DATA_DIR)' "$workdir/strings.txt"; then die "the e2e harness is in $exe"; fi
+  if grep -qF "$HOME" "$workdir/strings.txt"; then die "$exe embeds the build machine's home path"; fi
+done
 if grep -rlq __M3D_E2E_DIALOGS__ dist; then die "the scripted file dialog is in the frontend"; fi
-
-# The bundle holds the binary, its icons (Assets.car for macOS 26, icon.icns
-# for earlier releases), the license notices, and signing data.
-expected="$(printf '%s\n' \
-  Contents/CodeResources Contents/Info.plist Contents/MacOS/materialize-3d \
-  Contents/Resources/AGPL-3.0.txt Contents/Resources/Assets.car Contents/Resources/LICENSE \
-  Contents/Resources/THIRD_PARTY_NOTICES.md Contents/Resources/icon.icns \
-  Contents/_CodeSignature/CodeResources | sort)"
-actual="$(cd "$app" && find . -type f | sed 's|^\./||' | sort)"
-[[ "$actual" == "$expected" ]] || die "unexpected files in the app bundle:
-$(diff <(echo "$expected") <(echo "$actual") || true)"
+# The exact file list, the minimum macOS, the helper's signature and
+# entitlement, and the bundled runtime against the helper's pins.
+scripts/release/check-app-bundle.sh "$app" "$team"
 
 echo "release: building, signing, and notarizing the DMG"
 stage="$workdir/dmg"
