@@ -1029,11 +1029,12 @@ pub fn get(conn: &Connection, id: &RevisionId) -> Result<Revision> {
         .ok_or_else(|| RevisionError::NotFound(id.to_string()))?
 }
 
-/// Every export a person made of revision `id`, oldest first.
+/// Every export a person made of revision `id`, in the order they were made.
+/// That is insertion order (`rowid`), not `exported_at`, which a clock set
+/// back would put out of order.
 pub fn exports(conn: &Connection, id: &RevisionId) -> Result<Vec<ExportRecord>> {
-    let mut stmt = conn.prepare(
-        "SELECT format, path, sha256, exported_at FROM revision_exports WHERE revision_id = ?1 ORDER BY exported_at, rowid",
-    )?;
+    let mut stmt =
+        conn.prepare("SELECT format, path, sha256, exported_at FROM revision_exports WHERE revision_id = ?1 ORDER BY rowid")?;
     let rows = stmt.query_map(params![id.as_str()], |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?))
     })?;

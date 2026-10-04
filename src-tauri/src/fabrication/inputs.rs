@@ -7,6 +7,11 @@
 //! Storing the same bytes again reuses the stored file. Every read of a stored
 //! input hashes it again, so a stored file that changed is never built.
 //!
+//! The store is bounded twice: each file by [`MAX_INPUT_BYTES`], and the
+//! whole store by [`MAX_STORE_BYTES`]. A file is stored before its build
+//! runs, so a failed build keeps its input; the total cap is what keeps any
+//! MCP caller from filling the disk through `import_part`.
+//!
 //! The bytes are data. Nothing here or in the kind that reads them runs them.
 
 use std::fs::{self, File};
@@ -15,9 +20,17 @@ use std::path::{Path, PathBuf};
 
 use super::revisions::Sha256Hex;
 
-/// Most bytes one imported file may have: room for a binary STL at the
-/// slicer's 1,000,000-triangle cap (about 48 MiB), and a 3MF of that mesh.
+/// Most bytes one imported file may have. The binary STL at the slicer's
+/// 1,000,000-triangle cap sets it: 84 + 50 bytes a triangle is 50,000,084
+/// bytes (47.7 MiB). A 3MF of that same mesh is often larger, and above this
+/// cap it is refused; a 3MF from Fusion of a printable part is far smaller.
 pub const MAX_INPUT_BYTES: u64 = 64 << 20;
+
+/// Most bytes the whole store may hold: sixteen files at the per-file cap,
+/// or hundreds of typical parts of a few MiB. A file that would pass it is
+/// refused. Nothing evicts a stored input, because a revision's spec names
+/// it and a revise rebuilds from it.
+pub const MAX_STORE_BYTES: u64 = 1 << 30;
 
 #[derive(Debug, thiserror::Error)]
 pub enum InputError {
@@ -37,6 +50,8 @@ pub enum InputError {
     Changed { expected: Sha256Hex, actual: Sha256Hex },
     #[error("cannot store the input: {0}")]
     Store(io::Error),
+    #[error("the input store at {root} holds {held} bytes; this file would take it past its {max}-byte cap")]
+    StoreFull { root: PathBuf, held: u64, max: u64 },
 }
 
 /// Content-addressed files under one directory.
@@ -57,6 +72,9 @@ impl InputStore {
 
     /// Keeps `bytes` under their hash and returns it. Bytes already stored
     /// intact are not written again; a stored copy that changed is replaced.
+    /// New bytes that would take the store past [`MAX_STORE_BYTES`] are
+    /// refused. Two imports at the same moment can each pass the check, so
+    /// the store can exceed the cap by at most one file per concurrent call.
     pub fn put(&self, bytes: &[u8]) -> Result<Sha256Hex, InputError> {
         let sha256 = Sha256Hex::of_bytes(bytes);
         let path = self.path_of(&sha256);
@@ -65,6 +83,10 @@ impl InputStore {
             Ok(_) => {}
             Err(err) if err.kind() == io::ErrorKind::NotFound => {}
             Err(err) => return Err(InputError::Store(err)),
+        }
+        let held = self.held()?;
+        if held.saturating_add(bytes.len() as u64) > MAX_STORE_BYTES {
+            return Err(InputError::StoreFull { root: self.root.clone(), held, max: MAX_STORE_BYTES });
         }
         fs::create_dir_all(&self.root).map_err(InputError::Store)?;
         let mut staged = tempfile::NamedTempFile::new_in(&self.root).map_err(InputError::Store)?;
@@ -75,6 +97,23 @@ impl InputStore {
         staged.as_file().set_permissions(read_only).map_err(InputError::Store)?;
         staged.persist(&path).map_err(|err| InputError::Store(err.error))?;
         Ok(sha256)
+    }
+
+    /// Bytes the store's files hold now.
+    fn held(&self) -> Result<u64, InputError> {
+        let entries = match fs::read_dir(&self.root) {
+            Ok(entries) => entries,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(0),
+            Err(err) => return Err(InputError::Store(err)),
+        };
+        let mut held = 0u64;
+        for entry in entries {
+            let metadata = entry.and_then(|entry| entry.metadata()).map_err(InputError::Store)?;
+            if metadata.is_file() {
+                held = held.saturating_add(metadata.len());
+            }
+        }
+        Ok(held)
     }
 
     /// The stored bytes of `sha256`, hashed again on the way out.
@@ -179,6 +218,23 @@ mod tests {
         let ok = dir.path().join("ok.stl");
         fs::write(&ok, b"solid x").expect("write");
         assert_eq!(read_source(&ok).expect("read"), b"solid x");
+    }
+
+    /// New bytes that would take the store past its total cap are refused and
+    /// not written; bytes already stored are still reused.
+    #[test]
+    fn the_store_refuses_new_bytes_past_its_total_cap() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = InputStore::new(dir.path().join("inputs"));
+        let kept = store.put(b"kept mesh").expect("put");
+        // Sparse files: their length counts, and no disk is used.
+        let filler = MAX_STORE_BYTES - b"kept mesh".len() as u64 - 4;
+        File::create(dir.path().join("inputs").join("filler")).expect("create").set_len(filler).expect("grow");
+        assert_eq!(store.put(b"four").expect("exactly at the cap"), Sha256Hex::of_bytes(b"four"));
+        let refused = store.put(b"one more");
+        assert!(matches!(refused, Err(InputError::StoreFull { max: MAX_STORE_BYTES, .. })), "{refused:?}");
+        assert!(matches!(store.get(&Sha256Hex::of_bytes(b"one more")), Err(InputError::Missing(_))), "nothing was written");
+        assert_eq!(store.put(b"kept mesh").expect("reused"), kept, "stored bytes are reused at the cap");
     }
 
     #[cfg(unix)]

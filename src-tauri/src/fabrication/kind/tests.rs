@@ -90,9 +90,6 @@ fn the_registry_names_each_kind_once_in_snake_case() {
     unique.sort();
     unique.dedup();
     assert_eq!(unique.len(), ids.len(), "duplicate kind id");
-    let mut unique = ids.clone();
-    unique.dedup();
-    assert_eq!(unique, ids, "duplicate kind id");
     for id in ids {
         let snake = id.starts_with(|c: char| c.is_ascii_lowercase())
             && id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
