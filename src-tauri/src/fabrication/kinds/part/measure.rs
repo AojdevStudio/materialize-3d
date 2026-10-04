@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use super::spec::{Axis, Measure, MeasuredRequirement, ValidPart};
+use super::spec::{Axis, Measure, MeasuredRequirement};
 use super::{MESH_CHECKS, PRINT_CHECKS};
 use crate::fabrication::checks::{CheckId, CheckOutcome, CheckPhase};
 use crate::fabrication::kind::KernelError;
@@ -23,14 +23,19 @@ const THIN_MM2: f64 = 1.0;
 const MIN_CONTACT_MM2: f64 = 25.0;
 const MIN_CONTACT_SHARE: f64 = 0.1;
 
-/// Every geometry and print check of `model`, in the bound plan's order:
-/// each body's mesh checks, every requirement, each body's print checks. The
-/// layer slicing asks `cancelled` once a layer and returns
-/// [`KernelError::Cancelled`] at the first yes.
-pub fn measure(valid: &ValidPart, model: &PrintableModel, cancelled: &dyn Fn() -> bool) -> Result<Vec<CheckOutcome>, KernelError> {
-    let mut outcomes: Vec<CheckOutcome> = model.bodies().iter().flat_map(|body| mesh_checks(body, model, valid.bed())).collect();
+/// Every geometry and print check of `model` on a printer with build volume
+/// `bed`, in the bound plan's order: each body's mesh checks, every
+/// requirement, each body's print checks. The layer slicing asks `cancelled`
+/// once a layer and returns [`KernelError::Cancelled`] at the first yes.
+pub fn measure(
+    bed: [Um; 3],
+    requirements: &[MeasuredRequirement],
+    model: &PrintableModel,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Vec<CheckOutcome>, KernelError> {
+    let mut outcomes: Vec<CheckOutcome> = model.bodies().iter().flat_map(|body| mesh_checks(body, model, bed)).collect();
     let fits = outcomes.iter().filter(|o| o.id.as_str().starts_with("geometry.bounds.")).all(|o| o.passed);
-    outcomes.extend(valid.requirements().iter().map(|r| requirement(r, model)));
+    outcomes.extend(requirements.iter().map(|r| requirement(r, model)));
     // A part that fails its bounds is not sliced: a model the printer cannot
     // hold could be as tall as the decoder admits.
     let sliced = if fits {
