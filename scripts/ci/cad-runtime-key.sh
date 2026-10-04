@@ -52,6 +52,9 @@ case "${1:-}" in
     while (( page <= pages )); do
       artifacts="$(api "actions/artifacts?name=$name&per_page=100&page=$page")" \
         || miss "page $page of the artifact list for $name did not load"
+      if (( page == 1 )) && jq -e '.total_count == 0 and .artifacts == []' <<< "$artifacts" > /dev/null 2>&1; then
+        miss "no artifact is named $name"
+      fi
       page_text="$(jq -r --arg name "$name" --argjson max_total 5000 '
         if (.total_count | if type == "number" then . == floor and . >= 1 and . <= $max_total else false end)
           and (.artifacts | type) == "array" then

@@ -197,6 +197,11 @@ echo '{"artifacts":[{"id":1,"name":"'"$name"'","workflow_run":{"id":11}}]}' > "$
 no_hit "an artifact list without total_count was a hit"
 echo '{"total_count":"1","artifacts":[{"id":1,"name":"'"$name"'","workflow_run":{"id":11}}]}' > "$stub/artifacts-1.json"
 no_hit "an artifact list with a string total_count was a hit"
+# An empty list, the usual miss, says so.
+echo '{"total_count":0,"artifacts":[]}' > "$stub/artifacts-1.json"
+if reason="$(PATH="$work/bin:$PATH" STUB="$stub" EXPECTED_NAME="$name" GH_TOKEN=test-token \
+  "$repo/scripts/ci/cad-runtime-key.sh" lookup o/r 2>&1 > /dev/null)"; then fail "an empty artifact list was a hit"; fi
+[[ "$reason" == *"no artifact is named $name"* ]] || fail "an empty artifact list gave another reason: $reason"
 # total_count must be an integer from 1 to 5000 before bash does any arithmetic with it: the lookup must refuse the
 # value itself, not fail later on it.
 for bad_total in 18446744073709551600 -1 1.5 0 '"1"' null; do
