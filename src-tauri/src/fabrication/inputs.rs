@@ -15,6 +15,10 @@
 //! serializes every write, from the size check through the rename, so
 //! concurrent imports cannot pass the caps together.
 //!
+//! The store assumes one writer process. The lock lives in this process and
+//! serializes the writes of every store in it; it does not guard against a
+//! second app process writing the same store. The app runs one instance.
+//!
 //! The bytes are data. Nothing here or in the kind that reads them runs them.
 
 use std::fs::{self, File};
@@ -124,19 +128,20 @@ impl InputStore {
         let sha256 = Sha256Hex::of_bytes(bytes);
         let path = self.path_of(&sha256);
         let _writing = STORE_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
-        let replaced = match Sha256Hex::of_file(&path) {
+        // The charge of a stored copy that changed, which this write replaces.
+        let replaced: Option<u64> = match Sha256Hex::of_file(&path) {
             Ok(stored) if stored == sha256 => return Ok(sha256),
-            Ok(_) => fs::metadata(&path).map(|m| charge(&m)).map_err(InputError::Store)?,
-            Err(err) if err.kind() == io::ErrorKind::NotFound => 0,
+            Ok(_) => Some(fs::metadata(&path).map(|m| charge(&m)).map_err(InputError::Store)?),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => None,
             Err(err) => return Err(InputError::Store(err)),
         };
         fs::create_dir_all(&self.root).map_err(InputError::Store)?;
         let usage = self.usage()?;
         let new = (bytes.len() as u64).div_ceil(BLOCK).saturating_mul(BLOCK);
-        if usage.bytes.saturating_sub(replaced).saturating_add(new) > self.max_bytes {
+        if usage.bytes.saturating_sub(replaced.unwrap_or(0)).saturating_add(new) > self.max_bytes {
             return Err(InputError::StoreFull { root: self.root.clone(), held: usage.bytes, max: self.max_bytes });
         }
-        if replaced == 0 && usage.files >= self.max_files {
+        if replaced.is_none() && usage.files >= self.max_files {
             return Err(InputError::TooManyFiles { root: self.root.clone(), max: self.max_files });
         }
         let mut staged = tempfile::Builder::new().prefix(STAGED_PREFIX).tempfile_in(&self.root).map_err(InputError::Store)?;
@@ -321,6 +326,24 @@ mod tests {
         fs::set_permissions(&path, writable).expect("chmod");
         fs::write(&path, b"changed!!!").expect("tamper");
         assert_eq!(store.put(b"first mesh").expect("repair at the cap"), sha);
+        assert_eq!(store.get(&sha).expect("repaired"), b"first mesh");
+    }
+
+    /// A stored input emptied on disk is still a file the store holds, so its
+    /// repair at the count cap adds no file and succeeds.
+    #[test]
+    fn an_empty_changed_input_at_the_count_cap_is_repaired() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = InputStore::with_caps(dir.path().join("inputs"), MAX_STORE_BYTES, 2);
+        let sha = store.put(b"first mesh").expect("first");
+        store.put(b"second mesh").expect("second, now at the count cap");
+        let path = dir.path().join("inputs").join(sha.as_str());
+        let mut writable = fs::metadata(&path).expect("meta").permissions();
+        #[allow(clippy::permissions_set_readonly_false)]
+        writable.set_readonly(false);
+        fs::set_permissions(&path, writable).expect("chmod");
+        fs::write(&path, b"").expect("emptied");
+        assert_eq!(store.put(b"first mesh").expect("repair at the count cap"), sha);
         assert_eq!(store.get(&sha).expect("repaired"), b"first mesh");
     }
 
