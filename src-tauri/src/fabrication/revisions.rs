@@ -429,6 +429,24 @@ impl ExportFormat {
             ExportFormat::IncludedStep => "included_step",
         }
     }
+
+    fn from_db(text: &str) -> Result<Self> {
+        match text {
+            "print_package" => Ok(ExportFormat::PrintPackage),
+            "included_step" => Ok(ExportFormat::IncludedStep),
+            other => Err(RevisionError::Corrupt(format!("export format {other}"))),
+        }
+    }
+}
+
+/// One file a person exported from a revision: what they exported, where
+/// they chose to put it, and the SHA-256 of the bytes written there.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ExportRecord {
+    pub format: ExportFormat,
+    pub path: String,
+    pub sha256: Sha256Hex,
+    pub exported_at: String,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -1009,6 +1027,21 @@ pub fn get(conn: &Connection, id: &RevisionId) -> Result<Revision> {
     conn.query_row(&format!("{SELECT} WHERE r.id = ?1"), params![id.as_str()], row_to_revision)
         .optional()?
         .ok_or_else(|| RevisionError::NotFound(id.to_string()))?
+}
+
+/// Every export a person made of revision `id`, oldest first.
+pub fn exports(conn: &Connection, id: &RevisionId) -> Result<Vec<ExportRecord>> {
+    let mut stmt = conn.prepare(
+        "SELECT format, path, sha256, exported_at FROM revision_exports WHERE revision_id = ?1 ORDER BY exported_at, rowid",
+    )?;
+    let rows = stmt.query_map(params![id.as_str()], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?))
+    })?;
+    rows.map(|row| {
+        let (format, path, sha256, exported_at) = row?;
+        Ok(ExportRecord { format: ExportFormat::from_db(&format)?, path, sha256: Sha256Hex::try_from(sha256)?, exported_at })
+    })
+    .collect()
 }
 
 pub fn list_lineage(conn: &Connection, lineage: &LineageId) -> Result<Vec<Revision>> {

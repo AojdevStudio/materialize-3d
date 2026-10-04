@@ -162,6 +162,26 @@ impl RequestActions for FakeActions {
         Ok(PrinterState::default())
     }
 
+    fn import_part(
+        &self,
+        _path: &std::path::Path,
+        _title: &str,
+        _units: crate::fabrication::kinds::imported_part::Units,
+        _requester: RequestActor,
+        _control: &BuildControl<'_>,
+    ) -> Result<BuildOutcome, ActionError> {
+        Err(ActionError::State("FakeActions does not import".into()))
+    }
+
+    fn exports(&self, _id: &str) -> Result<Vec<crate::fabrication::revisions::ExportRecord>, ActionError> {
+        Ok(Vec::new())
+    }
+
+    /// Closed: no approval arrives through this fake.
+    fn approvals(&self) -> tokio::sync::watch::Receiver<u64> {
+        tokio::sync::watch::channel(0).1
+    }
+
     fn kinds(&self) -> Vec<&'static dyn crate::fabrication::kind::KindDriver> {
         crate::fabrication::kind::available(&crate::fabrication::kind::KernelContext::without_runtime(crate::fabrication::printer::P2S_04))
     }
@@ -226,6 +246,26 @@ impl RequestActions for PipelineActions {
 
     fn printer_status(&self) -> Result<PrinterState, ActionError> {
         Ok(PrinterState::default())
+    }
+
+    fn import_part(
+        &self,
+        _path: &std::path::Path,
+        _title: &str,
+        _units: crate::fabrication::kinds::imported_part::Units,
+        _requester: RequestActor,
+        _control: &BuildControl<'_>,
+    ) -> Result<BuildOutcome, ActionError> {
+        Err(ActionError::State("PipelineActions does not import".into()))
+    }
+
+    fn exports(&self, _id: &str) -> Result<Vec<crate::fabrication::revisions::ExportRecord>, ActionError> {
+        Ok(Vec::new())
+    }
+
+    /// Closed: no approval arrives through this fake.
+    fn approvals(&self) -> tokio::sync::watch::Receiver<u64> {
+        tokio::sync::watch::channel(0).1
     }
 
     fn kinds(&self) -> Vec<&'static dyn crate::fabrication::kind::KindDriver> {
@@ -630,6 +670,26 @@ impl RequestActions for ScriptedBuilds {
 
     fn printer_status(&self) -> Result<PrinterState, ActionError> {
         Ok(PrinterState::default())
+    }
+
+    fn import_part(
+        &self,
+        _path: &std::path::Path,
+        _title: &str,
+        _units: crate::fabrication::kinds::imported_part::Units,
+        _requester: RequestActor,
+        _control: &BuildControl<'_>,
+    ) -> Result<BuildOutcome, ActionError> {
+        Err(ActionError::State("ScriptedBuilds does not import".into()))
+    }
+
+    fn exports(&self, _id: &str) -> Result<Vec<crate::fabrication::revisions::ExportRecord>, ActionError> {
+        Ok(Vec::new())
+    }
+
+    /// Closed: no approval arrives through this fake.
+    fn approvals(&self) -> tokio::sync::watch::Receiver<u64> {
+        tokio::sync::watch::channel(0).1
     }
 
     fn kinds(&self) -> Vec<&'static dyn KindDriver> {

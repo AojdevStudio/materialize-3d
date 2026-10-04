@@ -13,13 +13,15 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde_json::Value;
+use tokio::sync::watch;
 
 pub use gui::HumanActor;
 
 use crate::fabrication::checks::CheckId;
 use crate::fabrication::kind::{self, BuildControl, KindDriver};
+use crate::fabrication::kinds::imported_part::Units;
 use crate::fabrication::pipeline::{self, BuildError, BuildOutcome, BuildRequest, KeptViews, Workspace};
-use crate::fabrication::revisions::{self, Actor, ExportFormat, LineageId, Revision, RevisionId, Sha256Hex};
+use crate::fabrication::revisions::{self, Actor, ExportFormat, ExportRecord, LineageId, Revision, RevisionId, Sha256Hex};
 use crate::state::{AppState, PrinterState};
 
 /// Sent with a revision id whenever a revision changes.
@@ -123,7 +125,15 @@ pub trait RequestActions: Send + Sync + 'static {
         control: &BuildControl<'_>,
     ) -> Result<BuildOutcome, ActionError>;
     fn list(&self, limit: u32) -> Result<Vec<Revision>, ActionError>;
+    /// Re-hashes an approved package first, so a changed file reads as void.
     fn get(&self, id: &str) -> Result<Revision, ActionError>;
+    /// Every export a person made of revision `id`, oldest first, with the
+    /// path they chose and the hash of what was written.
+    fn exports(&self, id: &str) -> Result<Vec<ExportRecord>, ActionError>;
+    /// A receiver whose value changes each time a person approves a revision,
+    /// so a caller waiting for a decision wakes on the approval itself. A
+    /// closed channel means no approval can arrive through it.
+    fn approvals(&self) -> watch::Receiver<u64>;
     fn show(&self, id: &str) -> Result<(), ActionError>;
     fn printer_status(&self) -> Result<PrinterState, ActionError>;
     /// The kinds this app can build now, in registry order: `part` only with a
@@ -143,6 +153,18 @@ pub trait RequestActions: Send + Sync + 'static {
         kind: &str,
         spec: Value,
         lineage_id: &str,
+        requester: RequestActor,
+        control: &BuildControl<'_>,
+    ) -> Result<BuildOutcome, ActionError>;
+
+    /// Blocking, like [`RequestActions::build`]: imports the mesh file at
+    /// `path` as a new `imported_part` design. Only MCP offers it, because it
+    /// takes a path on this computer. See [`pipeline::import_part`].
+    fn import_part(
+        &self,
+        path: &Path,
+        title: &str,
+        units: Units,
         requester: RequestActor,
         control: &BuildControl<'_>,
     ) -> Result<BuildOutcome, ActionError>;
@@ -197,12 +219,14 @@ pub struct Actions {
     emit: EventSink,
     state: Arc<AppState>,
     workspace: Workspace,
+    /// Counts approvals; every clone shares it ([`RequestActions::approvals`]).
+    approvals: Arc<watch::Sender<u64>>,
 }
 
 impl Actions {
     /// `emit` delivers [`DESIGNS_CHANGED`] and [`DESIGNS_OPEN`]; no Tauri runtime is needed.
     pub fn new(emit: EventSink, state: Arc<AppState>, workspace: Workspace) -> Self {
-        Self { emit, state, workspace }
+        Self { emit, state, workspace, approvals: Arc::new(watch::Sender::new(0)) }
     }
 
     fn notify(&self, id: &RevisionId) {
@@ -222,6 +246,20 @@ impl Actions {
         let lineage_id = lineage_id.map(LineageId::parse).transpose()?;
         let request = BuildRequest { kind: kind.to_owned(), spec, lineage_id, actor };
         let outcome = pipeline::build(&self.state, &self.workspace, request, control)?;
+        self.notify(&outcome.revision.id);
+        Ok(outcome)
+    }
+
+    /// See [`RequestActions::import_part`].
+    pub fn import_part(
+        &self,
+        path: &Path,
+        title: &str,
+        units: Units,
+        actor: Actor,
+        control: &BuildControl<'_>,
+    ) -> Result<BuildOutcome, ActionError> {
+        let outcome = pipeline::import_part(&self.state, &self.workspace, path, title, units, actor, control)?;
         self.notify(&outcome.revision.id);
         Ok(outcome)
     }
@@ -264,6 +302,12 @@ impl Actions {
         Ok(pipeline::with_db(&self.state, |conn| revisions::check_integrity(conn, &id))?)
     }
 
+    /// See [`RequestActions::exports`].
+    pub fn exports(&self, id: &str) -> Result<Vec<ExportRecord>, ActionError> {
+        let id = RevisionId::parse(id)?;
+        Ok(pipeline::with_db(&self.state, |conn| revisions::exports(conn, &id))?)
+    }
+
     pub fn preview_png(&self, id: &str) -> Result<Vec<u8>, ActionError> {
         let revision = self.get(id)?;
         let artifacts = revision.artifacts().ok_or_else(|| ActionError::State("this revision has no preview".into()))?;
@@ -294,6 +338,8 @@ impl Actions {
             revisions::approve(conn, &id, &expected, &acknowledged_warnings, who.actor())
         })?;
         self.notify(&revision.id);
+        // After the approval is committed, so a waiter that wakes reads it.
+        self.approvals.send_modify(|count| *count += 1);
         Ok(revision)
     }
 
@@ -355,8 +401,27 @@ impl RequestActions for Actions {
         Actions::list(self, limit)
     }
 
+    fn import_part(
+        &self,
+        path: &Path,
+        title: &str,
+        units: Units,
+        requester: RequestActor,
+        control: &BuildControl<'_>,
+    ) -> Result<BuildOutcome, ActionError> {
+        Actions::import_part(self, path, title, units, requester.into(), control)
+    }
+
     fn get(&self, id: &str) -> Result<Revision, ActionError> {
         Actions::get(self, id)
+    }
+
+    fn exports(&self, id: &str) -> Result<Vec<ExportRecord>, ActionError> {
+        Actions::exports(self, id)
+    }
+
+    fn approvals(&self) -> watch::Receiver<u64> {
+        self.approvals.subscribe()
     }
 
     fn show(&self, id: &str) -> Result<(), ActionError> {

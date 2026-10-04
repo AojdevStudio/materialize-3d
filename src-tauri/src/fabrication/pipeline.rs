@@ -919,6 +919,9 @@ fn handoff_matches_slice(template: &Value, palette: &Palette, printer: &PrinterP
 }
 
 #[cfg(test)]
+mod import_tests;
+
+#[cfg(test)]
 mod tests {
     use std::cell::{Cell, RefCell};
 

@@ -10,8 +10,14 @@
 //! ([`RequestActions::kinds`]), so `part` is offered exactly when the CAD
 //! runtime verified. A tool's result is [`ToolContent`]: the JSON summary,
 //! plus the build's views when it built one.
+//!
+//! `import_part` is the one tool only MCP offers: it takes a path on this
+//! computer. `get` can wait for a person's decision without holding a thread:
+//! it wakes on the approval itself ([`RequestActions::approvals`]).
 
+use std::path::Path;
 use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
@@ -23,9 +29,12 @@ use tokio_util::task::TaskTracker;
 use crate::actions::{ActionError, RequestActions, RequestActor};
 use crate::fabrication::checks::CheckId;
 use crate::fabrication::kind::{inlined_schema, BuildControl, KindDriver, View};
+use crate::fabrication::kinds::imported_part::Units;
 use crate::fabrication::kinds::part::is_requirement_check;
 use crate::fabrication::pipeline::{BuildOutcome, BuildStep, KeptViews, Stage};
-use crate::fabrication::revisions::{Actor, Approval, Artifacts, BuildState, PrintValidation, RecordedCheck, Revision};
+use crate::fabrication::revisions::{
+    Actor, Approval, Artifacts, BuildState, ExportRecord, PrintValidation, RecordedCheck, Revision,
+};
 
 /// Where a model meets the tools. The surface fixes the caller's
 /// [`RequestActor`], so no argument can claim to be someone else.
@@ -53,6 +62,8 @@ pub enum Tool {
     DescribeKind,
     Build,
     Revise,
+    /// MCP only: it takes a path on this computer.
+    ImportPart,
     Get,
     List,
     Show,
@@ -164,6 +175,53 @@ struct ReviseArgs {
     /// What changes, as an RFC 7396 merge patch on that revision's spec: name only the fields that change, give
     /// null to remove one, and nested objects such as params merge. On a part, a patch may change source too.
     changes: serde_json::Map<String, Value>,
+}
+
+/// `import_part` arguments.
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct ImportPartArgs {
+    /// Absolute path of a 3MF or STL file on this computer holding one body. The app copies it and never changes it.
+    path: String,
+    /// The design's title, shown in revision lists.
+    title: String,
+    /// The unit the file's coordinates are in. A 3MF must state this same unit.
+    units: Units,
+}
+
+/// `get` arguments.
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct GetArgs {
+    /// A design revision id (`revision_id` from build or list).
+    revision_id: String,
+    /// While approval is pending, wait up to this many seconds for a person to decide; omit or 0 to return at once.
+    #[serde(default)]
+    #[schemars(range(min = 0, max = 900))]
+    wait_s: Option<WaitSeconds>,
+}
+
+/// How long `get` may wait, in seconds. Over [`WaitSeconds::MAX`] is refused,
+/// never clamped, so the caller learns its request was not honored.
+#[derive(Deserialize, JsonSchema)]
+#[serde(try_from = "u32")]
+struct WaitSeconds(u32);
+
+impl WaitSeconds {
+    /// 15 minutes: the design's example wait.
+    const MAX: u32 = 900;
+}
+
+impl TryFrom<u32> for WaitSeconds {
+    type Error = String;
+
+    fn try_from(seconds: u32) -> Result<Self, Self::Error> {
+        if seconds <= Self::MAX {
+            Ok(WaitSeconds(seconds))
+        } else {
+            Err(format!("wait_s must be from 0 to {}, got {seconds}", Self::MAX))
+        }
+    }
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -341,6 +399,17 @@ pub struct BuildResult {
     pub views_missing: Vec<String>,
 }
 
+/// What `get` returns: the summary and every export a person made of the
+/// revision. An export names the path the person chose; Ossie decided that
+/// path is visible to callers (design.md, "Decided by Ossie").
+#[derive(Debug, Clone, Serialize)]
+pub struct GetResult {
+    #[serde(flatten)]
+    pub revision: DesignSummary,
+    /// Oldest first: the format, the path written, and the SHA-256 of the file written there.
+    pub exports: Vec<ExportRecord>,
+}
+
 /// What `show` returns.
 #[derive(Debug, Clone, Serialize)]
 pub struct Shown {
@@ -427,9 +496,53 @@ async fn build_result(
     Ok(ToolContent { value: encode(result)?, views })
 }
 
+/// `revision_id` as it is now, re-hashed first, with its exports. With a
+/// `wait` and approval pending, it first waits for a person's approval of
+/// any revision (each one wakes it to read again), the end of `wait`, or the
+/// call's cancellation, and then reads the revision as it is at that moment.
+/// The wait holds no thread and no database lock, so other calls run.
+async fn read_after_decision(
+    call: &ToolCall,
+    revision_id: String,
+    wait: Duration,
+) -> Result<(Revision, Vec<ExportRecord>), ToolError> {
+    let deadline = tokio::time::Instant::now() + wait;
+    let mut approvals = call.actions.approvals();
+    loop {
+        // Marked seen before reading, so an approval after this read wakes the wait below.
+        approvals.borrow_and_update();
+        let id = revision_id.clone();
+        let (revision, exports) = call.run(move |actions| Ok((actions.get(&id)?, actions.exports(&id)?))).await?;
+        let pending = matches!(revision.approval, Approval::Pending);
+        if !pending || tokio::time::Instant::now() >= deadline || call.cancel.is_cancelled() {
+            return Ok((revision, exports));
+        }
+        let closed = tokio::select! {
+            changed = approvals.changed() => changed.is_err(),
+            _ = tokio::time::sleep_until(deadline) => false,
+            _ = call.cancel.cancelled() => false,
+        };
+        // A closed channel carries no approval: wait out the time.
+        if closed {
+            tokio::select! {
+                _ = tokio::time::sleep_until(deadline) => {}
+                _ = call.cancel.cancelled() => {}
+            }
+        }
+    }
+}
+
 impl Tool {
-    pub const ALL: [Tool; 7] =
-        [Tool::DescribeKind, Tool::Build, Tool::Revise, Tool::Get, Tool::List, Tool::Show, Tool::PrinterStatus];
+    pub const ALL: [Tool; 8] = [
+        Tool::DescribeKind,
+        Tool::Build,
+        Tool::Revise,
+        Tool::ImportPart,
+        Tool::Get,
+        Tool::List,
+        Tool::Show,
+        Tool::PrinterStatus,
+    ];
 
     /// The tools offered on `surface`, in [`Tool::ALL`] order.
     pub fn on(surface: Surface) -> impl Iterator<Item = Tool> {
@@ -438,6 +551,8 @@ impl Tool {
 
     fn offered_on(self, surface: Surface) -> bool {
         match (self, surface) {
+            (Tool::ImportPart, Surface::ExternalMcp) => true,
+            (Tool::ImportPart, Surface::InAppAgent) => false,
             (Tool::DescribeKind | Tool::Build | Tool::Revise | Tool::Get | Tool::List | Tool::Show | Tool::PrinterStatus, _) => {
                 true
             }
@@ -449,6 +564,7 @@ impl Tool {
             Tool::DescribeKind => "describe_kind",
             Tool::Build => "build",
             Tool::Revise => "revise",
+            Tool::ImportPart => "import_part",
             Tool::Get => "get",
             Tool::List => "list",
             Tool::Show => "show",
@@ -481,7 +597,22 @@ impl Tool {
                  refused, and a patched spec is validated like a fresh one. The new revision waits for a person to \
                  approve it in the Materialize 3D app; this tool cannot approve it."
             }
-            Tool::Get => "Get one design revision, including any failed verification checks and warnings.",
+            Tool::ImportPart => {
+                "Import a mesh made in another program, such as one body exported from Fusion as a 3MF, so the app \
+                 checks it, slices it with Bambu Studio for the P2S, and gates it for a person's approval. Give the \
+                 file's absolute path, a title, and units (mm or in); a 3MF must state the same unit, and an STL takes \
+                 units as its own. The app copies the file and reads it as data: nothing in it runs. The file must hold \
+                 one body, which the app sets on the bed without turning it. Returns the same summary and images as \
+                 build, for a new design of kind imported_part. Mesh checks block; overhang, wall, and first-layer \
+                 checks only warn. Importing the same file, title, and units again returns the same revision. The \
+                 revision waits for a person to approve it in the Materialize 3D app; this tool cannot approve it."
+            }
+            Tool::Get => {
+                "Get one design revision, including any failed verification checks and warnings, and every export a \
+                 person made of it (format, path, sha256). With wait_s, while approval is pending, it waits up to \
+                 wait_s seconds (at most 900) and returns as soon as a person approves it, or when the time runs out, \
+                 with the revision as it is then. Other calls run while it waits."
+            }
             Tool::List => {
                 "List recent design revisions of every kind, newest first, with kind, build, approval, and print-test status."
             }
@@ -495,6 +626,8 @@ impl Tool {
     pub fn parameters(self, kinds: &[&'static dyn KindDriver]) -> Value {
         static LIST: OnceLock<Value> = OnceLock::new();
         static REVISION: OnceLock<Value> = OnceLock::new();
+        static GET: OnceLock<Value> = OnceLock::new();
+        static IMPORT_PART: OnceLock<Value> = OnceLock::new();
         static REVISE: OnceLock<Value> = OnceLock::new();
         static NO_ARGS: OnceLock<Value> = OnceLock::new();
         match self {
@@ -502,7 +635,9 @@ impl Tool {
             Tool::Build => build_parameters(kinds),
             Tool::Revise => REVISE.get_or_init(inlined_schema::<ReviseArgs>).clone(),
             Tool::List => LIST.get_or_init(inlined_schema::<ListArgs>).clone(),
-            Tool::Get | Tool::Show => REVISION.get_or_init(inlined_schema::<RevisionArgs>).clone(),
+            Tool::ImportPart => IMPORT_PART.get_or_init(inlined_schema::<ImportPartArgs>).clone(),
+            Tool::Get => GET.get_or_init(inlined_schema::<GetArgs>).clone(),
+            Tool::Show => REVISION.get_or_init(inlined_schema::<RevisionArgs>).clone(),
             Tool::PrinterStatus => NO_ARGS.get_or_init(inlined_schema::<NoArgs>).clone(),
         }
     }
@@ -540,10 +675,16 @@ impl Tool {
                 let revisions = call.run(move |actions| actions.list(limit)).await?;
                 encode(revisions.iter().map(DesignSummary::from).collect::<Vec<_>>()).map(ToolContent::json)
             }
+            Tool::ImportPart => {
+                let ImportPartArgs { path, title, units } = parse(args)?;
+                build_result(call, move |actions, actor, control| actions.import_part(Path::new(&path), &title, units, actor, control))
+                    .await
+            }
             Tool::Get => {
-                let RevisionArgs { revision_id } = parse(args)?;
-                let revision = call.run(move |actions| actions.get(&revision_id)).await?;
-                encode(DesignSummary::from(&revision)).map(ToolContent::json)
+                let GetArgs { revision_id, wait_s } = parse(args)?;
+                let wait = Duration::from_secs(wait_s.map_or(0, |WaitSeconds(seconds)| u64::from(seconds)));
+                let (revision, exports) = read_after_decision(call, revision_id, wait).await?;
+                encode(GetResult { revision: DesignSummary::from(&revision), exports }).map(ToolContent::json)
             }
             Tool::Show => {
                 let RevisionArgs { revision_id } = parse(args)?;

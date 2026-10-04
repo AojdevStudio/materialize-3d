@@ -16,9 +16,19 @@ fn build_validator() -> jsonschema::Validator {
 }
 
 #[test]
-fn the_tools_are_describe_build_revise_get_list_show_and_printer_status() {
+fn the_tools_are_describe_build_revise_import_part_get_list_show_and_printer_status() {
     let names: Vec<&str> = Tool::ALL.iter().map(|tool| tool.name()).collect();
-    assert_eq!(names, ["describe_kind", "build", "revise", "get", "list", "show", "printer_status"]);
+    assert_eq!(names, ["describe_kind", "build", "revise", "import_part", "get", "list", "show", "printer_status"]);
+}
+
+/// `import_part` takes a path on this computer, so only MCP offers it.
+#[test]
+fn import_part_is_offered_on_mcp_only() {
+    assert!(Tool::on(Surface::ExternalMcp).any(|tool| tool == Tool::ImportPart));
+    assert!(Tool::on(Surface::InAppAgent).all(|tool| tool != Tool::ImportPart));
+    let in_app: Vec<Tool> = Tool::on(Surface::InAppAgent).collect();
+    let external: Vec<Tool> = Tool::on(Surface::ExternalMcp).filter(|tool| *tool != Tool::ImportPart).collect();
+    assert_eq!(in_app, external, "every other tool is on both surfaces");
 }
 
 #[test]
@@ -87,6 +97,26 @@ impl RequestActions for ListingActions {
         Err(ActionError::State("not in this test".into()))
     }
 
+    fn import_part(
+        &self,
+        _path: &std::path::Path,
+        _title: &str,
+        _units: crate::fabrication::kinds::imported_part::Units,
+        _requester: RequestActor,
+        _control: &BuildControl<'_>,
+    ) -> Result<BuildOutcome, ActionError> {
+        Err(ActionError::State("not in this test".into()))
+    }
+
+    fn exports(&self, _id: &str) -> Result<Vec<crate::fabrication::revisions::ExportRecord>, ActionError> {
+        Ok(Vec::new())
+    }
+
+    /// Closed: no approval arrives through this fake.
+    fn approvals(&self) -> tokio::sync::watch::Receiver<u64> {
+        tokio::sync::watch::channel(0).1
+    }
+
     fn kinds(&self) -> Vec<&'static dyn KindDriver> {
         self.kinds.clone().unwrap_or_else(signs_only)
     }
@@ -127,6 +157,23 @@ async fn list_refuses_a_limit_outside_1_to_100_on_both_surfaces() {
     }
 }
 
+/// `get` waits at most 900 seconds; more is refused, never clamped, on both surfaces.
+#[tokio::test]
+async fn get_refuses_a_wait_over_900_seconds_on_both_surfaces() {
+    let schema = jsonschema::validator_for(&Tool::Get.parameters(&signs_only())).expect("get schema");
+    let id = "7d9f3c1e-2b4a-4c8e-9f10-123456789abc";
+    assert!(schema.is_valid(&json!({ "revision_id": id, "wait_s": 900 })));
+    assert!(!schema.is_valid(&json!({ "revision_id": id, "wait_s": 901 })));
+    for surface in [Surface::InAppAgent, Surface::ExternalMcp] {
+        let call = call_on(surface, Arc::new(ListingActions::default()));
+        let refused = Tool::Get.invoke(&call, json!({ "revision_id": id, "wait_s": 901 })).await;
+        assert!(
+            matches!(&refused, Err(ToolError::InvalidArguments(e)) if e.to_string().contains("0 to 900")),
+            "{surface:?}: {refused:?}"
+        );
+    }
+}
+
 #[test]
 fn the_build_schema_accepts_a_sign_spec() {
     let fixture: Value = serde_json::from_str(FIXTURE).expect("fixture json");
@@ -154,7 +201,7 @@ fn the_build_schema_rejects_unknown_kinds_and_malformed_specs() {
         ("no spec", json!({ "kind": "sign", "lineage_id": "x" })),
         ("no kind", json!({ "spec": fixture })),
         ("a kind this app cannot build", json!({ "kind": "part", "spec": fixture })),
-        ("an unregistered kind", json!({ "kind": "imported_part", "spec": fixture })),
+        ("a kind only import_part makes", json!({ "kind": "imported_part", "spec": fixture })),
     ];
     for (why, args) in bad {
         assert!(!validator.is_valid(&args), "schema accepted a spec with {why}");
