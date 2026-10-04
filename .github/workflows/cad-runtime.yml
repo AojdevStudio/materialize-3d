@@ -278,5 +278,8 @@ jobs:
         with:
           name: cad-runtime-pass-${{ steps.record.outputs.key }}
           path: cad-runtime-pass-record.txt
+          # A re-run keeps the run id and its earlier artifacts; replace the
+          # record under the same name, which is the name the lookup searches for.
+          overwrite: true
           if-no-files-found: error
           retention-days: 90

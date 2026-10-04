@@ -221,6 +221,10 @@ artifacts "$name:11"; rm -f "$stub/run-11.json"; no_hit "a run that did not load
 reset_stub
 artifacts "$name:11" "$name:12"; run 11; run 12 '.conclusion = "failure"'
 hit 11 "a passed run behind a failed one with the same record was not a hit"
+reset_stub; run 11
+echo '{"total_count":2,"artifacts":[{"id":1,"name":"'"$name"'","workflow_run":null},{"id":2,"name":"'"$name"'","workflow_run":{"id":11}}]}' \
+  > "$stub/artifacts-1.json"
+hit 11 "an artifact without a workflow_run hid a passed run's record"
 
 # Every candidate and every page counts: a passed run behind ten newer failed ones, and a record on page 2.
 reset_stub
