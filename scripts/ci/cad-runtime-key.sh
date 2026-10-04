@@ -43,8 +43,8 @@ case "${1:-}" in
         "https://api.github.com/repos/$repo/$1" <<< "Authorization: Bearer $GH_TOKEN"
     }
     # Every page is read before any run is checked, so a failure on any page is a miss, never a partial answer. jq
-    # accepts a page only when total_count is an integer from 1 to 5000 (50 pages of 100), so bash does arithmetic
-    # only on a checked value. The first page's total_count fixes how many pages there are. A page that fails, is not
+    # accepts a page only when total_count is an integer from 1 to 5000 (50 pages of 100) and prints it as a plain
+    # decimal integer, so bash does arithmetic only on a checked value. The first page's total_count fixes how many pages there are. A page that fails, is not
     # such a list, reports another total, or holds no artifact unseen on earlier pages is a miss. A short page is the
     # last.
     page=1 pages=1 total="" ids=()
@@ -58,11 +58,14 @@ case "${1:-}" in
       page_text="$(jq -r --arg name "$name" --argjson max_total 5000 '
         if (.total_count | if type == "number" then . == floor and . >= 1 and . <= $max_total else false end)
           and (.artifacts | type) == "array" then
-          (.total_count | tostring), (.artifacts | length | tostring),
+          (.total_count | floor | tostring), (.artifacts | length | tostring),
           (.artifacts[] | "\(.id) \(if .name == $name then .workflow_run.id else "-" end)")
         else error("not an artifact list") end' <<< "$artifacts")" \
         || miss "page $page of the artifact list for $name is not a list with a total_count from 1 to 5000"
       mapfile -t lines <<< "$page_text"
+      # jq keeps the notation it read (1e3, 1.0); floor above prints the plain integer, and bash checks it again.
+      [[ "${lines[0]}" =~ ^[1-9][0-9]{0,3}$ ]] \
+        || miss "page $page of the artifact list for $name gave total_count '${lines[0]}', not a plain integer"
       if (( page == 1 )); then
         total="${lines[0]}" pages=$(( (lines[0] + 99) / 100 ))
       fi

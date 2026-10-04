@@ -166,6 +166,8 @@ run() { # <id> [jq edit applied to a passed same-repo pull_request run]
 lookup() { PATH="$work/bin:$PATH" STUB="$stub" EXPECTED_NAME="$name" GH_TOKEN=test-token \
   "$repo/scripts/ci/cad-runtime-key.sh" lookup o/r 2> /dev/null; }
 reset_stub() { rm -f "$stub"/*; }
+other="cad-runtime-pass-$(printf '0%.0s' {1..64})"
+others() { local id list=(); for id in $(seq "$1" "$2"); do list+=("$other:$id"); done; echo "${list[@]}"; }
 hit() { [[ "$(lookup)" == "source_run=$1"$'\n'"key=$base" ]] || fail "$2"; }
 no_hit() { if lookup > /dev/null; then fail "$1"; fi; }
 
@@ -227,7 +229,7 @@ for id in {101..110}; do candidates+=("$name:$id"); run "$id" '.conclusion = "fa
 artifacts "${candidates[@]}"; run 11
 hit 11 "a passed run behind ten failed ones was not a hit"
 reset_stub
-other="cad-runtime-pass-$(printf '0%.0s' {1..64})" first=()
+first=()
 for id in {5000..5099}; do first+=("$other:$id"); done
 page 1 101 "${first[@]}"; page 2 101 "$name:11"; run 11
 hit 11 "a record on the second page of the artifact list was not a hit"
@@ -236,8 +238,18 @@ for id in {5001..5099}; do first+=("$other:$id"); done
 page 1 150 "${first[@]}"; rm -f "$stub/artifacts-2.json"
 no_hit "a lookup whose second page failed was a hit"
 
+# A total_count in another JSON notation is the same integer: 1 to 5000 finds the record, and 2e2 means two pages.
+for notation in 1e3 1.0 5e3 5.0e3; do
+  reset_stub; run 11; page 1 "$notation" "$name:11"
+  hit 11 "an artifact list with total_count $notation did not find its record"
+done
+reset_stub; run 11
+read -ra full <<< "$(others 5000 5099)"
+read -ra rest <<< "$(others 6000 6098)"
+page 1 2e2 "${full[@]}"; page 2 2.0e2 "$name:11" "${rest[@]}"
+hit 11 "an artifact list with total_count 2e2 did not read exactly two pages"
+
 # The pages end where the first page's total_count says, or at a short page, whichever comes first.
-others() { local id list=(); for id in $(seq "$1" "$2"); do list+=("$other:$id"); done; echo "${list[@]}"; }
 reset_stub; run 11
 read -ra full <<< "$(others 5000 5099)"
 read -ra rest <<< "$(others 6000 6098)"
