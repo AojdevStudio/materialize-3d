@@ -249,3 +249,60 @@ fn a_release_build_without_a_signing_team_trusts_no_helper() {
         assert!(requirement.contains("identifier \"com.aojdevstudio.materialize3d.cad-host\""), "{requirement}");
     }
 }
+
+/// The certificate fields a requirement says must exist, as (certificate,
+/// field OID) pairs: `certificate leaf[field.<oid>] exists` and
+/// `certificate 1[field.<oid>] exists`.
+fn required_fields(requirement: &str) -> Vec<(String, String)> {
+    requirement
+        .split("certificate ")
+        .skip(1)
+        .filter_map(|clause| {
+            let (slot, rest) = clause.split_once("[field.")?;
+            let (oid, rest) = rest.split_once(']')?;
+            rest.trim_start().starts_with("exists").then(|| (slot.to_owned(), oid.to_owned()))
+        })
+        .collect()
+}
+
+/// Whether a certificate chain, given as each certificate's marker OIDs,
+/// carries every field `requirement` says must exist.
+fn chain_carries(requirement: &str, leaf: &[&str], issuer: &[&str]) -> bool {
+    required_fields(requirement).iter().all(|(slot, oid)| match slot.as_str() {
+        "leaf" => leaf.contains(&oid.as_str()),
+        "1" => issuer.contains(&oid.as_str()),
+        _ => false,
+    })
+}
+
+/// A release requirement takes a Developer ID Application signature from the
+/// team and nothing else that team holds: an Apple Development leaf, issued
+/// by Apple's developer relations CA, lacks both Developer ID markers.
+#[test]
+fn a_release_helper_must_carry_the_teams_developer_id_application_signature() {
+    let requirement = helper_requirement(Some("TEAM123456"), false).expect("team").expect("a requirement");
+    assert!(requirement.contains("anchor apple generic"), "{requirement}");
+    assert!(requirement.contains("certificate leaf[field.1.2.840.113635.100.6.1.13] exists"), "Developer ID Application: {requirement}");
+    assert!(requirement.contains("certificate 1[field.1.2.840.113635.100.6.2.6] exists"), "Developer ID CA: {requirement}");
+    assert!(chain_carries(&requirement, &["1.2.840.113635.100.6.1.13"], &["1.2.840.113635.100.6.2.6"]), "Developer ID meets it");
+    // Apple Development (leaf 6.1.12, issuer the Worldwide Developer Relations CA, 6.2.1).
+    assert!(!chain_carries(&requirement, &["1.2.840.113635.100.6.1.12"], &["1.2.840.113635.100.6.2.1"]), "development does not");
+    // Apple Distribution (leaf 6.1.7) does not either.
+    assert!(!chain_carries(&requirement, &["1.2.840.113635.100.6.1.7"], &["1.2.840.113635.100.6.2.1"]));
+}
+
+/// Apple's own requirement compiler accepts the release requirement.
+#[cfg(target_os = "macos")]
+#[test]
+fn the_release_requirement_compiles() {
+    let requirement = helper_requirement(Some("TEAM123456"), false).expect("team").expect("a requirement");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let output = std::process::Command::new("/usr/bin/csreq")
+        .arg("-r")
+        .arg(&requirement)
+        .arg("-b")
+        .arg(dir.path().join("requirement.bin"))
+        .output()
+        .expect("csreq");
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+}

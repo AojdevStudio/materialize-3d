@@ -780,6 +780,10 @@ pub struct RawBody {
 }
 
 impl RawBody {
+    pub fn triangle_count(&self) -> usize {
+        self.triangles.len()
+    }
+
     /// Snaps every vertex to the 1 µm grid and merges vertices that land on
     /// the same grid point: the mesh the app checks, packages, and slices.
     pub fn weld(&self) -> Mesh {
@@ -884,18 +888,27 @@ const HELPER_NAME: &str = "materialize-cad-host";
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 const HELPER_IDENTIFIER: &str = "com.aojdevstudio.materialize3d.cad-host";
 
+/// Marks a leaf certificate as Developer ID Application, which only Apple
+/// issues for distribution outside the App Store.
+const DEVELOPER_ID_LEAF: &str = "1.2.840.113635.100.6.1.13";
+/// Marks the Developer ID certification authority, the leaf's issuer.
+const DEVELOPER_ID_CA: &str = "1.2.840.113635.100.6.2.6";
+
 /// The code requirement a helper must meet, for `codesign -R`, or `None` for
 /// any valid signature. `team` is the signing team compiled into this build
 /// (`M3D_CAD_HELPER_TEAM`, which `scripts/release/build-macos.sh` sets); with
-/// one, the helper must carry its identifier and that team's Developer ID
-/// signature. Without one, only a debug build (tests, `tauri dev`, the CI
+/// one, the helper must carry its identifier and a Developer ID Application
+/// signature from that team: Apple's anchor, the Developer ID CA, the
+/// Developer ID Application leaf, and the team as the leaf's OU. That team's
+/// Apple Development certificates do not meet it. Without one, only a debug build (tests, `tauri dev`, the CI
 /// self-test) accepts any valid signature, ad hoc included. A release build
 /// without a team fails closed: it trusts no helper, so `part` is unavailable.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn helper_requirement(team: Option<&str>, debug_build: bool) -> Result<Option<String>, RuntimeUnavailable> {
     match team {
         Some(team) => Ok(Some(format!(
-            "=identifier \"{HELPER_IDENTIFIER}\" and anchor apple generic and certificate leaf[subject.OU] = \"{team}\""
+            "=identifier \"{HELPER_IDENTIFIER}\" and anchor apple generic and certificate 1[field.{DEVELOPER_ID_CA}] exists \
+             and certificate leaf[field.{DEVELOPER_ID_LEAF}] exists and certificate leaf[subject.OU] = \"{team}\""
         ))),
         None if debug_build => Ok(None),
         None => Err(RuntimeUnavailable::Unverified(
@@ -1186,8 +1199,7 @@ mod linux {
             }
         };
         let mut channel = Channel::new(stream, deadline, control).map_err(|e| WorkerError::Internal(format!("vsock: {e}")))?;
-        let sent = request.iter().try_for_each(|(tag, payload)| write_frame(&mut channel, tag, payload));
-        let response = sent.map_err(ProtocolError::Io).and_then(|()| read_response(&mut channel, role, &FrameLimits::PART));
+        let response = exchange(&mut channel, request, role);
         drop(vm);
         match response {
             Ok(response) => Ok(response),
@@ -1318,21 +1330,42 @@ mod linux {
             }
         }
 
+        /// Fails once the build is cancelled or the deadline has passed. Asked
+        /// before every poll, after every wakeup, and before a response is
+        /// accepted, so a cancel or an expired deadline always wins.
+        fn still_wanted(&mut self) -> io::Result<()> {
+            if self.control.is_cancelled() {
+                self.cancelled = true;
+                return Err(io::Error::other("cancelled"));
+            }
+            if Instant::now() >= self.deadline {
+                self.timed_out = true;
+                return Err(io::Error::new(io::ErrorKind::TimedOut, "deadline"));
+            }
+            Ok(())
+        }
+
         fn wait(&mut self, events: i16) -> io::Result<()> {
             loop {
-                if self.control.is_cancelled() {
-                    self.cancelled = true;
-                    return Err(io::Error::other("cancelled"));
-                }
-                if Instant::now() >= self.deadline {
-                    self.timed_out = true;
-                    return Err(io::Error::new(io::ErrorKind::TimedOut, "deadline"));
-                }
-                if poll(self.fd.as_raw_fd(), events, POLL_MS)? {
+                self.still_wanted()?;
+                let left = self.deadline.saturating_duration_since(Instant::now());
+                let timeout = i32::try_from(left.as_millis()).unwrap_or(i32::MAX).clamp(1, POLL_MS);
+                let ready = poll(self.fd.as_raw_fd(), events, timeout)?;
+                self.still_wanted()?;
+                if ready {
                     return Ok(());
                 }
             }
         }
+    }
+
+    /// Sends `request` and reads the guest's response. The response counts
+    /// only if the build is still wanted once DONE has arrived.
+    fn exchange(channel: &mut Channel<'_>, request: &[([u8; 4], Vec<u8>)], role: Role) -> Result<Response, ProtocolError> {
+        request.iter().try_for_each(|(tag, payload)| write_frame(channel, tag, payload))?;
+        let response = read_response(channel, role, &FrameLimits::PART)?;
+        channel.still_wanted()?;
+        Ok(response)
     }
 
     impl Read for Channel<'_> {
@@ -1458,6 +1491,80 @@ mod linux {
                 assert!(started.elapsed() < Duration::from_secs(2), "{:?}", started.elapsed());
             });
         }
+
+        /// A whole, valid response, DONE included.
+        fn done_frames() -> Vec<u8> {
+            let mut bytes = Vec::new();
+            write_frame(&mut bytes, b"STEP", b"ISO-10303-21;").expect("frame");
+            write_frame(&mut bytes, b"MANI", br#"{"bodies":[{"name":"a","slot":1}]}"#).expect("frame");
+            write_frame(&mut bytes, b"DONE", br#"{"ok":true,"error":null}"#).expect("frame");
+            bytes
+        }
+
+        /// The guest sends all of `frames` but the last byte at once, and that
+        /// byte after `delay`: the host is waiting for it when time runs out.
+        fn send_later(peer: OwnedFd, delay: Duration, frames: Vec<u8>) -> std::thread::JoinHandle<OwnedFd> {
+            std::thread::spawn(move || {
+                let mut file = std::fs::File::from(peer);
+                let (head, last) = frames.split_at(frames.len() - 1);
+                file.write_all(head).expect("guest write");
+                std::thread::sleep(delay);
+                file.write_all(last).expect("guest write");
+                OwnedFd::from(file)
+            })
+        }
+
+        /// A whole DONE that arrives after the deadline is not accepted.
+        #[test]
+        fn a_response_that_arrives_after_the_deadline_is_refused() {
+            let (host, guest) = socket_pair();
+            let control = BuildControl::new(&|_| {}, &|| false);
+            let mut channel = Channel::new(host, Instant::now() + Duration::from_millis(50), &control).expect("channel");
+            let sender = send_later(guest, Duration::from_millis(80), done_frames());
+            let result = exchange(&mut channel, &[], Role::Generate);
+            assert!(result.is_err() && channel.timed_out, "{result:?}");
+            let _guest = sender.join().expect("guest");
+            // Already in the buffer, and the deadline long past: still refused.
+            let (host, guest) = socket_pair();
+            let _guest = send_later(guest, Duration::ZERO, done_frames()).join().expect("guest");
+            let mut channel = Channel::new(host, Instant::now() - Duration::from_millis(1), &control).expect("channel");
+            assert!(exchange(&mut channel, &[], Role::Generate).is_err() && channel.timed_out);
+        }
+
+        /// A cancel that lands while the host waits wins over the DONE that follows it.
+        #[test]
+        fn a_response_after_a_cancel_is_refused() {
+            let (host, guest) = socket_pair();
+            let cancel = std::sync::atomic::AtomicBool::new(false);
+            let cancelled = || cancel.load(std::sync::atomic::Ordering::SeqCst);
+            let control = BuildControl::new(&|_| {}, &cancelled);
+            let mut channel = Channel::new(host, Instant::now() + Duration::from_secs(10), &control).expect("channel");
+            std::thread::scope(|scope| {
+                scope.spawn(|| {
+                    std::thread::sleep(Duration::from_millis(30));
+                    cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+                });
+                let sender = send_later(guest, Duration::from_millis(60), done_frames());
+                let result = exchange(&mut channel, &[], Role::Generate);
+                assert!(result.is_err() && channel.cancelled, "{result:?}");
+                let _guest = sender.join().expect("guest");
+            });
+            // A cancel after the last byte arrived, before acceptance, also wins.
+            let (host, guest) = socket_pair();
+            let _guest = send_later(guest, Duration::ZERO, done_frames()).join().expect("guest");
+            // Cancelled once the host has read every byte: after DONE, before acceptance.
+            let raw = host.as_raw_fd();
+            let late = || {
+                let mut unread: libc::c_int = 0;
+                // SAFETY: FIONREAD writes one int; the descriptor stays open for the test.
+                unsafe { libc::ioctl(raw, libc::FIONREAD, &mut unread) };
+                unread == 0
+            };
+            let control = BuildControl::new(&|_| {}, &late);
+            let mut channel = Channel::new(host, Instant::now() + Duration::from_secs(10), &control).expect("channel");
+            assert!(exchange(&mut channel, &[], Role::Generate).is_err() && channel.cancelled);
+        }
+
     }
 }
 
