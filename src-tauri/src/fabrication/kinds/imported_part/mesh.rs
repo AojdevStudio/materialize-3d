@@ -114,6 +114,8 @@ pub enum MeshImportError {
     MultipleObjects(usize),
     #[error("the mesh holds {0} separate shells; import one body of one closed shell at a time")]
     SeparateShells(usize),
+    #[error("the mesh is pinched at a vertex where its surface only touches itself; import one closed shell")]
+    PinchedVertex,
     #[error("the 3MF refers to a mesh in another file")]
     ExternalMesh,
     #[error("the mesh has more than {MAX_VERTICES} vertices")]
@@ -199,48 +201,97 @@ impl Welder {
         let Some(lowest) = self.vertices.iter().map(|v| v[2]).min() else {
             return Err(MeshImportError::NoTriangles);
         };
-        match shells(self.vertices.len(), &self.triangles) {
-            1 => {}
-            many => return Err(MeshImportError::SeparateShells(many)),
-        }
+        one_shell(self.vertices.len(), &self.triangles)?;
         let vertices = self.vertices.into_iter().map(|[x, y, z]| [x, y, z - lowest]).collect();
         Ok(Mesh::new(vertices, self.triangles).expect("welding keeps every index in range"))
     }
 }
 
-/// How many shells `triangles` make: groups of triangles joined through
-/// shared welded vertices, found by a union-find over the vertices, linear in
-/// the capped counts. An imported part must be exactly one shell, whatever
-/// each shell's orientation, so a second solid, a sealed internal cavity, an
+/// A union-find over `0..n` with path halving.
+struct Groups(Vec<u32>);
+
+impl Groups {
+    fn new(n: usize) -> Self {
+        Self((0..u32::try_from(n).expect("bounded by the mesh caps")).collect())
+    }
+
+    fn root(&mut self, mut i: usize) -> u32 {
+        while self.0[i] as usize != i {
+            self.0[i] = self.0[self.0[i] as usize];
+            i = self.0[i] as usize;
+        }
+        i as u32
+    }
+
+    fn join(&mut self, a: usize, b: usize) {
+        let (a, b) = (self.root(a), self.root(b));
+        self.0[b as usize] = a;
+    }
+}
+
+/// Refuses `triangles` unless they are one shell that is a surface at every
+/// vertex. An imported part must be exactly one shell, whatever any other
+/// shell's orientation or place: a second solid, a sealed internal cavity, an
 /// inverted shell, or a shell crossing the body is refused without judging
-/// how the shells lie. A single shell that crosses itself is not caught here.
-fn shells(vertices: usize, triangles: &[[u32; 3]]) -> usize {
-    fn root(parent: &mut [u32], mut i: u32) -> u32 {
-        while parent[i as usize] != i {
-            parent[i as usize] = parent[parent[i as usize] as usize];
-            i = parent[i as usize];
+/// how the shells lie.
+///
+/// - Shells join through shared edges, not shared vertices: two triangles
+///   are in one shell only when they share an edge, so two bodies that touch
+///   at one welded vertex are two shells.
+/// - Around each vertex, the triangles that meet there must form one fan:
+///   their corners at the vertex are joined through the edges they share,
+///   and every corner must end in one group. A surface pinched at a vertex
+///   holds two fans there. The blocking `closed_manifold` check, which wants
+///   one twin for every edge, then closes that one fan into a cycle.
+///
+/// Both are union-finds over the triangles and their corners, with one map
+/// from each edge to the first triangle on it: linear in the capped counts.
+/// A single shell that crosses itself is not caught here or by any check.
+fn one_shell(vertices: usize, triangles: &[[u32; 3]]) -> Result<()> {
+    let mut shells = Groups::new(triangles.len());
+    let mut corners = Groups::new(3 * triangles.len());
+    let mut first_on: HashMap<(u32, u32), usize> = HashMap::with_capacity(triangles.len() * 3 / 2);
+    let at = |t: &[u32; 3], v: u32| t.iter().position(|&w| w == v).expect("an edge's ends are its triangle's corners");
+    for (i, t) in triangles.iter().enumerate() {
+        // A triangle the weld collapsed meets one vertex twice; those corners are one point.
+        for k in 0..3 {
+            corners.join(3 * i + at(t, t[k]), 3 * i + k);
         }
-        i
-    }
-    let mut parent: Vec<u32> = (0..u32::try_from(vertices).expect("bounded by MAX_VERTICES")).collect();
-    let mut groups = 0;
-    let mut used = vec![false; vertices];
-    for t in triangles {
-        for &v in t {
-            if !std::mem::replace(&mut used[v as usize], true) {
-                groups += 1;
+        for k in 0..3 {
+            let (a, b) = (t[k], t[(k + 1) % 3]);
+            if a == b {
+                continue;
+            }
+            match first_on.entry((a.min(b), a.max(b))) {
+                std::collections::hash_map::Entry::Vacant(slot) => {
+                    slot.insert(i);
+                }
+                std::collections::hash_map::Entry::Occupied(slot) => {
+                    let j = *slot.get();
+                    shells.join(j, i);
+                    corners.join(3 * j + at(&triangles[j], a), 3 * i + k);
+                    corners.join(3 * j + at(&triangles[j], b), 3 * i + (k + 1) % 3);
+                }
             }
         }
-        let a = root(&mut parent, t[0]);
-        for &v in &t[1..] {
-            let b = root(&mut parent, v);
-            if b != a {
-                parent[b as usize] = a;
-                groups -= 1;
-            }
+    }
+    let mut roots: Vec<u32> = (0..triangles.len()).map(|i| shells.root(i)).collect();
+    roots.sort_unstable();
+    roots.dedup();
+    if roots.len() != 1 {
+        return Err(MeshImportError::SeparateShells(roots.len()));
+    }
+    let mut fan = vec![u32::MAX; vertices];
+    for (c, &v) in triangles.iter().flatten().enumerate() {
+        let root = corners.root(c);
+        let seen = &mut fan[v as usize];
+        if *seen == u32::MAX {
+            *seen = root;
+        } else if *seen != root {
+            return Err(MeshImportError::PinchedVertex);
         }
     }
-    groups
+    Ok(())
 }
 
 // ─── STL ──────────────────────────────────────────────────────────────────────

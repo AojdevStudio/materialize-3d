@@ -414,6 +414,59 @@ fn a_mesh_of_more_than_one_shell_is_refused() {
     }
 }
 
+/// The outer surface of unit cells (`size` mm cubes at integer cell
+/// coordinates): every cell face with no cell beyond it, facing out.
+fn voxels(cells: &[[i32; 3]], size: f64) -> Piece {
+    let (v, t) = cuboid([0.0; 3], [size; 3]);
+    let filled = |c: [i32; 3]| cells.contains(&c);
+    // cuboid's faces, two triangles each: -z, +z, -y, +y, -x, +x.
+    let toward: [[i32; 3]; 6] = [[0, 0, -1], [0, 0, 1], [0, -1, 0], [0, 1, 0], [-1, 0, 0], [1, 0, 0]];
+    let mut pieces = Vec::new();
+    for &cell in cells {
+        let offset = cell.map(|c| f64::from(c) * size);
+        let moved: Vec<[f64; 3]> = v.iter().map(|p| [p[0] + offset[0], p[1] + offset[1], p[2] + offset[2]]).collect();
+        let open: Vec<[u32; 3]> = t
+            .chunks(2)
+            .zip(toward)
+            .filter(|(_, d)| !filled([cell[0] + d[0], cell[1] + d[1], cell[2] + d[2]]))
+            .flat_map(|(face, _)| face.iter().copied())
+            .collect();
+        pieces.push((moved, open));
+    }
+    joined(&pieces)
+}
+
+/// Two bodies that touch at one point are two shells, joined only through a
+/// shared edge: touching at a welded vertex, or across a 0.4 µm gap the weld
+/// closes, in every format. One shell pinched at a vertex, where its surface
+/// only touches itself, is refused too.
+#[test]
+fn shells_join_through_edges_and_a_pinched_vertex_is_refused() {
+    let a = shell([0.0, 0.0, 0.0], 10.0, false);
+    let touching = joined(&[a.clone(), shell([10.0, 10.0, 10.0], 10.0, false)]);
+    let welded_gap = joined(&[a.clone(), shell([10.0004, 10.0004, 10.0004], 10.0, false)]);
+    let mut one_solid = String::from_utf8(ascii_stl(&touching)).expect("text");
+    for (why, bytes) in [
+        ("binary STL", binary_stl(&touching)),
+        ("ASCII STL", one_solid.into_bytes()),
+        ("3MF", one_body_3mf(&touching)),
+        ("a 0.4 µm gap the weld closes", binary_stl(&welded_gap)),
+    ] {
+        assert_eq!(read(&bytes, Units::Mm).map(drop), Err(MeshImportError::SeparateShells(2)), "{why}");
+    }
+
+    // A loop of cells whose two ends meet only at the corner (10, 10, 10).
+    let ring = [[0, 0, 0], [0, 0, -1], [0, 0, -2], [1, 0, -2], [2, 0, -2], [3, 0, -2], [3, 0, -1], [3, 0, 0], [3, 0, 1], [3, 1, 1], [2, 1, 1], [1, 1, 1]];
+    let pinched = voxels(&ring, 10.0);
+    assert_eq!(read(&binary_stl(&pinched), Units::Mm).map(drop), Err(MeshImportError::PinchedVertex));
+    let open_ring = voxels(&ring[..ring.len() - 1], 10.0);
+    assert!(read(&binary_stl(&open_ring), Units::Mm).is_ok(), "the same cells without the touching end are one surface");
+
+    for (why, bytes) in [("a cube", binary_stl(&a)), ("the slab on a post", one_body_3mf(&slab_on_a_post(0.0)))] {
+        assert!(read(&bytes, Units::Mm).is_ok(), "{why}");
+    }
+}
+
 /// An attribute's whole qualified name is capped, prefix included.
 #[test]
 fn a_qualified_attribute_name_over_the_cap_is_refused() {
