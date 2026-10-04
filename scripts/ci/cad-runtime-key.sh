@@ -11,8 +11,8 @@
 # The record is the artifact cad-runtime-pass-<key>, which cad-runtime.yml uploads only after both CAD jobs did their
 # full work and passed. Only the run's own jobs can upload into a run, so `lookup` trusts an artifact only through its
 # run: a completed, successful run of .github/workflows/cad-runtime.yml whose head is in this repository, whose actor
-# and triggering actor are both named, and neither of them Dependabot. It reads every page of the artifact list and
-# checks every candidate run. Any failure to read or check that is a miss, never a hit. `lookup` reads GH_TOKEN, which
+# and triggering actor are both named, and neither of them Dependabot. It reads every page of the artifact list (at
+# most 50) and checks every candidate run. Any failure to read or check that is a miss, never a hit. `lookup` reads GH_TOKEN, which
 # needs actions: read (docs/ci-runners.md).
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -42,21 +42,35 @@ case "${1:-}" in
       curl -fsS --retry 3 --max-time 30 -H @- -H "Accept: application/vnd.github+json" \
         "https://api.github.com/repos/$repo/$1" <<< "Authorization: Bearer $GH_TOKEN"
     }
-    # Every page is read before any run is checked, so a page that fails is a miss and never a partial answer.
-    page=1 ids=()
-    while :; do
+    # Every page is read before any run is checked, so a failure on any page is a miss, never a partial answer. The
+    # first page's total_count fixes how many pages there are, at most max_pages. A page that fails, is not an artifact
+    # list, reports another total, or holds no artifact unseen on earlier pages is a miss. A short page is the last.
+    max_pages=50 page=1 pages=1 total="" ids=()
+    declare -A seen=()
+    while (( page <= pages )); do
       artifacts="$(api "actions/artifacts?name=$name&per_page=100&page=$page")" \
         || miss "page $page of the artifact list for $name did not load"
       page_text="$(jq -r --arg name "$name" '
         if (.total_count | type) == "number" and (.artifacts | type) == "array" then
           (.total_count | tostring), (.artifacts | length | tostring),
-          (.artifacts[] | select(.name == $name) | .workflow_run.id | tostring)
+          (.artifacts[] | "\(.id) \(if .name == $name then .workflow_run.id else "-" end)")
         else error("not an artifact list") end' <<< "$artifacts")" \
         || miss "page $page of the artifact list for $name is not the JSON expected"
       mapfile -t lines <<< "$page_text"
-      total="${lines[0]}" count="${lines[1]}"
-      ids+=("${lines[@]:2}")
-      (( count == 100 && page * 100 < total )) || break
+      if (( page == 1 )); then
+        total="${lines[0]}" pages=$(( (lines[0] + 99) / 100 ))
+        (( pages <= max_pages )) || miss "the artifact list for $name has more than $max_pages pages"
+      fi
+      [[ "${lines[0]}" == "$total" ]] || miss "the artifact list for $name changed while it was read"
+      new=0
+      for line in "${lines[@]:2}"; do
+        artifact="${line%% *}" run_id="${line#* }"
+        [[ -z "${seen[$artifact]:-}" ]] || continue
+        seen[$artifact]=1 new=$((new + 1))
+        [[ "$run_id" == - ]] || ids+=("$run_id")
+      done
+      (( page == 1 || new > 0 )) || miss "page $page of the artifact list for $name repeats earlier artifacts"
+      (( lines[1] == 100 )) || break
       page=$((page + 1))
     done
     # Newest run first; every candidate is checked.

@@ -115,7 +115,9 @@ reset
 if "$repo/scripts/ci/cad-runtime-key.sh" record 12ab "$record" > /dev/null 2>&1; then fail "record took a non-numeric run id"; fi
 
 # lookup trusts an artifact only through its run. A stub curl answers the two API calls from files in $stub and
-# refuses a request without the token on stdin, an unexpected artifact name, or a URL it has no answer for.
+# refuses a request without the token on stdin, an unexpected artifact name, or a URL it has no answer for. With
+# $stub/generate it writes every artifact page itself: `growing` reports a total 100 larger on each page, `big` serves
+# 51 full pages; both put a record for run 11 among other artifacts.
 stub="$work/stub" name="cad-runtime-pass-$base"
 mkdir -p "$work/bin" "$stub"
 cat > "$work/bin/curl" <<'STUB'
@@ -128,14 +130,30 @@ case "$url" in
   https://api.github.com/repos/o/r/actions/runs/*) answer="run-${url##*/}.json" ;;
   *) exit 22 ;;
 esac
+if [[ -f "$STUB/generate" && "$answer" == artifacts-* ]]; then
+  n="${url##*page=}" mode="$(cat "$STUB/generate")"
+  if [[ "$mode" == growing ]]; then total=$((n * 100 + 100)) record_page=2; else total=5100 record_page=1; fi
+  (( n * 100 <= total )) || exit 22
+  printf '{"total_count":%s,"artifacts":[' "$total"
+  for i in {0..99}; do
+    (( i == 0 )) || printf ,
+    artifact_name=other run_id=$((900000 + n * 100 + i))
+    if (( n == record_page && i == 0 )); then artifact_name="$EXPECTED_NAME" run_id=11; fi
+    printf '{"id":%s,"name":"%s","workflow_run":{"id":%s}}' $((n * 1000 + i)) "$artifact_name" "$run_id"
+  done
+  echo ']}'
+  exit 0
+fi
 [[ -f "$STUB/$answer" ]] || exit 22
 cat "$STUB/$answer"
 STUB
 chmod +x "$work/bin/curl"
-page() { # <page> <total_count> <name>:<run id> ...
+page() { # <page> <total_count> <name>:<run id> ...; artifact ids are <page>000 plus the position
   local number="$1" total="$2" pair list=()
   shift 2
-  for pair in "$@"; do list+=("{\"name\":\"${pair%%:*}\",\"workflow_run\":{\"id\":${pair##*:}}}"); done
+  for pair in "$@"; do
+    list+=("{\"id\":$((number * 1000 + ${#list[@]})),\"name\":\"${pair%%:*}\",\"workflow_run\":{\"id\":${pair##*:}}}")
+  done
   local IFS=,
   echo "{\"total_count\":$total,\"artifacts\":[${list[*]}]}" > "$stub/artifacts-$number.json"
 }
@@ -147,7 +165,7 @@ run() { # <id> [jq edit applied to a passed same-repo pull_request run]
 }
 lookup() { PATH="$work/bin:$PATH" STUB="$stub" EXPECTED_NAME="$name" GH_TOKEN=test-token \
   "$repo/scripts/ci/cad-runtime-key.sh" lookup o/r 2> /dev/null; }
-reset_stub() { rm -f "$stub"/*.json; }
+reset_stub() { rm -f "$stub"/*; }
 hit() { [[ "$(lookup)" == "source_run=$1"$'\n'"key=$base" ]] || fail "$2"; }
 no_hit() { if lookup > /dev/null; then fail "$1"; fi; }
 
@@ -169,11 +187,16 @@ run 11 'del(.actor)'; no_hit "a run without an actor was a hit"
 run 11 'del(.triggering_actor)'; no_hit "a run without a triggering actor was a hit"
 run 11 '.actor.login = ""'; no_hit "a run with an empty actor login was a hit"
 run 11 '.triggering_actor.login = null'; no_hit "a run with a null triggering actor login was a hit"
+run 11 '.actor.login = 42'; no_hit "a run with a numeric actor login was a hit"
+run 11 '.triggering_actor.login = {}'; no_hit "a run with an object as triggering actor login was a hit"
 run 11 '.conclusion = "success"'
 artifacts "cad-runtime-pass-$(printf '0%.0s' {1..64}):11"; no_hit "an artifact for another key was a hit"
 artifacts; no_hit "an empty artifact list was a hit"
 echo '{"artifacts": nul' > "$stub/artifacts-1.json"; no_hit "an unreadable artifact list was a hit"
-echo '{"artifacts": []}' > "$stub/artifacts-1.json"; no_hit "an artifact list without total_count was a hit"
+echo '{"artifacts":[{"id":1,"name":"'"$name"'","workflow_run":{"id":11}}]}' > "$stub/artifacts-1.json"
+no_hit "an artifact list without total_count was a hit"
+echo '{"total_count":"1","artifacts":[{"id":1,"name":"'"$name"'","workflow_run":{"id":11}}]}' > "$stub/artifacts-1.json"
+no_hit "an artifact list with a string total_count was a hit"
 rm -f "$stub/artifacts-1.json"; no_hit "a failed artifact list request was a hit"
 artifacts "$name:11"; rm -f "$stub/run-11.json"; no_hit "a run that did not load was a hit"
 reset_stub
@@ -195,5 +218,31 @@ first=("$name:11")
 for id in {5001..5099}; do first+=("$other:$id"); done
 page 1 150 "${first[@]}"; rm -f "$stub/artifacts-2.json"
 no_hit "a lookup whose second page failed was a hit"
+
+# The pages end where the first page's total_count says, or at a short page, whichever comes first.
+others() { local id list=(); for id in $(seq "$1" "$2"); do list+=("$other:$id"); done; echo "${list[@]}"; }
+reset_stub; run 11
+read -ra full <<< "$(others 5000 5099)"
+read -ra rest <<< "$(others 6000 6098)"
+page 1 200 "${full[@]}"; page 2 200 "$name:11" "${rest[@]}"
+hit 11 "a lookup did not stop at the page count total_count gives"
+reset_stub; run 11
+read -ra half <<< "$(others 6000 6048)"
+page 1 250 "${full[@]}"; page 2 250 "$name:11" "${half[@]}"
+hit 11 "a lookup did not stop at a short page"
+# A page that repeats earlier artifacts, a total that changes while the list is read, and a list of more than 50
+# pages are each a miss, even with a passed record further on.
+reset_stub; run 11
+page 1 300 "${full[@]}"; cp "$stub/artifacts-1.json" "$stub/artifacts-2.json"; page 3 300 "$name:11"
+no_hit "a page repeating earlier artifacts was not a miss"
+reset_stub; run 11; echo growing > "$stub/generate"
+if PATH="$work/bin:$PATH" STUB="$stub" EXPECTED_NAME="$name" GH_TOKEN=test-token \
+  timeout 20 "$repo/scripts/ci/cad-runtime-key.sh" lookup o/r > /dev/null 2>&1; then
+  fail "an artifact list whose total grew on every page was a hit"
+elif (( $? == 124 )); then
+  fail "an artifact list whose total grew on every page kept the lookup running"
+fi
+reset_stub; run 11; echo big > "$stub/generate"
+no_hit "an artifact list of 51 pages was not a miss"
 
 echo "cad-runtime key: ok"
