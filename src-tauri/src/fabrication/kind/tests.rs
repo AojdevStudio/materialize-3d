@@ -83,8 +83,13 @@ fn prepare(driver: &dyn KindDriver, parsed: &ParsedSpec) -> (Result<PreparedObje
 
 #[test]
 fn the_registry_names_each_kind_once_in_snake_case() {
-    let ids: Vec<&str> = KINDS.iter().map(|kind| kind.id().as_str()).collect();
-    assert_eq!(ids, ["sign", "part"]);
+    assert_eq!(KINDS.iter().map(|kind| kind.id().as_str()).collect::<Vec<_>>(), ["sign", "part"]);
+    assert_eq!(IMPORTED_KINDS.iter().map(|kind| kind.id().as_str()).collect::<Vec<_>>(), ["imported_part"]);
+    let ids: Vec<&str> = KINDS.iter().chain(IMPORTED_KINDS).map(|kind| kind.id().as_str()).collect();
+    let mut unique = ids.clone();
+    unique.sort();
+    unique.dedup();
+    assert_eq!(unique.len(), ids.len(), "duplicate kind id");
     let mut unique = ids.clone();
     unique.dedup();
     assert_eq!(unique, ids, "duplicate kind id");
@@ -94,7 +99,7 @@ fn the_registry_names_each_kind_once_in_snake_case() {
         assert!(snake, "{id} is not snake_case");
         assert_eq!(find(id).map(|kind| kind.id().as_str()), Some(id));
     }
-    assert!(find("imported_part").is_none(), "an unregistered kind is not found");
+    assert!(find("no_such_kind").is_none(), "an unregistered kind is not found");
 }
 
 #[test]
