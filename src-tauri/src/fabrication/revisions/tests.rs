@@ -361,6 +361,26 @@ fn export_requires_approval_never_overwrites_and_is_recorded() {
     assert_eq!(recorded, [(revision.id.to_string(), "print_package".to_owned(), path, hash.to_string())], "one record per file written");
 }
 
+/// Exports are listed in the order a person made them, even when the clock
+/// was set back between them.
+#[test]
+fn exports_are_listed_in_the_order_they_were_made() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut conn = db();
+    let revision = verified(&mut conn, dir.path(), "a");
+    approve(&mut conn, &revision.id, &package_hash(&revision), &none(), Actor::Human).expect("approve");
+    let (first, second) = (dir.path().join("out/first.3mf"), dir.path().join("out/second.3mf"));
+    export(&mut conn, &revision.id, ExportFormat::PrintPackage, &first).expect("first export");
+    export(&mut conn, &revision.id, ExportFormat::PrintPackage, &second).expect("second export");
+    conn.execute(
+        "UPDATE revision_exports SET exported_at = '2020-01-01T00:00:00+00:00' WHERE path = ?1",
+        rusqlite::params![second.to_string_lossy()],
+    )
+    .expect("clock set back");
+    let paths: Vec<String> = super::exports(&conn, &revision.id).expect("exports").into_iter().map(|e| e.path).collect();
+    assert_eq!(paths, [first.to_string_lossy().into_owned(), second.to_string_lossy().into_owned()]);
+}
+
 /// `builds_live_key` leaves out invalid builds, so the same spec builds again.
 #[test]
 fn a_void_approval_does_not_block_rebuilding_the_same_spec() {

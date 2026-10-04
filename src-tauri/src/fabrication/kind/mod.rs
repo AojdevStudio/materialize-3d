@@ -2,8 +2,9 @@
 //!
 //! A kind ([`ObjectKind`]) is the one place that knows how a spec becomes
 //! bodies on the bed. The blanket [`Kind`] wrapper turns each kind into the
-//! object-safe [`KindDriver`] that the pipeline and the tools see, and
-//! [`KINDS`] lists every registered kind. Everything after
+//! object-safe [`KindDriver`] that the pipeline and the tools see. [`KINDS`]
+//! lists every kind a caller builds from a spec it writes, and
+//! [`IMPORTED_KINDS`] every kind only `import_part` starts. Everything after
 //! [`KindDriver::prepare`] (packaging, slicing, slice verification, recording)
 //! is shared, so the pipeline cannot tell one kind from another.
 
@@ -19,7 +20,9 @@ use serde_json::Value;
 pub use super::package::ExtraArtifact;
 
 use super::cad_worker::CadRuntime;
+use super::inputs::InputStore;
 use super::checks::{CheckId, CheckOutcome, CheckPlan, CheckedModel, ChecksFailed, InvalidPlan};
+use super::kinds::imported_part::ImportedPart;
 use super::kinds::part::Part;
 use super::kinds::sign::Sign;
 use super::model::PrintableModel;
@@ -181,11 +184,14 @@ pub struct KernelContext {
     /// `None` when it is missing or failed verification; a kind that needs it
     /// is then unavailable.
     pub runtime: Option<CadRuntime>,
+    /// Where imported files are kept ([`InputStore`]). `None` outside an app
+    /// workspace; an imported kind is then unavailable.
+    pub inputs: Option<InputStore>,
 }
 
 impl KernelContext {
     pub fn without_runtime(printer: PrinterProfile) -> Self {
-        Self { printer, runtime: None }
+        Self { printer, runtime: None, inputs: None }
     }
 }
 
@@ -440,17 +446,24 @@ fn bound_plan(declared: &CheckPlan, bound: Result<CheckPlan, InvalidPlan>) -> Re
     Ok(bound)
 }
 
-/// Every registered kind, one line each. A kind that needs something this app
-/// may lack, such as the CAD runtime, is still listed; [`available`] is what
-/// leaves it out.
+/// Every kind a caller builds from a spec it writes, one line each. A kind
+/// that needs something this app may lack, such as the CAD runtime, is still
+/// listed; [`available`] is what leaves it out.
 pub static KINDS: &[&dyn KindDriver] = &[&Kind::<Sign>::NEW, &Kind::<Part>::NEW];
 
-/// The registered kind named `id`, whether or not it is available.
+/// Every kind only `import_part` starts. Its spec names a file in the input
+/// store, so `build` and `describe_kind` never offer it and the system
+/// prompt never lists it; `revise` and `get` reach its revisions like any
+/// other.
+pub static IMPORTED_KINDS: &[&dyn KindDriver] = &[&Kind::<ImportedPart>::NEW];
+
+/// The registered kind named `id`, imported kinds included, whether or not
+/// it is available.
 pub fn find(id: &str) -> Option<&'static dyn KindDriver> {
-    KINDS.iter().copied().find(|kind| kind.id().as_str() == id)
+    KINDS.iter().chain(IMPORTED_KINDS).copied().find(|kind| kind.id().as_str() == id)
 }
 
-/// The kinds that can build with `ctx`, in [`KINDS`] order.
+/// The kinds a caller can build from a spec with `ctx`, in [`KINDS`] order.
 pub fn available(ctx: &KernelContext) -> Vec<&'static dyn KindDriver> {
     KINDS.iter().copied().filter(|kind| kind.available(ctx)).collect()
 }

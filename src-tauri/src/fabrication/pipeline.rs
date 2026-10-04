@@ -9,6 +9,10 @@
 //! directory, and renames it into place before the build is recorded. A crash
 //! leaves either a complete record or leftovers that [`reconcile_startup`]
 //! removes on the next launch.
+//!
+//! [`import_part`] starts an `imported_part` build from a file: it reads and
+//! checks the file, keeps it in the input store, and builds the spec that
+//! names it, through the same [`build`].
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -20,7 +24,12 @@ use serde_json::{json, Value};
 use super::bambu::{self, BambuError, BambuStudio, Check, ResolvedPresets, SliceReport};
 use super::cad_worker::{CadRuntime, CadRuntimeSlot};
 use super::checks::{self, CheckId, CheckOutcome, CheckPhase, ChecksFailed, PassedChecks};
-use super::kind::{self, BuildControl, KernelContext, KernelError, KindDriver, KindId, ObjectNaming, ParsedSpec, SpecError, View};
+use super::inputs::{self, InputError, InputStore};
+use super::kinds::imported_part::{self, ImportedPart, ImportedPartSpec, MeshImportError, Units};
+use super::kind::{
+    self, BuildControl, KernelContext, KernelError, Kind, KindDriver, KindId, ObjectKind, ObjectNaming, ParsedSpec, SpecError,
+    View,
+};
 use super::model::{Palette, PrintableModel};
 use super::package::{self, PackageError};
 use super::printer::{PrinterProfile, P2S_04};
@@ -38,6 +47,8 @@ pub struct Workspace {
     /// `signs/` because recorded artifacts hold absolute paths into it.
     pub builds_dir: PathBuf,
     pub preset_cache: PathBuf,
+    /// Imported files, by content: `<app data>/inputs/<sha256>`.
+    pub inputs: InputStore,
     cad: CadRuntimeSlot,
 }
 
@@ -48,6 +59,7 @@ impl Workspace {
         Self {
             builds_dir: app_data_dir.join("signs"),
             preset_cache: app_cache_dir.join("bambu-presets"),
+            inputs: InputStore::new(app_data_dir.join("inputs")),
             cad: CadRuntimeSlot::bundled(),
         }
     }
@@ -57,9 +69,10 @@ impl Workspace {
         Self { cad: CadRuntimeSlot::fixed(runtime), ..self }
     }
 
-    /// What a kernel builds with: the printer and the verified CAD runtime.
+    /// What a kernel builds with: the printer, the verified CAD runtime, and
+    /// the input store.
     pub fn kernel_context(&self) -> KernelContext {
-        KernelContext { printer: P2S_04, runtime: self.cad.get().cloned() }
+        KernelContext { printer: P2S_04, runtime: self.cad.get().cloned(), inputs: Some(self.inputs.clone()) }
     }
 
     fn partial_dir(&self, build: &BuildId) -> PathBuf {
@@ -239,6 +252,12 @@ pub enum BuildError {
     /// what the build records as its failure.
     #[error("{stage}: {error}")]
     Stage { stage: Stage, error: String },
+    /// The file to import could not be read or kept.
+    #[error("import refused: {0}")]
+    Input(#[from] InputError),
+    /// The file to import is not a mesh this app reads, or is over a limit.
+    #[error("import refused: {0}")]
+    Mesh(#[from] MeshImportError),
 }
 
 impl From<BambuError> for BuildError {
@@ -402,6 +421,33 @@ fn build_as(
         control.report(BuildStep::Verified);
     }
     Ok(BuildOutcome { revision: finished, reused: false })
+}
+
+/// Imports the mesh file at `path` as an `imported_part` in `units`, titled
+/// `title`, for `actor`. The file is read once, capped, and parsed in Rust;
+/// one that is not a mesh, or is over a limit, is refused here, before
+/// anything is stored or recorded. A file that parses is kept in the input
+/// store by its hash, and the spec that names it builds through [`build`]
+/// as a new design. Importing the same bytes, title, and units again reuses
+/// the stored file and returns the revision they built.
+pub fn import_part(
+    state: &AppState,
+    workspace: &Workspace,
+    path: &Path,
+    title: &str,
+    units: Units,
+    actor: Actor,
+    control: &BuildControl<'_>,
+) -> Result<BuildOutcome, BuildError> {
+    let bytes = inputs::read_source(path)?;
+    let spec = ImportedPartSpec::new(title, &Sha256Hex::of_bytes(&bytes), units);
+    let spec = serde_json::to_value(spec)?;
+    // A bad title is refused like any spec, before the file is read as a mesh.
+    Kind::<ImportedPart>::NEW.parse(spec.clone(), &P2S_04)?;
+    imported_part::check_file(&bytes, units)?;
+    workspace.inputs.put(&bytes)?;
+    let request = BuildRequest { kind: ImportedPart::ID.to_string(), spec, lineage_id: None, actor };
+    build(state, workspace, request, control)
 }
 
 /// Hash of every input that determines a build's output: the kind's tag, the
@@ -871,6 +917,9 @@ fn handoff_matches_slice(template: &Value, palette: &Palette, printer: &PrinterP
         },
     }
 }
+
+#[cfg(test)]
+mod import_tests;
 
 #[cfg(test)]
 mod tests {

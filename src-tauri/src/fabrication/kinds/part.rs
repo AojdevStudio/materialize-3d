@@ -14,8 +14,8 @@
 //! `slice.support_warning`. The normalized STEP rides in the package
 //! ([`ExtraArtifact::Step`]), so approval covers it.
 
-mod measure;
-mod preview;
+pub(crate) mod measure;
+pub(crate) mod preview;
 pub mod self_test;
 mod spec;
 
@@ -88,14 +88,14 @@ impl ObjectKind for Part {
     /// slice and handoff checks. [`Part::bind_plan`] adds every body's checks
     /// once the bodies exist.
     fn check_plan(valid: &ValidPart, _printer: &PrinterProfile) -> Result<CheckPlan, InvalidPlan> {
-        plan(valid, &[])
+        plan(PART_CHECK_PLAN, valid.requirements(), &[])
     }
 
     /// The declared plan with every body's mesh and print checks. The script
     /// chooses its bodies' names, never which checks a body gets.
     fn bind_plan(valid: &ValidPart, _printer: &PrinterProfile, model: &PrintableModel) -> Result<CheckPlan, InvalidPlan> {
         let bodies: Vec<&str> = model.bodies().iter().map(|b| b.name.as_str()).collect();
-        plan(valid, &bodies)
+        plan(PART_CHECK_PLAN, valid.requirements(), &bodies)
     }
 
     /// Generation, then inspection, through the CAD runtime. Returns the
@@ -131,34 +131,40 @@ impl ObjectKind for Part {
     }
 
     fn measure(valid: &ValidPart, model: &PrintableModel, control: &BuildControl<'_>) -> Result<Vec<CheckOutcome>, KernelError> {
-        measure::measure(valid, model, &|| control.is_cancelled())
+        measure::measure(valid.bed(), valid.requirements(), model, &|| control.is_cancelled())
     }
 
     /// Isometric, front, and top views of the welded mesh.
     fn preview(_valid: &ValidPart, model: &PrintableModel) -> Result<ViewSet, KernelError> {
-        let views = Self::VIEWS
-            .iter()
-            .copied()
-            .map(|view| preview::render(model, view).map(|png| (view, png)))
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(KernelError::Failed)?;
-        ViewSet::new(views)
+        render_views(Self::VIEWS, model)
     }
 }
 
-/// The part's plan for `bodies`: each body's mesh checks, every requirement,
-/// each body's print checks, then the slice and handoff checks with the
-/// support warning last.
-fn plan(valid: &ValidPart, bodies: &[&str]) -> Result<CheckPlan, InvalidPlan> {
+/// `views` of any model's mesh, in order. An imported part renders its views
+/// this way too.
+pub(crate) fn render_views(views: &[View], model: &PrintableModel) -> Result<ViewSet, KernelError> {
+    let views = views
+        .iter()
+        .copied()
+        .map(|view| preview::render(model, view).map(|png| (view, png)))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(KernelError::Failed)?;
+    ViewSet::new(views)
+}
+
+/// The plan `id` for `bodies` of a mesh: each body's mesh checks, every
+/// requirement, each body's print checks, then the slice and handoff checks
+/// with the support warning last. An imported part's plan has no requirements.
+pub(crate) fn plan(id: CheckPlanId, requirements: &[MeasuredRequirement], bodies: &[&str]) -> Result<CheckPlan, InvalidPlan> {
     let per_body = |phase: CheckPhase, names: &[&str]| -> Vec<CheckId> {
         bodies.iter().flat_map(|body| names.iter().map(move |name| CheckId::new(phase, &format!("{name}.{body}")))).collect()
     };
     let mut required = per_body(CheckPhase::Geometry, &MESH_CHECKS);
-    required.extend(valid.requirements().iter().map(MeasuredRequirement::check_id));
+    required.extend(requirements.iter().map(MeasuredRequirement::check_id));
     required.extend(per_body(CheckPhase::Print, &PRINT_CHECKS));
     required.extend(slice_and_handoff_checks());
     required.push(slice_support_warning());
-    CheckPlan::new(PART_CHECK_PLAN, required)
+    CheckPlan::new(id, required)
 }
 
 /// Refuses a mesh with more triangles than the layer checks slice, so a part

@@ -32,6 +32,7 @@ fn gui(dir: &Path) -> Gui {
         .invoke_handler(tauri::generate_handler![
             crate::actions::gui::design_build,
             crate::actions::gui::design_approve,
+            crate::actions::gui::design_export,
             crate::actions::gui::design_record_print,
         ])
         .build(mock_context(noop_assets()))
@@ -47,8 +48,13 @@ fn gui(dir: &Path) -> Gui {
 }
 
 fn invoke(gui: &Gui, cmd: &str, body: Value) -> Result<Value, Value> {
+    invoke_on(&gui.webview, cmd, body)
+}
+
+/// A GUI command as the window sends it, from any thread.
+fn invoke_on(webview: &WebviewWindow<MockRuntime>, cmd: &str, body: Value) -> Result<Value, Value> {
     get_ipc_response(
-        &gui.webview,
+        webview,
         InvokeRequest {
             cmd: cmd.into(),
             callback: CallbackFn(0),
@@ -222,4 +228,172 @@ async fn each_caller_records_its_own_identity() {
     for (title, actor) in [("From the GUI", Actor::Human), ("From the agent", Actor::Agent), ("From MCP", Actor::ExternalMcp)] {
         assert!(recorded.contains(&(title.to_owned(), actor)), "{title} recorded as {actor:?}: {recorded:?}");
     }
+}
+
+/// An MCP endpoint over `gui`'s actions, and its URL.
+async fn mcp_over(gui: &Gui, token: &'static str) -> (crate::mcp::McpServer, String) {
+    let server = crate::mcp::McpServer::default();
+    let url = server
+        .set_enabled(Arc::new(gui.actions.clone()), 0, true, move || async move { Ok(token.to_owned()) })
+        .await
+        .expect("mcp")
+        .url
+        .expect("url");
+    (server, url)
+}
+
+/// The JSON a tool call over MCP returned.
+fn tool_output(reply: &Value) -> Value {
+    assert_eq!(reply["result"]["isError"], false, "{reply}");
+    serde_json::from_str(reply["result"]["content"][0]["text"].as_str().expect("tool text")).expect("tool json")
+}
+
+/// A person approves and exports through the GUI commands; `get` over MCP
+/// then names what they exported, where, and its hash.
+#[tokio::test(flavor = "multi_thread")]
+async fn get_over_mcp_returns_the_exports_a_person_made() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let gui = gui(dir.path());
+    let revision = agent_built_revision(&gui, dir.path());
+    let id = revision.id.to_string();
+    let hash = revision.artifacts().expect("artifacts").files().package_sha256.to_string();
+    let (server, url) = mcp_over(&gui, "tok-exports").await;
+
+    let before = tool_output(&crate::mcp::tests::call_over_http(&url, "tok-exports", "get", json!({ "revision_id": id })).await);
+    assert_eq!((before["approval"].as_str(), &before["exports"]), (Some("pending"), &json!([])));
+
+    let destination = dir.path().join("Fusion").join("inbox").join("clip-r1.3mf");
+    let written = tokio::task::block_in_place(|| {
+        invoke(&gui, "design_approve", json!({ "id": id, "packageSha256": hash, "acknowledgedWarnings": [] })).expect("approve");
+        invoke(&gui, "design_export", json!({ "id": id, "format": "print_package", "destination": destination.display().to_string() }))
+            .expect("export")
+    });
+    assert_eq!(written, json!(destination.display().to_string()));
+
+    let after = tool_output(&crate::mcp::tests::call_over_http(&url, "tok-exports", "get", json!({ "revision_id": id })).await);
+    assert_eq!(after["approval"], "approved");
+    let exports = after["exports"].as_array().expect("exports");
+    assert_eq!(exports.len(), 1, "{after}");
+    assert_eq!(exports[0]["format"], "print_package");
+    assert_eq!(exports[0]["path"], json!(destination.display().to_string()));
+    assert_eq!(exports[0]["sha256"], json!(hash), "the bytes written are the approved package");
+    assert!(exports[0]["exported_at"].is_string());
+    server.set_enabled(Arc::new(gui.actions.clone()), 0, false, || async { Ok(String::new()) }).await.expect("stop");
+}
+
+/// A `get` with `wait_s` waits while approval is pending, other MCP calls
+/// run meanwhile, and it returns as soon as a person approves from another
+/// thread.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_waiting_get_returns_when_a_person_approves_and_does_not_block_other_calls() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let gui = gui(dir.path());
+    let revision = agent_built_revision(&gui, dir.path());
+    let id = revision.id.to_string();
+    let hash = revision.artifacts().expect("artifacts").files().package_sha256.to_string();
+    let (server, url) = mcp_over(&gui, "tok-wait").await;
+
+    let started = std::time::Instant::now();
+    let waiting = tokio::spawn({
+        let (url, id) = (url.clone(), id.clone());
+        async move { crate::mcp::tests::call_over_http(&url, "tok-wait", "get", json!({ "revision_id": id, "wait_s": 120 })).await }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    assert!(!waiting.is_finished(), "get waits while approval is pending");
+    let listed = tool_output(&crate::mcp::tests::call_over_http(&url, "tok-wait", "list", json!({})).await);
+    assert_eq!(listed.as_array().map(Vec::len), Some(1));
+    assert!(!waiting.is_finished(), "list returned while get waits");
+
+    let webview = gui.webview.clone();
+    let approver = std::thread::spawn(move || {
+        invoke_on(&webview, "design_approve", json!({ "id": id, "packageSha256": hash, "acknowledgedWarnings": [] })).map(drop)
+    });
+    approver.join().expect("approver thread").expect("approve");
+    let approved_at = std::time::Instant::now();
+    let reply = tokio::time::timeout(std::time::Duration::from_secs(10), waiting).await.expect("woke").expect("join");
+    let output = tool_output(&reply);
+    assert_eq!(output["approval"], "approved", "{output}");
+    assert!(approved_at.elapsed() < std::time::Duration::from_secs(2), "woken by the approval, {:?} after it", approved_at.elapsed());
+    assert!(started.elapsed() < std::time::Duration::from_secs(60), "{:?}", started.elapsed());
+    server.set_enabled(Arc::new(gui.actions.clone()), 0, false, || async { Ok(String::new()) }).await.expect("stop");
+}
+
+/// When nobody decides, a waiting `get` returns the revision, still pending,
+/// once `wait_s` runs out; other MCP calls run meanwhile.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_waiting_get_returns_at_the_timeout_with_approval_still_pending() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let gui = gui(dir.path());
+    let id = agent_built_revision(&gui, dir.path()).id.to_string();
+    let (server, url) = mcp_over(&gui, "tok-timeout").await;
+
+    let started = std::time::Instant::now();
+    let waiting = tokio::spawn({
+        let (url, id) = (url.clone(), id.clone());
+        async move { crate::mcp::tests::call_over_http(&url, "tok-timeout", "get", json!({ "revision_id": id, "wait_s": 2 })).await }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    let listed = tool_output(&crate::mcp::tests::call_over_http(&url, "tok-timeout", "list", json!({})).await);
+    assert_eq!(listed.as_array().map(Vec::len), Some(1));
+    assert!(!waiting.is_finished(), "list returned while get waits");
+
+    let output = tool_output(&tokio::time::timeout(std::time::Duration::from_secs(10), waiting).await.expect("ended").expect("join"));
+    let waited = started.elapsed();
+    assert_eq!((output["revision_id"].as_str(), output["approval"].as_str()), (Some(id.as_str()), Some("pending")));
+    assert!(waited >= std::time::Duration::from_secs(2) && waited < std::time::Duration::from_secs(8), "{waited:?}");
+    server.set_enabled(Arc::new(gui.actions.clone()), 0, false, || async { Ok(String::new()) }).await.expect("stop");
+}
+
+/// `true` once `ready` holds, checking every 20 ms for up to `within`.
+async fn eventually(within: std::time::Duration, ready: impl Fn() -> bool) -> bool {
+    let until = std::time::Instant::now() + within;
+    while std::time::Instant::now() < until {
+        if ready() {
+            return true;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    ready()
+}
+
+/// A client that cancels its waiting `get` (MCP `notifications/cancelled`)
+/// ends the wait at once, not at `wait_s`.
+#[tokio::test(flavor = "multi_thread")]
+async fn cancelling_a_waiting_get_over_mcp_ends_the_wait() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let gui = gui(dir.path());
+    let id = agent_built_revision(&gui, dir.path()).id.to_string();
+    let (server, url) = mcp_over(&gui, "tok-cancel").await;
+    let client = reqwest::Client::new();
+    let post = |session: Option<String>, body: Value| {
+        let mut request = client
+            .post(&url)
+            .header("Authorization", "Bearer tok-cancel")
+            .header("Accept", "application/json, text/event-stream")
+            .json(&body);
+        if let Some(session) = session {
+            request = request.header("Mcp-Session-Id", session);
+        }
+        request.send()
+    };
+    let init = post(None, json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}))
+        .await
+        .expect("initialize");
+    let session = init.headers().get("mcp-session-id").and_then(|v| v.to_str().ok()).map(str::to_owned);
+    post(session.clone(), json!({"jsonrpc":"2.0","method":"notifications/initialized"})).await.expect("initialized");
+
+    let waiting = tokio::spawn(post(
+        session.clone(),
+        json!({"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"get","arguments":{"revision_id": id, "wait_s": 120}}}),
+    ));
+    assert!(eventually(std::time::Duration::from_secs(5), || gui.actions.approval_waiters() == 1).await, "get is waiting");
+    post(session, json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":7,"reason":"the skill moved on"}}))
+        .await
+        .expect("cancel");
+    assert!(
+        eventually(std::time::Duration::from_secs(3), || gui.actions.approval_waiters() == 0).await,
+        "the wait ended when the client cancelled it"
+    );
+    waiting.abort();
+    server.set_enabled(Arc::new(gui.actions.clone()), 0, false, || async { Ok(String::new()) }).await.expect("stop");
 }

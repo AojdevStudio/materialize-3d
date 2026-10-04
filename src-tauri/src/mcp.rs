@@ -5,6 +5,7 @@
 //! Off by default. When enabled it binds 127.0.0.1 only and requires
 //! `Authorization: Bearer <token>`; the token lives in the OS keyring. There is
 //! no approve, export, or print-result tool: those stay with a person in the app.
+//! `import_part` is offered here only, because it takes a path on this computer.
 
 use std::future::Future;
 use std::sync::Arc;
@@ -85,8 +86,9 @@ impl ServerHandler for MaterializeMcp {
             .with_server_info(Implementation::new("materialize-3d", env!("CARGO_PKG_VERSION")))
             .with_instructions(
                 "Materialize 3D designs and verifies printable objects for a Bambu P2S; build takes a kind \
-                 and that kind's spec, and describe_kind says how to write one. Builds you request wait for a \
-                 person's approval in the app."
+                 and that kind's spec, and describe_kind says how to write one. import_part brings in a mesh \
+                 made in another program, such as Fusion, for the same checks. Builds you request wait for a \
+                 person's approval in the app; get with wait_s waits for that decision."
                     .to_string(),
             )
     }
@@ -117,17 +119,20 @@ impl ServerHandler for MaterializeMcp {
 
     /// An unlisted name is refused before anything runs; a tool's own failure
     /// (bad arguments included) comes back as an error result the agent reads.
+    /// The call stops when its client cancels it: rmcp cancels `context.ct`
+    /// on the client's cancelled notification, which ends a waiting `get` and
+    /// stops a build at its next check.
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
         let tool = offered(&request.name).ok_or_else(|| ErrorData::invalid_params("tool not found", None))?;
         let call = ToolCall {
             surface: Surface::ExternalMcp,
             actions: self.actions.clone(),
             progress: Arc::new(|_| {}),
-            cancel: CancellationToken::new(),
+            cancel: context.ct.clone(),
             blocking: self.blocking.clone(),
         };
         let args = serde_json::Value::Object(request.arguments.unwrap_or_default());
@@ -385,7 +390,7 @@ pub(crate) mod tests {
     fn exposes_the_shared_actions_and_no_approval_path() {
         let mut names = tool_names();
         names.sort();
-        assert_eq!(names, ["build", "describe_kind", "get", "list", "printer_status", "revise", "show"]);
+        assert_eq!(names, ["build", "describe_kind", "get", "import_part", "list", "printer_status", "revise", "show"]);
         for forbidden in ["approve", "export", "print_result", "record_print"] {
             assert!(names.iter().all(|name| !name.contains(forbidden)), "{forbidden} must stay human-only");
         }
@@ -590,7 +595,7 @@ pub(crate) mod tests {
         let mut names: Vec<String> = listed["result"]["tools"].as_array().expect("tools").iter()
             .map(|t| t["name"].as_str().expect("name").to_owned()).collect();
         names.sort();
-        assert_eq!(names, ["build", "describe_kind", "get", "list", "printer_status", "revise", "show"]);
+        assert_eq!(names, ["build", "describe_kind", "get", "import_part", "list", "printer_status", "revise", "show"]);
 
         let called = sse_json(&rpc(session.clone(), serde_json::json!({"jsonrpc":"2.0","id":3,"method":"tools/call",
             "params":{"name":"list","arguments":{}}})).await.expect("call").text().await.expect("body"));
@@ -677,7 +682,9 @@ pub(crate) mod tests {
                 crate::agent::tools::bind_all(&scope, &scope.actions.kinds()).iter().map(|tool| tool.definition()).collect();
             let shared: Vec<Tool> =
                 Tool::on(Surface::InAppAgent).filter(|tool| Tool::on(Surface::ExternalMcp).any(|t| t == *tool)).collect();
-            assert_eq!(shared.len(), Tool::ALL.len(), "every tool is on both surfaces");
+            assert_eq!(shared.len(), Tool::ALL.len() - 1, "every tool but import_part is on both surfaces");
+            assert!(agent.iter().all(|d| d.name != Tool::ImportPart.name()), "the in-app agent is not offered import_part");
+            assert!(listed.iter().any(|t| t["name"] == Tool::ImportPart.name()), "MCP lists import_part");
             for tool in shared {
                 let in_app = agent.iter().find(|d| d.name == tool.name()).unwrap_or_else(|| panic!("agent lacks {}", tool.name()));
                 let external =
