@@ -750,16 +750,20 @@ async function runMockTurn(turnId: string, text: string, channel: Channel<AgentE
     title: buildArgs.spec.title,
     build: 'verified',
     failure_reason: null,
+    stage: null,
     checks_passed: 9,
     checks_total: 9,
     failed_checks: [],
     warnings: [],
+    requirements: [],
     package_sha256: 'abc123f09d1e7b55c0a4e2f6781d3b9ac0ffee12de45f67a89b0c1d2e3f4c4e7',
     approval: 'pending',
     print_validation: 'not_tested',
     requested_by: 'agent',
     created_at: now(),
     reused: false,
+    shown: true,
+    views: ['face'],
   }
   send({ type: 'toolResult', callId, ok: true, output: sign })
   record('completed', sign)

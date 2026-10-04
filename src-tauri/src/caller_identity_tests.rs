@@ -176,7 +176,8 @@ async fn each_caller_records_its_own_identity() {
     let from_agent = scope
         .invoke(crate::tools::Tool::Build, "call-1".into(), json!({ "kind": "sign", "spec": spec_titled("From the agent") }))
         .await
-        .expect("agent build");
+        .expect("agent build")
+        .value;
     assert_eq!(from_agent["requested_by"], "agent");
 
     let server = crate::mcp::McpServer::default();

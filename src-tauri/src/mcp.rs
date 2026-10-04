@@ -29,16 +29,26 @@ use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
 use crate::actions::RequestActions;
-use crate::tools::{Surface, Tool, ToolCall};
+use crate::fabrication::kind::KindDriver;
+use crate::tools::{self, Surface, Tool, ToolCall, ToolContent};
 
 pub const DEFAULT_PORT: u16 = 45373;
 const TOKEN_KEY: &str = "mcp:token";
 pub const ENABLED_SETTING: &str = "mcp.enabled";
 
-/// The MCP definition of a registry tool: its name, description, and schema as declared once in [`Tool`].
-fn advertised(tool: Tool) -> rmcp::model::Tool {
-    let schema = tool.parameters().as_object().cloned().unwrap_or_default();
+/// The MCP definition of a registry tool: its name, description, and schema
+/// as declared once in [`Tool`], for the kinds the app can build now.
+fn advertised(tool: Tool, kinds: &[&'static dyn KindDriver]) -> rmcp::model::Tool {
+    let schema = tool.parameters(kinds).as_object().cloned().unwrap_or_default();
     rmcp::model::Tool::new(tool.name(), tool.description(), Arc::new(schema))
+}
+
+/// A tool's content as MCP content: the JSON as text, then each view as a PNG
+/// image, the same content the in-app agent sends its model.
+fn mcp_content(content: ToolContent) -> Result<Vec<ContentBlock>, serde_json::Error> {
+    let text = ContentBlock::text(serde_json::to_string_pretty(&content.value)?);
+    let images = content.views.iter().map(|(_, png)| ContentBlock::image(tools::base64(png), "image/png"));
+    Ok(std::iter::once(text).chain(images).collect())
 }
 
 fn offered(name: &str) -> Option<Tool> {
@@ -57,6 +67,16 @@ impl MaterializeMcp {
     pub fn new(actions: Arc<dyn RequestActions>) -> Self {
         Self { actions, blocking: TaskTracker::new() }
     }
+
+    /// The kinds the app can build now. The first call may verify the CAD
+    /// runtime, so it runs on the blocking pool.
+    async fn kinds(&self) -> Result<Vec<&'static dyn KindDriver>, ErrorData> {
+        let actions = self.actions.clone();
+        self.blocking
+            .spawn_blocking(move || actions.kinds())
+            .await
+            .map_err(|e| ErrorData::internal_error(format!("listing the kinds failed: {e}"), None))
+    }
 }
 
 impl ServerHandler for MaterializeMcp {
@@ -65,7 +85,8 @@ impl ServerHandler for MaterializeMcp {
             .with_server_info(Implementation::new("materialize-3d", env!("CARGO_PKG_VERSION")))
             .with_instructions(
                 "Materialize 3D designs and verifies printable objects for a Bambu P2S; build takes a kind \
-                 and that kind's spec. Builds you request wait for a person's approval in the app."
+                 and that kind's spec, and describe_kind says how to write one. Builds you request wait for a \
+                 person's approval in the app."
                     .to_string(),
             )
     }
@@ -77,9 +98,10 @@ impl ServerHandler for MaterializeMcp {
     ) -> Result<ListToolsResult, ErrorData> {
         // The same cache hints rmcp's generated handler sends.
         let supports_cache_hints = context.protocol_version().is_some_and(|version| version >= ProtocolVersion::V_2026_07_28);
+        let kinds = self.kinds().await?;
         Ok(ListToolsResult {
             result_type: Some(ResultType::COMPLETE),
-            tools: Tool::on(Surface::ExternalMcp).map(advertised).collect(),
+            tools: Tool::on(Surface::ExternalMcp).map(|tool| advertised(tool, &kinds)).collect(),
             meta: None,
             next_cursor: None,
             ttl_ms: supports_cache_hints.then_some(0),
@@ -87,8 +109,10 @@ impl ServerHandler for MaterializeMcp {
         })
     }
 
+    /// Sync, so the kinds are read here directly. The CAD runtime is verified
+    /// once per process, so only a first call can take long.
     fn get_tool(&self, name: &str) -> Option<rmcp::model::Tool> {
-        offered(name).map(advertised)
+        offered(name).map(|tool| advertised(tool, &self.actions.kinds()))
     }
 
     /// An unlisted name is refused before anything runs; a tool's own failure
@@ -108,8 +132,8 @@ impl ServerHandler for MaterializeMcp {
         };
         let args = serde_json::Value::Object(request.arguments.unwrap_or_default());
         let result = match tool.invoke(&call, args).await {
-            Ok(output) => match serde_json::to_string_pretty(&output) {
-                Ok(text) => CallToolResult::success(vec![ContentBlock::text(text)]),
+            Ok(content) => match mcp_content(content) {
+                Ok(content) => CallToolResult::success(content),
                 Err(err) => CallToolResult::error(vec![ContentBlock::text(err.to_string())]),
             },
             Err(err) => CallToolResult::error(vec![ContentBlock::text(err.to_string())]),
@@ -350,18 +374,18 @@ pub async fn mcp_rotate_token(server: tauri::State<'_, McpServer>) -> Result<Str
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn tool_names() -> Vec<String> {
-        Tool::on(Surface::ExternalMcp).map(advertised).map(|tool| tool.name.to_string()).collect()
+        Tool::on(Surface::ExternalMcp).map(|tool| advertised(tool, crate::fabrication::kind::KINDS)).map(|tool| tool.name.to_string()).collect()
     }
 
     #[test]
     fn exposes_the_shared_actions_and_no_approval_path() {
         let mut names = tool_names();
         names.sort();
-        assert_eq!(names, ["build", "get", "list", "printer_status", "show"]);
+        assert_eq!(names, ["build", "describe_kind", "get", "list", "printer_status", "revise", "show"]);
         for forbidden in ["approve", "export", "print_result", "record_print"] {
             assert!(names.iter().all(|name| !name.contains(forbidden)), "{forbidden} must stay human-only");
         }
@@ -566,7 +590,7 @@ mod tests {
         let mut names: Vec<String> = listed["result"]["tools"].as_array().expect("tools").iter()
             .map(|t| t["name"].as_str().expect("name").to_owned()).collect();
         names.sort();
-        assert_eq!(names, ["build", "get", "list", "printer_status", "show"]);
+        assert_eq!(names, ["build", "describe_kind", "get", "list", "printer_status", "revise", "show"]);
 
         let called = sse_json(&rpc(session.clone(), serde_json::json!({"jsonrpc":"2.0","id":3,"method":"tools/call",
             "params":{"name":"list","arguments":{}}})).await.expect("call").text().await.expect("body"));
@@ -580,6 +604,27 @@ mod tests {
         let reason = smuggled["result"]["content"][0]["text"].as_str().unwrap_or_default();
         assert!(reason.contains("unknown field `actor`"), "{reason}");
         server.set_enabled(actions, 0, false, || fixed("unused")).await.expect("stop");
+    }
+
+    /// Calls `name` with `arguments` over HTTP in a fresh session; returns the JSON-RPC reply.
+    pub(crate) async fn call_over_http(url: &str, token: &str, name: &str, arguments: serde_json::Value) -> serde_json::Value {
+        let client = reqwest::Client::new();
+        let rpc = |session: Option<String>, body: serde_json::Value| {
+            let mut request = client
+                .post(url)
+                .header("Authorization", format!("Bearer {token}"))
+                .header("Accept", "application/json, text/event-stream")
+                .json(&body);
+            if let Some(id) = session {
+                request = request.header("Mcp-Session-Id", id);
+            }
+            request.send()
+        };
+        let init = rpc(None, initialize()).await.expect("initialize");
+        let session = init.headers().get("mcp-session-id").and_then(|v| v.to_str().ok()).map(str::to_owned);
+        rpc(session.clone(), serde_json::json!({"jsonrpc":"2.0","method":"notifications/initialized"})).await.expect("initialized");
+        sse_json(&rpc(session, serde_json::json!({"jsonrpc":"2.0","id":2,"method":"tools/call",
+            "params":{"name":name,"arguments":arguments}})).await.expect("call").text().await.expect("body"))
     }
 
     /// Lists the tools over HTTP, then calls `name`; returns the listed tools and the call's JSON-RPC reply.
@@ -606,34 +651,42 @@ mod tests {
         (listed["result"]["tools"].as_array().expect("tools").clone(), called)
     }
 
+    /// Checked for an app without the CAD runtime (signs only) and for one
+    /// with it (`part` offered too).
     #[tokio::test]
     async fn the_agent_and_mcp_advertise_identical_definitions_for_every_shared_tool() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let (actions, state) = test_actions(dir.path());
-        let server = McpServer::default();
-        let url = server.set_enabled(actions.clone(), 0, true, || fixed("tok-same")).await.expect("start").url.expect("url");
-        let (listed, _) = list_then_call(&url, "tok-same", "list").await;
-        server.set_enabled(actions.clone(), 0, false, || fixed("unused")).await.expect("stop");
+        let (signs_only, state) = test_actions(dir.path());
+        let with_part: Arc<dyn RequestActions> = Arc::new(crate::agent::tests::ScriptedBuilds::new(state.clone(), dir.path()));
+        for (actions, kinds) in [(signs_only, serde_json::json!(["sign"])), (with_part, serde_json::json!(["sign", "part"]))] {
+            let server = McpServer::default();
+            let url = server.set_enabled(actions.clone(), 0, true, || fixed("tok-same")).await.expect("start").url.expect("url");
+            let (listed, _) = list_then_call(&url, "tok-same", "list").await;
+            server.set_enabled(actions.clone(), 0, false, || fixed("unused")).await.expect("stop");
 
-        let scope = Arc::new(crate::agent::tools::TurnScope {
-            conversation_id: "c".into(),
-            turn_id: "t".into(),
-            state,
-            actions,
-            emit: Arc::new(|_| {}),
-            cancel: CancellationToken::new(),
-            blocking: TaskTracker::new(),
-        });
-        let agent: Vec<_> = crate::agent::tools::bind_all(&scope).iter().map(|tool| tool.definition()).collect();
-        let shared: Vec<Tool> =
-            Tool::on(Surface::InAppAgent).filter(|tool| Tool::on(Surface::ExternalMcp).any(|t| t == *tool)).collect();
-        assert!(!shared.is_empty());
-        for tool in shared {
-            let in_app = agent.iter().find(|d| d.name == tool.name()).unwrap_or_else(|| panic!("agent lacks {}", tool.name()));
-            let external =
-                listed.iter().find(|t| t["name"] == tool.name()).unwrap_or_else(|| panic!("MCP lacks {}", tool.name()));
-            assert_eq!(external["description"], in_app.description.as_str(), "{} description", tool.name());
-            assert_eq!(external["inputSchema"], in_app.parameters, "{} schema", tool.name());
+            let scope = Arc::new(crate::agent::tools::TurnScope {
+                conversation_id: "c".into(),
+                turn_id: "t".into(),
+                state: state.clone(),
+                actions,
+                emit: Arc::new(|_| {}),
+                cancel: CancellationToken::new(),
+                blocking: TaskTracker::new(),
+            });
+            let agent: Vec<_> =
+                crate::agent::tools::bind_all(&scope, &scope.actions.kinds()).iter().map(|tool| tool.definition()).collect();
+            let shared: Vec<Tool> =
+                Tool::on(Surface::InAppAgent).filter(|tool| Tool::on(Surface::ExternalMcp).any(|t| t == *tool)).collect();
+            assert_eq!(shared.len(), Tool::ALL.len(), "every tool is on both surfaces");
+            for tool in shared {
+                let in_app = agent.iter().find(|d| d.name == tool.name()).unwrap_or_else(|| panic!("agent lacks {}", tool.name()));
+                let external =
+                    listed.iter().find(|t| t["name"] == tool.name()).unwrap_or_else(|| panic!("MCP lacks {}", tool.name()));
+                assert_eq!(external["description"], in_app.description.as_str(), "{} description", tool.name());
+                assert_eq!(external["inputSchema"], in_app.parameters, "{} schema", tool.name());
+            }
+            let build = listed.iter().find(|t| t["name"] == "build").expect("build");
+            assert_eq!(build["inputSchema"]["properties"]["kind"]["enum"], kinds, "build offers exactly the app's kinds");
         }
     }
 
