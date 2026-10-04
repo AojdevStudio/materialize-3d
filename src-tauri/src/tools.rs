@@ -16,7 +16,8 @@ use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
 use crate::actions::{ActionError, RequestActions, RequestActor};
-use crate::fabrication::kind::{self, inlined_schema, BuildControl};
+use crate::fabrication::kind::{self, inlined_schema, BuildControl, KernelContext, KindDriver};
+use crate::fabrication::printer::P2S_04;
 use crate::fabrication::pipeline::BuildStep;
 use crate::fabrication::revisions::{Actor, Approval, Artifacts, BuildState, PrintValidation, RecordedCheck, Revision};
 
@@ -86,6 +87,8 @@ pub enum ToolError {
     Task(#[from] tokio::task::JoinError),
     #[error("could not encode the result: {0}")]
     Output(serde_json::Error),
+    #[error("the build tool does not offer kind {kind:?}; it offers {offered}")]
+    KindNotOffered { kind: String, offered: String },
 }
 
 /// `build` arguments. `spec` goes to [`RequestActions::build`] unparsed so
@@ -273,13 +276,22 @@ fn encode(value: impl Serialize) -> Result<Value, ToolError> {
     serde_json::to_value(value).map_err(ToolError::Output)
 }
 
-/// [`BuildArgs`]' schema with `kind` limited to the registered kinds and
-/// `spec` to their specs, so a model sees each kind's exact shape.
+/// The kinds the `build` tool offers a model: the registered kinds that build
+/// with nothing but the printer. A kind that needs the CAD runtime is left
+/// out, whether or not this app has one, until models get its script contract
+/// with it; [`RequestActions::kinds`] is what the app itself can build.
+fn offered_kinds() -> Vec<&'static dyn KindDriver> {
+    kind::available(&KernelContext::without_runtime(P2S_04))
+}
+
+/// [`BuildArgs`]' schema with `kind` limited to the offered kinds and `spec`
+/// to their specs, so a model sees each kind's exact shape.
 fn build_parameters() -> Value {
     let mut schema = inlined_schema::<BuildArgs>();
-    let kinds: Vec<&str> = kind::KINDS.iter().map(|kind| kind.id().as_str()).collect();
-    let summaries: Vec<String> = kind::KINDS.iter().map(|kind| format!("{}: {}", kind.id(), kind.summary())).collect();
-    let specs: Vec<Value> = kind::KINDS.iter().map(|kind| kind.spec_schema()).collect();
+    let offered = offered_kinds();
+    let kinds: Vec<&str> = offered.iter().map(|kind| kind.id().as_str()).collect();
+    let summaries: Vec<String> = offered.iter().map(|kind| format!("{}: {}", kind.id(), kind.summary())).collect();
+    let specs: Vec<Value> = offered.iter().map(|kind| kind.spec_schema()).collect();
     schema["properties"]["kind"] = json!({
         "type": "string",
         "enum": kinds,
@@ -356,6 +368,11 @@ impl Tool {
         match self {
             Tool::Build => {
                 let BuildArgs { kind, spec, lineage_id } = parse(args)?;
+                let offered = offered_kinds();
+                if !offered.iter().any(|offered| offered.id().as_str() == kind) {
+                    let offered = offered.iter().map(|kind| kind.id().as_str()).collect::<Vec<_>>().join(", ");
+                    return Err(ToolError::KindNotOffered { kind, offered });
+                }
                 let actor = call.surface.actor();
                 let progress = call.progress.clone();
                 let cancel = call.cancel.clone();

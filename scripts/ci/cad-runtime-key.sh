@@ -1,15 +1,19 @@
 #!/usr/bin/env bash
 # The CAD runtime key, and the record of a run that passed under it:
-#   scripts/ci/cad-runtime-key.sh                          prints key=<hex>
-#   scripts/ci/cad-runtime-key.sh record <run id> <file>   writes the record for this key to <file>, prints key=<hex>
-#   scripts/ci/cad-runtime-key.sh lookup <owner/repo>      exits 0 and prints source_run=<id> and key=<hex> only when a
-#                                                          passed run carries the record for this key; exits 1 otherwise
+#   scripts/ci/cad-runtime-key.sh [--backend]                          prints key=<hex>
+#   scripts/ci/cad-runtime-key.sh [--backend] record <run id> <file>   writes the record for this key to <file>, prints
+#                                                                      key=<hex>
+#   scripts/ci/cad-runtime-key.sh [--backend] lookup <owner/repo>      exits 0 and prints source_run=<id> and key=<hex>
+#                                                                      only when a passed run carries the record for
+#                                                                      this key; exits 1 otherwise
 # The key is the sha256 of `git ls-files -s -z` over the paths in scripts/ci/cad-runtime-paths.txt, which lists the
-# workflow, that list, and this script as well. Each entry carries mode, blob id, and path, so a change of content,
+# workflow, that list, and this script as well. With --backend it is the part-kind jobs' key instead: the same over
+# that list and scripts/ci/cad-backend-paths.txt together (the app's Rust and test inputs), recorded as
+# cad-backend-pass-<key>. A change to the app alone moves only the part-kind key, never the image key. Each entry carries mode, blob id, and path, so a change of content,
 # mode, or file set under a listed path gives a new key, and a change anywhere else does not. A listed path that
 # matches no tracked file is an error, not an empty contribution.
 # The record is the artifact cad-runtime-pass-<key>, which cad-runtime.yml uploads only after both CAD jobs did their
-# full work and passed. Only the run's own jobs can upload into a run, so `lookup` trusts an artifact only through its
+# full work and passed (cad-backend-pass-<key> after both part-kind jobs did). Only the run's own jobs can upload into a run, so `lookup` trusts an artifact only through its
 # run: a completed, successful run of .github/workflows/cad-runtime.yml whose head is in this repository, whose actor
 # and triggering actor are both named, and neither of them Dependabot. It reads every page of the artifact list (a
 # total_count from 1 to 5000, so at most 50 pages) and checks every candidate run. Any failure to read or check that
@@ -17,7 +21,12 @@
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 root="$(git -C "$here" rev-parse --show-toplevel)"
-paths_text="$(grep -Ev '^[[:space:]]*(#|$)' "$here/cad-runtime-paths.txt")"
+lists=("$here/cad-runtime-paths.txt") record_prefix=cad-runtime-pass
+if [[ "${1:-}" == --backend ]]; then
+  lists+=("$here/cad-backend-paths.txt") record_prefix=cad-backend-pass
+  shift
+fi
+paths_text="$(grep -hEv '^[[:space:]]*(#|$)' "${lists[@]}")"
 mapfile -t paths <<< "$paths_text"
 key="$(GIT_LITERAL_PATHSPECS=1 git -C "$root" ls-files -s -z --error-unmatch -- "${paths[@]}" | sha256sum)"
 key="${key%% *}"
@@ -34,7 +43,7 @@ case "${1:-}" in
     echo "key=$key"
     ;;
   lookup)
-    repo="${2:?owner/repo}" name="cad-runtime-pass-$key"
+    repo="${2:?owner/repo}" name="$record_prefix-$key"
     miss() { echo "cad-runtime key: miss, $*" >&2; exit 1; }
     [[ -n "${GH_TOKEN:-}" ]] || miss "GH_TOKEN is not set"
     # The token goes in on stdin, so it stays out of argv on the runner host.
@@ -104,7 +113,7 @@ case "${1:-}" in
     miss "no passed cad-runtime.yml run from $repo carries $name"
     ;;
   *)
-    echo "usage: $0 [record <run id> <file> | lookup <owner/repo>]" >&2
+    echo "usage: $0 [--backend] [record <run id> <file> | lookup <owner/repo>]" >&2
     exit 2
     ;;
 esac

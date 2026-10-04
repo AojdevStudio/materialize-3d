@@ -376,12 +376,10 @@ fn a_void_approval_does_not_block_rebuilding_the_same_spec() {
 }
 
 #[test]
-fn a_copy_that_does_not_match_the_approved_hash_leaves_no_file() {
+fn a_write_that_does_not_match_the_expected_hash_leaves_no_file() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let source = dir.path().join("package.3mf");
-    fs::write(&source, b"changed after approval").expect("source");
     let destination = dir.path().join("out/sign.3mf");
-    let result = copy_verified(&source, &destination, &sha("the approved bytes"));
+    let result = write_verified(b"changed after approval", &destination, &sha("the approved bytes"));
     assert!(matches!(result, Err(RevisionError::HashMismatch { .. })));
     assert!(!destination.exists(), "no partial or wrong file at the destination");
     let leftovers = fs::read_dir(dir.path().join("out")).expect("dir").count();
@@ -533,4 +531,99 @@ mod legacy {
         assert_eq!(newer.approval, Approval::Pending, "nobody approved it, so nothing is voided");
         assert_eq!(count(&conn, "builds"), 3, "nothing was built");
     }
+}
+
+/// A verified revision whose package is a real 3MF carrying `step`, or no
+/// STEP when `step` is `None`.
+fn verified_with_package(conn: &mut Connection, dir: &Path, key: &str, step: Option<&[u8]>) -> Revision {
+    use crate::fabrication::checks::{CheckPlan, CheckPlanId};
+    use crate::fabrication::package::{write_package, ExtraArtifact};
+    use crate::fabrication::printer::P2S_04;
+
+    let revision = started(claim(conn, &request(key, None, Actor::Agent)).expect("claim"));
+    let id = CheckId::new(CheckPhase::Geometry, "closed.a");
+    let plan = CheckPlan::new(CheckPlanId::new("package-test-1"), vec![id.clone()]).expect("plan");
+    let extra = step.map(|bytes| vec![ExtraArtifact::Step(bytes.to_vec())]).unwrap_or_default();
+    let checked = plan
+        .certify(test_support::model(), extra, vec![CheckOutcome { id, passed: true, detail: "ok".into() }])
+        .expect("certified");
+    let package = dir.join(format!("{key}.3mf"));
+    let info = write_package(&checked, "part-0123456789ab", &P2S_04, &package).expect("package");
+    let mut files = files(dir, b"unused");
+    files.package_path = package;
+    files.package_sha256 = Sha256Hex::try_from(info.sha256).expect("sha");
+    finish_verified(conn, &revision.build_id, files, &passed()).expect("finish");
+    get(conn, &revision.id).expect("get")
+}
+
+fn exports(conn: &Connection) -> Vec<(String, String)> {
+    conn.prepare("SELECT format, sha256 FROM revision_exports ORDER BY rowid")
+        .expect("prepare")
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .expect("query")
+        .collect::<rusqlite::Result<_>>()
+        .expect("rows")
+}
+
+/// The STEP leaves only as the member of the approved package: export
+/// refuses before approval, re-hashes the whole package first, writes the
+/// member's exact bytes, and records the STEP's own sha256.
+#[test]
+fn the_included_step_exports_from_the_approved_package_with_its_own_hash() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut conn = db();
+    let step = b"ISO-10303-21;\nHEADER;\nENDSEC;\nEND-ISO-10303-21;\n";
+    let revision = verified_with_package(&mut conn, dir.path(), "part", Some(step));
+    let target = dir.path().join("out/clip.step");
+    assert!(matches!(export(&mut conn, &revision.id, ExportFormat::IncludedStep, &target), Err(RevisionError::NotApproved(_))));
+    assert!(!target.exists());
+
+    approve(&mut conn, &revision.id, &package_hash(&revision), &none(), Actor::Human).expect("approve");
+    export(&mut conn, &revision.id, ExportFormat::IncludedStep, &target).expect("export");
+    assert_eq!(fs::read(&target).expect("step"), step);
+    let package = dir.path().join("out/clip.3mf");
+    export(&mut conn, &revision.id, ExportFormat::PrintPackage, &package).expect("export package");
+    assert_eq!(
+        exports(&conn),
+        [
+            ("included_step".to_owned(), Sha256Hex::of_bytes(step).to_string()),
+            ("print_package".to_owned(), package_hash(&revision).to_string()),
+        ],
+        "each export records the hash of what it wrote"
+    );
+    assert!(matches!(export(&mut conn, &revision.id, ExportFormat::IncludedStep, &target), Err(RevisionError::WouldOverwrite(_))));
+}
+
+/// A package changed after approval exports nothing, its STEP included.
+#[test]
+fn a_changed_package_exports_no_step() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut conn = db();
+    let revision = verified_with_package(&mut conn, dir.path(), "part", Some(b"ISO-10303-21;"));
+    approve(&mut conn, &revision.id, &package_hash(&revision), &none(), Actor::Human).expect("approve");
+    let path = revision.artifacts().expect("artifacts").files().package_path.clone();
+    let mut permissions = fs::metadata(&path).expect("meta").permissions();
+    #[allow(clippy::permissions_set_readonly_false)]
+    permissions.set_readonly(false);
+    fs::set_permissions(&path, permissions).expect("writable");
+    let mut bytes = fs::read(&path).expect("package");
+    let last = bytes.len() - 1;
+    bytes[last] ^= 1;
+    fs::write(&path, bytes).expect("tamper");
+    let target = dir.path().join("out/clip.step");
+    let refused = export(&mut conn, &revision.id, ExportFormat::IncludedStep, &target);
+    assert!(matches!(refused, Err(RevisionError::ApprovalVoid(..))), "{refused:?}");
+    assert!(!target.exists());
+    assert!(exports(&conn).is_empty());
+}
+
+#[test]
+fn a_package_without_a_step_has_none_to_export() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut conn = db();
+    let revision = verified_with_package(&mut conn, dir.path(), "sign", None);
+    approve(&mut conn, &revision.id, &package_hash(&revision), &none(), Actor::Human).expect("approve");
+    let target = dir.path().join("out/sign.step");
+    assert!(matches!(export(&mut conn, &revision.id, ExportFormat::IncludedStep, &target), Err(RevisionError::NoIncludedStep(_))));
+    assert!(!target.exists());
 }

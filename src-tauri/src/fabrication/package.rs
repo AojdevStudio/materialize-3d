@@ -29,6 +29,10 @@ const IDENTIFY_ID: u32 = 1001;
 const CONTENT_TYPES: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/><Default Extension="config" ContentType="application/octet-stream"/></Types>
 "#;
+/// `[Content_Types].xml` for a package that carries a STEP: the same types plus `.step`.
+const CONTENT_TYPES_WITH_STEP: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/><Default Extension="config" ContentType="application/octet-stream"/><Default Extension="step" ContentType="model/step"/></Types>
+"#;
 const RELS: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Target="/3D/3dmodel.model" Id="rel0" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/></Relationships>
 "#;
@@ -43,6 +47,50 @@ pub enum PackageError {
 
 type Result<T, E = PackageError> = std::result::Result<T, E>;
 
+/// Where a package stores a part's STEP. Bambu Studio slices a package with a
+/// member here exactly as it slices one without it
+/// (`cad-runtime/evidence/step-in-3mf.log`).
+pub const STEP_MEMBER: &str = "Metadata/part.step";
+
+/// A file a build makes beside its model. The package stores it as a member,
+/// so the package hash, and the approval bound to it, cover it too.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExtraArtifact {
+    /// A part's STEP, as the inspection guest re-exported it.
+    Step(Vec<u8>),
+}
+
+impl ExtraArtifact {
+    /// The package member that holds it.
+    pub fn member(&self) -> &'static str {
+        match self {
+            ExtraArtifact::Step(_) => STEP_MEMBER,
+        }
+    }
+
+    pub fn bytes(&self) -> &[u8] {
+        match self {
+            ExtraArtifact::Step(bytes) => bytes,
+        }
+    }
+}
+
+/// The STEP inside `package`, the bytes of a whole 3MF, if it holds one.
+/// Exporting reads it from bytes already checked against the approved hash,
+/// so it is exactly the STEP the person approved.
+pub fn included_step(package: &[u8]) -> Result<Option<Vec<u8>>> {
+    let zip_err = |e: zip::result::ZipError| PackageError::Package(e.to_string());
+    let mut zip = zip::ZipArchive::new(Cursor::new(package)).map_err(zip_err)?;
+    let mut member = match zip.by_name(STEP_MEMBER) {
+        Ok(member) => member,
+        Err(zip::result::ZipError::FileNotFound) => return Ok(None),
+        Err(e) => return Err(zip_err(e)),
+    };
+    let mut step = Vec::new();
+    std::io::Read::read_to_end(&mut member, &mut step)?;
+    Ok(Some(step))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PackageInfo {
     /// Lowercase hex SHA-256 of the written file.
@@ -54,7 +102,8 @@ pub struct PackageInfo {
 
 /// Writes the 3MF for `checked` to `out`, which must not exist yet.
 ///
-/// Only a model that passed its check plan can be packaged. `object_name` names
+/// Only a model that passed its check plan can be packaged, and the files it was
+/// certified with ([`CheckedModel::extra`]) go in with it. `object_name` names
 /// the assembly object in `3D/3dmodel.model` and `model_settings.config`, which
 /// is the name Bambu Studio prints in slicing warnings; the model's title goes
 /// into the 3MF `Title` metadata. The printer's project template is embedded with
@@ -91,7 +140,7 @@ pub fn write_package(
         )));
     }
 
-    let bytes = package_bytes(model, object_name, printer)?;
+    let bytes = package_bytes(model, checked.extra(), object_name, printer)?;
     let dir = match out.parent() {
         Some(p) if !p.as_os_str().is_empty() => p,
         _ => Path::new("."),
@@ -112,9 +161,17 @@ pub fn write_package(
     })
 }
 
-fn package_bytes(model: &PrintableModel, object_name: &str, printer: &PrinterProfile) -> Result<Vec<u8>> {
-    let entries = [
-        ("[Content_Types].xml", CONTENT_TYPES.as_bytes().to_vec()),
+/// A model without extras is written exactly as before extras existed, so a
+/// sign's package stays byte-identical.
+fn package_bytes(
+    model: &PrintableModel,
+    extra: &[ExtraArtifact],
+    object_name: &str,
+    printer: &PrinterProfile,
+) -> Result<Vec<u8>> {
+    let content_types = if extra.is_empty() { CONTENT_TYPES } else { CONTENT_TYPES_WITH_STEP };
+    let mut entries = vec![
+        ("[Content_Types].xml", content_types.as_bytes().to_vec()),
         ("_rels/.rels", RELS.as_bytes().to_vec()),
         ("3D/3dmodel.model", model_xml(model, object_name, printer).into_bytes()),
         (
@@ -126,6 +183,7 @@ fn package_bytes(model: &PrintableModel, object_name: &str, printer: &PrinterPro
             project_settings(model, printer)?,
         ),
     ];
+    entries.extend(extra.iter().map(|artifact| (artifact.member(), artifact.bytes().to_vec())));
 
     let options = SimpleFileOptions::default()
         .compression_method(CompressionMethod::Deflated)
@@ -337,7 +395,7 @@ mod tests {
         let design = SignDesign::new(spec).expect("layout");
         let model = build_model(design.layout(), design.spec().title(), &P2S_04).expect("model");
         let evidence = check_geometry(design.layout(), &model).iter().map(GeometryCheck::outcome).collect();
-        check_plan(design.spec()).expect("plan").certify(model, evidence).expect("certified")
+        check_plan(design.spec()).expect("plan").certify(model, Vec::new(), evidence).expect("certified")
     }
 
     fn entry(path: &Path, name: &str) -> String {
@@ -363,5 +421,30 @@ mod tests {
         assert!(settings.contains(r#"<object id="3">
   <metadata key="name" value="part-0123456789ab" />"#), "{settings}");
         assert!(!settings.contains("One ink"));
+    }
+
+    /// A part's STEP is a member of its package, so the package hash covers
+    /// it; a model without one is written as it always was.
+    #[test]
+    fn a_checked_step_is_packaged_and_reads_back_exactly() {
+        use crate::fabrication::checks::{CheckId, CheckOutcome, CheckPhase, CheckPlan, CheckPlanId};
+        let dir = tempfile::tempdir().expect("tempdir");
+        let step = b"ISO-10303-21;\nEND-ISO-10303-21;\n".to_vec();
+        let id = CheckId::new(CheckPhase::Geometry, "closed.a");
+        let plan = CheckPlan::new(CheckPlanId::new("p"), vec![id.clone()]).expect("plan");
+        let with_step = plan
+            .certify(crate::fabrication::checks::test_support::model(), vec![ExtraArtifact::Step(step.clone())], vec![CheckOutcome { id, passed: true, detail: String::new() }])
+            .expect("certified");
+        let out = dir.path().join("part.3mf");
+        let info = write_package(&with_step, "part-0123456789ab", &P2S_04, &out).expect("package");
+        let bytes = std::fs::read(&out).expect("read");
+        assert_eq!(included_step(&bytes).expect("zip"), Some(step));
+        assert!(entry(&out, "[Content_Types].xml").contains(r#"<Default Extension="step" ContentType="model/step"/>"#));
+        assert_eq!(Sha256Hex::of_bytes(&bytes).as_str(), info.sha256);
+
+        let sign = dir.path().join("sign.3mf");
+        write_package(&checked(), "One ink", &P2S_04, &sign).expect("package");
+        assert_eq!(included_step(&std::fs::read(&sign).expect("read")).expect("zip"), None);
+        assert_eq!(entry(&sign, "[Content_Types].xml"), CONTENT_TYPES, "no STEP, no change");
     }
 }

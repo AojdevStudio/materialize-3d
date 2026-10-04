@@ -1,9 +1,10 @@
 """Generation guest program: runs the model's build123d source and exports what it built.
 
-Reads /job/in/job.json ({"source", "params"}), calls build(params), and writes /job/out/model.step (one STEP root
-per body, in manifest order), /job/out/manifest.json (body names and filament slots), and /job/out/result.json.
-Everything here runs as the unprivileged job user and is untrusted by the host: the inspection guest re-reads the
-STEP and the host checks every byte it receives.
+Reads /job/in/job.json ({"source", "params"}), calls build(params), and writes /job/out/model.step (one free
+shape per body, in manifest order, each named after its body), /job/out/manifest.json (body names and filament
+slots), and /job/out/result.json. A body whose solid intersects itself fails here with an error the script's author
+can act on, instead of as an open mesh later. Everything here runs as the unprivileged job user and is untrusted by
+the host: the inspection guest re-reads the STEP and the host checks every byte it receives.
 """
 
 import json
@@ -48,14 +49,14 @@ def main():
         fail(script_error(e))
 
     from materialize import Body
-    from OCP.IFSelect import IFSelect_RetDone
-    from OCP.STEPControl import STEPControl_AsIs, STEPControl_Writer
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Check
     from OCP.TopoDS import TopoDS_Shape
+    from step_names import write_named_step
 
     if not isinstance(bodies, list) or not 1 <= len(bodies) <= MAX_BODIES:
         fail(f"build() must return a list of 1 to {MAX_BODIES} Body values")
     manifest = []
-    writer = STEPControl_Writer()
+    named = []
     for i, body in enumerate(bodies):
         if not isinstance(body, Body):
             fail(f"build() item {i} is not a Body")
@@ -66,10 +67,15 @@ def main():
         shape = getattr(body.part, "wrapped", body.part)
         if not isinstance(shape, TopoDS_Shape) or shape.IsNull():
             fail(f"body {body.name}: part is not a build123d shape")
-        if writer.Transfer(shape, STEPControl_AsIs) != IFSelect_RetDone:
-            fail(f"body {body.name}: STEP transfer failed")
+        # Self-interference only: small edges are legal, and the host's mesh checks judge the rest.
+        if not BRepAlgoAPI_Check(shape, False, True).IsValid():
+            fail(
+                f"body {body.name}: the solid intersects itself. Fillet or chamfer a block before cutting into it, "
+                "and keep repeated features, such as the turns of a thread, from overlapping"
+            )
         manifest.append({"name": body.name, "slot": body.slot})
-    if writer.Write("/job/out/model.step") != IFSelect_RetDone:
+        named.append((body.name, shape))
+    if not write_named_step(named, "/job/out/model.step"):
         fail("STEP write failed")
     with open("/job/out/manifest.json", "w") as f:
         json.dump({"bodies": manifest}, f)

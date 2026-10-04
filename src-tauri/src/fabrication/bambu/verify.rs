@@ -5,7 +5,7 @@ use serde_json::Value;
 
 use super::coverage::{self, Grid, Triangle};
 use super::gcode::DEFAULT_LINE_WIDTH_MM;
-use super::{Bbox, ExtrusionSegment, JsonMap, PartFootprint, ResolvedPresets, SliceReport};
+use super::{Bbox, ExtrusionSegment, JsonMap, PartFootprint, PlateWarning, ResolvedPresets, SliceReport};
 
 /// Largest allowed distance (mm) between a tool's layer-1 bbox edge and its parts' footprint.
 const PLACEMENT_TOLERANCE_MM: f64 = 1.0;
@@ -36,10 +36,14 @@ pub enum CheckId {
     FilamentsPreserved,
     PlacementPreserved,
     Layer1Coverage,
+    /// A part only, and advisory: Bambu Studio warned, in its exact words and
+    /// naming the part's app-chosen object, that the part needs supports.
+    /// Not in [`CheckId::ALL`], so a sign's checks do not change.
+    SupportWarning,
 }
 
 impl CheckId {
-    /// Every slice check, in the order [`verify`] returns them.
+    /// Every slice check a sign plans, in the order [`verify`] returns them.
     pub const ALL: [CheckId; 8] = [
         CheckId::SliceSucceeded,
         CheckId::NoWarnings,
@@ -62,6 +66,7 @@ impl CheckId {
             CheckId::FilamentsPreserved => "filaments_preserved",
             CheckId::PlacementPreserved => "placement_preserved",
             CheckId::Layer1Coverage => "layer1_coverage",
+            CheckId::SupportWarning => "support_warning",
         }
     }
 }
@@ -133,6 +138,63 @@ fn no_warnings(report: &SliceReport) -> Check {
         .map(|w| format!("plate {}: {}", w.plate_id, w.message))
         .collect();
     Check::new(CheckId::NoWarnings, failures, "no plate warnings")
+}
+
+/// What Bambu Studio 02.08.02.61 says when an object needs supports that the
+/// P2S template turns off (`PrintObject.cpp:887`): `It seems object <name> has
+/// <reason>. Please re-orient the object or enable support generation.`
+const SUPPORT_REASONS: [&str; 3] = ["floating regions", "floating cantilever", "large overhangs"];
+
+/// True when `message` is exactly one of Bambu's three support warnings about
+/// `object`. Anything else, a near match included, is not.
+pub fn is_support_warning(message: &str, object: &str) -> bool {
+    SUPPORT_REASONS.iter().any(|reason| {
+        message == format!("It seems object {object} has {reason}. Please re-orient the object or enable support generation.")
+    })
+}
+
+/// Judges a part's slice: [`verify`]'s checks in the same order, then
+/// [`CheckId::SupportWarning`]. `object` is the app-chosen name the package
+/// gave the part's object, the only name a support warning may carry.
+///
+/// Bambu keeps only a plate's last warning in `result.json`, so a part's
+/// warnings come from the slicer log, where every one is logged
+/// ([`SliceReport::logged_warnings`]). An exact support warning is advisory and
+/// is left out of [`CheckId::NoWarnings`]; every other warning still fails it.
+/// A log that does not account for `result.json`'s warnings fails
+/// [`CheckId::NoWarnings`] too, because a warning could be hiding.
+pub fn verify_part(report: &SliceReport, parts: &[PartFootprint], presets: &ResolvedPresets, object: &str) -> Vec<Check> {
+    let mut checks = verify(report, parts, presets);
+    let (support, other): (Vec<&PlateWarning>, Vec<&PlateWarning>) =
+        report.logged_warnings.iter().partition(|w| is_support_warning(&w.message, object));
+    let mut failures: Vec<String> =
+        other.iter().map(|w| format!("plate {}: {}", w.plate_id, w.message)).collect();
+    failures.extend(unrecovered_warnings(report));
+    let no_warnings = Check::new(CheckId::NoWarnings, failures, "no plate warnings besides support warnings");
+    if let Some(slot) = checks.iter_mut().find(|c| c.id == CheckId::NoWarnings) {
+        *slot = no_warnings;
+    }
+    let detail: Vec<String> = support.iter().map(|w| format!("plate {}: {}", w.plate_id, w.message)).collect();
+    checks.push(Check::new(CheckId::SupportWarning, detail, "Bambu Studio raised no support warning"));
+    checks
+}
+
+/// Each plate whose `result.json` warning the slicer log does not end with.
+fn unrecovered_warnings(report: &SliceReport) -> Vec<String> {
+    report
+        .plate_warnings
+        .iter()
+        .filter(|plate| {
+            let last = report.logged_warnings.iter().rev().find(|w| w.plate_id == plate.plate_id);
+            match last {
+                Some(logged) => logged.message != plate.message,
+                None => !plate.message.is_empty(),
+            }
+        })
+        .map(|plate| {
+            format!("plate {}: the slicer log does not account for result.json's warning {:?}", plate.plate_id, plate.message)
+        })
+        .collect()
 }
 
 fn str_list<'a>(config: &'a JsonMap, key: &str) -> Option<Vec<&'a str>> {
@@ -637,6 +699,7 @@ mod tests {
                 plate_id: 1,
                 message: String::new(),
             }],
+            logged_warnings: Vec::new(),
             effective: Some(EffectiveSettings {
                 printer_settings_id: "Bambu Lab P2S 0.4 nozzle".into(),
                 print_settings_id: "0.20mm Standard @BBL P2S".into(),
@@ -792,6 +855,85 @@ mod tests {
         let checks = verify(&report, &parts, &presets);
         assert_eq!(failed(&checks), vec![CheckId::NoWarnings]);
         assert!(checks[1].detail.contains("Floating regions detected"));
+    }
+
+    /// The part object name the package writer chose for these tests.
+    const OBJECT: &str = "part-0123456789ab";
+
+    fn support(object: &str, reason: &str) -> String {
+        format!("It seems object {object} has {reason}. Please re-orient the object or enable support generation.")
+    }
+
+    /// `warnings` as Bambu logs them on plate 1, with `result.json` keeping the last.
+    fn part_report(warnings: &[String]) -> (SliceReport, Vec<PartFootprint>, ResolvedPresets) {
+        let (mut report, parts, presets) = passing();
+        report.logged_warnings =
+            warnings.iter().map(|message| PlateWarning { plate_id: 1, message: message.clone() }).collect();
+        report.plate_warnings[0].message = warnings.last().cloned().unwrap_or_default();
+        (report, parts, presets)
+    }
+
+    fn part_checks(warnings: &[String]) -> Vec<Check> {
+        let (report, parts, presets) = part_report(warnings);
+        verify_part(&report, &parts, &presets, OBJECT)
+    }
+
+    #[test]
+    fn a_part_records_bambus_exact_support_warning_apart_from_no_warnings() {
+        for reason in ["floating regions", "floating cantilever", "large overhangs"] {
+            let checks = part_checks(&[support(OBJECT, reason)]);
+            let ids: Vec<CheckId> = checks.iter().map(|c| c.id).collect();
+            assert_eq!(ids, [CheckId::ALL.as_slice(), &[CheckId::SupportWarning]].concat());
+            assert_eq!(failed(&checks), [CheckId::SupportWarning], "{reason}");
+            assert!(checks[8].detail.contains(reason));
+        }
+        let clean = part_checks(&[]);
+        assert_eq!(failed(&clean), [], "{clean:#?}");
+        assert_eq!(clean[8].detail, "Bambu Studio raised no support warning");
+    }
+
+    #[test]
+    fn a_near_match_or_any_other_warning_still_fails_no_warnings() {
+        let near_matches = [
+            support("Six USB-C desk clip", "floating regions"),
+            support("part-0123456789ac", "large overhangs"),
+            support(OBJECT, "floating overhangs"),
+            support(OBJECT, "large overhangs").trim_end_matches('.').to_owned(),
+            format!("{} ", support(OBJECT, "large overhangs")),
+            "Floating regions detected".to_owned(),
+        ];
+        for warning in near_matches {
+            let checks = part_checks(std::slice::from_ref(&warning));
+            assert_eq!(failed(&checks), [CheckId::NoWarnings], "{warning:?}");
+            assert!(checks[1].detail.contains(warning.trim_end()), "{}", checks[1].detail);
+        }
+    }
+
+    /// Two warnings on one plate, as the real log fixture holds them: a support
+    /// warning first and another warning last surfaces the other one, and the
+    /// reverse order hides nothing either.
+    #[test]
+    fn two_warnings_on_one_plate_are_both_judged() {
+        let other = "Object can't be printed for empty layer between 5 and 8.2.".to_owned();
+        for warnings in [[support(OBJECT, "large overhangs"), other.clone()], [other.clone(), support(OBJECT, "large overhangs")]] {
+            let checks = part_checks(&warnings);
+            assert_eq!(failed(&checks), [CheckId::NoWarnings, CheckId::SupportWarning], "{warnings:?}");
+            assert!(checks[1].detail.contains(&other));
+            assert!(checks[8].detail.contains("large overhangs"));
+        }
+    }
+
+    #[test]
+    fn a_result_json_warning_missing_from_the_log_fails_no_warnings() {
+        let (mut report, parts, presets) = part_report(&[support(OBJECT, "large overhangs")]);
+        report.plate_warnings[0].message = "Hidden".into();
+        let checks = verify_part(&report, &parts, &presets, OBJECT);
+        assert!(failed(&checks).contains(&CheckId::NoWarnings));
+        assert!(checks[1].detail.contains("does not account for result.json's warning \"Hidden\""), "{}", checks[1].detail);
+
+        report.logged_warnings.clear();
+        let checks = verify_part(&report, &parts, &presets, OBJECT);
+        assert_eq!(failed(&checks), [CheckId::NoWarnings]);
     }
 
     #[test]

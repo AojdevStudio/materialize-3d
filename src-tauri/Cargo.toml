@@ -19,6 +19,9 @@ tauri-build = { version = "~2.6.3", features = [] }
 [features]
 # Verification harness for driving the app on macOS; never enabled in release builds.
 e2e = ["dep:objc2", "dep:objc2-web-kit", "dep:objc2-app-kit", "dep:objc2-foundation", "dep:block2"]
+# The CAD worker's Linux test backend (QEMU microvm on KVM), for the self-hosted Linux runner. The macOS release
+# never enables it, so it cannot ship.
+linux-cad-test = ["dep:libc"]
 
 [dependencies]
 log = "0.4"
@@ -93,4 +96,7 @@ keyring = { version = "3", features = ["windows-native"] }
 
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
 keyring = { version = "3", features = ["linux-native"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = { version = "0.2", optional = true }
 

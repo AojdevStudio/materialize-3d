@@ -1,0 +1,85 @@
+{
+    "error_string": "Success.",
+    "export_time": 0,
+    "layer_height": 0.20000000298023224,
+    "plate_index": 0,
+    "prepare_time": 6,
+    "return_code": 0,
+    "sliced_plates": [
+        {
+            "feature_type_times": {
+                "Bottom surface": 1.208051323890686,
+                "Bridge": 291.8525390625,
+                "Custom": 35.156890869140625,
+                "Inner wall": 66.29080963134766,
+                "Internal solid infill": 270.5065002441406,
+                "Outer wall": 91.25953674316406,
+                "Overhang wall": 63.144447326660156,
+                "Sparse infill": 41.77920913696289,
+                "Top surface": 54.098628997802734,
+                "Travel": 86.29727935791016,
+                "Undefined": 71.10089874267578
+            },
+            "filament_change_times": 0,
+            "filaments": [
+                {
+                    "filament_id": "GFA00",
+                    "id": 1,
+                    "main_used_g": 8.361101150512695,
+                    "total_used_g": 8.361101150512695
+                }
+            ],
+            "generate_support_material_time": 2,
+            "id": 1,
+            "infill_time": 9,
+            "layer_filament_change": 0,
+            "main_predication": 966.4496459960938,
+            "make_perimeters_time": 4,
+            "obj_cached_cnt": 0,
+            "objects": [
+                {
+                    "bbox": {
+                        "depth": 40.0,
+                        "height": 13.0,
+                        "width": 40.0,
+                        "x": 108.0,
+                        "y": 108.0,
+                        "z": 0.0
+                    },
+                    "id": 5,
+                    "name": "part-tee",
+                    "triangle_count": 24
+                },
+                {
+                    "bbox": {
+                        "depth": 40.0,
+                        "height": 13.0,
+                        "width": 40.0,
+                        "x": 160.0,
+                        "y": 160.0,
+                        "z": 0.0
+                    },
+                    "id": 9,
+                    "name": "part-other",
+                    "triangle_count": 24
+                }
+            ],
+            "sliced_time": 89,
+            "sliced_time_with_cache": 63,
+            "total_predication": 986.3795776367188,
+            "triangle_count": 48,
+            "warning_message": "It seems object part-tee has floating cantilever. Please re-orient the object or enable support generation."
+        }
+    ],
+    "sparse_infill_density": 15.0,
+    "upward_compatible_machine": [
+        "Bambu Lab A1 0.4 nozzle",
+        "Bambu Lab H2S 0.4 nozzle",
+        "Bambu Lab H2D 0.4 nozzle",
+        "Bambu Lab H2D Pro 0.4 nozzle",
+        "Bambu Lab H2C 0.4 nozzle",
+        "Bambu Lab X2D 0.4 nozzle",
+        "Bambu Lab A2L 0.4 nozzle"
+    ],
+    "wall_loops": 2
+}

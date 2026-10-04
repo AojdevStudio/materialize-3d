@@ -1,7 +1,8 @@
 """In-guest supervisor (PID 1). Serves exactly one job over vsock, then powers the guest off.
 
 The agent connects to the host on vsock port 7000. Wire format, both directions: frames of a 4-byte ASCII tag, a little-endian u32 length, and that many bytes.
-Host to guest: JOBS (JSON job spec), then INPT (the STEP bytes) for an inspect job.
+Host to guest: JOBS (JSON job spec), then INPT (the STEP bytes) for an inspect job, whose spec also carries the
+body names the host checked ("names").
 Guest to host: STEP, MANI (generate only), MESH (inspect only), DIAG, STAT, then DONE. The host enforces its own
 caps on every frame and trusts none of this; the caps here only keep an honest guest inside them.
 
@@ -202,12 +203,14 @@ def serve(conn, connect_ms):
     os.chown("/job/out", JOB_UID, JOB_GID)
     if role == "generate":
         job = {"source": spec["source"], "params": spec.get("params", {})}
-        data, name = json.dumps(job).encode(), "job.json"
+        inputs = [("job.json", json.dumps(job).encode())]
     else:
-        data, name = recv_frame(conn, b"INPT", INPT_MAX), "model.step"
-    with open(os.path.join("/job/in", name), "wb") as f:
-        f.write(data)
-    os.chmod(os.path.join("/job/in", name), 0o444)
+        names = json.dumps(spec.get("names", [])).encode()
+        inputs = [("names.json", names), ("model.step", recv_frame(conn, b"INPT", INPT_MAX))]
+    for name, data in inputs:
+        with open(os.path.join("/job/in", name), "wb") as f:
+            f.write(data)
+        os.chmod(os.path.join("/job/in", name), 0o444)
 
     setup_cgroup()
     status, diag, wall_ms, timed_out = run_job(role, timeout_s)
@@ -216,7 +219,7 @@ def serve(conn, connect_ms):
     result = read_output("/job/out/result.json", RESULT_MAX)
     try:
         result = json.loads(result) if result else {}
-    except ValueError:
+    except (ValueError, RecursionError):  # a deeply nested verdict must not lose the exit code and OOM report
         result = {}
     if not isinstance(result, dict):
         result = {}

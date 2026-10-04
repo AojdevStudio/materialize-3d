@@ -90,7 +90,8 @@ pub struct Timings {
     pub total_ms: u64,
     /// Whether the host force-stopped the VM and the framework confirmed it halted.
     pub forced_stop: bool,
-    /// The VM's state when the host was done with it. Anything but "stopped" or "error" means it may still run.
+    /// The VM's state when the host was done with it: "not created" when no VM was made. Anything but that,
+    /// "stopped", or "error" means it may still run.
     pub final_state: &'static str,
     /// Connections after the agent's, all refused (job code trying to reach the host).
     pub refused_connections: u32,
@@ -197,6 +198,13 @@ fn configure(
 ) -> Result<Retained<VZVirtualMachineConfiguration>, GuestError> {
     // SAFETY: framework object construction and setters on fresh objects owned by this function.
     unsafe {
+        // First, before anything can fail: the handle owns the console pipe's write end from here on and closes
+        // it when dropped, so a failed configuration still ends the console reader's read with EOF.
+        let handle = NSFileHandle::initWithFileDescriptor_closeOnDealloc(
+            NSFileHandle::alloc(),
+            console_write_fd,
+            true,
+        );
         let boot = VZLinuxBootLoader::initWithKernelURL(
             VZLinuxBootLoader::alloc(),
             &file_url(&cfg.kernel),
@@ -228,11 +236,6 @@ fn configure(
         }
         config.setStorageDevices(&NSArray::from_retained_slice(&storage));
 
-        let handle = NSFileHandle::initWithFileDescriptor_closeOnDealloc(
-            NSFileHandle::alloc(),
-            console_write_fd,
-            true,
-        );
         let attachment =
             VZFileHandleSerialPortAttachment::initWithFileHandleForReading_fileHandleForWriting(
                 VZFileHandleSerialPortAttachment::alloc(),
@@ -280,6 +283,7 @@ pub fn run_guest(
     if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
         let error =
             GuestError::Config(format!("console pipe: {}", std::io::Error::last_os_error()));
+        timings.final_state = NOT_CREATED;
         return GuestOutcome {
             result: Err(error),
             console: Vec::new(),
@@ -291,6 +295,7 @@ pub fn run_guest(
     let config = match configure(cfg, fds[1]) {
         Ok(config) => config,
         Err(e) => {
+            timings.final_state = NOT_CREATED;
             return GuestOutcome {
                 result: Err(e),
                 console: Vec::new(),
@@ -424,6 +429,9 @@ pub fn run_guest(
         timings,
     }
 }
+
+/// `Timings::final_state` when the host stopped before it created a VM, so nothing can still be running.
+const NOT_CREATED: &str = "not created";
 
 /// How long the host waits for each step of a forced stop.
 const STOP_TIMEOUT: Duration = Duration::from_secs(10);

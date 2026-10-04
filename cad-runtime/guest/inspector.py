@@ -4,6 +4,9 @@ Parses /job/in/model.step, rejects anything that is not one or more valid solids
 /job/out/normalized.step, and tessellates those same in-memory shapes into /job/out/mesh.bin. The host welds and
 checks the mesh in Rust; this program never decides whether a part is good.
 
+The STEP's free shapes are its bodies, in order. The re-exported STEP names them with /job/in/names.json, the body
+names the host checked from the generation guest's manifest, never with names the untrusted STEP carries.
+
 mesh.bin, little endian: b"M3DMESH1", u32 body count, then per body u32 vertex count, u32 triangle count,
 vertex count * 3 f64 (mm), triangle count * 3 u32 vertex indices (counterclockwise seen from outside).
 Vertices are listed per face. Each face evaluates its boundary nodes on its own surface, and two faces that share an
@@ -37,21 +40,29 @@ def main():
     from OCP.BRepAdaptor import BRepAdaptor_Curve
     from OCP.BRepCheck import BRepCheck_Analyzer
     from OCP.BRepMesh import BRepMesh_IncrementalMesh
-    from OCP.IFSelect import IFSelect_RetDone
-    from OCP.STEPControl import STEPControl_AsIs, STEPControl_Reader, STEPControl_Writer
     from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_REVERSED, TopAbs_SOLID
     from OCP.TopExp import TopExp, TopExp_Explorer
     from OCP.TopLoc import TopLoc_Location
     from OCP.TopoDS import TopoDS
 
-    reader = STEPControl_Reader()
-    if reader.ReadFile("/job/in/model.step") != IFSelect_RetDone:
+    from step_names import read_step_shapes, write_named_step
+
+    try:
+        with open("/job/in/names.json") as f:
+            names = json.load(f)
+    except (OSError, ValueError, RecursionError):
+        fail("the inspection job has no body names")
+    if not isinstance(names, list) or not all(isinstance(n, str) for n in names):
+        fail("the inspection job's body names are not a list of strings")
+
+    shapes = read_step_shapes("/job/in/model.step")
+    if shapes is None:
         fail("STEP could not be read")
-    reader.TransferRoots()
-    count = reader.NbShapes()
+    count = len(shapes)
     if not 1 <= count <= MAX_BODIES:
         fail(f"STEP holds {count} shapes; expected 1 to {MAX_BODIES}")
-    shapes = [reader.Shape(i) for i in range(1, count + 1)]
+    if count != len(names):
+        fail(f"STEP holds {count} shapes, but build() returned {len(names)} bodies")
 
     for i, shape in enumerate(shapes):
         if shape.IsNull() or not TopExp_Explorer(shape, TopAbs_SOLID).More():
@@ -59,12 +70,8 @@ def main():
         if not BRepCheck_Analyzer(shape).IsValid():
             fail(f"shape {i} is not a valid solid")
 
-    writer = STEPControl_Writer()
-    for shape in shapes:
-        if writer.Transfer(shape, STEPControl_AsIs) != IFSelect_RetDone:
-            fail("STEP re-export failed")
-    if writer.Write("/job/out/normalized.step") != IFSelect_RetDone:
-        fail("STEP write failed")
+    if not write_named_step(list(zip(names, shapes)), "/job/out/normalized.step"):
+        fail("STEP re-export failed")
 
     out = bytearray(b"M3DMESH1")
     out += struct.pack("<I", len(shapes))

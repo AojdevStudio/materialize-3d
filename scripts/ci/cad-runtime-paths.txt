@@ -3,7 +3,9 @@
 # Two scripts read this list as literal git pathspecs:
 #   scripts/ci/cad-runtime-scope.sh  does a pull request change any of these paths?
 #   scripts/ci/cad-runtime-key.sh    the key a passed CAD runtime run is recorded under
-# An app file that compiles in or reads the CAD runtime pins (none yet; PR 7's cad_worker.rs will) belongs here.
+# The app files that compile in or read the CAD runtime pins (src-tauri/src/fabrication/cad_worker.rs) are listed in
+# scripts/ci/cad-backend-paths.txt instead: they change what the part-kind jobs test, not what the images and the helper
+# restriction tests build or prove, so a change to them must not rebuild the images.
 cad-runtime/
 cad-host/
 scripts/release/

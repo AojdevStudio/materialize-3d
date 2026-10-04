@@ -58,6 +58,10 @@ impl RequestActions for ListingActions {
     fn printer_status(&self) -> Result<PrinterState, ActionError> {
         Err(ActionError::State("not in this test".into()))
     }
+
+    fn kinds(&self) -> Vec<&'static dyn crate::fabrication::kind::KindDriver> {
+        crate::fabrication::kind::available(&crate::fabrication::kind::KernelContext::without_runtime(crate::fabrication::printer::P2S_04))
+    }
 }
 
 #[tokio::test]
@@ -117,7 +121,8 @@ fn the_build_schema_rejects_unknown_kinds_and_malformed_specs() {
         ("text without baseline", mutate(&|s| drop(s["elements"][1].as_object_mut().expect("text").remove("y_mm")))),
         ("no spec", json!({ "kind": "sign", "lineage_id": "x" })),
         ("no kind", json!({ "spec": fixture })),
-        ("an unregistered kind", json!({ "kind": "part", "spec": fixture })),
+        ("a kind the tool does not offer", json!({ "kind": "part", "spec": fixture })),
+        ("an unregistered kind", json!({ "kind": "imported_part", "spec": fixture })),
     ];
     for (why, args) in bad {
         assert!(!validator.is_valid(&args), "schema accepted a spec with {why}");
@@ -160,4 +165,23 @@ fn generated_frontend_types_match_the_rust_types() {
     }
     let committed = std::fs::read_to_string(GENERATED_TYPES).expect("src/types/generated.ts");
     assert_eq!(committed, generated, "src/types/generated.ts is stale; regenerate it");
+}
+
+/// `part` is registered, but the build tool does not offer it to a model: a
+/// call naming it is refused before it reaches the app, on both surfaces.
+#[tokio::test]
+async fn the_build_tool_refuses_a_kind_it_does_not_offer() {
+    let schema = Tool::Build.parameters();
+    assert_eq!(schema["properties"]["kind"]["enum"], json!(["sign"]));
+    for surface in [Surface::InAppAgent, Surface::ExternalMcp] {
+        let call = ToolCall {
+            surface,
+            actions: Arc::new(ListingActions::default()),
+            progress: Arc::new(|_| {}),
+            cancel: CancellationToken::new(),
+            blocking: TaskTracker::new(),
+        };
+        let refused = Tool::Build.invoke(&call, json!({ "kind": "part", "spec": {} })).await;
+        assert!(matches!(&refused, Err(ToolError::KindNotOffered { kind, offered }) if kind == "part" && offered == "sign"), "{refused:?}");
+    }
 }

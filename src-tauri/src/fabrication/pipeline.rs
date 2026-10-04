@@ -18,8 +18,9 @@ use serde::Serialize;
 use serde_json::{json, Value};
 
 use super::bambu::{self, BambuError, BambuStudio, Check, ResolvedPresets, SliceReport};
+use super::cad_worker::{CadRuntime, CadRuntimeSlot};
 use super::checks::{self, CheckOutcome, ChecksFailed, PassedChecks};
-use super::kind::{self, BuildControl, KernelContext, KernelError, KindDriver, ParsedSpec, SpecError};
+use super::kind::{self, BuildControl, KernelContext, KernelError, KindDriver, KindId, ObjectNaming, ParsedSpec, SpecError};
 use super::model::Palette;
 use super::package::{self, PackageError};
 use super::printer::{PrinterProfile, P2S_04};
@@ -30,21 +31,35 @@ use super::revisions::{
 use super::studio_choice;
 use crate::state::AppState;
 
-/// Where builds live on disk.
+/// Where builds live on disk, and the CAD runtime script kinds run in.
 #[derive(Debug, Clone)]
 pub struct Workspace {
     /// One directory per build, named by its id. The folder is still called
     /// `signs/` because recorded artifacts hold absolute paths into it.
     pub builds_dir: PathBuf,
     pub preset_cache: PathBuf,
+    cad: CadRuntimeSlot,
 }
 
 impl Workspace {
+    /// The app's CAD runtime is the one bundled with it, verified once, on
+    /// first use.
     pub fn new(app_data_dir: &Path, app_cache_dir: &Path) -> Self {
         Self {
             builds_dir: app_data_dir.join("signs"),
             preset_cache: app_cache_dir.join("bambu-presets"),
+            cad: CadRuntimeSlot::bundled(),
         }
+    }
+
+    /// The same workspace with `runtime` as its CAD runtime, or with none.
+    pub fn with_cad_runtime(self, runtime: Option<CadRuntime>) -> Self {
+        Self { cad: CadRuntimeSlot::fixed(runtime), ..self }
+    }
+
+    /// What a kernel builds with: the printer and the verified CAD runtime.
+    pub fn kernel_context(&self) -> KernelContext {
+        KernelContext { printer: P2S_04, runtime: self.cad.get().cloned() }
     }
 
     fn partial_dir(&self, build: &BuildId) -> PathBuf {
@@ -121,6 +136,33 @@ pub enum BuildStep {
     Verified,
 }
 
+/// Where a failed build stopped. A caller repairing a script reads it beside
+/// the error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Stage {
+    /// The generation guest, running the script.
+    Generate,
+    /// The inspection guest, normalizing what the script made.
+    Inspect,
+    /// The app's checks of the model.
+    Geometry,
+    Slice,
+    Handoff,
+}
+
+impl std::fmt::Display for Stage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Stage::Generate => "generate",
+            Stage::Inspect => "inspect",
+            Stage::Geometry => "geometry",
+            Stage::Slice => "slice",
+            Stage::Handoff => "handoff",
+        })
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct BuildOutcome {
     pub revision: Revision,
@@ -133,6 +175,10 @@ pub struct BuildOutcome {
 pub enum BuildError {
     #[error("unknown kind {0:?}; the registered kinds are {}", registered_kinds())]
     UnknownKind(String),
+    /// The kind is registered but cannot build in this app, such as `part`
+    /// without a verified CAD runtime.
+    #[error("{0} is unavailable: this app has no verified CAD runtime")]
+    Unavailable(KindId),
     #[error(transparent)]
     Spec(#[from] SpecError),
     /// Bambu Studio is missing or not a validated version. The message is what
@@ -154,6 +200,10 @@ pub enum BuildError {
     NoDatabase,
     #[error("build failed: {0}")]
     Failed(String),
+    /// A bounded error from a script build, and where it stopped. The text is
+    /// what the build records as its failure.
+    #[error("{stage}: {error}")]
+    Stage { stage: Stage, error: String },
 }
 
 impl From<BambuError> for BuildError {
@@ -170,6 +220,7 @@ impl From<KernelError> for BuildError {
         match err {
             KernelError::Cancelled => BuildError::Cancelled,
             KernelError::Failed(reason) => BuildError::Failed(reason),
+            KernelError::Stage { stage, error } => BuildError::Stage { stage, error },
         }
     }
 }
@@ -223,7 +274,10 @@ pub fn build(
     control: &BuildControl<'_>,
 ) -> Result<BuildOutcome, BuildError> {
     let driver = kind::find(&request.kind).ok_or_else(|| BuildError::UnknownKind(request.kind.clone()))?;
-    let ctx = KernelContext { printer: P2S_04 };
+    let ctx = workspace.kernel_context();
+    if !driver.available(&ctx) {
+        return Err(BuildError::Unavailable(driver.id()));
+    }
     let parsed = driver.parse(request.spec.clone(), &ctx.printer)?;
     control.report(BuildStep::SpecValidated);
 
@@ -233,13 +287,14 @@ pub fn build(
         .map_err(|e| BuildError::Failed(format!("project settings template: {e}")))?;
     let presets = bambu::resolve_presets(&studio, &template_selection(&template)?, &workspace.preset_cache)
         .map_err(BuildError::Slicer)?;
+    let key_inputs = driver.key_inputs(&ctx);
     let request = NewRevision {
         lineage_id: request.lineage_id,
         kind: parsed.kind(),
         title: parsed.title().to_owned(),
         spec: request.spec,
         spec_sha256: parsed.spec_sha256().clone(),
-        build_key: build_key(&parsed, &presets.app_version, &presets.profile_version, ctx.printer.template),
+        build_key: build_key(&parsed, &key_inputs, &presets.app_version, &presets.profile_version, ctx.printer.template),
         check_plan: parsed.plan().id(),
         requested_by: request.actor,
     };
@@ -256,7 +311,15 @@ pub fn build(
     let build = &revision.build_id;
     let (partial, final_dir) = (workspace.partial_dir(build), workspace.final_dir(build));
     let mut unfinished = UnfinishedBuild::new(state, build, &partial, &final_dir);
-    let staged = Staged { template: &template, studio: &studio, presets: &presets, partial: &partial, final_dir: &final_dir };
+    let object_name = driver.naming().object_name(parsed.title(), &revision.build_key);
+    let staged = Staged {
+        template: &template,
+        studio: &studio,
+        presets: &presets,
+        partial: &partial,
+        final_dir: &final_dir,
+        object_name: &object_name,
+    };
     let (files, verdict) = run_pipeline(driver, &parsed, &ctx, &staged, control).map_err(|err| unfinished.fail(err))?;
     unfinished.settle(files, verdict)?;
     let finished = with_db(state, |conn| revisions::get(conn, &revision.id))?;
@@ -267,9 +330,13 @@ pub fn build(
 }
 
 /// Hash of every input that determines a build's output: the kind's tag, the
-/// validated spec, the slicer and profile versions, and the project template.
-fn build_key(parsed: &ParsedSpec, app_version: &str, profile_version: &str, template: &str) -> Sha256Hex {
-    Sha256Hex::of_bytes([parsed.tag(), parsed.spec_sha256().as_str(), app_version, profile_version, template].join("\n").as_bytes())
+/// validated spec, the slicer and profile versions, the project template, and
+/// the kind's own inputs ([`KindDriver::key_inputs`]), which a kind without
+/// any leaves out so its keys stay what they were.
+fn build_key(parsed: &ParsedSpec, key_inputs: &[String], app_version: &str, profile_version: &str, template: &str) -> Sha256Hex {
+    let shared = [parsed.tag(), parsed.spec_sha256().as_str(), app_version, profile_version, template];
+    let inputs: Vec<&str> = shared.into_iter().chain(key_inputs.iter().map(String::as_str)).collect();
+    Sha256Hex::of_bytes(inputs.join("\n").as_bytes())
 }
 
 const SETTLE_POLL: std::time::Duration = std::time::Duration::from_millis(250);
@@ -387,6 +454,8 @@ struct Staged<'a> {
     presets: &'a ResolvedPresets,
     partial: &'a Path,
     final_dir: &'a Path,
+    /// What the package names the object ([`KindDriver::naming`]).
+    object_name: &'a str,
 }
 
 /// Has the kind build and certify its model, then writes and slices the
@@ -399,19 +468,16 @@ fn run_pipeline(
     staged: &Staged<'_>,
     control: &BuildControl<'_>,
 ) -> Result<(BuildFiles, Verdict), BuildError> {
-    let Staged { template, studio, presets, partial, final_dir } = *staged;
+    let Staged { template, studio, presets, partial, final_dir, object_name } = *staged;
     let printer = &ctx.printer;
     let cancelled = || if control.is_cancelled() { Err(BuildError::Cancelled) } else { Ok(()) };
     fs::create_dir_all(partial)?;
     fs::write(partial.join("spec.json"), serde_json::to_vec_pretty(parsed.validated())?)?;
 
     let prepared = driver.prepare(parsed, ctx, control)?;
-    if !prepared.extra.is_empty() {
-        return Err(BuildError::Failed("this build returned files the package cannot carry yet".into()));
-    }
-    let (checked, plan) = (prepared.checked, parsed.plan());
+    let (checked, plan) = (prepared.checked, &prepared.plan);
     let package = partial.join(format!("{}.3mf", parsed.kind()));
-    let info = package::write_package(&checked, parsed.title(), printer, &package)?;
+    let info = package::write_package(&checked, object_name, printer, &package)?;
     set_read_only(&package)?;
     fs::write(partial.join("preview.png"), prepared.preview)?;
     control.report(BuildStep::PackageWritten);
@@ -422,7 +488,11 @@ fn run_pipeline(
     control.report(BuildStep::Sliced);
 
     let footprints = bambu::part_footprints(&package)?;
-    let slice = bambu::verify(&report, &footprints, presets).iter().map(slice_outcome).collect();
+    let slice_checks = match driver.naming() {
+        ObjectNaming::Title => bambu::verify(&report, &footprints, presets),
+        ObjectNaming::BuildKey => bambu::verify_part(&report, &footprints, presets, object_name),
+    };
+    let slice = slice_checks.iter().map(slice_outcome).collect();
     let handoff = vec![handoff_matches_slice(template, checked.model().palette(), printer, &report)];
     let verdict = match plan.finish(checked.geometry(), slice, handoff) {
         Ok(passed) => Verdict::Passed(passed),
@@ -583,7 +653,7 @@ mod tests {
     fn the_sign_build_key_is_the_pre_kind_formula() {
         let parsed = Kind::<Sign>::NEW.parse(fixture(), &P2S_04).expect("parse");
         let before = ["sign-pipeline-1", "8251927fe35f701ab5275eba7fb540f100b08776616b5c20a9e9db88d4d4c0eb", "02.08.02.61", "02.08.00.05", P2S_04.template];
-        assert_eq!(build_key(&parsed, "02.08.02.61", "02.08.00.05", P2S_04.template), Sha256Hex::of_bytes(before.join("\n").as_bytes()));
+        assert_eq!(build_key(&parsed, &[], "02.08.02.61", "02.08.00.05", P2S_04.template), Sha256Hex::of_bytes(before.join("\n").as_bytes()));
     }
 
     #[test]
@@ -868,5 +938,93 @@ mod tests {
         assert_eq!(third.revision.build_id, first.revision.build_id);
         assert!(matches!(third.revision.build, BuildState::Verified { .. }));
         assert_eq!(revisions_of(&state).len(), 3);
+    }
+
+    /// Slices `package` with the validated Bambu Studio and the P2S presets, as `build` does.
+    fn slice_with_real_bambu(dir: &Path, package: &Path) -> (SliceReport, Vec<bambu::PartFootprint>, ResolvedPresets) {
+        let studio = BambuStudio::locate(None).expect("a validated Bambu Studio");
+        let template: Value = serde_json::from_str(P2S_04.template).expect("template");
+        let presets = bambu::resolve_presets(&studio, &template_selection(&template).expect("selection"), &dir.join("cache"))
+            .expect("presets");
+        let report = bambu::slice_project(&studio, &presets, package, &dir.join("slice"), &|| false).expect("slice");
+        (report, bambu::part_footprints(package).expect("footprints"), presets)
+    }
+
+    /// A 40 mm slab on a 10 mm post, which Bambu Studio says needs supports. The post is 10 mm, not thinner, because
+    /// a 4 mm first layer read 0.989 recall on macOS Bambu Studio, below `slice.layer1_coverage`'s sign-tuned 0.99.
+    fn slab_on_a_post() -> checks::CheckedModel {
+        use crate::fabrication::checks::{CheckId, CheckPhase, CheckPlan, CheckPlanId};
+        use crate::fabrication::model::{Body, Mesh, PrintableModel};
+        let cuboid = |lo: [i64; 3], hi: [i64; 3], base: u32| {
+            let v: Vec<[i64; 3]> = (0..8)
+                .map(|i| [if i & 1 == 0 { lo[0] } else { hi[0] }, if i & 2 == 0 { lo[1] } else { hi[1] }, if i & 4 == 0 { lo[2] } else { hi[2] }])
+                .collect();
+            let t: Vec<[u32; 3]> = [[0, 2, 1], [1, 2, 3], [4, 5, 6], [5, 7, 6], [0, 1, 4], [1, 5, 4], [2, 6, 3], [3, 6, 7], [0, 4, 2], [2, 4, 6], [1, 3, 5], [3, 7, 5]]
+                .iter()
+                .map(|tri| tri.map(|i| i + base))
+                .collect();
+            (v, t)
+        };
+        let (mut v, mut t) = cuboid([15_000, 15_000, 0], [25_000, 25_000, 10_000], 0);
+        let (sv, st) = cuboid([0, 0, 10_000], [40_000, 40_000, 13_000], 8);
+        v.extend(sv);
+        t.extend(st);
+        let palette = Palette::new(vec!["#FFFFFF".into()], &P2S_04).expect("palette");
+        let slot = palette.slot(0).expect("slot");
+        let model = PrintableModel::new("Slab on a post".into(), palette, vec![Body { name: "tee".into(), slot, mesh: Mesh::new(v, t).expect("mesh") }])
+            .expect("model");
+        let id = CheckId::new(CheckPhase::Geometry, "test.tee");
+        let plan = CheckPlan::new(CheckPlanId::new("slice-test-1"), vec![id.clone()]).expect("plan");
+        plan.certify(model, Vec::new(), vec![CheckOutcome { id, passed: true, detail: String::new() }]).expect("certified")
+    }
+
+    /// Bambu Studio's own support warning about a part's app-named object is
+    /// advisory; the same warning about an object named by its title, which a
+    /// spec could word to look like anything, still fails `slice.no_warnings`.
+    #[test]
+    #[ignore = "needs a validated Bambu Studio (BAMBU_STUDIO_CLI or a standard install)"]
+    fn the_real_slicers_support_warning_is_advisory_only_for_the_app_named_object() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let checked = slab_on_a_post();
+        let object = ObjectNaming::BuildKey.object_name(checked.model().title(), &Sha256Hex::of_bytes(b"slab"));
+        let package = dir.path().join("part.3mf");
+        package::write_package(&checked, &object, &P2S_04, &package).expect("package");
+        let (report, parts, presets) = slice_with_real_bambu(&dir.path().join("part"), &package);
+        let checks = bambu::verify_part(&report, &parts, &presets, &object);
+        for check in &checks {
+            println!("{} {:?}: {}", if check.passed { "PASS" } else { "FAIL" }, check.id, check.detail);
+        }
+        let support = checks.iter().find(|c| c.id == bambu::CheckId::SupportWarning).expect("support warning");
+        assert!(!support.passed && support.detail.contains(&format!("It seems object {object} has ")), "{support:?}");
+        assert!(checks.iter().filter(|c| c.id != bambu::CheckId::SupportWarning).all(|c| c.passed), "nothing else fails");
+        assert!(checks::slice_support_warning().is_advisory());
+
+        let titled = dir.path().join("titled.3mf");
+        package::write_package(&checked, checked.model().title(), &P2S_04, &titled).expect("package");
+        let (report, parts, presets) = slice_with_real_bambu(&dir.path().join("titled"), &titled);
+        let checks = bambu::verify_part(&report, &parts, &presets, &object);
+        let no_warnings = checks.iter().find(|c| c.id == bambu::CheckId::NoWarnings).expect("no warnings");
+        assert!(!no_warnings.passed && no_warnings.detail.contains("It seems object Slab on a post has "), "{no_warnings:?}");
+    }
+
+    /// Two objects on one plate that each need supports: `result.json` keeps
+    /// one warning, the log keeps both, and both are judged.
+    #[test]
+    #[ignore = "needs a validated Bambu Studio (BAMBU_STUDIO_CLI or a standard install)"]
+    fn two_warnings_on_one_plate_both_surface_from_the_real_slicer() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/bambu/two-support-warnings.3mf");
+        let package = dir.path().join("two.3mf");
+        fs::copy(&fixture, &package).expect("fixture");
+        let (report, parts, presets) = slice_with_real_bambu(dir.path(), &package);
+        println!("result.json: {:?}\nlog: {:?}", report.plate_warnings, report.logged_warnings);
+        assert_eq!(report.logged_warnings.len(), 2, "both warnings are in the log");
+        assert_eq!(report.plate_warnings.iter().filter(|w| !w.message.is_empty()).count(), 1, "result.json keeps one");
+        let checks = bambu::verify_part(&report, &parts, &presets, "part-tee");
+        let detail = |id| checks.iter().find(|c| c.id == id).map(|c| (c.passed, c.detail.clone())).expect("check");
+        let (passed, no_warnings) = detail(bambu::CheckId::NoWarnings);
+        assert!(!passed && no_warnings.contains("It seems object part-other has floating cantilever"), "{no_warnings}");
+        let (passed, support) = detail(bambu::CheckId::SupportWarning);
+        assert!(!passed && support.contains("It seems object part-tee has floating cantilever"), "{support}");
     }
 }

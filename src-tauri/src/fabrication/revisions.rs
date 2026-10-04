@@ -288,7 +288,7 @@ impl From<&CheckOutcome> for RecordedCheck {
         Self {
             id: outcome.id.to_string(),
             passed: outcome.passed,
-            advisory: outcome.id.phase().is_advisory(),
+            advisory: outcome.id.is_advisory(),
             detail: outcome.detail.clone(),
         }
     }
@@ -414,12 +414,15 @@ impl Revision {
 pub enum ExportFormat {
     /// The approved 3MF package, byte for byte.
     PrintPackage,
+    /// The STEP inside the approved package (a part's), byte for byte.
+    IncludedStep,
 }
 
 impl ExportFormat {
     fn as_db(self) -> &'static str {
         match self {
             ExportFormat::PrintPackage => "print_package",
+            ExportFormat::IncludedStep => "included_step",
         }
     }
 }
@@ -452,6 +455,10 @@ pub enum RevisionError {
     BuildInvalid(String, String),
     #[error("revision {0} is not approved")]
     NotApproved(String),
+    #[error("revision {0}'s package holds no STEP to export")]
+    NoIncludedStep(String),
+    #[error("the approved package could not be read: {0}")]
+    Package(String),
     #[error("design {lineage} is a {kind}; it cannot take a {requested} revision")]
     KindMismatch { lineage: String, kind: String, requested: String },
     #[error("build {build} was planned with check plan {planned}, but its proof is for {proved}")]
@@ -736,7 +743,7 @@ pub fn finish_verified(conn: &Connection, build: &BuildId, files: BuildFiles, pa
 pub fn finish_failed(conn: &Connection, build: &BuildId, files: BuildFiles, outcomes: &[CheckOutcome]) -> Result<()> {
     let failed: Vec<&str> = outcomes
         .iter()
-        .filter(|o| !o.passed && !o.id.phase().is_advisory())
+        .filter(|o| !o.passed && !o.id.is_advisory())
         .map(|o| o.id.as_str())
         .collect();
     if failed.is_empty() {
@@ -883,8 +890,14 @@ fn invalidate(conn: &Connection, build: &BuildId, reason: &str) -> Result<()> {
     Ok(())
 }
 
-/// Copies an approved package to `destination` and records the export.
-/// Never overwrites.
+/// Writes what a person approved to `destination` and records the export,
+/// with the sha256 of the bytes written. Never overwrites.
+///
+/// The whole package is read and hashed against the approved hash first.
+/// [`ExportFormat::PrintPackage`] writes those bytes; [`ExportFormat::IncludedStep`]
+/// writes the STEP member taken from those same bytes, so the STEP is exactly
+/// the one the approval covered. A package that no longer matches invalidates
+/// the build and writes nothing.
 pub fn export(conn: &mut Connection, id: &RevisionId, format: ExportFormat, destination: &Path) -> Result<PathBuf> {
     let revision = check_integrity(conn, id)?;
     let approved = match &revision.approval {
@@ -892,49 +905,49 @@ pub fn export(conn: &mut Connection, id: &RevisionId, format: ExportFormat, dest
         Approval::Void { reason, .. } => return Err(RevisionError::ApprovalVoid(id.to_string(), reason.clone())),
         Approval::Pending => return Err(RevisionError::NotApproved(id.to_string())),
     };
-    // Every format so far copies the approved package itself; a format that
-    // extracts a member from it adds an arm here.
-    let ExportFormat::PrintPackage = format;
     let artifacts = revision.artifacts().ok_or_else(|| RevisionError::NotVerified(id.to_string()))?;
+    let package = fs::read(&artifacts.files().package_path)?;
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    match copy_verified(&artifacts.files().package_path, destination, &approved) {
-        Ok(written) => {
-            tx.execute(
-                "INSERT INTO revision_exports (id, revision_id, format, path, sha256, exported_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![
-                    Uuid::new_v4().to_string(),
-                    id.as_str(),
-                    format.as_db(),
-                    written.to_string_lossy(),
-                    approved.as_str(),
-                    now(),
-                ],
-            )?;
-            tx.commit()?;
-            Ok(written)
-        }
-        Err(RevisionError::HashMismatch { expected, actual }) => {
-            invalidate(&tx, &revision.build_id, &format!("package changed during export (now {actual})"))?;
-            tx.commit()?;
-            Err(RevisionError::HashMismatch { expected, actual })
-        }
-        Err(other) => Err(other),
+    let actual = Sha256Hex::of_bytes(&package);
+    if actual != approved {
+        invalidate(&tx, &revision.build_id, &format!("package changed during export (now {actual})"))?;
+        tx.commit()?;
+        return Err(RevisionError::HashMismatch { expected: approved.to_string(), actual: actual.to_string() });
     }
+    let (bytes, sha256) = match format {
+        ExportFormat::PrintPackage => (package, approved),
+        ExportFormat::IncludedStep => {
+            let step = super::package::included_step(&package)
+                .map_err(|e| RevisionError::Package(e.to_string()))?
+                .ok_or_else(|| RevisionError::NoIncludedStep(id.to_string()))?;
+            let sha256 = Sha256Hex::of_bytes(&step);
+            (step, sha256)
+        }
+    };
+    // The bytes were checked against the approval above; a mismatch here is
+    // a bad write at the destination, which leaves the build as it is.
+    let written = write_verified(&bytes, destination, &sha256)?;
+    tx.execute(
+        "INSERT INTO revision_exports (id, revision_id, format, path, sha256, exported_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![Uuid::new_v4().to_string(), id.as_str(), format.as_db(), written.to_string_lossy(), sha256.as_str(), now()],
+    )?;
+    tx.commit()?;
+    Ok(written)
 }
 
-/// Copies `source` to `destination` only if the copy hashes to `expected`.
-/// The bytes go to a temporary file beside the destination first, so a failed
-/// or mismatched copy never leaves a partial or wrong file behind, and the
-/// final step refuses to replace an existing file.
-fn copy_verified(source: &Path, destination: &Path, expected: &Sha256Hex) -> Result<PathBuf> {
+/// Writes `bytes` to `destination` only if the written file hashes to
+/// `expected`. The bytes go to a temporary file beside the destination first,
+/// so a failed or mismatched write never leaves a partial or wrong file
+/// behind, and the final step refuses to replace an existing file.
+fn write_verified(bytes: &[u8], destination: &Path, expected: &Sha256Hex) -> Result<PathBuf> {
     if destination.exists() {
         return Err(RevisionError::WouldOverwrite(destination.to_path_buf()));
     }
     let parent = destination.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
     fs::create_dir_all(parent)?;
     let mut staged = tempfile::NamedTempFile::new_in(parent)?;
-    io::copy(&mut File::open(source)?, staged.as_file_mut())?;
+    io::Write::write_all(staged.as_file_mut(), bytes)?;
     staged.as_file().sync_all()?;
     let copied = Sha256Hex::of_file(staged.path())?;
     if &copied != expected {

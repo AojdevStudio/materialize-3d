@@ -29,7 +29,7 @@ fn model_of(design: &SignDesign) -> PrintableModel {
 fn package(design: &SignDesign, out: &std::path::Path) -> Result<PackageInfo, PackageError> {
     let model = model_of(design);
     let evidence = check_geometry(design.layout(), &model).iter().map(GeometryCheck::outcome).collect();
-    let checked = check_plan(design.spec()).unwrap().certify(model, evidence).unwrap();
+    let checked = check_plan(design.spec()).unwrap().certify(model, Vec::new(), evidence).unwrap();
     write_package(&checked, design.spec().title(), &P2S_04, out)
 }
 

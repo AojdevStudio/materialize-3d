@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Decides whether the CAD runtime jobs do their full work for this event, and prints `relevant=true` or
 # `relevant=false` for $GITHUB_OUTPUT:
-#   scripts/ci/cad-runtime-scope.sh <event name> [<base sha> <head sha>]
+#   scripts/ci/cad-runtime-scope.sh [--backend] <event name> [<base sha> <head sha>]
+# With --backend it decides for the part-kind jobs instead, over scripts/ci/cad-runtime-paths.txt and
+# scripts/ci/cad-backend-paths.txt together, as `cad-runtime-key.sh --backend` keys them.
 # A push to main and a manual dispatch always do. A pull request does when it changes a path in
 # scripts/ci/cad-runtime-paths.txt, compared with its merge base; otherwise the jobs still run and succeed fast, so
 # their check-runs are present and green on every pull request once they are required checks. The key script reads
@@ -9,7 +11,12 @@
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 root="$(git -C "$here" rev-parse --show-toplevel)"
-paths_text="$(grep -Ev '^[[:space:]]*(#|$)' "$here/cad-runtime-paths.txt")"
+lists=("$here/cad-runtime-paths.txt")
+if [[ "${1:-}" == --backend ]]; then
+  lists+=("$here/cad-backend-paths.txt")
+  shift
+fi
+paths_text="$(grep -hEv '^[[:space:]]*(#|$)' "${lists[@]}")"
 mapfile -t paths <<< "$paths_text"
 event="${1:?event name}"
 if [[ "$event" != pull_request ]]; then
