@@ -19,7 +19,7 @@
 #
 # Both jobs run on every event, so their check-runs exist on every pull request.
 # On a pull request that changes nothing the runtime is built, bundled, or tested
-# from (scripts/ci/cad-runtime-scope.sh), they skip the heavy steps and succeed
+# from (scripts/ci/cad-runtime-paths.txt), they skip the heavy steps and succeed
 # in seconds. Pushes to main and manual runs always do the full work.
 name: CAD runtime
 
@@ -53,6 +53,8 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
+      - name: The runtime key follows the listed inputs, and scope reads the same list
+        run: scripts/ci/test/cad-runtime-key.sh
       - name: Does this change touch the CAD runtime?
         id: scope
         env:
