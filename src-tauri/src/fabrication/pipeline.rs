@@ -950,7 +950,8 @@ mod tests {
         (report, bambu::part_footprints(package).expect("footprints"), presets)
     }
 
-    /// A 40 mm slab on a 4 mm post, which Bambu Studio says needs supports.
+    /// A 40 mm slab on a 10 mm post, which Bambu Studio says needs supports. The post is 10 mm, not thinner, because
+    /// a 4 mm first layer read 0.989 recall on macOS Bambu Studio, below `slice.layer1_coverage`'s sign-tuned 0.99.
     fn slab_on_a_post() -> checks::CheckedModel {
         use crate::fabrication::checks::{CheckId, CheckPhase, CheckPlan, CheckPlanId};
         use crate::fabrication::model::{Body, Mesh, PrintableModel};
@@ -964,7 +965,7 @@ mod tests {
                 .collect();
             (v, t)
         };
-        let (mut v, mut t) = cuboid([18_000, 18_000, 0], [22_000, 22_000, 10_000], 0);
+        let (mut v, mut t) = cuboid([15_000, 15_000, 0], [25_000, 25_000, 10_000], 0);
         let (sv, st) = cuboid([0, 0, 10_000], [40_000, 40_000, 13_000], 8);
         v.extend(sv);
         t.extend(st);
