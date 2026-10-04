@@ -1,0 +1,18 @@
+# What the part-kind jobs (CAD part kind on the Linux backend, CAD part kind on the macOS backend) build and test from,
+# besides the CAD runtime itself: the app crate they compile and run, its test fixtures, and the scripts that give
+# them Bambu Studio and the runtime. Same format as scripts/ci/cad-runtime-paths.txt. Their key and scope cover both
+# lists (`cad-runtime-key.sh --backend`, `cad-runtime-scope.sh --backend`), so a change to the app alone runs the
+# part-kind jobs and leaves the image key, and with it the image builds, alone. The jobs compile and test the whole
+# crate, so all of src-tauri/src/ is listed, not only the CAD modules.
+src-tauri/Cargo.toml
+src-tauri/Cargo.lock
+src-tauri/build.rs
+src-tauri/tauri.conf.json
+src-tauri/capabilities/
+src-tauri/src/
+src-tauri/tests/fixtures/
+src-tauri/resources/bambu/
+scripts/ci/install-bambu-linux.sh
+scripts/ci/install-bambu-macos.sh
+scripts/ci/cad-runtime-cache.sh
+scripts/ci/cad-backend-paths.txt
