@@ -14,7 +14,7 @@ pub enum AgentEvent {
     TurnStarted { conversation_id: String, turn_id: String },
     TextDelta { text: String },
     ToolCall { call_id: String, name: String, args: Value },
-    /// Only `build` reports steps today.
+    /// Only `build` and `revise` report steps.
     ToolProgress { call_id: String, step: BuildStep },
     ToolResult { call_id: String, ok: bool, output: Value },
     TurnFinished,

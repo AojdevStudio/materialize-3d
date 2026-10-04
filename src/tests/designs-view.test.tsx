@@ -237,6 +237,38 @@ describe('Designs view', () => {
     expect(invokeMock).toHaveBeenCalledWith('design_get', { id: target.id })
   })
 
+  it('opens a part from a designs:open event without the sign view, which a part spec would crash', async () => {
+    const part = {
+      ...revision(),
+      kind: 'part',
+      title: 'Six USB-C desk clip',
+      spec: {
+        schema_version: 1,
+        title: 'Six USB-C desk clip',
+        source: 'from build123d import *',
+        params: { span: 60 },
+        requirements: [],
+        filaments: [{ slot: 1, name: 'Black' }],
+      },
+    } as Revision
+    backend(part)
+    function Harness() {
+      useDesignsEvents()
+      return <DesignsView />
+    }
+    render(<Harness />)
+    await waitFor(() => expect(listeners.has('designs:open')).toBe(true))
+
+    act(() => listeners.get('designs:open')?.({ payload: { revisionId: part.id } }))
+
+    const detail = await screen.findByTestId('sign-detail')
+    expect(detail.textContent).toContain('r2 of Six USB-C desk clip')
+    expect(screen.getByTestId('part-pending').textContent).toBe('The part view arrives with pr8-gui.')
+    expect(screen.queryByTestId('sign-preview')).toBeNull()
+    expect(screen.queryByTestId('btn-approve')).toBeNull()
+    expect(screen.getByTestId('sign-checks')).toBeTruthy()
+  })
+
   it('shows an invalid build as not verified with its reason, and offers no approval', async () => {
     const reason = 'package changed on disk (now 9f00…) after approval'
     await openRevision(

@@ -19,9 +19,9 @@ use serde_json::{json, Value};
 
 use super::bambu::{self, BambuError, BambuStudio, Check, ResolvedPresets, SliceReport};
 use super::cad_worker::{CadRuntime, CadRuntimeSlot};
-use super::checks::{self, CheckOutcome, ChecksFailed, PassedChecks};
-use super::kind::{self, BuildControl, KernelContext, KernelError, KindDriver, KindId, ObjectNaming, ParsedSpec, SpecError};
-use super::model::Palette;
+use super::checks::{self, CheckId, CheckOutcome, CheckPhase, ChecksFailed, PassedChecks};
+use super::kind::{self, BuildControl, KernelContext, KernelError, KindDriver, KindId, ObjectNaming, ParsedSpec, SpecError, View};
+use super::model::{Palette, PrintableModel};
 use super::package::{self, PackageError};
 use super::printer::{PrinterProfile, P2S_04};
 use super::revisions::{
@@ -139,6 +139,7 @@ pub enum BuildStep {
 /// Where a failed build stopped. A caller repairing a script reads it beside
 /// the error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum Stage {
     /// The generation guest, running the script.
@@ -151,15 +152,49 @@ pub enum Stage {
     Handoff,
 }
 
-impl std::fmt::Display for Stage {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
+impl Stage {
+    const ALL: [Stage; 5] = [Stage::Generate, Stage::Inspect, Stage::Geometry, Stage::Slice, Stage::Handoff];
+
+    fn as_str(self) -> &'static str {
+        match self {
             Stage::Generate => "generate",
             Stage::Inspect => "inspect",
             Stage::Geometry => "geometry",
             Stage::Slice => "slice",
             Stage::Handoff => "handoff",
-        })
+        }
+    }
+
+    /// Where a failed build stopped: the phase of its first failed blocking
+    /// check, or else the stage its recorded reason starts with (a
+    /// [`BuildError::Stage`] records `<stage>: <error>`). `None` for a build
+    /// that did not fail, or that failed outside any stage: cancelled,
+    /// interrupted, or an error in the app itself.
+    pub fn of_failure(build: &BuildState) -> Option<Stage> {
+        let BuildState::Failed { reason, artifacts } = build else { return None };
+        if let Some(artifacts) = artifacts {
+            let failed = artifacts.checks().iter().find(|check| !check.passed && !check.advisory)?;
+            return match CheckId::try_from(failed.id.clone()).ok()?.phase() {
+                CheckPhase::Geometry => Some(Stage::Geometry),
+                CheckPhase::Slice => Some(Stage::Slice),
+                CheckPhase::Handoff => Some(Stage::Handoff),
+                CheckPhase::Print => None,
+            };
+        }
+        // Before staged failures, a failed geometry check was recorded as
+        // `build failed: checks failed: <first failed check>: ...`.
+        if let Some(failed) = reason.strip_prefix("build failed: checks failed: ") {
+            let id = failed.split([':', ',']).next()?.trim();
+            return (CheckId::try_from(id.to_owned()).ok()?.phase() == CheckPhase::Geometry).then_some(Stage::Geometry);
+        }
+        let (prefix, _) = reason.split_once(": ")?;
+        Stage::ALL.into_iter().find(|stage| stage.as_str() == prefix)
+    }
+}
+
+impl std::fmt::Display for Stage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 
@@ -267,11 +302,39 @@ pub fn with_db<T>(state: &AppState, f: impl FnOnce(&mut Connection) -> Result<T,
 /// build becomes a revision on that build, both without doing any work. An
 /// unknown kind, a validation error, or a missing slicer fails before any
 /// revision is recorded; anything later is recorded on the build as a failure.
+///
+/// A failure the spec's author can repair returns its failed revision rather
+/// than an error: a failed check, or a [`BuildError::Stage`] (the script, its
+/// inspection, or a blocking geometry check). [`Stage::of_failure`] reads
+/// where it stopped. A cancelled build, or an error in the app itself, is an
+/// error.
 pub fn build(
     state: &AppState,
     workspace: &Workspace,
     request: BuildRequest,
     control: &BuildControl<'_>,
+) -> Result<BuildOutcome, BuildError> {
+    build_as(state, workspace, request, control, revisions::claim)
+}
+
+/// [`build`] for `revise`: the request's design always gets a new revision,
+/// approval pending, even when its spec repeats an earlier one, whose build
+/// it then reuses ([`revisions::claim_next`]). The request must name its design.
+pub fn build_next(
+    state: &AppState,
+    workspace: &Workspace,
+    request: BuildRequest,
+    control: &BuildControl<'_>,
+) -> Result<BuildOutcome, BuildError> {
+    build_as(state, workspace, request, control, revisions::claim_next)
+}
+
+fn build_as(
+    state: &AppState,
+    workspace: &Workspace,
+    request: BuildRequest,
+    control: &BuildControl<'_>,
+    claim: fn(&mut Connection, &NewRevision) -> Result<Claim, RevisionError>,
 ) -> Result<BuildOutcome, BuildError> {
     let driver = kind::find(&request.kind).ok_or_else(|| BuildError::UnknownKind(request.kind.clone()))?;
     let ctx = workspace.kernel_context();
@@ -301,7 +364,7 @@ pub fn build(
     // An identical build already running is awaited, never reported as done:
     // once it settles, a verified result is reused and a failed one is retried.
     let revision = loop {
-        match with_db(state, |conn| revisions::claim(conn, &request))? {
+        match with_db(state, |conn| claim(conn, &request))? {
             Claim::Started(revision) => break revision,
             Claim::Reused(revision) => return Ok(BuildOutcome { revision, reused: true }),
             Claim::Busy(build) => wait_until_settled(state, &build, control)?,
@@ -320,7 +383,19 @@ pub fn build(
         final_dir: &final_dir,
         object_name: &object_name,
     };
-    let (files, verdict) = run_pipeline(driver, &parsed, &ctx, &staged, control).map_err(|err| unfinished.fail(err))?;
+    let (files, verdict) = match run_pipeline(driver, &parsed, &ctx, &staged, control) {
+        Ok(done) => done,
+        Err(err @ BuildError::Stage { .. }) => {
+            let err = unfinished.fail(err);
+            let failed = with_db(state, |conn| revisions::get(conn, &revision.id))?;
+            // A failure that could not be recorded stays an error.
+            return match failed.build {
+                BuildState::Failed { .. } => Ok(BuildOutcome { revision: failed, reused: false }),
+                _ => Err(err),
+            };
+        }
+        Err(err) => return Err(unfinished.fail(err)),
+    };
     unfinished.settle(files, verdict)?;
     let finished = with_db(state, |conn| revisions::get(conn, &revision.id))?;
     if matches!(finished.build, BuildState::Verified { .. }) {
@@ -479,7 +554,10 @@ fn run_pipeline(
     let package = partial.join(format!("{}.3mf", parsed.kind()));
     let info = package::write_package(&checked, object_name, printer, &package)?;
     set_read_only(&package)?;
-    fs::write(partial.join("preview.png"), prepared.preview)?;
+    fs::write(partial.join(PREVIEW_FILE), prepared.views.preview())?;
+    for (view, png) in prepared.views.views() {
+        fs::write(partial.join(view.file_name()), png)?;
+    }
     control.report(BuildStep::PackageWritten);
     cancelled()?;
 
@@ -519,7 +597,7 @@ fn run_pipeline(
         revision_dir: final_dir.to_path_buf(),
         package_path: rebase(&package),
         package_sha256: Sha256Hex::try_from(info.sha256)?,
-        preview_path: final_dir.join("preview.png"),
+        preview_path: final_dir.join(PREVIEW_FILE),
         slice_dir: rebase(&slice_dir),
         gcode_sha256,
         slicer: SlicerIdentity {
@@ -528,7 +606,220 @@ fn run_pipeline(
             profile_version: presets.profile_version.clone(),
         },
         effective_settings: serde_json::to_value(&report.effective)?,
+        size_mm: Some(size_mm(checked.model())),
     }, verdict))
+}
+
+/// Most bytes one view may have. A view is a 640 px PNG of tens of kilobytes,
+/// so this only stops a file that is not one.
+pub const MAX_VIEW_BYTES: u64 = 2 * 1024 * 1024;
+/// Most bytes of views one result carries, together.
+pub const MAX_VIEWS_BYTES: u64 = 4 * 1024 * 1024;
+
+/// The views of one build that could be read, and why each other view the
+/// kind declares could not.
+#[derive(Debug, Default, PartialEq)]
+pub struct KeptViews {
+    pub views: Vec<(View, Vec<u8>)>,
+    /// One line per view left out, for example `front: not found`.
+    pub missing: Vec<String>,
+}
+
+impl KeptViews {
+    /// Every one of `expected` left out for the same reason.
+    fn none_of(expected: &[View], why: &str) -> Self {
+        Self { views: Vec::new(), missing: expected.iter().map(|view| format!("{}: {why}", view.as_str())).collect() }
+    }
+}
+
+/// The views of `revision`'s build, in the order its kind declares them
+/// ([`KindDriver::views`]), read from `builds_dir`, the app's own build root
+/// ([`Workspace::builds_dir`]). The build's directory is that root plus the
+/// build's id, never a path a record holds; a build recorded anywhere else
+/// kept no views there. A build without artifacts has none to keep.
+pub fn read_views(builds_dir: &Path, revision: &Revision) -> KeptViews {
+    let (Some(artifacts), Some(kind)) = (revision.artifacts(), kind::find(&revision.kind)) else {
+        return KeptViews::default();
+    };
+    let build = revision.build_id.as_str();
+    // A hyphenated UUID is one path component: no separator, no `..`.
+    let one_component = uuid::Uuid::parse_str(build).is_ok_and(|id| id.hyphenated().to_string() == build);
+    if !one_component || artifacts.files().revision_dir != builds_dir.join(build) {
+        return KeptViews::none_of(kind.views(), "the build kept no views in the app's build directory");
+    }
+    read_view_files(builds_dir, build, kind.views())
+}
+
+/// Reads each of `expected` from `root`/`build`: a regular file, at most
+/// [`MAX_VIEW_BYTES`], and at most [`MAX_VIEWS_BYTES`] in all. Every view
+/// left out is named in `missing` with the reason.
+fn read_view_files(root: &Path, build: &str, expected: &[View]) -> KeptViews {
+    let directory = match views::open_build_directory(root, build) {
+        Ok(directory) => directory,
+        Err(why) => return KeptViews::none_of(expected, &why),
+    };
+    let mut kept = KeptViews::default();
+    let mut budget = MAX_VIEWS_BYTES;
+    for (index, &view) in expected.iter().enumerate() {
+        let mut read = views::read_view(&directory, &view.file_name(), budget);
+        // A build from before view sets kept its first view only as its preview,
+        // the same render under another name. It is read the same guarded way.
+        if index == 0 && matches!(&read, Err(why) if why == NOT_FOUND) {
+            read = views::read_view(&directory, PREVIEW_FILE, budget).map_err(|why| match why.as_str() {
+                NOT_FOUND => why,
+                _ => format!("{why} ({PREVIEW_FILE})"),
+            });
+        }
+        match read {
+            Ok(png) => {
+                budget -= png.len() as u64;
+                kept.views.push((view, png));
+            }
+            Err(why) => kept.missing.push(format!("{}: {why}", view.as_str())),
+        }
+    }
+    kept
+}
+
+/// The file a build keeps its preview in, the first of its views.
+const PREVIEW_FILE: &str = "preview.png";
+/// Why a view that is not in its build directory is left out.
+const NOT_FOUND: &str = "not found";
+
+/// Why a view of `bytes` bytes cannot ride in a result with `budget` left.
+fn over_cap(bytes: u64, budget: u64) -> Option<String> {
+    if bytes > MAX_VIEW_BYTES {
+        Some(format!("{bytes} bytes, over the {MAX_VIEW_BYTES}-byte cap for one view"))
+    } else if bytes > budget {
+        Some(format!("{bytes} bytes, over the {MAX_VIEWS_BYTES}-byte cap for one result's views"))
+    } else {
+        None
+    }
+}
+
+/// Reads an opened view: the file must be regular, and only up to the caps.
+fn read_capped(file: fs::File, budget: u64) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let meta = file.metadata().map_err(|e| e.to_string())?;
+    if !meta.file_type().is_file() {
+        return Err("not a regular file".into());
+    }
+    if let Some(why) = over_cap(meta.len(), budget) {
+        return Err(why);
+    }
+    let mut png = Vec::new();
+    file.take(MAX_VIEW_BYTES + 1).read_to_end(&mut png).map_err(|e| e.to_string())?;
+    match over_cap(png.len() as u64, budget) {
+        Some(why) => Err(why),
+        None => Ok(png),
+    }
+}
+
+/// View files opened through descriptors: the build directory relative to
+/// the app's root without following a symlink, each view relative to that
+/// directory without following a symlink or blocking on a FIFO, and the
+/// opened descriptor checked with `fstat` before a byte is read. Nothing a
+/// path check races.
+#[cfg(unix)]
+mod views {
+    use std::ffi::CString;
+    use std::fs::File;
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    use std::os::unix::ffi::OsStrExt;
+    use std::path::Path;
+
+    use super::{read_capped, NOT_FOUND};
+
+    pub(super) struct BuildDirectory(OwnedFd);
+
+    fn c_string(bytes: &[u8]) -> Result<CString, String> {
+        CString::new(bytes).map_err(|_| "a path holds a NUL byte".to_owned())
+    }
+
+    /// `fd` as owned, or the error `open` or `openat` set.
+    fn owned(fd: libc::c_int) -> std::io::Result<OwnedFd> {
+        if fd < 0 {
+            Err(std::io::Error::last_os_error())
+        } else {
+            // SAFETY: a non-negative return of open or openat is a new descriptor this code owns.
+            Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+        }
+    }
+
+    fn refused_link(err: &std::io::Error) -> bool {
+        matches!(err.raw_os_error(), Some(libc::ELOOP | libc::ENOTDIR))
+    }
+
+    /// Opens `root` (the app's own build root, whose path the app chose)
+    /// and then its entry `build`, which must be a directory and not a symlink.
+    pub(super) fn open_build_directory(root: &Path, build: &str) -> Result<BuildDirectory, String> {
+        let root = c_string(root.as_os_str().as_bytes())?;
+        // SAFETY: `root` is a NUL-terminated path; the flags take no mode.
+        let root = owned(unsafe { libc::open(root.as_ptr(), libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC) })
+            .map_err(|e| format!("the build root cannot be opened: {e}"))?;
+        let name = c_string(build.as_bytes())?;
+        let flags = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC;
+        // SAFETY: `root` is an open directory and `name` a NUL-terminated name in it.
+        match owned(unsafe { libc::openat(root.as_raw_fd(), name.as_ptr(), flags) }) {
+            Ok(directory) => Ok(BuildDirectory(directory)),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Err("its build directory is not found".into()),
+            Err(err) if refused_link(&err) => Err("its build directory is not a directory".into()),
+            Err(err) => Err(format!("its build directory cannot be opened: {err}")),
+        }
+    }
+
+    /// Reads the file `name` (one path component) in `directory`.
+    pub(super) fn read_view(directory: &BuildDirectory, name: &str, budget: u64) -> Result<Vec<u8>, String> {
+        assert!(!name.contains('/'), "a view's file name is one path component: {name}");
+        let name = c_string(name.as_bytes())?;
+        let flags = libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC;
+        // SAFETY: `directory` is an open directory and `name` a NUL-terminated name in it.
+        let file = match owned(unsafe { libc::openat(directory.0.as_raw_fd(), name.as_ptr(), flags) }) {
+            Ok(fd) => File::from(fd),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Err(NOT_FOUND.into()),
+            Err(err) if refused_link(&err) => return Err("not a regular file".into()),
+            Err(err) => return Err(err.to_string()),
+        };
+        read_capped(file, budget)
+    }
+}
+
+/// Outside unix (no shipped target), path checks stand in for descriptors.
+#[cfg(not(unix))]
+mod views {
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    use super::{read_capped, NOT_FOUND};
+
+    pub(super) struct BuildDirectory(PathBuf);
+
+    pub(super) fn open_build_directory(root: &Path, build: &str) -> Result<BuildDirectory, String> {
+        let dir = root.join(build);
+        match fs::symlink_metadata(&dir) {
+            Ok(meta) if meta.file_type().is_dir() => Ok(BuildDirectory(dir)),
+            Ok(_) => Err("its build directory is not a directory".into()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Err("its build directory is not found".into()),
+            Err(err) => Err(format!("its build directory cannot be opened: {err}")),
+        }
+    }
+
+    pub(super) fn read_view(directory: &BuildDirectory, name: &str, budget: u64) -> Result<Vec<u8>, String> {
+        let path = directory.0.join(name);
+        match fs::symlink_metadata(&path) {
+            Ok(meta) if meta.file_type().is_file() => {}
+            Ok(_) => return Err("not a regular file".into()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Err(NOT_FOUND.into()),
+            Err(err) => return Err(err.to_string()),
+        }
+        read_capped(fs::File::open(&path).map_err(|e| e.to_string())?, budget)
+    }
+}
+
+/// The extent of `model` along x, y, and z, in millimeters.
+fn size_mm(model: &PrintableModel) -> [f64; 3] {
+    let [lo, hi] = model.bounds();
+    std::array::from_fn(|k| (hi[k] - lo[k]) as f64 / 1000.0)
 }
 
 fn set_read_only(path: &Path) -> std::io::Result<()> {
@@ -643,6 +934,7 @@ mod tests {
             gcode_sha256: Sha256Hex::of_bytes(b"gcode"),
             slicer: SlicerIdentity { name: "Bambu Studio".into(), version: "02.08.02.61".into(), profile_version: "02.08.00.05".into() },
             effective_settings: Value::Null,
+            size_mm: None,
         }
     }
 
@@ -938,6 +1230,307 @@ mod tests {
         assert_eq!(third.revision.build_id, first.revision.build_id);
         assert!(matches!(third.revision.build, BuildState::Verified { .. }));
         assert_eq!(revisions_of(&state).len(), 3);
+    }
+
+    /// Before staged failures, a failed geometry check was recorded as
+    /// `build failed: checks failed: geometry.<check>: ...`. It still reads as
+    /// stage geometry; a staged reason reads as its stage; other reasons have none.
+    #[test]
+    fn a_failure_reads_as_its_stage_legacy_geometry_reasons_included() {
+        let failed = |reason: &str| BuildState::Failed { reason: reason.into(), artifacts: None };
+        let cases = [
+            ("build failed: checks failed: geometry.requirement.0: width 10.00 mm (20 ± 0.1)", Some(Stage::Geometry)),
+            ("build failed: checks failed: geometry.closed_manifold.clip: 468 open edges, geometry.bounds.clip: ok", Some(Stage::Geometry)),
+            ("geometry: checks failed: geometry.requirement.0: width 10.00 mm (20 ± 0.1)", Some(Stage::Geometry)),
+            ("generate: line 10: ValueError: Failed creating a fillet", Some(Stage::Generate)),
+            ("inspect: shape 0 has no solid", Some(Stage::Inspect)),
+            ("build failed: the CAD runtime is unavailable", None),
+            ("build cancelled", None),
+            ("interrupted: the app stopped before this build finished", None),
+        ];
+        for (reason, stage) in cases {
+            assert_eq!(Stage::of_failure(&failed(reason)), stage, "{reason}");
+        }
+    }
+
+    /// The build every view test reads: `<root>/<BUILD>`.
+    const BUILD: &str = "3f2b1c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d";
+
+    /// A build root holding one build directory with each named view written
+    /// with `bytes` bytes of 7.
+    fn view_root(views: &[(View, usize)]) -> tempfile::TempDir {
+        let root = tempfile::tempdir().expect("tempdir");
+        fs::create_dir(root.path().join(BUILD)).expect("build dir");
+        for (view, bytes) in views {
+            fs::write(root.path().join(BUILD).join(view.file_name()), vec![7u8; *bytes]).expect("view");
+        }
+        root
+    }
+
+    const PART_VIEWS: [View; 3] = [View::Isometric, View::Front, View::Top];
+    /// What an outside file holds; no read may ever return it.
+    const OUTSIDE: &[u8] = b"OUTSIDE THE BUILD";
+
+    fn no_outside_bytes(kept: &KeptViews) {
+        for (view, png) in &kept.views {
+            assert!(!png.windows(OUTSIDE.len()).any(|w| w == OUTSIDE), "{view:?} read outside bytes");
+        }
+    }
+
+    #[test]
+    fn view_file_names_are_one_path_component() {
+        for view in View::ALL {
+            let name = view.file_name();
+            assert!(!name.contains('/') && !name.contains('\\') && name != ".." && !name.is_empty(), "{name}");
+        }
+    }
+
+    #[test]
+    fn views_are_read_in_the_kinds_order_and_a_missing_one_is_named() {
+        let root = view_root(&[(View::Top, 30), (View::Isometric, 10)]);
+        let kept = read_view_files(root.path(), BUILD, &PART_VIEWS);
+        assert_eq!(kept.views, [(View::Isometric, vec![7; 10]), (View::Top, vec![7; 30])]);
+        assert_eq!(kept.missing, ["front: not found"]);
+        let kept = read_view_files(root.path(), "4f2b1c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d", &[View::Top]);
+        assert_eq!(kept.missing, ["top: its build directory is not found"]);
+    }
+
+    /// The build's directory comes from the app's build root and its id; a
+    /// record that names any other directory, or an id that is not one path
+    /// component, keeps no views.
+    #[test]
+    fn views_are_read_only_from_the_apps_build_directory() {
+        let root = view_root(&[(View::Face, 10)]);
+        let mut revision = claim(&app_state(root.path()), "views");
+        let mut artifacts = serde_json::to_value(staged(&root.path().join("p"), &root.path().join(BUILD))).expect("files");
+        artifacts["checks"] = json!([]);
+        revision.build = BuildState::Verified { artifacts: Box::new(serde_json::from_value(artifacts).expect("artifacts")) };
+        revision.build_id = serde_json::from_value(json!(BUILD)).expect("id");
+        assert_eq!(read_views(root.path(), &revision).views, [(View::Face, vec![7; 10])]);
+
+        let elsewhere = tempfile::tempdir().expect("tempdir");
+        assert_eq!(read_views(elsewhere.path(), &revision).missing, ["face: the build kept no views in the app's build directory"]);
+        revision.build_id = serde_json::from_value(json!("../escape")).expect("id");
+        assert_eq!(read_views(root.path(), &revision).missing, ["face: the build kept no views in the app's build directory"]);
+    }
+
+    /// A view that is a symlink is never followed, even to a file inside the
+    /// build directory, and neither is a build directory that is a symlink.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_view_or_build_directory_is_not_read() {
+        let outside = tempfile::tempdir().expect("tempdir");
+        fs::write(outside.path().join("secret.png"), OUTSIDE).expect("secret");
+        let root = view_root(&[(View::Isometric, 10)]);
+        let dir = root.path().join(BUILD);
+        std::os::unix::fs::symlink(outside.path().join("secret.png"), dir.join(View::Front.file_name())).expect("symlink");
+        std::os::unix::fs::symlink(dir.join(View::Isometric.file_name()), dir.join(View::Top.file_name())).expect("symlink");
+        let kept = read_view_files(root.path(), BUILD, &PART_VIEWS);
+        assert_eq!(kept.views, [(View::Isometric, vec![7; 10])]);
+        assert_eq!(kept.missing, ["front: not a regular file", "top: not a regular file"]);
+
+        let linked = tempfile::tempdir().expect("tempdir");
+        std::os::unix::fs::symlink(&dir, linked.path().join(BUILD)).expect("symlink");
+        let kept = read_view_files(linked.path(), BUILD, &[View::Isometric]);
+        assert_eq!(kept.missing, ["isometric: its build directory is not a directory"]);
+    }
+
+    /// A sign built before view sets kept its face only as `preview.png`. That
+    /// file stands in for the first declared view, read the same guarded way.
+    #[test]
+    fn a_legacy_build_s_preview_stands_in_for_its_first_view() {
+        let root = view_root(&[]);
+        fs::write(root.path().join(BUILD).join(PREVIEW_FILE), [5u8; 12]).expect("preview");
+        let kept = read_view_files(root.path(), BUILD, &[View::Face]);
+        assert_eq!((kept.views, kept.missing), (vec![(View::Face, vec![5; 12])], Vec::<String>::new()));
+
+        let kept = read_view_files(root.path(), BUILD, &PART_VIEWS);
+        assert_eq!(kept.views, [(View::Isometric, vec![5; 12])], "only the first view falls back");
+        assert_eq!(kept.missing, ["front: not found", "top: not found"]);
+
+        let empty = view_root(&[]);
+        assert_eq!(read_view_files(empty.path(), BUILD, &[View::Face]).missing, ["face: not found"]);
+    }
+
+    /// A `preview.png` that is a symlink is refused like any view.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_preview_is_not_read_in_place_of_a_view() {
+        let outside = tempfile::tempdir().expect("tempdir");
+        fs::write(outside.path().join("secret.png"), OUTSIDE).expect("secret");
+        let root = view_root(&[]);
+        std::os::unix::fs::symlink(outside.path().join("secret.png"), root.path().join(BUILD).join(PREVIEW_FILE)).expect("symlink");
+        let kept = read_view_files(root.path(), BUILD, &[View::Face]);
+        no_outside_bytes(&kept);
+        assert_eq!((kept.views.len(), kept.missing), (0, vec![format!("face: not a regular file ({PREVIEW_FILE})")]));
+    }
+
+    /// `read` on its own thread, failing the test if it does not return in
+    /// five seconds (a FIFO used to block its open forever).
+    fn within_five_seconds(read: impl FnOnce() -> KeptViews + Send + 'static) -> KeptViews {
+        let (done, result) = std::sync::mpsc::channel();
+        std::thread::spawn(move || done.send(read()));
+        result.recv_timeout(std::time::Duration::from_secs(5)).expect("the read returned within five seconds")
+    }
+
+    /// A FIFO in a view's place neither blocks the read nor is read.
+    #[cfg(unix)]
+    #[test]
+    fn a_fifo_in_place_of_a_view_does_not_block_and_is_named() {
+        let root = view_root(&[(View::Isometric, 10)]);
+        let fifo = std::ffi::CString::new(root.path().join(BUILD).join(View::Front.file_name()).into_os_string().into_encoded_bytes())
+            .expect("path");
+        // SAFETY: `fifo` is a NUL-terminated path.
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0, "mkfifo");
+        let path = root.path().to_path_buf();
+        let kept = within_five_seconds(move || read_view_files(&path, BUILD, &PART_VIEWS));
+        assert_eq!(kept.views, [(View::Isometric, vec![7; 10])]);
+        assert_eq!(kept.missing, ["front: not a regular file", "top: not found"]);
+    }
+
+    /// Races a swapper thread that keeps replacing a view with a symlink to an
+    /// outside file, and the build directory with a symlink to an outside
+    /// directory of views, and a view with a FIFO. Every read returns quickly,
+    /// and none returns an outside byte.
+    #[cfg(unix)]
+    #[test]
+    fn swapping_views_and_the_build_directory_for_symlinks_or_a_fifo_never_reads_outside() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+        let outside = tempfile::tempdir().expect("tempdir");
+        fs::write(outside.path().join("secret.png"), OUTSIDE).expect("secret");
+        let fake_build = outside.path().join("fake-build");
+        fs::create_dir(&fake_build).expect("fake build");
+        for view in PART_VIEWS {
+            fs::write(fake_build.join(view.file_name()), OUTSIDE).expect("outside view");
+        }
+        let root = view_root(&[(View::Isometric, 10), (View::Front, 10), (View::Top, 10)]);
+        let (root_path, outside_path) = (root.path().to_path_buf(), outside.path().to_path_buf());
+        let stop = Arc::new(AtomicBool::new(false));
+        let swapper = std::thread::spawn({
+            let stop = stop.clone();
+            move || {
+                let dir = root_path.join(BUILD);
+                let front = dir.join(View::Front.file_name());
+                let top = dir.join(View::Top.file_name());
+                let (staged_file, staged_link, staged_fifo) = (dir.join("staged.png"), dir.join("staged-link"), dir.join("staged-fifo"));
+                let (aside, link) = (root_path.join("aside"), root_path.join("link"));
+                let fifo = std::ffi::CString::new(staged_fifo.clone().into_os_string().into_encoded_bytes()).expect("path");
+                let mut swaps = 0u64;
+                while !stop.load(Ordering::SeqCst) {
+                    // The front view: a file, then a symlink out, by atomic renames.
+                    fs::write(&staged_file, [7u8; 10]).expect("staged");
+                    fs::rename(&staged_file, &front).expect("file in");
+                    std::os::unix::fs::symlink(outside_path.join("secret.png"), &staged_link).expect("link");
+                    fs::rename(&staged_link, &front).expect("link in");
+                    // The top view: a FIFO, then a file again.
+                    // SAFETY: `fifo` is a NUL-terminated path.
+                    if unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) } == 0 {
+                        fs::rename(&staged_fifo, &top).expect("fifo in");
+                    }
+                    fs::write(&staged_file, [7u8; 10]).expect("staged");
+                    fs::rename(&staged_file, &top).expect("file in");
+                    // The build directory: aside, a symlink out in its place, then back.
+                    fs::rename(&dir, &aside).expect("dir aside");
+                    std::os::unix::fs::symlink(&fake_build, &link).expect("dir link");
+                    fs::rename(&link, &dir).expect("link in place of the dir");
+                    fs::remove_file(&dir).expect("link out");
+                    fs::rename(&aside, &dir).expect("dir back");
+                    swaps += 1;
+                }
+                swaps
+            }
+        });
+        let mut reads = 0;
+        let started = std::time::Instant::now();
+        while started.elapsed() < std::time::Duration::from_secs(3) {
+            let path = root.path().to_path_buf();
+            let kept = within_five_seconds(move || read_view_files(&path, BUILD, &PART_VIEWS));
+            no_outside_bytes(&kept);
+            assert_eq!(kept.views.len() + kept.missing.len(), PART_VIEWS.len(), "{kept:?}");
+            reads += 1;
+        }
+        stop.store(true, Ordering::SeqCst);
+        let swaps = swapper.join().expect("swapper");
+        println!("{reads} reads raced {swaps} swap rounds");
+        assert!(reads > 100 && swaps > 100, "the race ran: {reads} reads, {swaps} swaps");
+    }
+
+    /// One view may not pass [`MAX_VIEW_BYTES`], and one result's views may
+    /// not pass [`MAX_VIEWS_BYTES`] together.
+    #[test]
+    fn views_over_the_byte_caps_are_left_out_and_named() {
+        let big = MAX_VIEW_BYTES as usize;
+        let root = view_root(&[(View::Isometric, big + 1), (View::Front, big), (View::Top, big)]);
+        let kept = read_view_files(root.path(), BUILD, &PART_VIEWS);
+        assert_eq!(kept.views.iter().map(|(view, png)| (*view, png.len())).collect::<Vec<_>>(), [(View::Front, big), (View::Top, big)]);
+        assert_eq!(kept.missing, [format!("isometric: {} bytes, over the {MAX_VIEW_BYTES}-byte cap for one view", big + 1)]);
+
+        let most = (MAX_VIEWS_BYTES / 3 + 1) as usize;
+        let root = view_root(&[(View::Isometric, most), (View::Front, most), (View::Top, most)]);
+        let kept = read_view_files(root.path(), BUILD, &PART_VIEWS);
+        assert_eq!(kept.views.len(), 2);
+        assert_eq!(kept.missing, [format!("top: {most} bytes, over the {MAX_VIEWS_BYTES}-byte cap for one result's views")]);
+        assert!(kept.views.iter().map(|(_, png)| png.len() as u64).sum::<u64>() <= MAX_VIEWS_BYTES);
+    }
+
+    /// The shared actions over `state` and `workspace`, with no window to notify.
+    fn actions(state: AppState, workspace: Workspace) -> crate::actions::Actions {
+        crate::actions::Actions::new(std::sync::Arc::new(|_, _| {}), std::sync::Arc::new(state), workspace)
+    }
+
+    /// A merge patch that makes an invalid spec is refused exactly like the
+    /// patched spec built fresh, before any revision or slicer.
+    #[test]
+    fn revise_refuses_a_patch_that_makes_an_invalid_spec_like_a_fresh_spec() {
+        use crate::actions::{merge_patch, RequestActions, RequestActor};
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = app_state(dir.path());
+        let parent = claim(&state, "parent");
+        let actions = actions(state, Workspace::new(&dir.path().join("data"), &dir.path().join("cache")));
+        let quiet = BuildControl::new(&|_| {}, &|| false);
+        for patch in [json!({ "width_mm": "wide" }), json!({ "inks": null }), json!({ "colour": "navy" })] {
+            let revised = actions.revise(parent.id.as_str(), &patch, RequestActor::Agent, &quiet).expect_err("refused");
+            let fresh = RequestActions::build(&actions, "sign", merge_patch(fixture(), &patch), None, RequestActor::Agent, &quiet)
+                .expect_err("refused fresh");
+            assert!(matches!(revised, crate::actions::ActionError::Build(BuildError::Spec(_))), "{patch}: {revised}");
+            assert_eq!(revised.to_string(), fresh.to_string(), "{patch}");
+        }
+        assert_eq!(actions.list(10).expect("list").len(), 1, "no revision was recorded");
+    }
+
+    /// `revise` through the shared actions with the real slicer: a merge
+    /// patch is revision n+1, a patch back to the first spec is revision 3 on
+    /// the first build, and nothing runs for it.
+    #[test]
+    #[ignore = "needs a validated Bambu Studio (BAMBU_STUDIO_CLI or a standard install)"]
+    fn revise_makes_the_next_revision_and_a_patch_back_reuses_the_first_build() {
+        use crate::actions::{RequestActions, RequestActor};
+        let dir = tempfile::tempdir().expect("tempdir");
+        let actions = actions(app_state(dir.path()), Workspace::new(&dir.path().join("data"), &dir.path().join("cache")));
+        let quiet = BuildControl::new(&|_| {}, &|| false);
+        let first = RequestActions::build(&actions, "sign", fixture(), None, RequestActor::Agent, &quiet).expect("first");
+        assert!(matches!(first.revision.build, BuildState::Verified { .. }), "{:?}", first.revision.build);
+
+        let taller = actions.revise(first.revision.id.as_str(), &json!({ "height_mm": 215 }), RequestActor::Agent, &quiet).expect("revise");
+        assert_eq!((taller.revision.number, taller.reused), (2, false));
+        assert_eq!(taller.revision.lineage_id, first.revision.lineage_id);
+        assert_eq!(taller.revision.spec["height_mm"], json!(215));
+        assert_eq!(taller.revision.spec["width_mm"], first.revision.spec["width_mm"], "fields the patch did not name keep their values");
+        assert!(matches!(taller.revision.build, BuildState::Verified { .. }) && matches!(taller.revision.approval, Approval::Pending));
+
+        let steps = RefCell::new(Vec::new());
+        let back = actions
+            .revise(
+                taller.revision.id.as_str(),
+                &json!({ "height_mm": first.revision.spec["height_mm"] }),
+                RequestActor::Agent,
+                &BuildControl::new(&|s| steps.borrow_mut().push(s), &|| false),
+            )
+            .expect("revise back");
+        assert_eq!((back.revision.number, back.reused), (3, true));
+        assert_eq!(back.revision.build_id, first.revision.build_id, "the first build is reused");
+        assert_eq!(*steps.borrow(), [BuildStep::SpecValidated], "nothing past validation ran");
     }
 
     /// Slices `package` with the validated Bambu Studio and the P2S presets, as `build` does.

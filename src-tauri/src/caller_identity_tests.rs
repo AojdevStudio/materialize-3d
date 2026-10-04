@@ -90,6 +90,7 @@ fn agent_built_revision(gui: &Gui, dir: &Path) -> Revision {
             gcode_sha256: Sha256Hex::of_bytes(b"gcode"),
             slicer: SlicerIdentity { name: "Bambu Studio".into(), version: "02.08.02.61".into(), profile_version: "02.08.00.05".into() },
             effective_settings: json!({}),
+            size_mm: None,
         };
         let proof = checks::test_support::passed(&[checks::slice_check_id(bambu::CheckId::SliceSucceeded)]);
         revisions::finish_verified(conn, &revision.build_id, files, &proof)?;
@@ -176,7 +177,8 @@ async fn each_caller_records_its_own_identity() {
     let from_agent = scope
         .invoke(crate::tools::Tool::Build, "call-1".into(), json!({ "kind": "sign", "spec": spec_titled("From the agent") }))
         .await
-        .expect("agent build");
+        .expect("agent build")
+        .value;
     assert_eq!(from_agent["requested_by"], "agent");
 
     let server = crate::mcp::McpServer::default();

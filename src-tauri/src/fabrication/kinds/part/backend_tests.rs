@@ -186,15 +186,15 @@ fn an_overhanging_part_verifies_with_bambus_support_warning_as_advisory() {
 #[ignore = "needs a CAD backend (M3D_CAD_RUNTIME) and Bambu Studio"]
 fn a_failing_fillet_returns_a_bounded_error_at_generate_and_records_the_revision() {
     let h = Harness::new();
-    let err = h.build(spec("failing-fillet")).expect_err("the fillet fails");
-    println!("{err}");
-    let BuildError::Stage { stage, error } = &err else { panic!("a staged error, got {err:?}") };
-    assert_eq!(*stage, Stage::Generate);
+    let failed = h.build(spec("failing-fillet")).expect("a failed script is a failed revision, not an error").revision;
+    println!("{:?}", failed.build);
+    assert_eq!(Stage::of_failure(&failed.build), Some(Stage::Generate));
+    let BuildState::Failed { reason, .. } = &failed.build else { panic!("a failed build, got {:?}", failed.build) };
+    let error = reason.strip_prefix("generate: ").expect("the reason names the stage");
     assert!(error.starts_with("line 10: ValueError: Failed creating a fillet"), "{error}");
     assert!(error.chars().count() <= 2000);
     let recorded = h.db(|conn| revisions::list_recent(conn, 10)).expect("list");
-    assert_eq!(recorded.len(), 1, "the revision is recorded");
-    assert!(matches!(&recorded[0].build, BuildState::Failed { reason, .. } if reason.starts_with("generate: line 10: ValueError")), "{:?}", recorded[0].build);
+    assert_eq!(recorded, [failed], "the revision is recorded");
 }
 
 /// The script forges a verdict, a mesh, and a check list, prints a pass, and
@@ -205,13 +205,18 @@ fn a_failing_fillet_returns_a_bounded_error_at_generate_and_records_the_revision
 #[ignore = "needs a CAD backend (M3D_CAD_RUNTIME) and Bambu Studio"]
 fn a_hostile_script_cannot_change_its_own_checks() {
     let h = Harness::new();
-    let err = h.build(spec("hostile")).expect_err("the box is 10 mm, not 20");
-    println!("{err}");
-    assert_eq!(err.to_string(), "build failed: checks failed: geometry.requirement.0: width 10.00 mm (20 ± 0.1)");
+    let failed = h.build(spec("hostile")).expect("the box is 10 mm, not 20: a failed revision").revision;
+    println!("{:?}", failed.build);
+    assert!(
+        matches!(&failed.build, BuildState::Failed { reason, .. } if reason == "geometry: checks failed: geometry.requirement.0: width 10.00 mm (20 ± 0.1)"),
+        "{:?}",
+        failed.build
+    );
+    assert_eq!(Stage::of_failure(&failed.build), Some(Stage::Geometry));
 
     let mut open = spec("hostile");
     open["params"]["open"] = json!(true);
-    let err = h.build(open).expect_err("an open shell is not a solid");
-    println!("{err}");
-    assert!(matches!(&err, BuildError::Stage { stage: Stage::Inspect, error } if error == "shape 0 has no solid"), "{err:?}");
+    let failed = h.build(open).expect("an open shell is not a solid: a failed revision").revision;
+    println!("{:?}", failed.build);
+    assert!(matches!(&failed.build, BuildState::Failed { reason, .. } if reason == "inspect: shape 0 has no solid"), "{:?}", failed.build);
 }

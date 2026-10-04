@@ -18,7 +18,7 @@ pub use gui::HumanActor;
 
 use crate::fabrication::checks::CheckId;
 use crate::fabrication::kind::{self, BuildControl, KindDriver};
-use crate::fabrication::pipeline::{self, BuildError, BuildOutcome, BuildRequest, Workspace};
+use crate::fabrication::pipeline::{self, BuildError, BuildOutcome, BuildRequest, KeptViews, Workspace};
 use crate::fabrication::revisions::{self, Actor, ExportFormat, LineageId, Revision, RevisionId, Sha256Hex};
 use crate::state::{AppState, PrinterState};
 
@@ -129,6 +129,67 @@ pub trait RequestActions: Send + Sync + 'static {
     /// The kinds this app can build now, in registry order: `part` only with a
     /// verified CAD runtime. See [`Actions::kinds`].
     fn kinds(&self) -> Vec<&'static dyn KindDriver>;
+
+    /// The views `revision`'s build kept in the app's build directory, and why
+    /// any other view its kind renders is left out. See [`pipeline::read_views`].
+    fn views(&self, revision: &Revision) -> KeptViews;
+
+    /// Blocking, like [`RequestActions::build`], but always records a new
+    /// revision of `lineage_id`'s design with approval pending, even when the
+    /// spec repeats an earlier revision's; it then reuses that build, never
+    /// that approval. See [`pipeline::build_next`].
+    fn build_next(
+        &self,
+        kind: &str,
+        spec: Value,
+        lineage_id: &str,
+        requester: RequestActor,
+        control: &BuildControl<'_>,
+    ) -> Result<BuildOutcome, ActionError>;
+
+    /// Builds revision n+1 of `revision_id`'s design from its stored spec with
+    /// `changes` applied as an RFC 7396 merge patch ([`merge_patch`]). The
+    /// patched spec is validated like any spec, so a patch can make nothing
+    /// a fresh spec could not. The new revision waits for its own approval,
+    /// even when its spec returns to an approved one. A patch that leaves the
+    /// spec as it is, the empty patch included, is refused.
+    fn revise(
+        &self,
+        revision_id: &str,
+        changes: &Value,
+        requester: RequestActor,
+        control: &BuildControl<'_>,
+    ) -> Result<BuildOutcome, ActionError> {
+        let parent = self.get(revision_id)?;
+        let spec = merge_patch(parent.spec.clone(), changes);
+        if spec == parent.spec {
+            return Err(ActionError::State(format!(
+                "the changes leave revision {}'s spec as it is; name at least one field to change",
+                parent.number
+            )));
+        }
+        self.build_next(&parent.kind, spec, parent.lineage_id.as_str(), requester, control)
+    }
+}
+
+/// `target` with `patch` applied as an RFC 7396 JSON merge patch: an object
+/// patch sets each key it names, removes a key whose value is null, and
+/// merges nested objects; any other patch replaces the target.
+pub fn merge_patch(target: Value, patch: &Value) -> Value {
+    let Value::Object(changes) = patch else { return patch.clone() };
+    let mut merged = match target {
+        Value::Object(fields) => fields,
+        _ => serde_json::Map::new(),
+    };
+    for (key, change) in changes {
+        if change.is_null() {
+            merged.remove(key);
+        } else {
+            let current = merged.remove(key).unwrap_or(Value::Null);
+            merged.insert(key.clone(), merge_patch(current, change));
+        }
+    }
+    Value::Object(merged)
 }
 
 #[derive(Clone)]
@@ -161,6 +222,21 @@ impl Actions {
         let lineage_id = lineage_id.map(LineageId::parse).transpose()?;
         let request = BuildRequest { kind: kind.to_owned(), spec, lineage_id, actor };
         let outcome = pipeline::build(&self.state, &self.workspace, request, control)?;
+        self.notify(&outcome.revision.id);
+        Ok(outcome)
+    }
+
+    /// See [`RequestActions::build_next`].
+    pub fn build_next(
+        &self,
+        kind: &str,
+        spec: Value,
+        lineage_id: &str,
+        actor: Actor,
+        control: &BuildControl<'_>,
+    ) -> Result<BuildOutcome, ActionError> {
+        let request = BuildRequest { kind: kind.to_owned(), spec, lineage_id: Some(LineageId::parse(lineage_id)?), actor };
+        let outcome = pipeline::build_next(&self.state, &self.workspace, request, control)?;
         self.notify(&outcome.revision.id);
         Ok(outcome)
     }
@@ -264,6 +340,17 @@ impl RequestActions for Actions {
         Actions::build(self, kind, spec, lineage_id, requester.into(), control)
     }
 
+    fn build_next(
+        &self,
+        kind: &str,
+        spec: Value,
+        lineage_id: &str,
+        requester: RequestActor,
+        control: &BuildControl<'_>,
+    ) -> Result<BuildOutcome, ActionError> {
+        Actions::build_next(self, kind, spec, lineage_id, requester.into(), control)
+    }
+
     fn list(&self, limit: u32) -> Result<Vec<Revision>, ActionError> {
         Actions::list(self, limit)
     }
@@ -283,13 +370,44 @@ impl RequestActions for Actions {
     fn kinds(&self) -> Vec<&'static dyn KindDriver> {
         Actions::kinds(self)
     }
+
+    fn views(&self, revision: &Revision) -> KeptViews {
+        pipeline::read_views(&self.workspace.builds_dir, revision)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use std::sync::Mutex;
 
+    use serde_json::json;
+
     use super::*;
+
+    /// The examples of RFC 7396, appendix A.
+    #[test]
+    fn merge_patch_follows_rfc_7396() {
+        let cases = [
+            (json!({"a": "b"}), json!({"a": "c"}), json!({"a": "c"})),
+            (json!({"a": "b"}), json!({"b": "c"}), json!({"a": "b", "b": "c"})),
+            (json!({"a": "b"}), json!({"a": null}), json!({})),
+            (json!({"a": "b", "b": "c"}), json!({"a": null}), json!({"b": "c"})),
+            (json!({"a": ["b"]}), json!({"a": "c"}), json!({"a": "c"})),
+            (json!({"a": "c"}), json!({"a": ["b"]}), json!({"a": ["b"]})),
+            (json!({"a": {"b": "c"}}), json!({"a": {"b": "d", "c": null}}), json!({"a": {"b": "d"}})),
+            (json!({"a": [{"b": "c"}]}), json!({"a": [1]}), json!({"a": [1]})),
+            (json!(["a", "b"]), json!(["c", "d"]), json!(["c", "d"])),
+            (json!({"a": "b"}), json!(["c"]), json!(["c"])),
+            (json!({"a": "foo"}), json!(null), json!(null)),
+            (json!({"a": "foo"}), json!("bar"), json!("bar")),
+            (json!({"e": null}), json!({"a": 1}), json!({"e": null, "a": 1})),
+            (json!([1, 2]), json!({"a": "b", "c": null}), json!({"a": "b"})),
+            (json!({}), json!({"a": {"bb": {"ccc": null}}}), json!({"a": {"bb": {}}})),
+        ];
+        for (target, patch, expected) in cases {
+            assert_eq!(merge_patch(target.clone(), &patch), expected, "{target} patched with {patch}");
+        }
+    }
 
     #[test]
     fn actions_emit_through_the_sink_they_are_given_without_a_tauri_app() {

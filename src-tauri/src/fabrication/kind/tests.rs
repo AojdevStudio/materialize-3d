@@ -39,6 +39,8 @@ impl ObjectKind for Probe {
     const ID: KindId = KindId::new("probe");
     const TAG: &'static str = "probe-1";
     const SUMMARY: &'static str = "a kind for tests";
+    const GUIDE: &'static str = "how to probe";
+    const VIEWS: &'static [View] = &[View::Isometric, View::Top];
 
     fn validate(spec: ProbeSpec, _printer: &PrinterProfile) -> Result<ValidProbe, SpecError> {
         Ok(ValidProbe { geometry_passes: spec.geometry_passes, print_passes: spec.print_passes })
@@ -63,8 +65,8 @@ impl ObjectKind for Probe {
         ])
     }
 
-    fn preview(_valid: &ValidProbe, _model: &PrintableModel) -> Result<Vec<u8>, KernelError> {
-        Ok(b"png".to_vec())
+    fn preview(_valid: &ValidProbe, _model: &PrintableModel) -> Result<ViewSet, KernelError> {
+        ViewSet::new(vec![(View::Isometric, b"png".to_vec()), (View::Top, b"top".to_vec())])
     }
 }
 
@@ -101,16 +103,19 @@ fn an_advisory_failure_is_a_warning_and_the_model_is_still_certified() {
     let (prepared, steps) = prepare(&PROBE, &parsed);
     let prepared = prepared.expect("an advisory failure does not stop the build");
     assert_eq!(prepared.checked.geometry().warnings().collect::<Vec<_>>(), [&overhang()]);
-    assert_eq!(prepared.preview, b"png");
+    assert_eq!(prepared.views.preview(), b"png");
+    assert_eq!(prepared.views.views().iter().map(|(view, _)| *view).collect::<Vec<_>>(), [View::Isometric, View::Top]);
     assert_eq!(steps, [BuildStep::GeometryBuilt]);
 }
 
 #[test]
-fn a_blocking_failure_stops_the_build_before_packaging() {
+fn a_blocking_failure_stops_the_build_at_the_geometry_stage_before_packaging() {
     let parsed = PROBE.parse(json!({ "geometry_passes": false, "print_passes": false }), &P2S_04).expect("parse");
     let (prepared, _) = prepare(&PROBE, &parsed);
     match prepared {
-        Err(BuildError::Failed(reason)) => assert_eq!(reason, "checks failed: geometry.tip.probe: tip", "only the blocking check fails it"),
+        Err(BuildError::Stage { stage: Stage::Geometry, error }) => {
+            assert_eq!(error, "checks failed: geometry.tip.probe: tip", "only the blocking check fails it")
+        }
         Err(other) => panic!("expected a failed build, got {other}"),
         Ok(_) => panic!("a failed geometry check certified the model"),
     }

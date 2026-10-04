@@ -33,16 +33,22 @@ const SIGN: BuildResult = {
   title: 'Back Shortly door sign',
   build: 'verified',
   failure_reason: null,
+  stage: null,
   checks_passed: 9,
   checks_total: 9,
   failed_checks: [],
   warnings: [],
+  requirements: [],
+  size_mm: [150, 210, 2.6],
   package_sha256: 'abc123f09d1e7b55c0a4e2f6781d3b9ac0ffee12de45f67a89b0c1d2e3f4c4e7',
   approval: 'pending',
   print_validation: 'not_tested',
   requested_by: 'agent',
   created_at: '2026-10-02T10:00:00Z',
   reused: false,
+  shown: true,
+  views: ['face'],
+  views_missing: [],
 }
 
 beforeEach(() => {
@@ -208,6 +214,48 @@ describe('ChatPanel', () => {
     const result = await screen.findByTestId('tool-result')
     expect(result.textContent).toContain(`Invalid: ${reason}`)
     expect(result.textContent).not.toContain('Failed')
+  })
+
+  it('heads a build that returned a failed revision as failed, with its stage, not as all steps done', async () => {
+    render(<ChatPanel />)
+    const turn = await sendMessage('Make the clip')
+    const reason = 'generate: line 10: ValueError: Failed creating a fillet'
+    const failed: BuildResult = {
+      ...SIGN,
+      kind: 'part',
+      build: 'failed',
+      failure_reason: reason,
+      stage: 'generate',
+      checks_passed: 0,
+      checks_total: 0,
+      package_sha256: null,
+      size_mm: null,
+      views: [],
+    }
+    turn.emit({ type: 'toolCall', callId: 'c1', name: 'build', args: {} })
+    turn.emit({ type: 'toolProgress', callId: 'c1', step: 'spec_validated' })
+    turn.emit({ type: 'toolResult', callId: 'c1', ok: true, output: failed })
+    turn.emit({ type: 'turnFinished' })
+    await act(async () => turn.finish())
+
+    const card = await screen.findByTestId('tool-build')
+    const head = within(card).getByText('Build failed at generate')
+    expect(head.className).toMatch(/bad/)
+    expect(card.textContent).not.toContain('5 of 5 steps')
+    expect((await screen.findByTestId('tool-result')).textContent).toContain(`Failed: ${reason}`)
+  })
+
+  it('shows a revise like a build, under its own name', async () => {
+    render(<ChatPanel />)
+    const turn = await sendMessage('Make it taller')
+    turn.emit({ type: 'toolCall', callId: 'c1', name: 'revise', args: {} })
+    turn.emit({ type: 'toolResult', callId: 'c1', ok: true, output: { ...SIGN, number: 3 } })
+    turn.emit({ type: 'turnFinished' })
+    await act(async () => turn.finish())
+
+    const card = await screen.findByTestId('tool-build')
+    expect(card.textContent).toContain('revise')
+    expect((await screen.findByTestId('tool-result')).textContent).toContain('r3, Back Shortly door sign')
   })
 
   it('shows a missing key error that opens Settings', async () => {

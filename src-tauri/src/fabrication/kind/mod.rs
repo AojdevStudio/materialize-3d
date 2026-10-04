@@ -13,13 +13,13 @@ use std::marker::PhantomData;
 
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub use super::package::ExtraArtifact;
 
 use super::cad_worker::CadRuntime;
-use super::checks::{CheckId, CheckOutcome, CheckPlan, CheckedModel, InvalidPlan};
+use super::checks::{CheckId, CheckOutcome, CheckPlan, CheckedModel, ChecksFailed, InvalidPlan};
 use super::kinds::part::Part;
 use super::kinds::sign::Sign;
 use super::model::PrintableModel;
@@ -69,6 +69,15 @@ pub trait ObjectKind: Send + Sync + 'static {
     const TAG: &'static str;
     /// One line naming what the kind makes, for a model choosing a kind.
     const SUMMARY: &'static str;
+    /// What `describe_kind` returns: how to write a good spec of this kind.
+    const GUIDE: &'static str;
+    /// What the system prompt carries under the kind's catalog line. Empty
+    /// for a kind a model describes before it builds; `part` puts its script
+    /// contract here.
+    const PROMPT_GUIDE: &'static str = "";
+    /// The views [`ObjectKind::preview`] renders, in order. A build keeps
+    /// exactly these, so a view that is not on disk later is reported missing.
+    const VIEWS: &'static [View];
     /// What the package names the build's object.
     const NAMING: ObjectNaming = ObjectNaming::Title;
 
@@ -102,8 +111,66 @@ pub trait ObjectKind: Send + Sync + 'static {
     /// Measures `model` for every geometry and print check the plan names. A
     /// long measurement polls `control` and returns [`KernelError::Cancelled`].
     fn measure(valid: &Self::Valid, model: &PrintableModel, control: &BuildControl<'_>) -> Result<Vec<CheckOutcome>, KernelError>;
-    /// The PNG the app shows for the build.
-    fn preview(valid: &Self::Valid, model: &PrintableModel) -> Result<Vec<u8>, KernelError>;
+    /// The build's views. The first is the preview the app shows; every
+    /// view goes back to the model that asked for the build.
+    fn preview(valid: &Self::Valid, model: &PrintableModel) -> Result<ViewSet, KernelError>;
+}
+
+/// One rendered view of a build.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum View {
+    /// A sign's finished face, as a person reads it.
+    Face,
+    /// From the front right, above the bed.
+    Isometric,
+    /// From the front of the bed, looking along +y.
+    Front,
+    /// From above, looking down at the bed.
+    Top,
+}
+
+impl View {
+    pub const ALL: [View; 4] = [View::Face, View::Isometric, View::Front, View::Top];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            View::Face => "face",
+            View::Isometric => "isometric",
+            View::Front => "front",
+            View::Top => "top",
+        }
+    }
+
+    /// The file a build keeps this view in, inside its directory.
+    pub fn file_name(self) -> String {
+        format!("view-{}.png", self.as_str())
+    }
+}
+
+/// A build's PNG views: at least one, each view at most once, the preview
+/// first.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ViewSet(Vec<(View, Vec<u8>)>);
+
+impl ViewSet {
+    pub fn new(views: Vec<(View, Vec<u8>)>) -> Result<Self, KernelError> {
+        let repeated = views.iter().enumerate().any(|(i, (view, _))| views[..i].iter().any(|(seen, _)| seen == view));
+        if views.is_empty() || repeated {
+            return Err(KernelError::Failed("a view set holds each view once, and at least one".into()));
+        }
+        Ok(Self(views))
+    }
+
+    /// The view the app shows as the build's preview.
+    pub fn preview(&self) -> &[u8] {
+        &self.0[0].1
+    }
+
+    pub fn views(&self) -> &[(View, Vec<u8>)] {
+        &self.0
+    }
 }
 
 /// What a kernel may use besides the spec.
@@ -233,12 +300,12 @@ impl ParsedSpec {
     }
 }
 
-/// A model that passed its plan's geometry checks, with its preview, ready to
+/// A model that passed its plan's geometry checks, with its views, ready to
 /// package. The checked model carries the build's extras, and `plan` is the
 /// bound plan ([`ObjectKind::bind_plan`]) that certified it and finishes it.
 pub struct PreparedObject {
     pub checked: CheckedModel,
-    pub preview: Vec<u8>,
+    pub views: ViewSet,
     pub plan: CheckPlan,
 }
 
@@ -247,6 +314,12 @@ pub struct PreparedObject {
 pub trait KindDriver: Send + Sync {
     fn id(&self) -> KindId;
     fn summary(&self) -> &'static str;
+    /// See [`ObjectKind::GUIDE`].
+    fn guide(&self) -> &'static str;
+    /// See [`ObjectKind::PROMPT_GUIDE`].
+    fn prompt_guide(&self) -> &'static str;
+    /// See [`ObjectKind::VIEWS`].
+    fn views(&self) -> &'static [View];
     /// See [`ObjectKind::available`].
     fn available(&self, ctx: &KernelContext) -> bool;
     fn naming(&self) -> ObjectNaming;
@@ -256,7 +329,8 @@ pub trait KindDriver: Send + Sync {
     fn spec_schema(&self) -> Value;
     fn parse(&self, spec: Value, printer: &PrinterProfile) -> Result<ParsedSpec, SpecError>;
     /// Builds and measures the model, reports [`BuildStep::GeometryBuilt`],
-    /// renders the preview, and certifies the model against the parsed plan.
+    /// renders the views, and certifies the model against the parsed plan. A
+    /// failed blocking geometry check stops it at [`Stage::Geometry`].
     fn prepare(&self, parsed: &ParsedSpec, ctx: &KernelContext, control: &BuildControl<'_>)
         -> Result<PreparedObject, BuildError>;
 }
@@ -275,6 +349,18 @@ impl<K: ObjectKind> KindDriver for Kind<K> {
 
     fn summary(&self) -> &'static str {
         K::SUMMARY
+    }
+
+    fn guide(&self) -> &'static str {
+        K::GUIDE
+    }
+
+    fn prompt_guide(&self) -> &'static str {
+        K::PROMPT_GUIDE
+    }
+
+    fn views(&self) -> &'static [View] {
+        K::VIEWS
     }
 
     fn available(&self, ctx: &KernelContext) -> bool {
@@ -326,9 +412,15 @@ impl<K: ObjectKind> KindDriver for Kind<K> {
         if control.is_cancelled() {
             return Err(BuildError::Cancelled);
         }
-        let preview = K::preview(valid, &model)?;
-        let checked = plan.certify(model, extra, evidence).map_err(|e| BuildError::Failed(e.to_string()))?;
-        Ok(PreparedObject { checked, preview, plan })
+        let views = K::preview(valid, &model)?;
+        if !views.views().iter().map(|(view, _)| *view).eq(K::VIEWS.iter().copied()) {
+            return Err(BuildError::Failed(format!("{} rendered views other than its declared {:?}", K::ID, K::VIEWS)));
+        }
+        let checked = plan.certify(model, extra, evidence).map_err(|e| match e {
+            failed @ ChecksFailed::Failed(_) => BuildError::Stage { stage: Stage::Geometry, error: failed.to_string() },
+            mismatch => BuildError::Failed(mismatch.to_string()),
+        })?;
+        Ok(PreparedObject { checked, views, plan })
     }
 }
 
@@ -363,6 +455,29 @@ pub fn available(ctx: &KernelContext) -> Vec<&'static dyn KindDriver> {
     KINDS.iter().copied().filter(|kind| kind.available(ctx)).collect()
 }
 
+/// The catalog a model reads: one line per kind in `kinds`, and under a
+/// kind's line its [`KindDriver::prompt_guide`], indented. A kind with no
+/// prompt guide is marked `[describe]`: a model calls `describe_kind` for it
+/// before it builds one.
+pub fn catalog(kinds: &[&'static dyn KindDriver]) -> String {
+    let mut out = String::new();
+    for kind in kinds {
+        let guide = kind.prompt_guide().trim();
+        if guide.is_empty() {
+            out.push_str(&format!("- {} [describe]: {}\n", kind.id(), kind.summary()));
+            continue;
+        }
+        out.push_str(&format!("- {}: {}\n", kind.id(), kind.summary()));
+        for line in guide.lines() {
+            match line.trim_end() {
+                "" => out.push('\n'),
+                line => out.push_str(&format!("  {line}\n")),
+            }
+        }
+    }
+    out
+}
+
 /// JSON Schema for `T` with every subschema inlined; providers differ in `$ref` support.
 pub fn inlined_schema<T: JsonSchema>() -> Value {
     let generator = schemars::generate::SchemaSettings::draft2020_12()
@@ -379,9 +494,14 @@ pub fn inlined_schema<T: JsonSchema>() -> Value {
 /// SHA-256 (lowercase hex) of `value`'s canonical JSON: object keys sorted,
 /// no whitespace. Input field order does not matter.
 fn canonical_sha256(value: &Value) -> Sha256Hex {
+    Sha256Hex::of_bytes(canonical_json(value).as_bytes())
+}
+
+/// `value` as canonical JSON: object keys sorted, no whitespace, one line.
+pub fn canonical_json(value: &Value) -> String {
     let mut canonical = String::new();
     write_canonical(value, &mut canonical);
-    Sha256Hex::of_bytes(canonical.as_bytes())
+    canonical
 }
 
 fn write_canonical(value: &Value, out: &mut String) {

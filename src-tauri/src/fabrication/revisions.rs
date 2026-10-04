@@ -308,6 +308,10 @@ pub struct BuildFiles {
     pub gcode_sha256: Sha256Hex,
     pub slicer: SlicerIdentity,
     pub effective_settings: serde_json::Value,
+    /// The model's extent along x, y, and z in millimeters. Builds recorded
+    /// before it was kept have none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size_mm: Option<[f64; 3]>,
 }
 
 /// What a finished build recorded: its files and its checks in plan order.
@@ -526,6 +530,30 @@ fn now() -> String {
 /// with that key, otherwise a new build. A verified build is re-hashed before
 /// it is reused; one whose package changed is invalidated and not reused.
 pub fn claim(conn: &mut Connection, request: &NewRevision) -> Result<Claim> {
+    claim_as(conn, request, Repeat::ReturnsHead)
+}
+
+/// Records the next revision of `request`'s design, always a new one with
+/// approval pending, as `revise` makes. It reuses the live build with the
+/// same key like [`claim`] does, never an earlier revision or its approval.
+/// The request must name its design.
+pub fn claim_next(conn: &mut Connection, request: &NewRevision) -> Result<Claim> {
+    if request.lineage_id.is_none() {
+        return Err(RevisionError::NotFound("the design to revise".into()));
+    }
+    claim_as(conn, request, Repeat::NewRevision)
+}
+
+/// What a request that repeats an existing revision's build gets.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Repeat {
+    /// That revision, unchanged.
+    ReturnsHead,
+    /// A new revision on its build.
+    NewRevision,
+}
+
+fn claim_as(conn: &mut Connection, request: &NewRevision, repeat: Repeat) -> Result<Claim> {
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let head = match &request.lineage_id {
         Some(lineage) => {
@@ -542,9 +570,10 @@ pub fn claim(conn: &mut Connection, request: &NewRevision) -> Result<Claim> {
         None => None,
     };
 
-    let repeated = match &head {
-        Some(head) => Some(head.clone()).filter(|head| head.build_key == request.build_key && head.is_live()),
-        None => newest_live_revision(&tx, &request.build_key)?,
+    let repeated = match (&head, repeat) {
+        (_, Repeat::NewRevision) => None,
+        (Some(head), Repeat::ReturnsHead) => Some(head.clone()).filter(|head| head.build_key == request.build_key && head.is_live()),
+        (None, Repeat::ReturnsHead) => newest_live_revision(&tx, &request.build_key)?,
     };
     if let Some(revision) = repeated {
         let reusable = match &revision.build {

@@ -131,14 +131,21 @@ function stepState(index: number, completed: number, state: CallState): StepStat
   return index === completed ? 'stopped' : 'skipped'
 }
 
-/** build: numbered steps while running, one line plus the result once finished. */
+/** build and revise: numbered steps while running, one line plus the result once finished. */
 export const BuildTool: ToolCallMessagePartComponent = (props) => {
   const state = callState(props)
   const steps = stepsOf(props.artifact)
   const total = BUILD_STEPS.length
+  const result = state === 'done' ? (props.result as BuildResult) : null
+  // A call that finished can still return a revision whose build failed.
+  const buildFailed = result !== null && (result.build === 'failed' || result.build === 'invalid')
   const summary =
     state === 'running'
       ? `${steps.length} of ${total} steps`
+      : buildFailed
+        ? result.stage
+          ? `Build failed at ${result.stage}`
+          : 'Build failed'
       : state === 'done'
         ? `${total} of ${total} steps`
         : state === 'cancelled'
@@ -149,13 +156,13 @@ export const BuildTool: ToolCallMessagePartComponent = (props) => {
             ? 'Interrupted, the app closed while it ran'
             : 'Failed'
   const showSteps = state === 'running' || (state === 'cancelled' && steps.length > 0)
-  const result = state === 'done' ? (props.result as BuildResult) : null
+  const tone = buildFailed || state === 'failed' ? styles.bad : state === 'done' ? styles.ok : styles.muted
 
   return (
     <div className={styles.tool} data-testid="tool-build" data-state={state}>
       <div className={styles.toolHead}>
-        <span className={styles.mono}>build</span>
-        <span className={state === 'done' ? styles.ok : state === 'failed' ? styles.bad : styles.muted}>{summary}</span>
+        <span className={styles.mono}>{props.toolName}</span>
+        <span className={tone}>{summary}</span>
       </div>
       {showSteps && (
         <ol className={styles.steps} data-testid="tool-steps">

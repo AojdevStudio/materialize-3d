@@ -2,17 +2,24 @@
 //! conversation, the text the chat UI renders, and a journal of tool calls.
 //!
 //! Each user message row owns its turn's model transcript (`rig_json`): the
-//! user message alone while the turn runs, the full exchange once it finishes,
-//! or the message plus a note when it was cancelled or failed. Assistant rows
+//! user message alone while the turn runs, the exchange once it finishes, or
+//! the message plus a note when it was cancelled or failed. Assistant rows
 //! are display text only, so nothing the model half-said is ever replayed to it.
+//!
+//! History replays text only: what the person said and what the model said,
+//! never tool calls, tool results, or images. A one-line focus record
+//! ([`focus_record`]) carries the last revision forward instead.
 
 use chrono::SecondsFormat;
+use rig::completion::message::{AssistantContent, Text, ToolResultContent, UserContent};
 use rig::completion::Message;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
 use uuid::Uuid;
 
 use super::protocol::{HistoryEntry, ToolCallStatus};
+use crate::fabrication::kind::canonical_json;
+use crate::fabrication::revisions::{self, RevisionError, RevisionId};
 use crate::state::AppState;
 
 pub const MIGRATION_005: &str = "
@@ -59,6 +66,8 @@ pub enum StoreError {
     Settings(String),
     #[error("conversation {0} does not exist")]
     UnknownConversation(String),
+    #[error("reading a revision: {0}")]
+    Revision(#[from] RevisionError),
 }
 
 pub type Result<T> = std::result::Result<T, StoreError>;
@@ -146,7 +155,8 @@ fn require_conversation(conn: &Connection, id: &str) -> Result<()> {
     found.map(|_| ()).ok_or_else(|| StoreError::UnknownConversation(id.to_owned()))
 }
 
-/// Everything the model has been told and has said, in order.
+/// What the person and the model said in earlier turns, in order, as text
+/// only ([`text_only`]).
 pub fn model_history(conn: &Connection, conversation_id: &str) -> Result<Vec<Message>> {
     require_conversation(conn, conversation_id)?;
     let mut stmt = conn.prepare(
@@ -158,7 +168,87 @@ pub fn model_history(conn: &Connection, conversation_id: &str) -> Result<Vec<Mes
     for transcript in transcripts {
         history.extend(serde_json::from_str::<Vec<Message>>(&transcript?)?);
     }
-    Ok(history)
+    Ok(text_only(history))
+}
+
+/// `messages` with every tool call, tool result, image, and reasoning block
+/// dropped. A message left with no text is dropped too, and what the model
+/// said around its tool calls in one turn joins into one reply.
+pub fn text_only(messages: Vec<Message>) -> Vec<Message> {
+    let texts = |parts: Vec<Option<String>>| parts.into_iter().flatten().collect::<Vec<_>>().join("\n\n");
+    let mut said: Vec<(bool, String)> = Vec::new();
+    for message in messages {
+        let (user, text) = match message {
+            Message::User { content } => (
+                true,
+                texts(content.into_iter().map(|c| if let UserContent::Text(Text { text, .. }) = c { Some(text) } else { None }).collect()),
+            ),
+            Message::Assistant { content, .. } => (
+                false,
+                texts(content.into_iter().map(|c| if let AssistantContent::Text(Text { text, .. }) = c { Some(text) } else { None }).collect()),
+            ),
+            Message::System { .. } => continue,
+        };
+        let text = text.trim();
+        match said.last_mut() {
+            _ if text.is_empty() => {}
+            Some((false, last)) if !user => {
+                last.push_str("\n\n");
+                last.push_str(text);
+            }
+            _ => said.push((user, text.to_owned())),
+        }
+    }
+    said.into_iter().map(|(user, text)| if user { Message::user(text) } else { Message::assistant(text) }).collect()
+}
+
+/// `messages` with every image dropped, tool results' included, so a stored
+/// transcript never holds a build's views. Tool calls and their JSON stay.
+pub fn without_images(messages: Vec<Message>) -> Vec<Message> {
+    messages
+        .into_iter()
+        .map(|message| match message {
+            Message::User { content } => Message::User {
+                content: content
+                    .into_iter()
+                    .filter(|c| !matches!(c, UserContent::Image(_)))
+                    .map(|c| match c {
+                        UserContent::ToolResult(mut result) => {
+                            result.content.retain(|part| !matches!(part, ToolResultContent::Image(_)));
+                            UserContent::ToolResult(result)
+                        }
+                        other => other,
+                    })
+                    .collect(),
+            },
+            other => other,
+        })
+        .collect()
+}
+
+/// The one line that carries the conversation's last design into a new turn:
+/// the newest revision a `build` or `revise` call returned, its kind, and its
+/// spec as canonical JSON. `None` before the first build.
+pub fn focus_record(conn: &Connection, conversation_id: &str) -> Result<Option<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT output_json FROM agent_tool_calls
+         WHERE conversation_id = ?1 AND name IN ('build', 'revise') AND status = 'completed' AND output_json IS NOT NULL
+         ORDER BY started_at DESC, rowid DESC",
+    )?;
+    let outputs = stmt.query_map(params![conversation_id], |row| row.get::<_, String>(0))?;
+    for output in outputs {
+        let output: Value = serde_json::from_str(&output?)?;
+        let Some(id) = output.get("revision_id").and_then(Value::as_str) else { continue };
+        let revision = revisions::get(conn, &RevisionId::parse(id)?)?;
+        return Ok(Some(format!(
+            "[Focus: the last revision is {} (kind {}, revision {}), spec {}]",
+            revision.id,
+            revision.kind,
+            revision.number,
+            canonical_json(&revision.spec)
+        )));
+    }
+    Ok(None)
 }
 
 /// Records the person's message as the turn starts. Returns the row id that

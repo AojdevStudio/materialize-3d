@@ -285,9 +285,15 @@ fn without_a_runtime_a_part_is_unavailable_and_never_runs() {
 }
 
 #[test]
-fn the_preview_draws_the_model() {
-    let png = preview::render(&clip_like()).expect("png");
-    assert_eq!(&png[1..4], b"PNG");
+fn the_views_draw_the_model_from_three_sides() {
+    let views = Part::preview(&valid(clip_spec()), &clip_like()).expect("views");
+    let names: Vec<View> = views.views().iter().map(|(view, _)| *view).collect();
+    assert_eq!(names, [View::Isometric, View::Front, View::Top]);
+    for (view, png) in views.views() {
+        assert_eq!(&png[1..4], b"PNG", "{view:?}");
+    }
+    assert_eq!(views.preview(), views.views()[0].1, "the isometric view is the preview");
+    assert_ne!(views.views()[1].1, views.views()[2].1, "front and top differ");
 }
 
 /// A part with a print warning verifies; approving it takes exactly that
@@ -337,6 +343,7 @@ fn approval_refuses_an_acknowledgement_that_differs_from_the_warnings() {
         gcode_sha256: Sha256Hex::of_bytes(b"gcode"),
         slicer: SlicerIdentity { name: "Bambu Studio".into(), version: "02.08.02.61".into(), profile_version: "02.08.00.05".into() },
         effective_settings: Value::Null,
+        size_mm: None,
     };
     revisions::finish_verified(&conn, &revision.build_id, files, &passed).expect("verified");
 
