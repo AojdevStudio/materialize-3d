@@ -25,6 +25,10 @@ pub struct SliceReport {
     pub return_code: i64,
     pub error_string: String,
     pub plate_warnings: Vec<PlateWarning>,
+    /// Every plate warning Bambu logged, in log order. `result.json` keeps only
+    /// each plate's last one; [`logged_plate_warnings`] recovers them all.
+    #[serde(default)]
+    pub logged_warnings: Vec<PlateWarning>,
     /// `None` when Bambu did not export effective settings.
     pub effective: Option<EffectiveSettings>,
     /// `plate_N.gcode` files in plate order.
@@ -87,7 +91,7 @@ struct SlicedPlate {
 /// Slices a project 3MF with the resolved presets using the proven command:
 ///
 /// `<bambu> <input> --load-settings "<process>;<machine>" --load-filaments "<f1>;...;<fN>"
-///  --check-preset --arrange 0 --slice 0 --export-settings <out>/effective-settings.json
+///  --debug 2 --check-preset --arrange 0 --slice 0 --export-settings <out>/effective-settings.json
 ///  --outputdir <out>`
 ///
 /// No orient, no arrange, no filament or start-G-code overrides: the project's placement
@@ -123,6 +127,10 @@ pub fn slice_project(
         .arg("--load-filaments")
         .arg(load_filaments)
         .args([
+            // Warning-level logging puts every plate warning in the log; it
+            // changes nothing Bambu writes besides its log.
+            "--debug",
+            "2",
             "--check-preset",
             "--arrange",
             "0",
@@ -208,6 +216,7 @@ pub fn slice_project(
         exit_code,
         return_code: result.return_code,
         error_string: result.error_string,
+        logged_warnings: logged_plate_warnings(&String::from_utf8_lossy(&fs::read(&stdout_log).map_err(io_err(&stdout_log))?)),
         plate_warnings: result
             .sliced_plates
             .into_iter()
@@ -224,6 +233,58 @@ pub fn slice_project(
         stdout_log,
         stderr_log,
     })
+}
+
+/// Every plate warning in a Bambu Studio 02.08.02.61 log written at warning
+/// level, in log order. Bambu logs each one as it collects it
+/// (`BambuStudio.cpp:7123`, `:7126`), in one of two forms:
+///
+/// ```text
+/// [<time>] [<thread>] [warning] plate <n>: found NON_CRITICAL slicing warnings: <text>
+/// [<time>] [<thread>] [warning] plate <n>: found slicing warnings: <text>, no_check=<n>
+/// ```
+///
+/// A record runs until the next line that opens with a `[<time>]` header, so a
+/// warning that spans lines is read whole; the newline Bambu ends each one with
+/// is dropped.
+pub fn logged_plate_warnings(log: &str) -> Vec<PlateWarning> {
+    let mut records: Vec<String> = Vec::new();
+    for line in log.lines() {
+        match record_body(line) {
+            Some(body) => records.push(body.to_owned()),
+            None => {
+                if let Some(record) = records.last_mut() {
+                    record.push('\n');
+                    record.push_str(line);
+                }
+            }
+        }
+    }
+    records.iter().filter_map(|record| plate_warning(record.trim_end_matches('\n'))).collect()
+}
+
+/// The text after a log header `[<time>] [<thread>] [<level>]`, or `None` when
+/// `line` continues the previous record.
+fn record_body(line: &str) -> Option<&str> {
+    let rest = line.strip_prefix('[')?;
+    let (time, rest) = rest.split_once("] [")?;
+    let (thread, rest) = rest.split_once("] [")?;
+    let (level, body) = rest.split_once(']')?;
+    let header = time.len() >= 19
+        && time.as_bytes()[..4].iter().all(u8::is_ascii_digit)
+        && thread.starts_with("0x")
+        && level.bytes().all(|b| b.is_ascii_lowercase());
+    header.then(|| body.trim_start_matches(' '))
+}
+
+fn plate_warning(body: &str) -> Option<PlateWarning> {
+    let (plate, found) = body.strip_prefix("plate ")?.split_once(": found ")?;
+    let plate_id = plate.parse().ok()?;
+    let message = match found.strip_prefix("NON_CRITICAL slicing warnings: ") {
+        Some(text) => text,
+        None => found.strip_prefix("slicing warnings: ")?.rsplit_once(", no_check=")?.0,
+    };
+    Some(PlateWarning { plate_id, message: message.to_owned() })
 }
 
 /// Bambu splits path lists on ';' on every platform.
@@ -436,5 +497,38 @@ echo '{"return_code": -50, "error_string": "Rejected", "sliced_plates": [{"id": 
         );
         assert!(report.effective.is_none());
         assert_eq!(report.input_sha256_before, report.input_sha256_after);
+    }
+
+    const TWO_WARNINGS: &str = include_str!("../../../tests/fixtures/bambu/logs/two-support-warnings-on-one-plate.stdout.txt");
+
+    /// A real Bambu Studio 02.08.02.61 log of one plate holding two objects that
+    /// each need supports. `result.json` from the same run kept only the second.
+    #[test]
+    fn every_plate_warning_is_recovered_from_a_real_log_that_result_json_cut_to_one() {
+        let support = |object: &str| PlateWarning {
+            plate_id: 1,
+            message: format!("It seems object {object} has floating cantilever. Please re-orient the object or enable support generation."),
+        };
+        assert_eq!(logged_plate_warnings(TWO_WARNINGS), [support("part-other"), support("part-tee")]);
+        let result: Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/bambu/logs/two-support-warnings-on-one-plate.result.json"
+        ))
+        .expect("result.json");
+        assert_eq!(result["sliced_plates"][0]["warning_message"], support("part-tee").message, "result.json kept the last one");
+    }
+
+    #[test]
+    fn a_critical_warning_and_a_warning_over_several_lines_are_read_whole() {
+        let log = "[2026-10-03 21:31:50.960182] [0x00007f6852890f80] [error]   unrelated, plate 1: found nothing\n\
+                   [2026-10-03 21:31:50.965992] [0x00007f6852890f80] [warning] plate 2: found slicing warnings: Object can't be printed for empty layer.\nObject: part-a, no_check=0\n\n\
+                   [2026-10-03 21:31:50.966011] [0x00007f6852890f80] [warning] plate 1: found NON_CRITICAL slicing warnings: one, no_check=1\n\n\
+                   [2026-10-03 21:31:50.966020] [0x00007f6852890f80] [info] done\n";
+        assert_eq!(
+            logged_plate_warnings(log),
+            [
+                PlateWarning { plate_id: 2, message: "Object can't be printed for empty layer.\nObject: part-a".into() },
+                PlateWarning { plate_id: 1, message: "one, no_check=1".into() },
+            ]
+        );
     }
 }

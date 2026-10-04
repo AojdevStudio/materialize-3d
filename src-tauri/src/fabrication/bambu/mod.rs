@@ -34,7 +34,7 @@ pub use studio::{
     VALIDATED_VERSIONS,
 };
 pub use threemf::{part_footprints, read_preset_selection, PartFootprint, PresetSelection};
-pub use verify::{verify, Check, CheckId};
+pub use verify::{is_support_warning, verify, verify_part, Check, CheckId};
 
 pub type Result<T, E = BambuError> = std::result::Result<T, E>;
 

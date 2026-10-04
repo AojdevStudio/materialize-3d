@@ -1,0 +1,19 @@
+[2026-10-03 21:31:50.926016] [0x00007f6852890f80] [trace]   Initializing StaticPrintConfigs
+[2026-10-03 21:31:50.934487] [0x00007f6852890f80] [warning] cli mode, Current BambuStudio Version 02.08.02.61
+[2026-10-03 21:31:50.939714] [0x00007f6852890f80] [warning] run:2873, can not find system preset file: <bambu>/resources/profiles/BBL/machine_full/Bambu Lab P2S 0.4 nozzle.json 
+[2026-10-03 21:31:50.939726] [0x00007f6852890f80] [warning] run:2895, can not find system preset file: <bambu>/resources/profiles/BBL/process_full/0.20mm Standard @BBL P2S.json 
+[2026-10-03 21:31:50.939969] [0x00007f6852890f80] [warning] no filament colors found in projects
+[2026-10-03 21:31:50.940547] [0x00007f6852890f80] [warning] 4191: disable_wipe_tower_after_mapping: disable prime tower for only one filament!
+[2026-10-03 21:31:50.940699] [0x00007f6852890f80] [warning] load_nozzle_infos_with_compatibility: building nozzle list from filament map and volume types
+[2026-10-03 21:31:50.941281] [0x00007f6852890f80] [error]   update_values_to_printer_extruders_for_multiple_filaments, Line 8936: could not found extruder_type Direct Drive, nozzle_volume_type High Flow, filament_index 1, extruder index 1
+[2026-10-03 21:31:50.941291] [0x00007f6852890f80] [error]   update_values_to_printer_extruders_for_multiple_filaments, Line 8936: could not found extruder_type Direct Drive, nozzle_volume_type High Flow, filament_index 2, extruder index 1
+[2026-10-03 21:31:50.941297] [0x00007f6852890f80] [error]   update_values_to_printer_extruders_for_multiple_filaments, Line 8936: could not found extruder_type Direct Drive, nozzle_volume_type High Flow, filament_index 3, extruder index 1
+[2026-10-03 21:31:50.957839] [0x00007f683bfff6c0] [warning] tree support default to organic support
+[2026-10-03 21:31:50.957875] [0x00007f6852890f80] [warning] tree support default to organic support
+[2026-10-03 21:31:50.960159] [0x00007f6852890f80] [error]   update_values_to_printer_extruders_for_multiple_filaments, Line 8936: could not found extruder_type Direct Drive, nozzle_volume_type High Flow, filament_index 1, extruder index 1
+[2026-10-03 21:31:50.960174] [0x00007f6852890f80] [error]   update_values_to_printer_extruders_for_multiple_filaments, Line 8936: could not found extruder_type Direct Drive, nozzle_volume_type High Flow, filament_index 2, extruder index 1
+[2026-10-03 21:31:50.960182] [0x00007f6852890f80] [error]   update_values_to_printer_extruders_for_multiple_filaments, Line 8936: could not found extruder_type Direct Drive, nozzle_volume_type High Flow, filament_index 3, extruder index 1
+[2026-10-03 21:31:50.965992] [0x00007f6852890f80] [warning] plate 1: found NON_CRITICAL slicing warnings: It seems object part-other has floating cantilever. Please re-orient the object or enable support generation.
+
+[2026-10-03 21:31:50.966011] [0x00007f6852890f80] [warning] plate 1: found NON_CRITICAL slicing warnings: It seems object part-tee has floating cantilever. Please re-orient the object or enable support generation.
+
