@@ -100,6 +100,78 @@ if cache fetch amd64 "$work/cross"; then fail "fetch accepted pins whose arch is
   || fail "pins for another architecture wrote something or started a build"
 echo "$good_pins" > "$repo/cad-runtime/pins-amd64.json"
 
+# A key that holds a newline, a NUL, or another control character is refused as a whole, even when every line of it
+# is a pinned name, and even beside the valid pins.
+odd_key() {
+  local label="$1" key="$2" before builds_before
+  rm -rf "$M3D_CAD_RUNTIME_CACHE" "$work/dest-$label"
+  jq --arg k "$key" '.files[$k] = .files.vmlinux' <<< "$good_pins" > "$repo/cad-runtime/pins-amd64.json"
+  before="$(cd "$work" && find . -path ./builds -prune -o -print | sort)" builds_before="$(builds)"
+  if cache store amd64 "$work/first"; then fail "store accepted a pinned key with $label"; fi
+  if cache fetch amd64 "$work/dest-$label"; then fail "fetch accepted a pinned key with $label"; fi
+  rm -rf "$work/dest-$label"
+  [[ "$before" == "$(cd "$work" && find . -path ./builds -prune -o -print | sort)" ]] \
+    || fail "a pinned key with $label wrote something"
+  [[ "$(builds)" == "$builds_before" ]] || fail "a pinned key with $label started a build"
+}
+odd_key newline $'vmlinux\nrootfs.img'
+odd_key tab $'vmlinux\trootfs.img'
+# bash strings cannot hold a NUL, so this pins file is written as JSON text.
+rm -rf "$M3D_CAD_RUNTIME_CACHE" "$work/dest-nul"
+jq '.files["vm\u0000linux"] = .files.vmlinux' <<< "$good_pins" > "$repo/cad-runtime/pins-amd64.json"
+builds_before="$(builds)"
+if cache store amd64 "$work/first"; then fail "store accepted a pinned key with a NUL"; fi
+if cache fetch amd64 "$work/dest-nul"; then fail "fetch accepted a pinned key with a NUL"; fi
+[[ ! -e "$M3D_CAD_RUNTIME_CACHE" && ! -e "$work/dest-nul" && "$(builds)" == "$builds_before" ]] \
+  || fail "a pinned key with a NUL wrote something or started a build"
+echo "$good_pins" > "$repo/cad-runtime/pins-amd64.json"
+
+# A store that fails or is killed between moving the old slot aside and moving the new copy in. The next fetch
+# restores the old slot when it still matches the pins, or else rebuilds, and leaves no .old-* or .stage-* behind.
+# A stub mv on PATH breaks only the move of the staged copy: M3D_TEST_MV=fail exits 73, =kill kills the store.
+real_mv="$(command -v mv)"
+mkdir -p "$work/fakebin"
+cat > "$work/fakebin/mv" <<STUB
+#!/usr/bin/env bash
+if [[ "\$1" == */.stage-* ]]; then
+  [[ "\$M3D_TEST_MV" == kill ]] && kill -9 "\$PPID"
+  exit 73
+fi
+exec "$real_mv" "\$@"
+STUB
+chmod +x "$work/fakebin/mv"
+leftovers() { find "$M3D_CAD_RUNTIME_CACHE" -maxdepth 1 \( -name '.old-*' -o -name '.stage-*' \) | wc -l; }
+# interrupted <how> <cache before: full|empty> <fetch outcome: restored|rebuilt>
+interrupted() {
+  local how="$1" before="$2" outcome="$3" builds_before
+  rm -rf "$M3D_CAD_RUNTIME_CACHE" "$work/after-$how-$before"
+  if [[ "$before" == full ]]; then cache store amd64 "$work/first" > /dev/null || fail "setup store failed"; fi
+  if (PATH="$work/fakebin:$PATH" M3D_TEST_MV="$how" cache store amd64 "$work/first") > /dev/null 2>&1; then
+    fail "the store with a broken move ($how) succeeded"
+  fi
+  [[ ! -e "$(echo "$M3D_CAD_RUNTIME_CACHE"/amd64-*)" && "$(leftovers)" -gt 0 ]] \
+    || fail "the broken move ($how, $before) did not leave the half-swapped state this case tests"
+  builds_before="$(builds)"
+  cache fetch amd64 "$work/after-$how-$before" > /dev/null || fail "the fetch after a $how store ($before) failed"
+  pinned "$work/after-$how-$before" || fail "the fetch after a $how store ($before) handed out a wrong runtime"
+  if [[ "$outcome" == restored ]]; then
+    [[ "$(builds)" == "$builds_before" ]] || fail "the fetch after a $how store rebuilt instead of restoring"
+  else
+    [[ "$(builds)" == $((builds_before + 1)) ]] || fail "the fetch after a $how store on an empty cache did not rebuild"
+  fi
+  [[ "$(leftovers)" == 0 ]] || fail "the fetch after a $how store ($before) left .old-* or .stage-* directories"
+  [[ -f "$(echo "$M3D_CAD_RUNTIME_CACHE"/amd64-*)/vmlinux" ]] || fail "the fetch after a $how store left no slot"
+}
+interrupted fail full restored
+interrupted kill full restored
+interrupted kill empty rebuilt
+# A store after a killed store recovers the same way before it stages its own copy.
+rm -rf "$M3D_CAD_RUNTIME_CACHE"
+cache store amd64 "$work/first" > /dev/null
+if (PATH="$work/fakebin:$PATH" M3D_TEST_MV=kill cache store amd64 "$work/first") > /dev/null 2>&1; then fail "the killed store succeeded"; fi
+cache store amd64 "$work/first" > /dev/null || fail "a store after a killed store failed"
+[[ "$(leftovers)" == 0 ]] || fail "a store after a killed store left .old-* or .stage-* directories"
+
 # store and fetch at the same time: every fetch ends with the pinned runtime, from the cache or from a clean miss.
 # Larger files widen the window in which a store replaces the slot while a fetch copies out of it.
 head -c 8000000 /dev/urandom > "$work/vmlinux" && head -c 8000000 /dev/urandom > "$work/rootfs.img"

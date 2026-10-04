@@ -11,10 +11,13 @@
 # is a miss and is rebuilt, never used, and nothing that fails the check is stored. `fetch` also copies the committed
 # pins into <dir> as pins.json. The tests that boot the runtime check it against the pins compiled into the app (and
 # the helper) once more before any boot.
-# The pins must name the requested architecture and only plain file names (one path segment, no "..", no "/"); any
-# other pins are refused before anything is built, copied, or stored. A per-slot lock (flock) serializes the cache:
-# a fetch copies out under the shared lock, and a store swaps a fully checked copy into place under the exclusive
-# lock, so a fetch never sees a slot half replaced.
+# The pins must name the requested architecture and only plain file names (one path segment, no "..", no "/", no
+# control character); jq checks each whole key, and the names reach bash NUL-delimited. Any other pins are refused
+# before anything is built, copied, or stored. A per-slot lock (flock) serializes the cache: a fetch copies out under
+# the shared lock, and a store stages, checks, and swaps a copy into place under the exclusive lock, so a fetch never
+# sees a slot half replaced. Whoever takes the exclusive lock first recovers from a store that died mid-swap: it
+# restores a missing slot from that store's checked .old-* copy, then deletes every .stage-* and .old-* directory for
+# the slot, which only a store that no longer holds the lock can have left.
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 root="$(git -C "$here" rev-parse --show-toplevel)"
@@ -30,11 +33,15 @@ cache_root="${M3D_CAD_RUNTIME_CACHE:-$HOME/.cache/m3d-tool-cache/cad-runtime}"
 slot="$cache_root/$arch-$pins_sha"
 pinned_arch="$(jq -r '.arch' "$pins")"
 [[ "$pinned_arch" == "$arch" ]] || die "$pins pins the architecture '$pinned_arch', not $arch"
-names_text="$(jq -r '.files | keys[]' "$pins")"
-mapfile -t names <<< "$names_text"
-(( ${#names[@]} > 0 )) && [[ -n "${names[0]}" ]] || die "$pins names no files"
+# Each whole key, not each line of it: \A and \z anchor the string, where ^ and $ would anchor a line.
+jq -e '.files | type == "object" and length > 0
+  and (keys | all(test("\\A[A-Za-z0-9][A-Za-z0-9._-]*\\z") and (contains("..") | not)))' "$pins" > /dev/null \
+  || die "$pins names no files, or a name that is not a plain file name"
+names=()
+while IFS= read -r -d '' name; do names+=("$name"); done < <(jq -j '.files | keys[] | ., "\u0000"' "$pins")
+(( ${#names[@]} > 0 )) || die "$pins names no files"
 for name in "${names[@]}"; do
-  [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ && "$name" != *..* ]] || die "$pins names '$name', which is not a plain file name"
+  [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ && "$name" != *..* ]] || die "$pins names a name that is not a plain file name"
 done
 
 # matches <dir>: every pinned file is a regular file in <dir> with its pinned size and sha256.
@@ -58,23 +65,42 @@ lock() {
 }
 unlock() { exec {lock_fd}>&-; }
 
-# store_from <dir>: copies <dir>'s pinned files into a private staging directory beside the slot and checks them
-# there, then, under the exclusive lock, moves the old slot aside and the checked copy into its place.
+# recover: run under the exclusive lock. A store holds that lock from its first staging copy to its last cleanup, so
+# any .stage-* or .old-* directory for this slot belongs to a store that died. A missing slot comes back from a .old-*
+# copy that still matches the pins; then every such directory is deleted.
+recover() {
+  local leftover
+  if [[ ! -e "$slot" ]]; then
+    for leftover in "$cache_root/.old-$arch-$pins_sha".*/slot; do
+      if [[ -d "$leftover" ]] && matches "$leftover"; then
+        mv "$leftover" "$slot"
+        echo "cad-runtime cache: restored $arch under $pins_sha from an interrupted store" >&2
+        break
+      fi
+    done
+  fi
+  rm -rf "$cache_root/.stage-$arch-$pins_sha".* "$cache_root/.old-$arch-$pins_sha".*
+}
+
+# store_from <dir>: under the exclusive lock, copies <dir>'s pinned files into a staging directory beside the slot,
+# checks them there, moves the old slot aside, moves the checked copy into its place, and deletes the old slot.
 store_from() {
-  local stage name old
-  mkdir -p "$cache_root"
-  stage="$(mktemp -d "$cache_root/.stage-$arch.XXXXXX")"
+  local stage name old=""
+  lock exclusive
+  recover
+  stage="$(mktemp -d "$cache_root/.stage-$arch-$pins_sha.XXXXXX")"
   for name in "${names[@]}"; do cp "$1/$name" "$stage/$name"; done
   if ! matches "$stage"; then
     rm -rf "$stage"
     die "the copy of $1 in the cache does not match $pins"
   fi
-  old="$(mktemp -d "$cache_root/.old-$arch.XXXXXX")"
-  lock exclusive
-  if [[ -e "$slot" ]]; then mv "$slot" "$old/slot"; fi
+  if [[ -e "$slot" ]]; then
+    old="$(mktemp -d "$cache_root/.old-$arch-$pins_sha.XXXXXX")"
+    mv "$slot" "$old/slot"
+  fi
   mv "$stage" "$slot"
+  [[ -z "$old" ]] || rm -rf "$old"
   unlock
-  rm -rf "$old"
 }
 
 case "$action" in
@@ -93,6 +119,16 @@ case "$action" in
       hit=true
     fi
     unlock
+    if [[ "$hit" == false ]]; then
+      # A miss: recover from a store that died mid-swap, which may bring the slot back.
+      lock exclusive
+      recover
+      if matches "$slot"; then
+        for name in "${names[@]}"; do cp "$slot/$name" "$dir/$name"; done
+        hit=true
+      fi
+      unlock
+    fi
     if [[ "$hit" == true ]]; then
       matches "$dir" || die "the runtime copied from the cache into $dir does not match $pins"
       echo "cad-runtime cache: $arch hit under $pins_sha"
