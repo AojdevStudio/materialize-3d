@@ -20,7 +20,8 @@ mod mesh;
 pub(crate) mod tests;
 
 pub use mesh::{
-    MeshImportError, Units, MAX_ABS_MM, MAX_EXPANDED_BYTES, MAX_TRIANGLES, MAX_VERTICES, MAX_ZIP_ENTRIES,
+    MeshImportError, Units, MAX_ABS_MM, MAX_ATTRIBUTES, MAX_ATTRIBUTE_BYTES, MAX_EXPANDED_BYTES, MAX_TRIANGLES, MAX_VERTICES,
+    MAX_ZIP_ENTRIES,
 };
 
 use schemars::JsonSchema;

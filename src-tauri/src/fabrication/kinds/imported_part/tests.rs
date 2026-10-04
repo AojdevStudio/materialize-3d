@@ -2,7 +2,7 @@ use std::io::{Cursor, Write};
 
 use serde_json::json;
 
-use super::mesh::{read, read_3mf_expanding_to};
+use super::mesh::{read, read_3mf_expanding_to, MAX_ATTRIBUTES, MAX_ATTRIBUTE_BYTES};
 use super::*;
 use crate::fabrication::kind::{find, Kind, KindDriver};
 use crate::fabrication::printer::P2S_04;
@@ -19,13 +19,21 @@ fn cuboid(lo: [f64; 3], hi: [f64; 3]) -> Piece {
     (v, t)
 }
 
-/// The pipeline's slab on a post, which overhangs: a 40 mm slab 3 mm thick on
-/// a 10 mm post 10 mm tall, with its foot `lift` mm above z = 0.
+/// The pipeline's slab on a post as one closed shell, which overhangs: a
+/// 40 mm slab 3 mm thick on a 10 mm post 10 mm tall, with its foot `lift` mm
+/// above z = 0. The slab's underside is a ring around the post's top.
 pub(crate) fn slab_on_a_post(lift: f64) -> Piece {
-    let (mut v, mut t) = cuboid([15.0, 15.0, lift], [25.0, 25.0, lift + 10.0]);
-    let (sv, st) = cuboid([0.0, 0.0, lift + 10.0], [40.0, 40.0, lift + 13.0]);
-    t.extend(st.iter().map(|tri| tri.map(|i| i + 8)));
-    v.extend(sv);
+    let square = |lo: f64, hi: f64, z: f64| [[lo, lo, z], [hi, lo, z], [hi, hi, z], [lo, hi, z]];
+    let v: Vec<[f64; 3]> = [square(15.0, 25.0, lift), square(15.0, 25.0, lift + 10.0), square(0.0, 40.0, lift + 10.0), square(0.0, 40.0, lift + 13.0)]
+        .concat();
+    // 0-3 the post's foot, 4-7 its top, 8-11 the slab's underside edge, 12-15 the slab's top.
+    let t = vec![
+        [0, 2, 1], [0, 3, 2], // foot
+        [0, 1, 5], [0, 5, 4], [1, 2, 6], [1, 6, 5], [2, 3, 7], [2, 7, 6], [3, 0, 4], [3, 4, 7], // post sides
+        [8, 4, 5], [8, 5, 9], [9, 5, 6], [9, 6, 10], [10, 6, 7], [10, 7, 11], [11, 7, 4], [11, 4, 8], // underside ring
+        [12, 13, 14], [12, 14, 15], // top
+        [8, 9, 13], [8, 13, 12], [9, 10, 14], [9, 14, 13], [10, 11, 15], [10, 15, 14], [11, 8, 12], [11, 12, 15], // slab sides
+    ];
     (v, t)
 }
 
@@ -116,7 +124,7 @@ fn bounds(mesh: &crate::fabrication::model::Mesh) -> [[Um; 3]; 2] {
 fn every_format_reads_one_body_welded_and_set_on_the_bed() {
     let piece = slab_on_a_post(5.0);
     let from_3mf = read(&one_body_3mf(&piece), Units::Mm).expect("3mf");
-    assert_eq!((from_3mf.vertices().len(), from_3mf.triangles().len()), (16, 24));
+    assert_eq!((from_3mf.vertices().len(), from_3mf.triangles().len()), (16, 28));
     assert_eq!(bounds(&from_3mf), [[0, 0, 0], [40_000, 40_000, 13_000]], "lifted 5 mm, then set on the bed");
     assert_eq!(read(&binary_stl(&piece), Units::Mm).expect("binary stl"), from_3mf);
     assert_eq!(read(&ascii_stl(&piece), Units::Mm).expect("ascii stl"), from_3mf);
@@ -310,4 +318,81 @@ fn the_kind_is_found_but_never_offered_to_build_and_its_spec_is_validated() {
     ] {
         assert!(Kind::<ImportedPart>::NEW.parse(bad, &P2S_04).is_err(), "{why}");
     }
+}
+
+/// Every attribute is bounded, whether the reader uses it or not: its length,
+/// how many one element has, and no name twice. A DTD, which could declare
+/// entities, is refused.
+#[test]
+fn xml_attributes_are_bounded_and_a_dtd_is_refused() {
+    let piece = slab_on_a_post(0.0);
+    let with_vertex_attrs = |extra: &str| {
+        let object = mesh_object(1, &piece).replacen("<vertex ", &format!("<vertex {extra} "), 1);
+        three_mf(&model("millimeter", &object, "<item objectid=\"1\"/>"))
+    };
+    assert!(read(&with_vertex_attrs("color=\"red\""), Units::Mm).is_ok(), "a short unknown attribute is fine");
+    let long = format!("note=\"{}\"", "a".repeat(MAX_ATTRIBUTE_BYTES + 1));
+    let many: String = (0..=MAX_ATTRIBUTES).map(|i| format!("a{i}=\"1\" ")).collect();
+    let twice = "note=\"1\" note=\"2\"".to_owned();
+    for (why, attrs) in [("an unknown attribute over the cap", long), ("too many attributes", many), ("one name twice", twice)] {
+        let refused = read(&with_vertex_attrs(&attrs), Units::Mm);
+        assert!(matches!(refused, Err(MeshImportError::Malformed(_))), "{why}: {refused:?}");
+    }
+    let dtd = model("millimeter", &mesh_object(1, &piece), "<item objectid=\"1\"/>").replacen(
+        "<model",
+        "<!DOCTYPE model [<!ENTITY lol \"lollollol\"><!ENTITY lol2 \"&lol;&lol;&lol;\">]>\n<model",
+        1,
+    );
+    let refused = read(&three_mf(&dtd), Units::Mm);
+    assert!(matches!(refused, Err(MeshImportError::Malformed(_))), "a DTD with entities: {refused:?}");
+}
+
+/// A zip64 extra field on an entry is refused like a zip64 end record.
+#[test]
+fn a_zip64_entry_is_refused() {
+    let body = model("millimeter", &mesh_object(1, &slab_on_a_post(0.0)), "<item objectid=\"1\"/>");
+    let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    zip.start_file("3D/3dmodel.model", zip::write::SimpleFileOptions::default().large_file(true)).expect("entry");
+    zip.write_all(body.as_bytes()).expect("write");
+    let bytes = zip.finish().expect("finish").into_inner();
+    assert_eq!(read(&bytes, Units::Mm).map(drop), Err(MeshImportError::Zip64));
+}
+
+/// One body per file: an ASCII STL with two `solid` blocks, and a mesh of
+/// two separate closed solids in any format, are refused. A hollow body,
+/// whose cavity's shell faces inward, is still one.
+#[test]
+fn separate_solids_in_one_file_are_refused_and_a_cavity_is_not_a_solid() {
+    let a = cuboid([0.0, 0.0, 0.0], [10.0, 10.0, 10.0]);
+    let (mut v, mut t) = cuboid([20.0, 0.0, 0.0], [30.0, 10.0, 10.0]);
+    t = t.iter().map(|tri| tri.map(|i| i + 8)).collect();
+    t.extend(a.1.iter().copied());
+    v.splice(0..0, a.0.iter().copied());
+    let two = (v, t);
+
+    let mut ascii = String::from_utf8(ascii_stl(&a)).expect("text");
+    ascii.push_str(&String::from_utf8(ascii_stl(&cuboid([20.0, 0.0, 0.0], [30.0, 10.0, 10.0]))).expect("text"));
+    assert_eq!(read(ascii.as_bytes(), Units::Mm).map(drop), Err(MeshImportError::MultipleObjects(2)));
+    for (why, bytes) in [("a binary STL", binary_stl(&two)), ("a 3MF object", one_body_3mf(&two))] {
+        let refused = read(&bytes, Units::Mm).map(drop).expect_err(why);
+        assert!(refused.to_string().contains("2 separate solids"), "{why}: {refused}");
+    }
+
+    let (mut v, mut t) = cuboid([0.0, 0.0, 0.0], [30.0, 30.0, 30.0]);
+    let (cv, ct) = cuboid([10.0, 10.0, 10.0], [20.0, 20.0, 20.0]);
+    v.extend(cv);
+    t.extend(ct.iter().map(|[a, b, c]| [a + 8, c + 8, b + 8])); // the cavity faces inward
+    assert!(read(&binary_stl(&(v, t)), Units::Mm).is_ok(), "a hollow cube is one body");
+}
+
+/// A unit the 3MF specification does not name is called "an unknown unit";
+/// the file's own text is never repeated.
+#[test]
+fn a_unit_mismatch_never_repeats_the_files_unit_text() {
+    let object = mesh_object(1, &slab_on_a_post(0.0));
+    let crafted = read(&three_mf(&model("secrettokenunit", &object, "<item objectid=\"1\"/>")), Units::Mm).map(drop).expect_err("refused");
+    assert!(!crafted.to_string().contains("secrettoken"), "{crafted}");
+    assert!(crafted.to_string().contains("an unknown unit"), "{crafted}");
+    let known = read(&three_mf(&model("centimeter", &object, "<item objectid=\"1\"/>")), Units::Mm).map(drop).expect_err("refused");
+    assert_eq!(known.to_string(), "the 3MF says its unit is centimeter, but units is mm; give the unit the file uses");
 }

@@ -2,12 +2,17 @@
 //!
 //! A 3MF (what Fusion exports), a binary STL, or an ASCII STL. The bytes are
 //! untrusted data and every read of them is bounded: the input store caps the
-//! file ([`MAX_INPUT_BYTES`]); a 3MF's zip is refused for zip64, for more than
-//! [`MAX_ZIP_ENTRIES`] entries, for an entry name that could leave its folder,
-//! or for more than [`MAX_EXPANDED_BYTES`] declared or read once expanded; and
-//! the mesh is refused past [`MAX_VERTICES`], [`MAX_TRIANGLES`] (the layer
-//! checks' slicing cap), or a coordinate past [`MAX_ABS_MM`]. Nothing in the
-//! file is run, and no error repeats the file's own text.
+//! file ([`MAX_INPUT_BYTES`]); a 3MF's zip is refused for zip64 (in its end
+//! record or in any entry), for more than [`MAX_ZIP_ENTRIES`] entries, for an
+//! entry name that could leave its folder, or for more than
+//! [`MAX_EXPANDED_BYTES`] declared or read once expanded; its XML is refused
+//! for a DTD, for more than [`MAX_ATTRIBUTES`] attributes on an element, or
+//! for an attribute over [`MAX_ATTRIBUTE_BYTES`]; and the mesh is refused
+//! past [`MAX_VERTICES`], [`MAX_TRIANGLES`] (the layer checks' slicing cap),
+//! or a coordinate past [`MAX_ABS_MM`]. A file is one body: more than one
+//! 3MF object, ASCII STL `solid`, or separate solid in the welded mesh is
+//! refused. Nothing in the file is run, and no error repeats the file's own
+//! text.
 
 use std::collections::HashMap;
 use std::io::{BufReader, Cursor, Read};
@@ -40,6 +45,8 @@ pub const MAX_TRIANGLES: usize = slice::MAX_TRIANGLES;
 pub const MAX_ABS_MM: f64 = MeshLimits::PART.max_abs_mm;
 /// Most `<object>`, `<component>`, and `<item>` elements a 3MF may hold.
 const MAX_ELEMENTS: usize = 256;
+/// The units a 3MF's `unit` attribute may name.
+const THREE_MF_UNITS: [&str; 6] = ["micron", "millimeter", "centimeter", "inch", "foot", "meter"];
 /// The model part every 3MF this reads keeps its mesh in.
 const MODEL_ENTRY: &str = "3D/3dmodel.model";
 
@@ -102,9 +109,11 @@ pub enum MeshImportError {
     #[error("the 3MF's model is malformed: {0}")]
     Malformed(&'static str),
     #[error("the 3MF says its unit is {found}, but units is {given}; give the unit the file uses")]
-    UnitMismatch { found: String, given: &'static str },
+    UnitMismatch { found: &'static str, given: &'static str },
     #[error("the file holds {0} objects; import one body at a time")]
     MultipleObjects(usize),
+    #[error("the mesh holds {0} separate solids; import one body at a time")]
+    SeparateSolids(usize),
     #[error("the 3MF refers to a mesh in another file")]
     ExternalMesh,
     #[error("the mesh has more than {MAX_VERTICES} vertices")]
@@ -190,9 +199,45 @@ impl Welder {
         let Some(lowest) = self.vertices.iter().map(|v| v[2]).min() else {
             return Err(MeshImportError::NoTriangles);
         };
+        match solids(&self.vertices, &self.triangles) {
+            0 | 1 => {}
+            many => return Err(MeshImportError::SeparateSolids(many)),
+        }
         let vertices = self.vertices.into_iter().map(|[x, y, z]| [x, y, z - lowest]).collect();
         Ok(Mesh::new(vertices, self.triangles).expect("welding keeps every index in range"))
     }
+}
+
+/// How many separate solids `triangles` make: groups of triangles joined
+/// through shared welded vertices (a union-find over the vertices, linear in
+/// the bounded counts) whose signed volume is positive. An inner shell that
+/// bounds a cavity faces inward, so its volume is negative and a hollow body
+/// is still one solid. A group with no volume is left to the mesh checks.
+fn solids(vertices: &[[Um; 3]], triangles: &[[u32; 3]]) -> usize {
+    fn root(parent: &mut [u32], mut i: u32) -> u32 {
+        while parent[i as usize] != i {
+            parent[i as usize] = parent[parent[i as usize] as usize];
+            i = parent[i as usize];
+        }
+        i
+    }
+    let mut parent: Vec<u32> = (0..u32::try_from(vertices.len()).expect("bounded by MAX_VERTICES")).collect();
+    for t in triangles {
+        let a = root(&mut parent, t[0]);
+        for &v in &t[1..] {
+            let b = root(&mut parent, v);
+            if b != a {
+                parent[b as usize] = a;
+            }
+        }
+    }
+    let mut six_volume: HashMap<u32, i128> = HashMap::new();
+    for t in triangles {
+        let [a, b, c] = t.map(|i| vertices[i as usize].map(i128::from));
+        let cross = [b[1] * c[2] - b[2] * c[1], b[2] * c[0] - b[0] * c[2], b[0] * c[1] - b[1] * c[0]];
+        *six_volume.entry(root(&mut parent, t[0])).or_default() += a[0] * cross[0] + a[1] * cross[1] + a[2] * cross[2];
+    }
+    six_volume.values().filter(|volume| **volume > 0).count()
 }
 
 // ─── STL ──────────────────────────────────────────────────────────────────────
@@ -222,9 +267,14 @@ fn read_binary_stl(bytes: &[u8], count: usize, welder: &mut Welder) -> Result<()
 }
 
 /// `solid`, then facets of `facet normal`, `outer loop`, three `vertex`
-/// lines, `endloop`, and `endfacet`, then `endsolid`.
+/// lines, `endloop`, and `endfacet`, then `endsolid`. One `solid` only: each
+/// is an object, and a file holds one body.
 fn read_ascii_stl(bytes: &[u8], welder: &mut Welder) -> Result<()> {
     let text = std::str::from_utf8(bytes).map_err(|_| MeshImportError::NotAMesh)?;
+    let solids = text.lines().filter(|line| line.split_whitespace().next() == Some("solid")).count();
+    if solids > 1 {
+        return Err(MeshImportError::MultipleObjects(solids));
+    }
     let mut corners: Vec<[f64; 3]> = Vec::with_capacity(3);
     for line in text.lines() {
         let mut words = line.split_whitespace();
@@ -269,6 +319,9 @@ fn read_3mf(bytes: &[u8], units: Units, welder: &mut Welder, expanded: u64) -> R
         if !safe_entry_name(entry.name_raw()) || entry.enclosed_name().is_none() {
             return Err(MeshImportError::UnsafeEntryName);
         }
+        if zip64_extra(bytes, entry.central_header_start(), Header::Central)? || zip64_extra(bytes, entry.header_start(), Header::Local)? {
+            return Err(MeshImportError::Zip64);
+        }
         declared = declared.saturating_add(entry.size());
         if declared > expanded {
             return Err(MeshImportError::Expanded);
@@ -296,6 +349,38 @@ fn refuse_zip64(bytes: &[u8]) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// A zip header kind: the central directory's, or the one before an entry's data.
+#[derive(Clone, Copy)]
+enum Header {
+    Central,
+    Local,
+}
+
+/// True when the header at `at` carries a zip64 extra field (id 0x0001). The
+/// zip reader drops that field from what it reports, so the raw header is read.
+fn zip64_extra(bytes: &[u8], at: u64, header: Header) -> Result<bool> {
+    let (magic, fixed, lengths): (&[u8; 4], usize, usize) = match header {
+        Header::Central => (b"PK\x01\x02", 46, 28),
+        Header::Local => (b"PK\x03\x04", 30, 26),
+    };
+    let at = usize::try_from(at).map_err(|_| MeshImportError::BadZip)?;
+    let fixed_part = bytes.get(at..at.saturating_add(fixed)).ok_or(MeshImportError::BadZip)?;
+    if &fixed_part[..4] != magic {
+        return Err(MeshImportError::BadZip);
+    }
+    let length = |k: usize| usize::from(u16::from_le_bytes([fixed_part[k], fixed_part[k + 1]]));
+    let start = at + fixed + length(lengths);
+    let mut extra = bytes.get(start..start + length(lengths + 2)).ok_or(MeshImportError::BadZip)?;
+    while extra.len() >= 4 {
+        if u16::from_le_bytes([extra[0], extra[1]]) == 0x0001 {
+            return Ok(true);
+        }
+        let skip = 4 + usize::from(u16::from_le_bytes([extra[2], extra[3]]));
+        extra = extra.get(skip..).ok_or(MeshImportError::BadZip)?;
+    }
+    Ok(false)
 }
 
 /// A relative name of plain components: no `..`, no leading separator, no
@@ -381,7 +466,8 @@ impl ModelFile {
     fn weld(self, units: Units, welder: &mut Welder) -> Result<()> {
         let unit = self.unit.as_deref().unwrap_or("millimeter");
         if unit != units.three_mf_name() {
-            let found = if unit.len() <= 16 && unit.bytes().all(|b| b.is_ascii_alphabetic()) { unit.to_owned() } else { "not a 3MF unit".to_owned() };
+            // Only a unit the 3MF specification names is repeated; never the file's own text.
+            let found = THREE_MF_UNITS.into_iter().find(|known| *known == unit).unwrap_or("an unknown unit");
             return Err(MeshImportError::UnitMismatch { found, given: units.as_str() });
         }
         let [(object, placed)] = &self.items[..] else { return Err(MeshImportError::MultipleObjects(self.items.len())) };
@@ -419,6 +505,8 @@ fn parse_model<R: Read>(source: Capped<R>) -> Result<ModelFile> {
         let (element, empty) = match &event {
             Event::Start(e) => (e, false),
             Event::Empty(e) => (e, true),
+            // A DTD can declare entities; a 3MF never needs one.
+            Event::DocType(_) => return Err(MeshImportError::Malformed("the model has a DTD")),
             Event::End(e) if e.local_name().as_ref() == b"object" => {
                 let (id, object) = current.take().ok_or(MeshImportError::Malformed("an object ends twice"))?;
                 file.objects.insert(id, object);
@@ -431,14 +519,16 @@ fn parse_model<R: Read>(source: Capped<R>) -> Result<ModelFile> {
                 continue;
             }
         };
+        // Every element's attributes are bounded, whether this reader uses them or not.
+        let attrs = Attributes::of(element)?;
         match element.local_name().as_ref() {
-            b"model" => file.unit = attr(element, b"unit")?,
+            b"model" => file.unit = attrs.get(b"unit").map(str::to_owned),
             b"object" => {
                 elements += 1;
                 if elements > MAX_ELEMENTS || current.is_some() {
                     return Err(MeshImportError::Malformed("too many or nested objects"));
                 }
-                let id = attr(element, b"id")?.ok_or(MeshImportError::Malformed("an object has no id"))?;
+                let id = attrs.get(b"id").map(str::to_owned).ok_or(MeshImportError::Malformed("an object has no id"))?;
                 if file.objects.contains_key(&id) {
                     return Err(MeshImportError::Malformed("two objects share an id"));
                 }
@@ -457,7 +547,7 @@ fn parse_model<R: Read>(source: Capped<R>) -> Result<ModelFile> {
                 let Some((_, Object::Mesh { vertices, .. })) = &mut current else {
                     return Err(MeshImportError::Malformed("a vertex is outside a mesh"));
                 };
-                vertices.push([number(element, b"x")?, number(element, b"y")?, number(element, b"z")?]);
+                vertices.push([attrs.number(b"x")?, attrs.number(b"y")?, attrs.number(b"z")?]);
             }
             b"triangle" => {
                 triangle_count += 1;
@@ -467,7 +557,7 @@ fn parse_model<R: Read>(source: Capped<R>) -> Result<ModelFile> {
                 let Some((_, Object::Mesh { vertices, triangles })) = &mut current else {
                     return Err(MeshImportError::Malformed("a triangle is outside a mesh"));
                 };
-                let t = [index(element, b"v1")?, index(element, b"v2")?, index(element, b"v3")?];
+                let t = [attrs.index(b"v1")?, attrs.index(b"v2")?, attrs.index(b"v3")?];
                 if t.iter().any(|&i| i as usize >= vertices.len()) {
                     return Err(MeshImportError::BadIndex);
                 }
@@ -478,7 +568,7 @@ fn parse_model<R: Read>(source: Capped<R>) -> Result<ModelFile> {
                 if elements > MAX_ELEMENTS {
                     return Err(MeshImportError::Malformed("too many components"));
                 }
-                let reference = reference(element)?;
+                let reference = attrs.reference()?;
                 let Some((_, object)) = &mut current else {
                     return Err(MeshImportError::Malformed("a component is outside an object"));
                 };
@@ -495,7 +585,7 @@ fn parse_model<R: Read>(source: Capped<R>) -> Result<ModelFile> {
                 if elements > MAX_ELEMENTS {
                     return Err(MeshImportError::Malformed("too many build items"));
                 }
-                file.items.push(reference(element)?);
+                file.items.push(attrs.reference()?);
             }
             _ => {}
         }
@@ -507,42 +597,65 @@ fn parse_model<R: Read>(source: Capped<R>) -> Result<ModelFile> {
     Ok(file)
 }
 
-/// The text of `element`'s attribute `name`, by local name, if it has one.
-/// Only short values are kept: ids, units, numbers, and transforms.
-fn attr(element: &BytesStart<'_>, name: &[u8]) -> Result<Option<String>> {
-    for attribute in element.attributes() {
-        let attribute = attribute.map_err(|_| MeshImportError::Malformed("an attribute is malformed"))?;
-        if attribute.key.local_name().as_ref() == name {
-            let text = std::str::from_utf8(&attribute.value).map_err(|_| MeshImportError::Malformed("an attribute is not UTF-8"))?;
-            if text.len() > 1024 {
+/// Most attributes one element may have. A 3MF's `<model>` carries about
+/// ten (its unit, language, and namespaces); a `<triangle>` at most seven.
+pub const MAX_ATTRIBUTES: usize = 32;
+/// Most bytes one attribute's name or value may have: room for ids, units,
+/// numbers, and a transform's twelve numbers.
+pub const MAX_ATTRIBUTE_BYTES: usize = 1024;
+
+/// One element's attributes by local name, read once: at most
+/// [`MAX_ATTRIBUTES`], each name and value at most [`MAX_ATTRIBUTE_BYTES`],
+/// UTF-8, and no name twice. The duplicate check compares at most
+/// [`MAX_ATTRIBUTES`] names, so it stays bounded.
+struct Attributes(Vec<(Vec<u8>, String)>);
+
+impl Attributes {
+    fn of(element: &BytesStart<'_>) -> Result<Self> {
+        let mut found: Vec<(Vec<u8>, String)> = Vec::new();
+        // quick-xml's own duplicate check is quadratic in the attribute count; this one stops at the cap first.
+        for attribute in element.attributes().with_checks(false) {
+            if found.len() == MAX_ATTRIBUTES {
+                return Err(MeshImportError::Malformed("an element has too many attributes"));
+            }
+            let attribute = attribute.map_err(|_| MeshImportError::Malformed("an attribute is malformed"))?;
+            let name = attribute.key.local_name();
+            if name.as_ref().len() > MAX_ATTRIBUTE_BYTES || attribute.value.len() > MAX_ATTRIBUTE_BYTES {
                 return Err(MeshImportError::Malformed("an attribute is too long"));
             }
-            return Ok(Some(text.trim().to_owned()));
+            if found.iter().any(|(seen, _)| seen.as_slice() == name.as_ref()) {
+                return Err(MeshImportError::Malformed("an element names an attribute twice"));
+            }
+            let value = std::str::from_utf8(&attribute.value).map_err(|_| MeshImportError::Malformed("an attribute is not UTF-8"))?;
+            found.push((name.as_ref().to_vec(), value.trim().to_owned()));
         }
+        Ok(Self(found))
     }
-    Ok(None)
-}
 
-fn number(element: &BytesStart<'_>, name: &[u8]) -> Result<f64> {
-    attr(element, name)?
-        .and_then(|text| text.parse::<f64>().ok())
-        .filter(|n| n.is_finite())
-        .ok_or(MeshImportError::BadCoordinate)
-}
-
-fn index(element: &BytesStart<'_>, name: &[u8]) -> Result<u32> {
-    attr(element, name)?.and_then(|text| text.parse().ok()).ok_or(MeshImportError::BadIndex)
-}
-
-/// A component's or a build item's object and transform. A reference to a
-/// mesh in another model part (the production extension's `path`) is refused.
-fn reference(element: &BytesStart<'_>) -> Result<(String, Transform)> {
-    if attr(element, b"path")?.is_some() {
-        return Err(MeshImportError::ExternalMesh);
+    /// The value of the attribute whose local name is `name`.
+    fn get(&self, name: &[u8]) -> Option<&str> {
+        self.0.iter().find(|(key, _)| key.as_slice() == name).map(|(_, value)| value.as_str())
     }
-    let object = attr(element, b"objectid")?.ok_or(MeshImportError::Malformed("a reference has no objectid"))?;
-    let transform = attr(element, b"transform")?.map_or(Ok(Transform::IDENTITY), |text| Transform::parse(&text))?;
-    Ok((object, transform))
+
+    fn number(&self, name: &[u8]) -> Result<f64> {
+        self.get(name).and_then(|text| text.parse::<f64>().ok()).filter(|n| n.is_finite()).ok_or(MeshImportError::BadCoordinate)
+    }
+
+    fn index(&self, name: &[u8]) -> Result<u32> {
+        self.get(name).and_then(|text| text.parse().ok()).ok_or(MeshImportError::BadIndex)
+    }
+
+    /// A component's or a build item's object and transform. A reference to
+    /// a mesh in another model part (the production extension's `path`) is
+    /// refused.
+    fn reference(&self) -> Result<(String, Transform)> {
+        if self.get(b"path").is_some() {
+            return Err(MeshImportError::ExternalMesh);
+        }
+        let object = self.get(b"objectid").ok_or(MeshImportError::Malformed("a reference has no objectid"))?.to_owned();
+        let transform = self.get(b"transform").map_or(Ok(Transform::IDENTITY), Transform::parse)?;
+        Ok((object, transform))
+    }
 }
 
 #[cfg(test)]
