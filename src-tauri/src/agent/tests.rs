@@ -145,6 +145,10 @@ impl RequestActions for FakeActions {
     fn printer_status(&self) -> Result<PrinterState, ActionError> {
         Ok(PrinterState::default())
     }
+
+    fn kinds(&self) -> Vec<&'static dyn crate::fabrication::kind::KindDriver> {
+        crate::fabrication::kind::available(&crate::fabrication::kind::KernelContext::without_runtime(crate::fabrication::printer::P2S_04))
+    }
 }
 
 /// The real build pipeline and revision store, without a window to notify.
@@ -190,6 +194,10 @@ impl RequestActions for PipelineActions {
 
     fn printer_status(&self) -> Result<PrinterState, ActionError> {
         Ok(PrinterState::default())
+    }
+
+    fn kinds(&self) -> Vec<&'static dyn crate::fabrication::kind::KindDriver> {
+        crate::fabrication::kind::available(&self.workspace.kernel_context())
     }
 }
 

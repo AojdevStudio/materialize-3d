@@ -17,7 +17,7 @@ use serde_json::Value;
 pub use gui::HumanActor;
 
 use crate::fabrication::checks::CheckId;
-use crate::fabrication::kind::BuildControl;
+use crate::fabrication::kind::{self, BuildControl, KindDriver};
 use crate::fabrication::pipeline::{self, BuildError, BuildOutcome, BuildRequest, Workspace};
 use crate::fabrication::revisions::{self, Actor, ExportFormat, LineageId, Revision, RevisionId, Sha256Hex};
 use crate::state::{AppState, PrinterState};
@@ -126,6 +126,9 @@ pub trait RequestActions: Send + Sync + 'static {
     fn get(&self, id: &str) -> Result<Revision, ActionError>;
     fn show(&self, id: &str) -> Result<(), ActionError>;
     fn printer_status(&self) -> Result<PrinterState, ActionError>;
+    /// The kinds this app can build now, in registry order: `part` only with a
+    /// verified CAD runtime. See [`Actions::kinds`].
+    fn kinds(&self) -> Vec<&'static dyn KindDriver>;
 }
 
 #[derive(Clone)]
@@ -160,6 +163,12 @@ impl Actions {
         let outcome = pipeline::build(&self.state, &self.workspace, request, control)?;
         self.notify(&outcome.revision.id);
         Ok(outcome)
+    }
+
+    /// The registered kinds this app can build now. `part` drops out when the
+    /// CAD runtime is missing or failed verification; signs need nothing.
+    pub fn kinds(&self) -> Vec<&'static dyn KindDriver> {
+        kind::available(&self.workspace.kernel_context())
     }
 
     /// The newest revisions of every design, newest first.
@@ -212,7 +221,9 @@ impl Actions {
         Ok(revision)
     }
 
-    /// Copies an approved package to `destination` for a person, in `format`.
+    /// Writes what a person approved to `destination`, in `format`: the print
+    /// package, or the STEP it carries. Either one comes from the approved
+    /// package's bytes, re-hashed first.
     pub fn export(&self, _who: &HumanActor, id: &str, format: ExportFormat, destination: &Path) -> Result<PathBuf, ActionError> {
         let id = RevisionId::parse(id)?;
         Ok(pipeline::with_db(&self.state, |conn| revisions::export(conn, &id, format, destination))?)
@@ -268,6 +279,10 @@ impl RequestActions for Actions {
     fn printer_status(&self) -> Result<PrinterState, ActionError> {
         Actions::printer_status(self)
     }
+
+    fn kinds(&self) -> Vec<&'static dyn KindDriver> {
+        Actions::kinds(self)
+    }
 }
 
 #[cfg(test)]
@@ -291,5 +306,38 @@ mod tests {
         actions.show(id).expect("show");
 
         assert_eq!(*emitted.lock().expect("emitted"), [(DESIGNS_OPEN.to_owned(), serde_json::json!({ "revisionId": id }))]);
+    }
+
+    fn kind_ids(actions: &Actions) -> Vec<&'static str> {
+        RequestActions::kinds(actions).iter().map(|kind| kind.id().as_str()).collect()
+    }
+
+    /// Without a verified CAD runtime `part` is not offered; signs are.
+    #[test]
+    fn part_is_absent_from_kinds_when_the_runtime_is_missing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workspace = Workspace::new(&dir.path().join("data"), &dir.path().join("cache"));
+        let actions = Actions::new(Arc::new(|_, _| {}), Arc::new(AppState::default()), workspace.clone());
+        assert_eq!(kind_ids(&actions), ["sign"], "no runtime is bundled beside a test binary");
+        let actions = Actions::new(Arc::new(|_, _| {}), Arc::new(AppState::default()), workspace.with_cad_runtime(None));
+        assert_eq!(kind_ids(&actions), ["sign"]);
+    }
+
+    /// A runtime directory whose image does not match the compiled-in pins
+    /// never becomes a runtime, so `part` stays absent.
+    #[cfg(all(target_os = "linux", feature = "linux-cad-test"))]
+    #[test]
+    fn part_is_absent_from_kinds_when_the_runtime_fails_verification() {
+        use crate::fabrication::cad_worker::{CadRuntime, MicroVmConfig, RuntimeUnavailable};
+        let dir = tempfile::tempdir().expect("tempdir");
+        for name in ["vmlinux", "rootfs.img", "job.img"] {
+            std::fs::write(dir.path().join(name), b"not the pinned image").expect("write");
+        }
+        let config = MicroVmConfig { qemu: "qemu-system-x86_64".into() };
+        let runtime = CadRuntime::linux_microvm(config, dir.path());
+        assert!(matches!(runtime, Err(RuntimeUnavailable::Unverified(_))), "{runtime:?}");
+        let workspace = Workspace::new(&dir.path().join("data"), &dir.path().join("cache")).with_cad_runtime(runtime.ok());
+        let actions = Actions::new(Arc::new(|_, _| {}), Arc::new(AppState::default()), workspace);
+        assert_eq!(kind_ids(&actions), ["sign"]);
     }
 }

@@ -1,0 +1,52 @@
+{
+  "cable-clip": {
+    "title": "Six USB-C desk clip",
+    "params": {"cables": 6, "cable_d": 4, "clearance": 0.4, "desk_t": 18, "span": 60, "depth": 25, "wall": 3, "fillet": 1.2},
+    "requirements": [
+      {"measure": "span", "name": "width", "axis": "x", "mm": 60, "tol": 0.2},
+      {"measure": "opening", "name": "desk jaw", "axis": "z", "at": [0, 14, 12], "mm": 18.4, "tol": 0.2}
+    ],
+    "filaments": [{"slot": 1, "name": "Black"}]
+  },
+  "threaded-cap": {
+    "title": "28 mm bottle cap",
+    "params": {"bore_d": 28, "wall": 2, "height": 14, "top": 2, "relief": 1, "pitch": 3, "thread_depth": 1.0,
+               "thread_crest": 0.6, "grips": 24, "grip_r": 0.8},
+    "requirements": [
+      {"measure": "hole", "name": "bore", "axis": "z", "at": [0, 0, 2.5], "mm": 28, "tol": 0.1},
+      {"measure": "min_wall", "name": "top", "at": [0, 0, 1], "mm": 2},
+      {"measure": "span", "name": "height", "axis": "z", "mm": 14, "tol": 0.1}
+    ],
+    "filaments": [{"slot": 1, "name": "White"}]
+  },
+  "gridfinity-bin": {
+    "title": "Gridfinity bin 1x1x3",
+    "params": {"grid": 42, "clearance": 0.5, "units_x": 1, "units_y": 1, "units_z": 3, "unit_h": 7, "corner_r": 3.75,
+               "foot_low_chamfer": 0.8, "foot_band": 1.8, "foot_high_chamfer": 2.15, "wall": 1.2, "floor": 1.0},
+    "requirements": [
+      {"measure": "span", "name": "width", "axis": "x", "mm": 41.5, "tol": 0.2},
+      {"measure": "span", "name": "height", "axis": "z", "mm": 21, "tol": 0.2},
+      {"measure": "opening", "name": "inside width", "axis": "x", "at": [0, 0, 15], "mm": 39.1, "tol": 0.2},
+      {"measure": "min_wall", "name": "wall", "at": [20.15, 0, 15], "mm": 1.2}
+    ],
+    "filaments": [{"slot": 1, "name": "Gray"}]
+  },
+  "overhang-tee": {
+    "title": "Slab on a post",
+    "params": {"post": 10, "post_h": 10, "slab": 40, "slab_t": 3},
+    "requirements": [{"measure": "span", "name": "slab", "axis": "x", "mm": 40, "tol": 0.1}],
+    "filaments": [{"slot": 1, "name": "White"}]
+  },
+  "failing-fillet": {
+    "title": "Overrounded block",
+    "params": {"size": 10, "fillet": 6},
+    "requirements": [],
+    "filaments": [{"slot": 1, "name": "White"}]
+  },
+  "hostile": {
+    "title": "Self-grading box",
+    "params": {"size": 10, "open": false},
+    "requirements": [{"measure": "span", "name": "width", "axis": "x", "mm": 20, "tol": 0.1}],
+    "filaments": [{"slot": 1, "name": "White"}]
+  }
+}

@@ -16,10 +16,14 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::Value;
 
-use super::checks::{CheckOutcome, CheckPlan, CheckedModel, InvalidPlan};
+pub use super::package::ExtraArtifact;
+
+use super::cad_worker::CadRuntime;
+use super::checks::{CheckId, CheckOutcome, CheckPlan, CheckedModel, InvalidPlan};
+use super::kinds::part::Part;
 use super::kinds::sign::Sign;
 use super::model::PrintableModel;
-use super::pipeline::{BuildError, BuildStep};
+use super::pipeline::{BuildError, BuildStep, Stage};
 use super::printer::PrinterProfile;
 use super::revisions::Sha256Hex;
 
@@ -45,8 +49,11 @@ impl fmt::Display for KindId {
 }
 
 /// A kind of printable object. `validate` is total (no panics on hostile
-/// input), and `model` is deterministic for a given `Valid` and
-/// [`TAG`](ObjectKind::TAG), which is what lets a `build_key` reuse a build.
+/// input). A Rust kind's `model` is deterministic for a given `Valid` and
+/// [`TAG`](ObjectKind::TAG). A script kind's need not be: its build is
+/// idempotent because the first build that verifies under a `build_key` is
+/// sealed and reused, never because running the script again gives the same
+/// bytes.
 pub trait ObjectKind: Send + Sync + 'static {
     /// Untrusted wire shape, `deny_unknown_fields`. Its JSON Schema is what
     /// the `build` tool advertises for this kind.
@@ -62,11 +69,33 @@ pub trait ObjectKind: Send + Sync + 'static {
     const TAG: &'static str;
     /// One line naming what the kind makes, for a model choosing a kind.
     const SUMMARY: &'static str;
+    /// What the package names the build's object.
+    const NAMING: ObjectNaming = ObjectNaming::Title;
+
+    /// Whether this kind can build with `ctx`. A kind that needs the CAD
+    /// runtime is unavailable without it.
+    fn available(_ctx: &KernelContext) -> bool {
+        true
+    }
+
+    /// Inputs besides the validated spec and the slicer that decide this
+    /// kind's output, such as the runtime image a script runs in. They join
+    /// the build key; a kind with none keeps the key it always had.
+    fn key_inputs(_ctx: &KernelContext) -> Vec<String> {
+        Vec::new()
+    }
 
     fn validate(spec: Self::Spec, printer: &PrinterProfile) -> Result<Self::Valid, SpecError>;
     fn title(valid: &Self::Valid) -> String;
     /// Every check a build must pass, declared before anything is built.
     fn check_plan(valid: &Self::Valid, printer: &PrinterProfile) -> Result<CheckPlan, InvalidPlan>;
+    /// The plan a built `model` is judged by: the declared plan, plus the
+    /// checks of bodies only the build could name (a script names its own
+    /// bodies). It keeps the declared plan's id and every check the declared
+    /// plan names, so a kind can add per-body checks but never drop one.
+    fn bind_plan(valid: &Self::Valid, printer: &PrinterProfile, _model: &PrintableModel) -> Result<CheckPlan, InvalidPlan> {
+        Self::check_plan(valid, printer)
+    }
     /// Builds the bodies on the bed. Blocking, like the slicer; a long kernel
     /// polls `control` and returns [`KernelError::Cancelled`].
     fn model(valid: &Self::Valid, ctx: &KernelContext, control: &BuildControl<'_>) -> Result<Built, KernelError>;
@@ -76,10 +105,42 @@ pub trait ObjectKind: Send + Sync + 'static {
     fn preview(valid: &Self::Valid, model: &PrintableModel) -> Result<Vec<u8>, KernelError>;
 }
 
-/// What a kernel may use besides the spec. A later kind adds its runtime here.
-#[derive(Debug, Clone, Copy)]
+/// What a kernel may use besides the spec.
+#[derive(Debug, Clone)]
 pub struct KernelContext {
     pub printer: PrinterProfile,
+    /// The CAD runtime, verified against the digests compiled into this app.
+    /// `None` when it is missing or failed verification; a kind that needs it
+    /// is then unavailable.
+    pub runtime: Option<CadRuntime>,
+}
+
+impl KernelContext {
+    pub fn without_runtime(printer: PrinterProfile) -> Self {
+        Self { printer, runtime: None }
+    }
+}
+
+/// What the package names a build's object, which is the name Bambu Studio
+/// prints in its slicing warnings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ObjectNaming {
+    /// The spec's title. Its warnings name text the spec chose, so none can be
+    /// told apart from a look-alike and each one fails `slice.no_warnings`.
+    Title,
+    /// `part-` and the first 12 hex digits of the build key: text the app
+    /// chose. Bambu's exact support warning about it is then recorded as the
+    /// advisory `slice.support_warning`.
+    BuildKey,
+}
+
+impl ObjectNaming {
+    pub fn object_name(self, title: &str, build_key: &Sha256Hex) -> String {
+        match self {
+            ObjectNaming::Title => title.to_owned(),
+            ObjectNaming::BuildKey => format!("part-{}", &build_key.as_str()[..12]),
+        }
+    }
 }
 
 /// A running build's progress sink and cancel flag.
@@ -112,19 +173,15 @@ pub struct Built {
     pub extra: Vec<ExtraArtifact>,
 }
 
-/// A named byte payload a kind returns beside its model.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ExtraArtifact {
-    pub name: String,
-    pub bytes: Vec<u8>,
-}
-
 #[derive(Debug, thiserror::Error)]
 pub enum KernelError {
     #[error("build cancelled")]
     Cancelled,
     #[error("{0}")]
     Failed(String),
+    /// A bounded error a script's author can act on, and where it stopped.
+    #[error("{stage}: {error}")]
+    Stage { stage: Stage, error: String },
 }
 
 /// A spec its kind refused. The message names what to fix; a person or a
@@ -175,11 +232,13 @@ impl ParsedSpec {
     }
 }
 
-/// A model that passed its plan's geometry checks, with its preview, ready to package.
+/// A model that passed its plan's geometry checks, with its preview, ready to
+/// package. The checked model carries the build's extras, and `plan` is the
+/// bound plan ([`ObjectKind::bind_plan`]) that certified it and finishes it.
 pub struct PreparedObject {
     pub checked: CheckedModel,
     pub preview: Vec<u8>,
-    pub extra: Vec<ExtraArtifact>,
+    pub plan: CheckPlan,
 }
 
 /// The object-safe face of a kind, implemented once by [`Kind`]. The
@@ -187,6 +246,11 @@ pub struct PreparedObject {
 pub trait KindDriver: Send + Sync {
     fn id(&self) -> KindId;
     fn summary(&self) -> &'static str;
+    /// See [`ObjectKind::available`].
+    fn available(&self, ctx: &KernelContext) -> bool;
+    fn naming(&self) -> ObjectNaming;
+    /// See [`ObjectKind::key_inputs`].
+    fn key_inputs(&self, ctx: &KernelContext) -> Vec<String>;
     /// JSON Schema of the kind's spec, every subschema inlined.
     fn spec_schema(&self) -> Value;
     fn parse(&self, spec: Value, printer: &PrinterProfile) -> Result<ParsedSpec, SpecError>;
@@ -210,6 +274,18 @@ impl<K: ObjectKind> KindDriver for Kind<K> {
 
     fn summary(&self) -> &'static str {
         K::SUMMARY
+    }
+
+    fn available(&self, ctx: &KernelContext) -> bool {
+        K::available(ctx)
+    }
+
+    fn naming(&self) -> ObjectNaming {
+        K::NAMING
+    }
+
+    fn key_inputs(&self, ctx: &KernelContext) -> Vec<String> {
+        K::key_inputs(ctx)
     }
 
     fn spec_schema(&self) -> Value {
@@ -243,22 +319,47 @@ impl<K: ObjectKind> KindDriver for Kind<K> {
             .downcast_ref::<K::Valid>()
             .ok_or_else(|| BuildError::Failed(format!("a {} spec cannot build as {}", parsed.kind, K::ID)))?;
         let Built { model, extra } = K::model(valid, ctx, control)?;
+        let plan = bound_plan(&parsed.plan, K::bind_plan(valid, &ctx.printer, &model))?;
         let evidence = K::measure(valid, &model);
         control.report(BuildStep::GeometryBuilt);
         if control.is_cancelled() {
             return Err(BuildError::Cancelled);
         }
         let preview = K::preview(valid, &model)?;
-        let checked = parsed.plan.certify(model, evidence).map_err(|e| BuildError::Failed(e.to_string()))?;
-        Ok(PreparedObject { checked, preview, extra })
+        let checked = plan.certify(model, extra, evidence).map_err(|e| BuildError::Failed(e.to_string()))?;
+        Ok(PreparedObject { checked, preview, plan })
     }
 }
 
-/// Every registered kind, one line each.
-pub static KINDS: &[&dyn KindDriver] = &[&Kind::<Sign>::NEW];
+/// `bound`, if it keeps `declared`'s id and every check `declared` names.
+fn bound_plan(declared: &CheckPlan, bound: Result<CheckPlan, InvalidPlan>) -> Result<CheckPlan, BuildError> {
+    let bound = bound.map_err(|e| BuildError::Failed(e.to_string()))?;
+    let dropped: Vec<&str> =
+        declared.required().iter().filter(|id| !bound.required().contains(id)).map(CheckId::as_str).collect();
+    if bound.id() != declared.id() || !dropped.is_empty() {
+        return Err(BuildError::Failed(format!(
+            "check plan {} was bound as {} without [{}]",
+            declared.id().as_str(),
+            bound.id().as_str(),
+            dropped.join(", ")
+        )));
+    }
+    Ok(bound)
+}
 
+/// Every registered kind, one line each. A kind that needs something this app
+/// may lack, such as the CAD runtime, is still listed; [`available`] is what
+/// leaves it out.
+pub static KINDS: &[&dyn KindDriver] = &[&Kind::<Sign>::NEW, &Kind::<Part>::NEW];
+
+/// The registered kind named `id`, whether or not it is available.
 pub fn find(id: &str) -> Option<&'static dyn KindDriver> {
     KINDS.iter().copied().find(|kind| kind.id().as_str() == id)
+}
+
+/// The kinds that can build with `ctx`, in [`KINDS`] order.
+pub fn available(ctx: &KernelContext) -> Vec<&'static dyn KindDriver> {
+    KINDS.iter().copied().filter(|kind| kind.available(ctx)).collect()
 }
 
 /// JSON Schema for `T` with every subschema inlined; providers differ in `$ref` support.

@@ -9,14 +9,16 @@
 //! the plan does not name, or contains a failed blocking check.
 //!
 //! Print checks are advisory: a failed `print.*` check is kept as a warning,
-//! and the model is still certified and the build still verified. Every other
-//! phase blocks. A person approving a build acknowledges its warnings.
+//! and the model is still certified and the build still verified. So is a
+//! part's `slice.support_warning`. Every other check blocks. A person
+//! approving a build acknowledges its warnings.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use super::bambu;
 use super::model::PrintableModel;
+use super::package::ExtraArtifact;
 
 /// When a check runs. Check ids start with the phase's name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -54,6 +56,7 @@ impl CheckPhase {
     }
 
     /// A failed check in this phase is a warning: the build still verifies.
+    /// One slice check is advisory too; see [`CheckId::is_advisory`].
     pub fn is_advisory(self) -> bool {
         matches!(self, CheckPhase::Print)
     }
@@ -81,7 +84,17 @@ impl CheckId {
     pub fn as_str(&self) -> &str {
         &self.id
     }
+
+    /// A failed advisory check is a warning, never a failed build: every
+    /// `print.*` check, and Bambu Studio's exact support warning on a part
+    /// ([`slice_support_warning`]). Every other check blocks.
+    pub fn is_advisory(&self) -> bool {
+        self.phase.is_advisory() || self.id == SUPPORT_WARNING
+    }
 }
+
+/// The id of [`slice_support_warning`].
+const SUPPORT_WARNING: &str = "slice.support_warning";
 
 /// A recorded check name that does not start with a known phase.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -156,6 +169,12 @@ pub fn slice_check_id(check: bambu::CheckId) -> CheckId {
     CheckId::new(CheckPhase::Slice, check.as_str())
 }
 
+/// The advisory slice check a part plans: Bambu Studio warned that the part
+/// needs supports, in its exact words, naming the part's app-chosen object.
+pub fn slice_support_warning() -> CheckId {
+    slice_check_id(bambu::CheckId::SupportWarning)
+}
+
 /// The slice and handoff checks every plan ends with today, in recorded order.
 pub fn slice_and_handoff_checks() -> impl Iterator<Item = CheckId> {
     bambu::CheckId::ALL.into_iter().map(slice_check_id).chain(std::iter::once(handoff_settings_match_slice()))
@@ -192,10 +211,17 @@ impl CheckPlan {
 
     /// Proves the model passed every planned geometry check. `evidence` must
     /// hold exactly the plan's geometry and print checks, each once; a failed
-    /// print check is kept as a warning.
-    pub fn certify(&self, model: PrintableModel, evidence: Vec<CheckOutcome>) -> Result<CheckedModel, ChecksFailed> {
+    /// print check is kept as a warning. `extra` are the files the build made
+    /// beside the model, such as a part's STEP: they travel with the checked
+    /// model into the package, and nothing can add one later.
+    pub fn certify(
+        &self,
+        model: PrintableModel,
+        extra: Vec<ExtraArtifact>,
+        evidence: Vec<CheckOutcome>,
+    ) -> Result<CheckedModel, ChecksFailed> {
         let outcomes = self.judge(|phase| phase.is_model_phase(), evidence)?;
-        Ok(CheckedModel { model, proof: PassedGeometry { plan: self.id, outcomes } })
+        Ok(CheckedModel { model, extra, proof: PassedGeometry { plan: self.id, outcomes } })
     }
 
     /// Proves every planned blocking check passed: the geometry this plan
@@ -237,7 +263,7 @@ impl CheckPlan {
             return Err(ChecksFailed::Mismatch(mismatch));
         }
         let ordered: Vec<CheckOutcome> = planned.iter().filter_map(|id| by_id.remove(id)).collect();
-        if ordered.iter().all(|outcome| outcome.passed || outcome.id.phase().is_advisory()) {
+        if ordered.iter().all(|outcome| outcome.passed || outcome.id.is_advisory()) {
             Ok(ordered)
         } else {
             Err(ChecksFailed::Failed(ordered))
@@ -288,7 +314,7 @@ fn describe_mismatch(mismatch: &PlanMismatch) -> String {
 fn describe_failures(outcomes: &[CheckOutcome]) -> String {
     let failed: Vec<String> = outcomes
         .iter()
-        .filter(|o| !o.passed && !o.id.phase().is_advisory())
+        .filter(|o| !o.passed && !o.id.is_advisory())
         .map(|o| format!("{}: {}", o.id, o.detail))
         .collect();
     format!("checks failed: {}", failed.join("; "))
@@ -337,18 +363,24 @@ impl PassedGeometry {
 /// use materialize_3d_lib::fabrication::checks::{CheckedModel, PassedGeometry};
 /// use materialize_3d_lib::fabrication::model::PrintableModel;
 /// fn forge(model: PrintableModel, proof: PassedGeometry) -> CheckedModel {
-///     CheckedModel { model, proof }
+///     CheckedModel { model, extra: Vec::new(), proof }
 /// }
 /// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct CheckedModel {
     model: PrintableModel,
+    extra: Vec<ExtraArtifact>,
     proof: PassedGeometry,
 }
 
 impl CheckedModel {
     pub fn model(&self) -> &PrintableModel {
         &self.model
+    }
+
+    /// The files certified with the model, which the package carries.
+    pub fn extra(&self) -> &[ExtraArtifact] {
+        &self.extra
     }
 
     pub fn geometry(&self) -> &PassedGeometry {
@@ -428,7 +460,7 @@ pub(crate) mod test_support {
                 .map(|id| CheckOutcome { id: id.clone(), passed: !warnings.contains(id), detail: "ok".into() })
                 .collect()
         };
-        let checked = plan.certify(model(), pass(CheckPhase::is_model_phase)).expect("certified");
+        let checked = plan.certify(model(), Vec::new(), pass(CheckPhase::is_model_phase)).expect("certified");
         plan.finish(checked.geometry(), pass(|p| p == CheckPhase::Slice), pass(|p| p == CheckPhase::Handoff))
             .expect("passed")
     }
@@ -476,7 +508,7 @@ mod tests {
 
     #[test]
     fn certify_orders_passed_geometry_by_the_plan() {
-        let checked = plan().certify(model(), geometry_evidence()).expect("certified");
+        let checked = plan().certify(model(), Vec::new(), geometry_evidence()).expect("certified");
         let ids: Vec<&str> = checked.geometry().outcomes().iter().map(|o| o.id.as_str()).collect();
         assert_eq!(ids, ["geometry.closed.a", "geometry.bounds.a"]);
         assert_eq!(checked.model(), &model());
@@ -485,25 +517,25 @@ mod tests {
     #[test]
     fn certify_rejects_missing_duplicate_unexpected_and_failed_checks() {
         let plan = plan();
-        let missing = mismatch(plan.certify(model(), vec![pass(&geometry("closed.a"))]));
+        let missing = mismatch(plan.certify(model(), Vec::new(), vec![pass(&geometry("closed.a"))]));
         assert_eq!(missing.missing, [geometry("bounds.a")]);
 
         let mut repeated = geometry_evidence();
         repeated.push(pass(&geometry("closed.a")));
-        assert_eq!(mismatch(plan.certify(model(), repeated)).duplicate, [geometry("closed.a")]);
+        assert_eq!(mismatch(plan.certify(model(), Vec::new(), repeated)).duplicate, [geometry("closed.a")]);
 
         let mut extra = geometry_evidence();
         extra.push(pass(&geometry("ink_present.b")));
         extra.push(pass(&slice_check_id(bambu::CheckId::NoWarnings)));
         assert_eq!(
-            mismatch(plan.certify(model(), extra)).unexpected,
+            mismatch(plan.certify(model(), Vec::new(), extra)).unexpected,
             [geometry("ink_present.b"), slice_check_id(bambu::CheckId::NoWarnings)]
         );
 
         let mut failing = geometry_evidence();
         failing[0].passed = false;
         failing[0].detail = "min 0 max 300".into();
-        let err = plan.certify(model(), failing).unwrap_err();
+        let err = plan.certify(model(), Vec::new(), failing).unwrap_err();
         assert_eq!(err.to_string(), "checks failed: geometry.bounds.a: min 0 max 300");
         assert!(matches!(err, ChecksFailed::Failed(outcomes) if outcomes.len() == 2));
     }
@@ -511,7 +543,7 @@ mod tests {
     #[test]
     fn finish_needs_every_slice_and_handoff_check_to_pass() {
         let plan = plan();
-        let checked = plan.certify(model(), geometry_evidence()).expect("certified");
+        let checked = plan.certify(model(), Vec::new(), geometry_evidence()).expect("certified");
         let handoff = || vec![pass(&handoff_settings_match_slice())];
 
         let passed = plan.finish(checked.geometry(), slice_evidence(), handoff()).expect("passed");
@@ -549,7 +581,7 @@ mod tests {
     fn a_failed_print_check_is_a_warning_and_the_build_still_passes() {
         let plan = plan_with_print_check();
         let checked = plan
-            .certify(model(), vec![pass(&geometry("closed.a")), fail(&print("overhang.a"), "62 degrees")])
+            .certify(model(), Vec::new(), vec![pass(&geometry("closed.a")), fail(&print("overhang.a"), "62 degrees")])
             .expect("an advisory failure still certifies");
         assert_eq!(checked.geometry().warnings().collect::<Vec<_>>(), [&print("overhang.a")]);
 
@@ -564,13 +596,13 @@ mod tests {
     fn a_failed_blocking_check_fails_even_beside_a_warning() {
         let plan = plan_with_print_check();
         let err = plan
-            .certify(model(), vec![fail(&geometry("closed.a"), "2 open edges"), fail(&print("overhang.a"), "62 degrees")])
+            .certify(model(), Vec::new(), vec![fail(&geometry("closed.a"), "2 open edges"), fail(&print("overhang.a"), "62 degrees")])
             .unwrap_err();
         assert!(matches!(&err, ChecksFailed::Failed(_)), "{err}");
         assert_eq!(err.to_string(), "checks failed: geometry.closed.a: 2 open edges", "the warning is not a failure");
 
         let checked = plan
-            .certify(model(), vec![pass(&geometry("closed.a")), fail(&print("overhang.a"), "62 degrees")])
+            .certify(model(), Vec::new(), vec![pass(&geometry("closed.a")), fail(&print("overhang.a"), "62 degrees")])
             .expect("certified");
         let mut slice = slice_evidence();
         slice[0].passed = false;
@@ -580,7 +612,7 @@ mod tests {
 
     #[test]
     fn finish_refuses_geometry_certified_by_another_plan() {
-        let checked = plan().certify(model(), geometry_evidence()).expect("certified");
+        let checked = plan().certify(model(), Vec::new(), geometry_evidence()).expect("certified");
         let other = CheckPlan::new(CheckPlanId::new("test-2"), plan().required().to_vec()).expect("plan");
         let err = other.finish(checked.geometry(), slice_evidence(), vec![pass(&handoff_settings_match_slice())]).unwrap_err();
         assert_eq!(err, ChecksFailed::WrongPlan { certified: CheckPlanId::new("test-1"), finishing: CheckPlanId::new("test-2") });
@@ -599,7 +631,7 @@ mod tests {
         let required = [requirement.clone(), print("overhang.a")].into_iter().chain(slice_and_handoff_checks()).collect();
         let plan = CheckPlan::new(CheckPlanId::new("test-requirement-1"), required).expect("plan");
         let err = plan
-            .certify(model(), vec![fail(&requirement, "opening 11.2 mm, want 12.0 ± 0.2"), fail(&print("overhang.a"), "62 degrees")])
+            .certify(model(), Vec::new(), vec![fail(&requirement, "opening 11.2 mm, want 12.0 ± 0.2"), fail(&print("overhang.a"), "62 degrees")])
             .unwrap_err();
         assert!(matches!(&err, ChecksFailed::Failed(_)), "{err}");
         assert_eq!(err.to_string(), "checks failed: geometry.requirement.0: opening 11.2 mm, want 12.0 ± 0.2");

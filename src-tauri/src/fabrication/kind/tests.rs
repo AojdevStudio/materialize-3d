@@ -69,18 +69,20 @@ impl ObjectKind for Probe {
 }
 
 const PROBE: Kind<Probe> = Kind::NEW;
-const CTX: KernelContext = KernelContext { printer: P2S_04 };
+fn ctx() -> KernelContext {
+    KernelContext::without_runtime(P2S_04)
+}
 
 fn prepare(driver: &dyn KindDriver, parsed: &ParsedSpec) -> (Result<PreparedObject, BuildError>, Vec<BuildStep>) {
     let steps = RefCell::new(Vec::new());
-    let result = driver.prepare(parsed, &CTX, &BuildControl::new(&|step| steps.borrow_mut().push(step), &|| false));
+    let result = driver.prepare(parsed, &ctx(), &BuildControl::new(&|step| steps.borrow_mut().push(step), &|| false));
     (result, steps.into_inner())
 }
 
 #[test]
 fn the_registry_names_each_kind_once_in_snake_case() {
     let ids: Vec<&str> = KINDS.iter().map(|kind| kind.id().as_str()).collect();
-    assert_eq!(ids, ["sign"]);
+    assert_eq!(ids, ["sign", "part"]);
     let mut unique = ids.clone();
     unique.dedup();
     assert_eq!(unique, ids, "duplicate kind id");
@@ -90,7 +92,7 @@ fn the_registry_names_each_kind_once_in_snake_case() {
         assert!(snake, "{id} is not snake_case");
         assert_eq!(find(id).map(|kind| kind.id().as_str()), Some(id));
     }
-    assert!(find("part").is_none(), "an unregistered kind is not found");
+    assert!(find("imported_part").is_none(), "an unregistered kind is not found");
 }
 
 #[test]
@@ -132,4 +134,25 @@ fn parse_refuses_unknown_fields_and_hashes_the_validated_spec() {
     assert_eq!(a.spec_sha256(), b.spec_sha256(), "field order does not change the hash");
     assert_eq!((a.kind(), a.tag(), a.title()), (KindId::new("probe"), "probe-1", "Probe"));
     assert_eq!(a.plan().id(), CheckPlanId::new("probe-checks-1"));
+}
+
+/// Without a verified CAD runtime, `part` stays registered but is not
+/// available; signs need nothing and are always available.
+#[test]
+fn part_is_unavailable_without_a_verified_runtime_and_signs_are_unaffected() {
+    let ids: Vec<&str> = available(&ctx()).iter().map(|kind| kind.id().as_str()).collect();
+    assert_eq!(ids, ["sign"]);
+    let part = find("part").expect("part is registered");
+    assert!(!part.available(&ctx()));
+    assert!(find("sign").expect("sign").available(&ctx()));
+    assert_eq!(part.key_inputs(&ctx()), Vec::<String>::new(), "no runtime, nothing to key on");
+}
+
+#[test]
+fn only_a_part_names_its_object_after_the_build_key() {
+    let key = Sha256Hex::of_bytes(b"key");
+    assert_eq!(find("sign").expect("sign").naming(), ObjectNaming::Title);
+    assert_eq!(find("part").expect("part").naming(), ObjectNaming::BuildKey);
+    assert_eq!(ObjectNaming::Title.object_name("Six USB-C desk clip", &key), "Six USB-C desk clip");
+    assert_eq!(ObjectNaming::BuildKey.object_name("Six USB-C desk clip", &key), format!("part-{}", &key.as_str()[..12]));
 }
