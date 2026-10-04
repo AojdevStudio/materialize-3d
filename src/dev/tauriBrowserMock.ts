@@ -4,7 +4,7 @@ import { mockIPC, mockWindows } from '@tauri-apps/api/mocks'
 import type { PrinterSnapshot } from '../stores/printer'
 import type { WorkspaceSnapshot } from '../stores/workspace'
 import type { PrinterConfig } from '../stores/printerConfigs'
-import type { SignRevision } from '../types/designs'
+import type { PartRevision, Revision, SignRevision } from '../types/designs'
 import type { BuildResult } from '../types/generated'
 import type { AgentEvent, AgentStatus, BuildStep, HistoryEntry, Provider } from '../types/agent'
 
@@ -171,6 +171,64 @@ let mockSign: SignRevision = {
   created_at: '2026-09-25T14:10:00Z',
   updated_at: '2026-09-25T14:12:00Z',
 }
+
+// One verified part revision, the cable clip's repair, so the Designs view
+// shows a part (its view arrives with pr8-gui). Dev-only, like everything here.
+const MOCK_PART_CLIP_SOURCE = 'from build123d import *\nfrom materialize import Body\n\ndef build(p): ...'
+const mockPart: PartRevision = {
+  id: '9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d',
+  lineage_id: '1b2c3d4e-5f6a-4b7c-8d9e-0f1a2b3c4d5e',
+  number: 2,
+  parent_id: '2c3d4e5f-6a7b-4c8d-9e0f-1a2b3c4d5e6f',
+  kind: 'part',
+  title: 'Six USB-C desk clip',
+  spec: {
+    schema_version: 1,
+    title: 'Six USB-C desk clip',
+    source: MOCK_PART_CLIP_SOURCE,
+    params: { cables: 6, cable_d: 4, clearance: 0.4, desk_t: 18, span: 60, depth: 25, wall: 3, fillet: 1.2 },
+    requirements: [{ measure: 'span', name: 'width', axis: 'x', mm: 60, tol: 0.2 }],
+    filaments: [{ slot: 1, name: 'Black' }],
+  },
+  spec_sha256: '3c'.repeat(32),
+  build_id: '4d5e6f7a-8b9c-4d0e-9f1a-2b3c4d5e6f7a',
+  build_key: 'd7'.repeat(32),
+  requested_by: 'agent',
+  build: {
+    status: 'verified',
+    artifacts: {
+      ...mockSign.build.status === 'verified' ? mockSign.build.artifacts : ({} as never),
+      revision_dir: '/mock/signs/4d5e6f7a-8b9c-4d0e-9f1a-2b3c4d5e6f7a',
+      package_path: '/mock/signs/4d5e6f7a-8b9c-4d0e-9f1a-2b3c4d5e6f7a/part.3mf',
+      package_sha256: 'e1'.repeat(32),
+      preview_path: '/mock/signs/4d5e6f7a-8b9c-4d0e-9f1a-2b3c4d5e6f7a/preview.png',
+      checks: [
+        ...['closed_manifold', 'non_degenerate', 'outward_orientation', 'bounds'].map((name) => ({
+          id: `geometry.${name}.clip`,
+          passed: true,
+          advisory: false,
+          detail: 'ok',
+        })),
+        { id: 'geometry.requirement.0', passed: true, advisory: false, detail: 'width 60.02 mm (60 ± 0.2)' },
+        { id: 'print.overhang.clip', passed: false, advisory: true, detail: 'about 1218 mm² unsupported at z 21.4 mm' },
+        { id: 'slice.slice_succeeded', passed: true, advisory: false, detail: 'exit 0, return_code 0, 1 plate(s)' },
+        { id: 'slice.no_warnings', passed: true, advisory: false, detail: 'no plate warnings besides support warnings' },
+        {
+          id: 'handoff.settings_match_slice',
+          passed: true,
+          advisory: false,
+          detail: 'package settings and colors match the verified slice',
+        },
+      ],
+    },
+  },
+  approval: { status: 'pending' },
+  print_validation: { status: 'not_tested' },
+  created_at: '2026-10-04T14:10:00Z',
+  updated_at: '2026-10-04T14:12:00Z',
+}
+
+const mockRevisions = (): Revision[] => [structuredClone(mockPart), structuredClone(mockSign)]
 
 /** Draws a stand-in finished face and returns PNG bytes, like `design_preview`. */
 async function mockSignPreview(): Promise<ArrayBuffer> {
@@ -576,12 +634,18 @@ export function installTauriBrowserMock() {
       return undefined
     }
 
-    if (cmd === 'design_list' || cmd === 'design_lineage') {
-      return [structuredClone(mockSign)]
+    if (cmd === 'design_list') {
+      return mockRevisions()
+    }
+
+    if (cmd === 'design_lineage') {
+      const { lineageId } = payload as { lineageId: string }
+      return mockRevisions().filter((revision) => revision.lineage_id === lineageId)
     }
 
     if (cmd === 'design_get') {
-      return structuredClone(mockSign)
+      const { id } = payload as { id: string }
+      return mockRevisions().find((revision) => revision.id === id) ?? structuredClone(mockSign)
     }
 
     if (cmd === 'design_preview') {
@@ -634,9 +698,10 @@ export function installTauriBrowserMock() {
 // ── Scripted agent ──
 //
 // Mirrors the Rust agent's commands closely enough for `bun run dev` in a
-// browser: a prompt about the printer runs printer_status; anything else runs a
-// build turn with one step every STEP_MS. Clear the key in Settings to see
-// the missing-key error.
+// browser: a prompt about the printer runs printer_status; a prompt about a
+// part or clip runs a part build that fails at generate and its repair;
+// anything else runs a sign build with one step every STEP_MS. Clear the key
+// in Settings to see the missing-key error.
 
 const NOT_AGENT = Symbol('not an agent command')
 const STEP_MS = 1500
@@ -724,6 +789,11 @@ async function runMockTurn(turnId: string, text: string, channel: Channel<AgentE
     return
   }
 
+  if (/part|clip/i.test(text)) {
+    await runMockPartTurn(send, say, cancelled, now)
+    return
+  }
+
   await say('Building a 150 x 210 x 2.6 mm sign: white PLA Basic base, navy and teal inlays.')
   const callId = crypto.randomUUID()
   const buildArgs = { kind: 'sign', spec: { title: 'Back Shortly door sign', width_mm: 150, height_mm: 210 } }
@@ -770,5 +840,88 @@ async function runMockTurn(turnId: string, text: string, channel: Channel<AgentE
   send({ type: 'toolResult', callId, ok: true, output: sign })
   record('completed', sign)
   await say(`Revision r${sign.number} passed all checks. Review and approve it in the Signs view.`)
+  send({ type: 'turnFinished' })
+}
+
+/** A part summary like the Rust `BuildResult`, from the mock part revision. */
+function mockPartResult(overrides: Partial<BuildResult>): BuildResult {
+  return {
+    revision_id: mockPart.id,
+    lineage_id: mockPart.lineage_id,
+    kind: 'part',
+    number: mockPart.number,
+    title: mockPart.title,
+    build: 'verified',
+    failure_reason: null,
+    stage: null,
+    checks_passed: 8,
+    checks_total: 8,
+    failed_checks: [],
+    warnings: ['print.overhang.clip: about 1218 mm² unsupported at z 21.4 mm'],
+    requirements: ['width 60.02 mm (60 ± 0.2)'],
+    size_mm: [60, 25, 26.8],
+    package_sha256: 'e1'.repeat(32),
+    approval: 'pending',
+    print_validation: 'not_tested',
+    requested_by: 'agent',
+    created_at: new Date().toISOString(),
+    reused: false,
+    shown: true,
+    views: ['isometric', 'front', 'top'],
+    views_missing: [],
+    ...overrides,
+  }
+}
+
+/** The design's repair loop, scripted: a fillet too large fails at generate, then the repair verifies. */
+async function runMockPartTurn(
+  send: (event: AgentEvent) => void,
+  say: (reply: string) => Promise<void>,
+  cancelled: () => boolean,
+  now: () => string,
+): Promise<void> {
+  const builds = [
+    {
+      args: { kind: 'part', spec: { title: mockPart.title, params: { ...mockPart.spec.params, fillet: 99 } } },
+      steps: ['spec_validated'] as BuildStep[],
+      result: mockPartResult({
+        revision_id: mockPart.parent_id ?? mockPart.id,
+        number: 1,
+        build: 'failed',
+        stage: 'generate',
+        failure_reason: 'generate: line 10: ValueError: Failed creating a fillet with radius of 99, try a smaller value',
+        checks_passed: 0,
+        checks_total: 0,
+        warnings: [],
+        requirements: [],
+        size_mm: null,
+        package_sha256: null,
+        views: [],
+      }),
+      reply: 'The fillet radius was too large for the jaw edge. Fixing it and building again in the same design.',
+    },
+    {
+      args: { kind: 'part', spec: { title: mockPart.title, params: mockPart.spec.params }, lineage_id: mockPart.lineage_id },
+      steps: BUILD_STEPS,
+      result: mockPartResult({}),
+      reply: 'Revision r2 verified, 8 of 8 checks, with one overhang warning. It waits for your approval in the app.',
+    },
+  ]
+  await say('Building a six-cable desk clip, 60 mm wide, for an 18 mm desk.')
+  for (const build of builds) {
+    const callId = crypto.randomUUID()
+    send({ type: 'toolCall', callId, name: 'build', args: build.args })
+    for (const step of build.steps) {
+      await sleep(STEP_MS / 3)
+      if (cancelled()) {
+        send({ type: 'turnCancelled' })
+        return
+      }
+      send({ type: 'toolProgress', callId, step })
+    }
+    send({ type: 'toolResult', callId, ok: true, output: build.result })
+    mockAgent.history.push({ role: 'tool', callId, name: 'build', args: build.args, status: 'completed', output: build.result, createdAt: now() })
+    await say(build.reply)
+  }
   send({ type: 'turnFinished' })
 }
