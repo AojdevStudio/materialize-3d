@@ -24,7 +24,7 @@ RUN sed "s/@SNAPSHOT@/${DEBIAN_SNAPSHOT}/" /tmp/snapshot.sources > /etc/apt/sour
  && rm -rf /var/lib/apt/lists/* \
  && find /var/log -type f -delete
 RUN groupadd -g 1000 job && useradd -u 1000 -g 1000 -M -d /nonexistent -s /usr/sbin/nologin job
-COPY guest/materialize.py guest/m3d_text.py /usr/local/lib/python3.13/site-packages/
+COPY guest/materialize.py guest/m3d_text.py guest/step_names.py /usr/local/lib/python3.13/site-packages/
 COPY guest/init guest/agent.py guest/runner.py guest/inspector.py /opt/m3d/
 # COPY keeps the checkout's file modes, which follow the umask of whoever cloned it, so every mode is set here.
 # (COPY --chmod would also apply the file mode to the /opt/m3d directory it creates.)
@@ -34,9 +34,9 @@ COPY guest/init guest/agent.py guest/runner.py guest/inspector.py /opt/m3d/
 # The import check fails the build if a wheel needs a system library the image lacks; -B keeps it from writing.
 RUN chmod 0755 /opt/m3d/init \
  && chmod 0644 /opt/m3d/*.py /usr/local/lib/python3.13/site-packages/materialize.py \
-      /usr/local/lib/python3.13/site-packages/m3d_text.py \
+      /usr/local/lib/python3.13/site-packages/m3d_text.py /usr/local/lib/python3.13/site-packages/step_names.py \
  && mkdir -m 0755 /job \
  && PYTHONHASHSEED=0 PYTHONDONTWRITEBYTECODE=1 \
       python -m compileall -q -f --invalidation-mode unchecked-hash /usr/local/lib/python3.13 /opt/m3d \
- && python -I -B -c "import build123d, materialize, m3d_text, OCP.BRepMesh, OCP.STEPControl" \
+ && python -I -B -c "import build123d, materialize, m3d_text, step_names, OCP.BRepMesh, OCP.STEPControl" \
  && rm -rf /usr/share/doc /usr/share/man /usr/share/locale /var/cache/* /root/.cache

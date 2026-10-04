@@ -6,8 +6,8 @@
       "bytes": 7399432
     },
     "rootfs.img": {
-      "sha256": "b39d607bc4d881e8109217b94029f9c8e4df9801d6784381996950b2ebddd4dc",
-      "bytes": 587726848
+      "sha256": "51553a5a7c1ffc1998cacc020eb52cd815d0a433fcbdaceb36d4d1717a2ef4e4",
+      "bytes": 587735040
     },
     "job.img": {
       "sha256": "71045302f36c872d522346e3211a59ea4753d7708d28f438973cdfb43b3ed697",
@@ -18,7 +18,7 @@
       "bytes": 776704
     }
   },
-  "rootfs_installed_bytes": 1203722430,
+  "rootfs_installed_bytes": 1203729681,
   "inputs": {
     "python_base": "python:3.13-slim-trixie@sha256:bb2988715db2cf7ace7b53f38f3cffbef7c7046a656bee66245eb0ed386e2e81",
     "debian_snapshot": "20260918T000000Z",
