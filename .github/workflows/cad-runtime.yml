@@ -17,10 +17,15 @@
 # A third guard sits outside the jobs: scripts/ci/runner-guard.sh on each runner
 # host stops that host's runner if the policy ever reads differently.
 #
-# Both jobs run on every event, so their check-runs exist on every pull request.
+# Every job runs on every event, so its check-run exists on every pull request.
 # On a pull request that changes nothing the runtime is built, bundled, or tested
-# from (scripts/ci/cad-runtime-scope.sh), they skip the heavy steps and succeed
-# in seconds. Pushes to main and manual runs always do the full work.
+# from (scripts/ci/cad-runtime-scope.sh), the jobs skip the heavy steps and
+# succeed in seconds. Pushes to main and manual runs always do the full work.
+#
+# The two part-kind jobs build the app's `part` kind on a real CAD backend and
+# slice with the real Bambu Studio: the amd64 image under QEMU's microvm machine
+# on the Linux runner (the app's `linux-cad-test` feature, which no release
+# enables), and the arm64 image on Apple's Virtualization framework on the Mac.
 name: CAD runtime
 
 on:
@@ -84,7 +89,7 @@ jobs:
               printf '\n#### %s\n\n```json\n%s\n```\n' "$arch" "$(cat "cad-runtime/out/$arch/pins.json")"
             done
           } >> "$GITHUB_STEP_SUMMARY"
-      - name: Hand the arm64 runtime to the Mac job
+      - name: Hand the arm64 runtime to the Mac jobs
         if: steps.scope.outputs.relevant == 'true'
         uses: actions/upload-artifact@v4
         with:
@@ -95,6 +100,18 @@ jobs:
             cad-runtime/out/arm64/job.img
             cad-runtime/out/arm64/hostile-initramfs.cpio
             cad-runtime/out/arm64/pins.json
+          if-no-files-found: error
+          retention-days: 7
+      - name: Hand the amd64 runtime to the Linux part-kind job
+        if: steps.scope.outputs.relevant == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: cad-runtime-amd64
+          path: |
+            cad-runtime/out/amd64/vmlinux
+            cad-runtime/out/amd64/rootfs.img
+            cad-runtime/out/amd64/job.img
+            cad-runtime/out/amd64/pins.json
           if-no-files-found: error
           retention-days: 7
 
@@ -128,13 +145,23 @@ jobs:
       - name: Library tests
         if: env.RELEVANT == 'true'
         run: cargo test --locked
-      - name: Clippy, including the macOS VM driver
+      - name: Clippy, including the macOS VM driver, with and without the restriction-test command
         if: env.RELEVANT == 'true'
-        run: cargo clippy --locked --all-targets -- -D warnings
-      - name: Build the helper and sign it ad hoc with the virtualization entitlement
+        run: |
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo clippy --locked --all-targets --features restriction-tests -- -D warnings
+      - name: A release helper has no hostile command
         if: env.RELEVANT == 'true'
         run: |
           cargo build --release --locked
+          code=0
+          target/release/materialize-cad-host hostile --runtime ../cad-runtime/out/arm64 --case valid --out out/no-hostile \
+            > /dev/null || code=$?
+          test "$code" = 64
+      - name: Build the helper with the restriction-test command and sign it ad hoc with the virtualization entitlement
+        if: env.RELEVANT == 'true'
+        run: |
+          cargo build --release --locked --features restriction-tests
           codesign -s - -f --options runtime --entitlements entitlements.plist target/release/materialize-cad-host
       - name: The runtime matches the pins compiled into the helper
         if: env.RELEVANT == 'true'
@@ -161,3 +188,116 @@ jobs:
             cad-host/out/clip/result.json
           if-no-files-found: ignore
           retention-days: 14
+
+  part-linux:
+    name: CAD part kind on the Linux backend
+    needs: images
+    if: >-
+      github.actor != 'dependabot[bot]' && (
+      github.event_name == 'push' || github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+      && github.event.pull_request.user.login != 'dependabot[bot]'))
+    runs-on: [self-hosted, Linux, X64, m3d-linux-kvm]
+    timeout-minutes: 90
+    defaults:
+      run:
+        working-directory: src-tauri
+    env:
+      RELEVANT: ${{ needs.images.outputs.relevant }}
+      # Outside the checkout, which actions/checkout cleans, so a run reuses the last one's build.
+      CARGO_TARGET_DIR: ${{ github.workspace }}/../m3d-target-part-linux
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Nothing the CAD runtime is built, bundled, or tested from changed
+        if: env.RELEVANT != 'true'
+        run: echo "No CAD runtime path changed; the part-kind tests are skipped and this check passes." >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/download-artifact@v4
+        if: env.RELEVANT == 'true'
+        with:
+          name: cad-runtime-amd64
+          path: cad-runtime/out/amd64
+      - name: The runner can boot a microVM (KVM, vhost-vsock, QEMU)
+        if: env.RELEVANT == 'true'
+        run: |
+          test -r /dev/kvm -a -w /dev/kvm || { echo "the runner user cannot open /dev/kvm (add it to the kvm group)"; exit 1; }
+          test -w /dev/vhost-vsock || { echo "the runner user cannot open /dev/vhost-vsock"; exit 1; }
+          qemu-system-x86_64 --version
+      # Before Bambu Studio is installed: its BAMBU_STUDIO_CLI in the job environment would override the setting
+      # the missing-Bambu-Studio unit test stores.
+      - name: Unit tests with the Linux test backend compiled in
+        if: env.RELEVANT == 'true'
+        run: cargo test --lib --locked --features linux-cad-test -- fabrication actions
+      - name: Install Bambu Studio 02.08.02.61
+        if: env.RELEVANT == 'true'
+        working-directory: .
+        run: scripts/ci/install-bambu-linux.sh
+      - name: Proof parts, support warnings, a failing fillet, and a hostile script, on the real backend and slicer
+        if: env.RELEVANT == 'true'
+        env:
+          M3D_CAD_RUNTIME: ${{ github.workspace }}/cad-runtime/out/amd64
+        run: >
+          cargo test --lib --locked --features linux-cad-test fabrication::kinds::part::backend_tests
+          -- --ignored --nocapture --test-threads=1
+
+  part-macos:
+    name: CAD part kind on the macOS backend
+    needs: images
+    if: >-
+      github.actor != 'dependabot[bot]' && (
+      github.event_name == 'push' || github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+      && github.event.pull_request.user.login != 'dependabot[bot]'))
+    runs-on: [self-hosted, macOS, ARM64, m3d-mac-vz]
+    timeout-minutes: 90
+    defaults:
+      run:
+        working-directory: src-tauri
+    env:
+      RELEVANT: ${{ needs.images.outputs.relevant }}
+      CARGO_TARGET_DIR: ${{ github.workspace }}/../m3d-target-part-macos
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Nothing the CAD runtime is built, bundled, or tested from changed
+        if: env.RELEVANT != 'true'
+        run: echo "No CAD runtime path changed; the part-kind tests are skipped and this check passes." >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/download-artifact@v4
+        if: env.RELEVANT == 'true'
+        with:
+          name: cad-runtime-arm64
+          path: cad-runtime/out/arm64
+      - name: Build the release helper and sign it ad hoc with the virtualization entitlement
+        if: env.RELEVANT == 'true'
+        working-directory: cad-host
+        run: |
+          cargo build --release --locked --target-dir ../../m3d-target-cad-host
+          cp ../../m3d-target-cad-host/release/materialize-cad-host "$RUNNER_TEMP/materialize-cad-host"
+          codesign -s - -f --options runtime --entitlements entitlements.plist "$RUNNER_TEMP/materialize-cad-host"
+      - name: Install Bambu Studio 02.08.02.61
+        if: env.RELEVANT == 'true'
+        working-directory: .
+        run: scripts/ci/install-bambu-macos.sh
+      - name: Proof parts, support warnings, a failing fillet, and a hostile script, on the real backend and slicer
+        if: env.RELEVANT == 'true'
+        env:
+          M3D_CAD_HELPER: ${{ runner.temp }}/materialize-cad-host
+          M3D_CAD_RUNTIME: ${{ github.workspace }}/cad-runtime/out/arm64
+        run: >
+          cargo test --lib --locked fabrication::kinds::part::backend_tests
+          -- --ignored --nocapture --test-threads=1
+      - name: The app binary builds the cable clip with the helper and runtime laid out as in the bundle
+        if: env.RELEVANT == 'true'
+        run: |
+          cargo build --locked
+          app="$RUNNER_TEMP/self-test/Materialize 3D.app"
+          rm -rf "$RUNNER_TEMP/self-test"
+          mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources/cad-runtime"
+          cp "$CARGO_TARGET_DIR/debug/materialize-3d" "$RUNNER_TEMP/materialize-cad-host" "$app/Contents/MacOS/"
+          for file in Image rootfs.img job.img; do
+            ln -s "$GITHUB_WORKSPACE/cad-runtime/out/arm64/$file" "$app/Contents/Resources/cad-runtime/$file"
+          done
+          "$app/Contents/MacOS/materialize-3d" --cad-self-test "$RUNNER_TEMP/self-test/out" > "$RUNNER_TEMP/self-test/clip.json"
+          jq -e '.build == "verified" and .step_inside_package' "$RUNNER_TEMP/self-test/clip.json"

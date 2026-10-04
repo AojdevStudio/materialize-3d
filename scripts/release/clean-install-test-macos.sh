@@ -6,11 +6,15 @@
 # with an empty home and only the system PATH: the DMG lands in ~/Downloads with a quarantine attribute as a browser
 # would set it, Gatekeeper assesses the DMG and the app, the app is copied into ~/Applications (a standard account
 # cannot write /Applications), check-app-bundle.sh checks it, and the bundled helper, still quarantined, verifies
-# its runtime, boots both guests, and builds the cable clip (cad-host/spike/cable-clip-fillet-first.py). Any failure
+# its runtime, boots both guests, and builds the cable clip (cad-host/spike/cable-clip-fillet-first.py). Then the app
+# itself, still quarantined, builds the same clip through its own part kind and pipeline (`--cad-self-test`): it
+# verifies its bundled helper and runtime, runs both guests, checks the mesh, and slices with Bambu Studio. Any failure
 # fails the run. The account and its home are deleted on exit, and a teardown that leaves anything behind fails the
 # run too; evidence, teardown.txt included, stays in ~/m3d-verify/clean-install-<run>/.
 #
-# Needs Apple Silicon, macOS 26 or later, and sudo without a password prompt (to create and delete the account).
+# Needs Apple Silicon, macOS 26 or later, sudo without a password prompt (to create and delete the account), and a
+# validated Bambu Studio the test account can run: in /Applications, or at BAMBU_STUDIO_CLI (a path the account can
+# read, such as one under /Users/Shared), which the account's otherwise empty environment receives.
 # What "clean" covers and what it does not is in docs/releasing.md.
 set -euo pipefail
 die() { echo "clean-install: $*" >&2; exit 1; }
@@ -200,7 +204,8 @@ fi
 started="$(date '+%Y-%m-%d %H:%M:%S')"
 set +e
 sudo -n -u "$user" -H env -i HOME="$home" USER="$user" TMPDIR="$home/tmp" PATH=/usr/bin:/bin:/usr/sbin:/sbin \
-  SHARED="$shared" /bin/bash -s <<'BODY' 2>&1 | tee "$evidence/actions.log"
+  SHARED="$shared" ${BAMBU_STUDIO_CLI:+BAMBU_STUDIO_CLI="$BAMBU_STUDIO_CLI"} /bin/bash -s <<'BODY' 2>&1 \
+  | tee "$evidence/actions.log"
 set -euo pipefail
 cd "$HOME"
 mkdir -p Downloads Applications evidence tmp spike
@@ -261,6 +266,17 @@ facts="$(/usr/bin/jq -r '[.outcome, (.bodies | length), .bodies[0].mesh.closed_m
 log "result: outcome, bodies, closed, non-degenerate, outward, triangles = $facts"
 read -r outcome bodies closed nondeg outward _ <<<"$facts"
 [[ "$outcome $bodies $closed $nondeg $outward" == "accepted 1 true true true" ]] || fail "the clip is not a closed mesh"
+
+log "== the app itself, still quarantined, builds the cable clip: its helper and runtime, the part kind, Bambu Studio"
+started=$(date +%s)
+"$app/Contents/MacOS/materialize-3d" --cad-self-test "$PWD/out/app-clip" > evidence/app-clip.json \
+  2> evidence/app-clip.stderr || { cat evidence/app-clip.stderr; fail "the app could not build the cable clip"; }
+log "app build took $(( $(date +%s) - started )) s"
+facts="$(/usr/bin/jq -r '[.build, .step_inside_package,
+  ([.checks[] | select((.advisory | not) and (.passed | not))] | length)] | map(tostring) | join(" ")' \
+  evidence/app-clip.json)"
+log "app result: build, STEP inside the package, failed blocking checks = $facts"
+[[ "$facts" == "verified true 0" ]] || fail "the app's cable clip did not verify"
 log "quarantine on the helper after the run: $(xattr -p com.apple.quarantine "$helper" 2>/dev/null || echo none)"
 log "done"
 BODY
