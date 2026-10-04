@@ -7,7 +7,7 @@
 # other than all_external_contributors stops the runner service at once. A read that fails (gh exits non-zero, or
 # prints anything but one of GitHub's documented values) is retried 5 times over about 75 seconds, because GitHub's
 # API has brief outages; only when every attempt fails does the guard stop the runner. Either way it then exits 1,
-# so the timer that runs it records a failure. It never starts a runner: after it trips, a person reads the policy
+# so the timer that runs it records a failure, or 3 when it cannot confirm the runner stopped. It never starts a runner: after it trips, a person reads the policy
 # and restarts the service (docs/ci-runners.md). A CI job cannot do this check itself: GITHUB_TOKEN cannot read the
 # policy, and the owner's credential must never sit in a job, least of all on the day the policy has changed.
 # Runs every 5 minutes: a systemd timer on dev-substrate, a LaunchAgent on the Mac mini.
@@ -73,21 +73,40 @@ if (( read_ok )); then
   log "fork approval policy is $policy, not $want; stopping the runner"
 fi
 
+# Stops the runner and confirms it is down. On macOS launchd knows the service by the plist's Label, which need
+# not match the file name, so the Label is read from the plist; a service already gone needs no bootout.
 stopped=0
 case "$kind" in
   linux)
-    sudo -n systemctl stop "$target" || log "systemctl stop $target failed"
+    if ! out="$(sudo -n systemctl stop "$target" 2>&1)"; then log "systemctl stop $target failed: ${out:0:200}"; fi
     if ! systemctl is-active --quiet "$target"; then stopped=1; fi
     ;;
   macos)
-    label="$(basename "$target" .plist)"
-    launchctl bootout "gui/$(id -u)" "$target" 2>/dev/null || true   # fails when it is already unloaded
-    if ! launchctl print "gui/$(id -u)/$label" >/dev/null 2>&1; then stopped=1; fi
+    domain="gui/$(id -u)"
+    if ! label="$(plutil -extract Label raw "$target" 2>&1)" || [[ -z "$label" ]]; then
+      log "cannot read the Label from $target: ${label:0:200}"
+    elif ! launchctl print "$domain" >/dev/null 2>&1; then
+      log "cannot read launchd domain $domain, so the stop cannot be confirmed"
+    else
+      if launchctl print "$domain/$label" >/dev/null 2>&1; then
+        if ! out="$(launchctl bootout "$domain/$label" 2>&1)"; then
+          log "launchctl bootout $domain/$label failed: ${out:0:200}"
+        fi
+      fi
+      # bootout returns while launchd is still tearing the service down, so wait up to 30 seconds for it to go.
+      for _ in $(seq 1 30); do
+        if ! launchctl print "$domain/$label" >/dev/null 2>&1; then
+          stopped=1
+          break
+        fi
+        sleep 1
+      done
+    fi
     ;;
 esac
 if (( stopped )); then
   log "the runner is stopped; restart it by hand once the policy reads $want again"
-else
-  log "COULD NOT STOP the runner ($target)"
+  exit 1
 fi
-exit 1
+log "COULD NOT CONFIRM the runner is stopped ($target); stop it by hand"
+exit 3
