@@ -2,7 +2,7 @@ use std::io::{Cursor, Write};
 
 use serde_json::json;
 
-use super::mesh::{read, read_3mf_expanding_to, MAX_ATTRIBUTES, MAX_ATTRIBUTE_BYTES, MAX_SHELLS};
+use super::mesh::{read, read_3mf_expanding_to, MAX_ATTRIBUTES, MAX_ATTRIBUTE_BYTES};
 use super::*;
 use crate::fabrication::kind::{find, Kind, KindDriver};
 use crate::fabrication::printer::P2S_04;
@@ -358,33 +358,6 @@ fn a_zip64_entry_is_refused() {
     assert_eq!(read(&bytes, Units::Mm).map(drop), Err(MeshImportError::Zip64));
 }
 
-/// One body per file: an ASCII STL with two `solid` blocks, and a mesh of
-/// two separate closed solids in any format, are refused. A hollow body,
-/// whose cavity's shell faces inward, is still one.
-#[test]
-fn separate_solids_in_one_file_are_refused_and_a_cavity_is_not_a_solid() {
-    let a = cuboid([0.0, 0.0, 0.0], [10.0, 10.0, 10.0]);
-    let (mut v, mut t) = cuboid([20.0, 0.0, 0.0], [30.0, 10.0, 10.0]);
-    t = t.iter().map(|tri| tri.map(|i| i + 8)).collect();
-    t.extend(a.1.iter().copied());
-    v.splice(0..0, a.0.iter().copied());
-    let two = (v, t);
-
-    let mut ascii = String::from_utf8(ascii_stl(&a)).expect("text");
-    ascii.push_str(&String::from_utf8(ascii_stl(&cuboid([20.0, 0.0, 0.0], [30.0, 10.0, 10.0]))).expect("text"));
-    assert_eq!(read(ascii.as_bytes(), Units::Mm).map(drop), Err(MeshImportError::MultipleObjects(2)));
-    for (why, bytes) in [("a binary STL", binary_stl(&two)), ("a 3MF object", one_body_3mf(&two))] {
-        let refused = read(&bytes, Units::Mm).map(drop).expect_err(why);
-        assert!(refused.to_string().contains("2 separate solids"), "{why}: {refused}");
-    }
-
-    let (mut v, mut t) = cuboid([0.0, 0.0, 0.0], [30.0, 30.0, 30.0]);
-    let (cv, ct) = cuboid([10.0, 10.0, 10.0], [20.0, 20.0, 20.0]);
-    v.extend(cv);
-    t.extend(ct.iter().map(|[a, b, c]| [a + 8, c + 8, b + 8])); // the cavity faces inward
-    assert!(read(&binary_stl(&(v, t)), Units::Mm).is_ok(), "a hollow cube is one body");
-}
-
 /// A unit the 3MF specification does not name is called "an unknown unit";
 /// the file's own text is never repeated.
 #[test]
@@ -414,21 +387,31 @@ fn joined(pieces: &[Piece]) -> Piece {
     (v, t)
 }
 
-/// An inward shell is a cavity only inside the body, by the body's winding
-/// number. One beside the body is a separate solid, in every format, and
-/// more shells than the cap are refused before any is tested.
+/// An imported part is exactly one shell after welding, whatever the
+/// orientation or placement of any other: a second solid, a sealed internal
+/// cavity (a stated limit), shells that cross, and an inverted shell outside
+/// the body are all refused, in every format. One shell is read.
 #[test]
-fn an_inverted_shell_counts_as_a_cavity_only_inside_the_body() {
+fn a_mesh_of_more_than_one_shell_is_refused() {
     let cube = shell([0.0, 0.0, 0.0], 30.0, false);
-    let cavity = joined(&[cube.clone(), shell([10.0, 10.0, 10.0], 10.0, true)]);
-    assert!(read(&binary_stl(&cavity), Units::Mm).is_ok(), "a cavity inside the cube is part of one body");
-    let beside = joined(&[cube.clone(), shell([40.0, 0.0, 0.0], 10.0, true)]);
-    for (why, bytes) in [("a binary STL", binary_stl(&beside)), ("a 3MF object", one_body_3mf(&beside))] {
-        assert_eq!(read(&bytes, Units::Mm).map(drop), Err(MeshImportError::SeparateSolids(2)), "{why}");
+    let mut ascii = String::from_utf8(ascii_stl(&cube)).expect("text");
+    ascii.push_str(&String::from_utf8(ascii_stl(&shell([40.0, 0.0, 0.0], 10.0, false))).expect("text"));
+    assert_eq!(read(ascii.as_bytes(), Units::Mm).map(drop), Err(MeshImportError::MultipleObjects(2)));
+    for (why, pieces) in [
+        ("two disjoint solids", vec![cube.clone(), shell([40.0, 0.0, 0.0], 10.0, false)]),
+        ("a sealed internal cavity", vec![cube.clone(), shell([10.0, 10.0, 10.0], 10.0, true)]),
+        ("crossing shells", vec![cube.clone(), shell([20.0, 20.0, 20.0], 30.0, false)]),
+        ("an inverted shell outside the body", vec![cube.clone(), shell([40.0, 0.0, 0.0], 10.0, true)]),
+        ("three shells", vec![cube.clone(), shell([40.0, 0.0, 0.0], 10.0, false), shell([60.0, 0.0, 0.0], 10.0, true)]),
+    ] {
+        let mesh = joined(&pieces);
+        for (format, bytes) in [("binary STL", binary_stl(&mesh)), ("3MF", one_body_3mf(&mesh))] {
+            assert_eq!(read(&bytes, Units::Mm).map(drop), Err(MeshImportError::SeparateShells(pieces.len())), "{why}, {format}");
+        }
     }
-    let many: Vec<Piece> =
-        std::iter::once(cube).chain((0..MAX_SHELLS).map(|i| shell([40.0 + 3.0 * i as f64, 0.0, 0.0], 1.0, true))).collect();
-    assert_eq!(read(&binary_stl(&joined(&many)), Units::Mm).map(drop), Err(MeshImportError::TooManyShells));
+    for (format, bytes) in [("binary STL", binary_stl(&cube)), ("3MF", one_body_3mf(&slab_on_a_post(0.0)))] {
+        assert!(read(&bytes, Units::Mm).is_ok(), "one shell, {format}");
+    }
 }
 
 /// An attribute's whole qualified name is capped, prefix included.

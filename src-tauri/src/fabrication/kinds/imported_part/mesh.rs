@@ -9,10 +9,10 @@
 //! for a DTD, for more than [`MAX_ATTRIBUTES`] attributes on an element, or
 //! for an attribute over [`MAX_ATTRIBUTE_BYTES`]; and the mesh is refused
 //! past [`MAX_VERTICES`], [`MAX_TRIANGLES`] (the layer checks' slicing cap),
-//! or a coordinate past [`MAX_ABS_MM`]. A file is one body: more than one
-//! 3MF object, ASCII STL `solid`, or separate solid in the welded mesh is
-//! refused. Nothing in the file is run, and no error repeats the file's own
-//! text.
+//! or a coordinate past [`MAX_ABS_MM`]. A file is one body of one closed
+//! shell: more than one 3MF object, ASCII STL `solid`, or shell in the
+//! welded mesh is refused, so a sealed internal cavity is refused too.
+//! Nothing in the file is run, and no error repeats the file's own text.
 
 use std::collections::HashMap;
 use std::io::{BufReader, Cursor, Read};
@@ -24,7 +24,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::fabrication::cad_worker::MeshLimits;
 use crate::fabrication::inputs::MAX_INPUT_BYTES;
-use crate::fabrication::kinds::part::measure::Triangles;
 use crate::fabrication::layers::slice;
 use crate::fabrication::model::Mesh;
 use crate::fabrication::printer::{Um, UM_PER_MM};
@@ -113,10 +112,8 @@ pub enum MeshImportError {
     UnitMismatch { found: &'static str, given: &'static str },
     #[error("the file holds {0} objects; import one body at a time")]
     MultipleObjects(usize),
-    #[error("the mesh holds {0} separate solids; import one body at a time")]
-    SeparateSolids(usize),
-    #[error("the mesh has more than {MAX_SHELLS} separate shells")]
-    TooManyShells,
+    #[error("the mesh holds {0} separate shells; import one body of one closed shell at a time")]
+    SeparateShells(usize),
     #[error("the 3MF refers to a mesh in another file")]
     ExternalMesh,
     #[error("the mesh has more than {MAX_VERTICES} vertices")]
@@ -202,28 +199,22 @@ impl Welder {
         let Some(lowest) = self.vertices.iter().map(|v| v[2]).min() else {
             return Err(MeshImportError::NoTriangles);
         };
-        match solids(&self.vertices, &self.triangles)? {
-            0 | 1 => {}
-            many => return Err(MeshImportError::SeparateSolids(many)),
+        match shells(self.vertices.len(), &self.triangles) {
+            1 => {}
+            many => return Err(MeshImportError::SeparateShells(many)),
         }
         let vertices = self.vertices.into_iter().map(|[x, y, z]| [x, y, z - lowest]).collect();
         Ok(Mesh::new(vertices, self.triangles).expect("welding keeps every index in range"))
     }
 }
 
-/// Most shells (groups of triangles joined through shared welded vertices)
-/// one file may hold. Each shell that is not the body is tested against the
-/// body's triangles, so this bounds that work at 63 times the triangle cap.
-pub const MAX_SHELLS: usize = 64;
-
-/// How many separate solids `triangles` make. A shell is a group of
-/// triangles joined through shared welded vertices, found by a union-find
-/// over the vertices, linear in the capped counts. A shell with a positive
-/// signed volume is a solid. A shell with no positive volume is a cavity only
-/// when it lies inside the one solid; one outside, such as an inverted shell
-/// beside the body, is a separate solid too. With no solid at all the count
-/// is 0 and the mesh checks judge it.
-fn solids(vertices: &[[Um; 3]], triangles: &[[u32; 3]]) -> Result<usize> {
+/// How many shells `triangles` make: groups of triangles joined through
+/// shared welded vertices, found by a union-find over the vertices, linear in
+/// the capped counts. An imported part must be exactly one shell, whatever
+/// each shell's orientation, so a second solid, a sealed internal cavity, an
+/// inverted shell, or a shell crossing the body is refused without judging
+/// how the shells lie. A single shell that crosses itself is not caught here.
+fn shells(vertices: usize, triangles: &[[u32; 3]]) -> usize {
     fn root(parent: &mut [u32], mut i: u32) -> u32 {
         while parent[i as usize] != i {
             parent[i as usize] = parent[parent[i as usize] as usize];
@@ -231,48 +222,25 @@ fn solids(vertices: &[[Um; 3]], triangles: &[[u32; 3]]) -> Result<usize> {
         }
         i
     }
-    let mut parent: Vec<u32> = (0..u32::try_from(vertices.len()).expect("bounded by MAX_VERTICES")).collect();
+    let mut parent: Vec<u32> = (0..u32::try_from(vertices).expect("bounded by MAX_VERTICES")).collect();
+    let mut groups = 0;
+    let mut used = vec![false; vertices];
     for t in triangles {
+        for &v in t {
+            if !std::mem::replace(&mut used[v as usize], true) {
+                groups += 1;
+            }
+        }
         let a = root(&mut parent, t[0]);
         for &v in &t[1..] {
             let b = root(&mut parent, v);
             if b != a {
                 parent[b as usize] = a;
+                groups -= 1;
             }
         }
     }
-    // Each shell's root, signed volume (times six), and one of its vertices.
-    let mut shells: Vec<(u32, i128, u32)> = Vec::new();
-    let mut index: HashMap<u32, usize> = HashMap::new();
-    let mut shell_of = Vec::with_capacity(triangles.len());
-    for t in triangles {
-        let r = root(&mut parent, t[0]);
-        let k = match index.get(&r) {
-            Some(&k) => k,
-            None => {
-                if shells.len() == MAX_SHELLS {
-                    return Err(MeshImportError::TooManyShells);
-                }
-                shells.push((r, 0, t[0]));
-                index.insert(r, shells.len() - 1);
-                shells.len() - 1
-            }
-        };
-        let [a, b, c] = t.map(|i| vertices[i as usize].map(i128::from));
-        let cross = [b[1] * c[2] - b[2] * c[1], b[2] * c[0] - b[0] * c[2], b[0] * c[1] - b[1] * c[0]];
-        shells[k].1 += a[0] * cross[0] + a[1] * cross[1] + a[2] * cross[2];
-        shell_of.push(k);
-    }
-    let solid: Vec<usize> = (0..shells.len()).filter(|&k| shells[k].1 > 0).collect();
-    let [body] = solid[..] else { return Ok(solid.len()) };
-    let mm = |i: u32| vertices[i as usize].map(|c| c as f64 / UM_PER_MM as f64);
-    let outer = Triangles(triangles.iter().zip(&shell_of).filter(|(_, k)| **k == body).map(|(t, _)| t.map(mm)).collect());
-    // Two shells share no welded vertex. A shell that does not cross the
-    // body's surface is connected and never meets it, so it lies wholly
-    // inside the body or wholly outside: one of its vertices decides which,
-    // by the body's generalized winding number (more than one half inside).
-    let outside = (0..shells.len()).filter(|&k| k != body && !outer.inside(mm(shells[k].2))).count();
-    Ok(1 + outside)
+    groups
 }
 
 // ─── STL ──────────────────────────────────────────────────────────────────────
