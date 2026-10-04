@@ -266,8 +266,9 @@ fn unit(axis: Axis, sign: f64) -> [f64; 3] {
     d
 }
 
-/// Every triangle of every body, in millimeters.
-struct Triangles(Vec<[[f64; 3]; 3]>);
+/// Every triangle of every body, in millimeters. The import reader tests a
+/// cavity's containment with [`Triangles::inside`] too.
+pub(crate) struct Triangles(pub(crate) Vec<[[f64; 3]; 3]>);
 
 impl Triangles {
     fn of(model: &PrintableModel) -> Self {
@@ -308,7 +309,7 @@ impl Triangles {
     /// angle (Van Oosterom and Strackee), so no ray meets an edge or a vertex
     /// twice: a closed outward body winds once around every point inside it
     /// and not at all around any point outside, whatever its triangles share.
-    fn inside(&self, at: [f64; 3]) -> bool {
+    pub(crate) fn inside(&self, at: [f64; 3]) -> bool {
         let mut solid_angle = 0.0;
         for t in &self.0 {
             let [a, b, c] = t.map(|v| sub3(v, at));

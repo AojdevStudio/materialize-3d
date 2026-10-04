@@ -2,7 +2,7 @@ use std::io::{Cursor, Write};
 
 use serde_json::json;
 
-use super::mesh::{read, read_3mf_expanding_to, MAX_ATTRIBUTES, MAX_ATTRIBUTE_BYTES};
+use super::mesh::{read, read_3mf_expanding_to, MAX_ATTRIBUTES, MAX_ATTRIBUTE_BYTES, MAX_SHELLS};
 use super::*;
 use crate::fabrication::kind::{find, Kind, KindDriver};
 use crate::fabrication::printer::P2S_04;
@@ -395,4 +395,92 @@ fn a_unit_mismatch_never_repeats_the_files_unit_text() {
     assert!(crafted.to_string().contains("an unknown unit"), "{crafted}");
     let known = read(&three_mf(&model("centimeter", &object, "<item objectid=\"1\"/>")), Units::Mm).map(drop).expect_err("refused");
     assert_eq!(known.to_string(), "the 3MF says its unit is centimeter, but units is mm; give the unit the file uses");
+}
+
+/// A closed, outward cube shell of side `size` mm at `at`, or an inward one.
+fn shell(at: [f64; 3], size: f64, inward: bool) -> Piece {
+    let (v, t) = cuboid(at, [at[0] + size, at[1] + size, at[2] + size]);
+    (v, if inward { t.iter().map(|[a, b, c]| [*a, *c, *b]).collect() } else { t })
+}
+
+/// `pieces` as one mesh, as one STL body or one 3MF object holds them.
+fn joined(pieces: &[Piece]) -> Piece {
+    let (mut v, mut t) = (Vec::new(), Vec::new());
+    for (pv, pt) in pieces {
+        let base = v.len() as u32;
+        v.extend_from_slice(pv);
+        t.extend(pt.iter().map(|tri| tri.map(|i| i + base)));
+    }
+    (v, t)
+}
+
+/// An inward shell is a cavity only inside the body, by the body's winding
+/// number. One beside the body is a separate solid, in every format, and
+/// more shells than the cap are refused before any is tested.
+#[test]
+fn an_inverted_shell_counts_as_a_cavity_only_inside_the_body() {
+    let cube = shell([0.0, 0.0, 0.0], 30.0, false);
+    let cavity = joined(&[cube.clone(), shell([10.0, 10.0, 10.0], 10.0, true)]);
+    assert!(read(&binary_stl(&cavity), Units::Mm).is_ok(), "a cavity inside the cube is part of one body");
+    let beside = joined(&[cube.clone(), shell([40.0, 0.0, 0.0], 10.0, true)]);
+    for (why, bytes) in [("a binary STL", binary_stl(&beside)), ("a 3MF object", one_body_3mf(&beside))] {
+        assert_eq!(read(&bytes, Units::Mm).map(drop), Err(MeshImportError::SeparateSolids(2)), "{why}");
+    }
+    let many: Vec<Piece> =
+        std::iter::once(cube).chain((0..MAX_SHELLS).map(|i| shell([40.0 + 3.0 * i as f64, 0.0, 0.0], 1.0, true))).collect();
+    assert_eq!(read(&binary_stl(&joined(&many)), Units::Mm).map(drop), Err(MeshImportError::TooManyShells));
+}
+
+/// An attribute's whole qualified name is capped, prefix included.
+#[test]
+fn a_qualified_attribute_name_over_the_cap_is_refused() {
+    let piece = slab_on_a_post(0.0);
+    for prefix in [MAX_ATTRIBUTE_BYTES - 3, MAX_ATTRIBUTE_BYTES] {
+        let name = format!("{}:note", "p".repeat(prefix));
+        let object = mesh_object(1, &piece).replacen("<vertex ", &format!("<vertex {name}=\"x\" "), 1);
+        let refused = read(&three_mf(&model("millimeter", &object, "<item objectid=\"1\"/>")), Units::Mm);
+        assert!(matches!(refused, Err(MeshImportError::Malformed(_))), "{} bytes: {refused:?}", name.len());
+    }
+}
+
+/// A one-entry 3MF whose local and central headers carry these extra fields.
+fn with_extra_fields(local: &[u8], central: &[u8]) -> Vec<u8> {
+    let body = model("millimeter", &mesh_object(1, &slab_on_a_post(0.0)), "<item objectid=\"1\"/>");
+    let base = zip_of(&[("3D/3dmodel.model", body.as_bytes())]);
+    let name = b"3D/3dmodel.model";
+    let directory = base.windows(4).rposition(|w| w == b"PK\x01\x02").expect("directory");
+    let end = base.windows(4).rposition(|w| w == b"PK\x05\x06").expect("end record");
+    assert_eq!((&base[28..30], &base[directory + 30..directory + 32]), (&[0, 0][..], &[0, 0][..]), "no extra fields yet");
+    let mut out = base[..30].to_vec();
+    out[28..30].copy_from_slice(&(local.len() as u16).to_le_bytes());
+    out.extend(name);
+    out.extend(local);
+    out.extend(&base[30 + name.len()..directory]);
+    let directory_start = out.len();
+    let mut header = base[directory..directory + 46].to_vec();
+    header[30..32].copy_from_slice(&(central.len() as u16).to_le_bytes());
+    out.extend(header);
+    out.extend(name);
+    out.extend(central);
+    let mut record = base[end..].to_vec();
+    record[12..16].copy_from_slice(&((out.len() - directory_start) as u32).to_le_bytes());
+    record[16..20].copy_from_slice(&(directory_start as u32).to_le_bytes());
+    out.extend(record);
+    out
+}
+
+/// An extra field must parse into whole records: a fragment shorter than a
+/// record's head, or a record that runs past the field, refuses the zip in
+/// either header.
+#[test]
+fn an_incomplete_extra_field_record_is_refused_in_either_header() {
+    let record = [0xfe, 0xca, 2, 0, 7, 7];
+    assert!(read(&with_extra_fields(&record, &record), Units::Mm).is_ok(), "whole records are fine");
+    let mut bad: Vec<Vec<u8>> = [&[1u8][..], &[1, 0], &[1, 0, 8]].iter().map(|tail| [&record[..], tail].concat()).collect();
+    bad.push(vec![0xfe, 0xca, 8, 0, 1, 2]);
+    for extra in &bad {
+        for (header, local, central) in [("local", &extra[..], &[][..]), ("central", &[][..], &extra[..])] {
+            assert_eq!(read(&with_extra_fields(local, central), Units::Mm).map(drop), Err(MeshImportError::BadZip), "{header}: {extra:?}");
+        }
+    }
 }
