@@ -118,8 +118,24 @@ interface RevisionBase {
   updated_at: string
 }
 
+/**
+ * A part's spec as submitted: model-written build123d with its params,
+ * requirements, and filaments. The part view that reads it is unit pr8-gui's.
+ */
+export interface PartSpec {
+  schema_version: number
+  title: string
+  source: string
+  params: Record<string, number | boolean | string>
+  requirements: unknown[]
+  filaments: unknown[]
+}
+
+export type SignRevision = RevisionBase & { kind: 'sign'; spec: SignSpec }
+export type PartRevision = RevisionBase & { kind: 'part'; spec: PartSpec }
+
 /** One revision of a design. `kind` decides the shape of `spec`; each new kind adds a member. */
-export type Revision = RevisionBase & { kind: 'sign'; spec: SignSpec }
+export type Revision = SignRevision | PartRevision
 
 /** The registered kinds. */
 export type Kind = Revision['kind']

@@ -2,7 +2,15 @@ import { invoke } from '@tauri-apps/api/core'
 import { pickSaveTarget } from '../../lib/fileDialog'
 import { useEffect, useState, type ReactNode } from 'react'
 import { useDesignsStore } from '../../stores/designs'
-import { buildWarnings, revisionArtifacts, type Artifacts, type Revision, type RevisionId, type Sha256Hex } from '../../types/designs'
+import {
+  buildWarnings,
+  revisionArtifacts,
+  type Artifacts,
+  type Revision,
+  type RevisionId,
+  type Sha256Hex,
+  type SignRevision,
+} from '../../types/designs'
 import { RevisionRows } from './RevisionRows'
 import {
   approvalAxis,
@@ -59,12 +67,12 @@ function Word({ word }: { word: StateWord }) {
   return <span className={styles[word.tone]}>{word.text}</span>
 }
 
-function sizeText(revision: Revision): string {
+function sizeText(revision: SignRevision): string {
   const { width_mm, height_mm, thickness_mm = DEFAULT_THICKNESS_MM } = revision.spec
   return `${width_mm} x ${height_mm} x ${thickness_mm} mm`
 }
 
-function DesignPreview({ revision }: { revision: Revision }) {
+function DesignPreview({ revision }: { revision: SignRevision }) {
   const preview = usePreview(revision.id, revisionArtifacts(revision) !== null)
 
   return (
@@ -154,7 +162,7 @@ function ChecksTable({ artifacts }: { artifacts: Artifacts }) {
   )
 }
 
-function Materials({ revision, artifacts }: { revision: Revision; artifacts: Artifacts | null }) {
+function Materials({ revision, artifacts }: { revision: SignRevision; artifacts: Artifacts | null }) {
   const effective = artifacts?.effective_settings ?? null
   const slots = [revision.spec.base, ...revision.spec.inks]
 
@@ -352,10 +360,15 @@ interface DesignDetailProps {
   lineage: Revision[]
 }
 
-/** Preview-first review of one revision, with its design's other revisions above the preview. */
+/**
+ * Preview-first review of one revision, with its design's other revisions
+ * above the preview. Only a sign has its view here; a part's view, and its
+ * approval, arrive with unit pr8-gui, so a part shows its state and checks.
+ */
 export function DesignDetail({ revision, lineage }: DesignDetailProps) {
   const open = useDesignsStore((state) => state.open)
   const artifacts = revisionArtifacts(revision)
+  const sign = revision.kind === 'sign' ? revision : null
 
   return (
     <div className={styles.split} data-testid="sign-detail">
@@ -363,7 +376,13 @@ export function DesignDetail({ revision, lineage }: DesignDetailProps) {
         <div className={styles.lineage}>
           <RevisionRows revisions={lineage} variant="lineage" currentId={revision.id} onOpen={(id) => void open(id)} />
         </div>
-        <DesignPreview revision={revision} />
+        {sign ? (
+          <DesignPreview revision={sign} />
+        ) : (
+          <div className={styles.preview} data-testid="part-pending">
+            <span className={styles.muted}>The part view arrives with pr8-gui.</span>
+          </div>
+        )}
       </div>
 
       <div className={styles.right}>
@@ -372,10 +391,10 @@ export function DesignDetail({ revision, lineage }: DesignDetailProps) {
         </h1>
         <Axes revision={revision} />
         {artifacts && <ChecksTable artifacts={artifacts} />}
-        <Materials revision={revision} artifacts={artifacts} />
+        {sign && <Materials revision={sign} artifacts={artifacts} />}
         {artifacts && <Hashes artifacts={artifacts} />}
         {/* Keyed so the export path and print note never carry over to another revision. */}
-        <Actions key={revision.id} revision={revision} />
+        {sign && <Actions key={revision.id} revision={sign} />}
       </div>
     </div>
   )

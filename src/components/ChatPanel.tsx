@@ -25,6 +25,7 @@ import styles from './chat/ChatPanel.module.css'
 // Calls under names the app no longer has render through the Fallback line.
 const toolkit = defineToolkit({
   build: { type: 'backend', render: BuildTool },
+  revise: { type: 'backend', render: BuildTool },
   list: { type: 'backend', render: ToolLine },
   get: { type: 'backend', render: ToolLine },
   show: { type: 'backend', render: ToolLine },
