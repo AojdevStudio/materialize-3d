@@ -7,16 +7,20 @@
 //! Storing the same bytes again reuses the stored file. Every read of a stored
 //! input hashes it again, so a stored file that changed is never built.
 //!
-//! The store is bounded twice: each file by [`MAX_INPUT_BYTES`], and the
-//! whole store by [`MAX_STORE_BYTES`]. A file is stored before its build
-//! runs, so a failed build keeps its input; the total cap is what keeps any
-//! MCP caller from filling the disk through `import_part`.
+//! The store is bounded: each file by [`MAX_INPUT_BYTES`], and the whole
+//! store by the disk space its files take ([`MAX_STORE_BYTES`]) and by their
+//! number ([`MAX_STORE_FILES`]). A file is stored before its build runs, so
+//! a failed build keeps its input; the store caps are what keep any MCP
+//! caller from filling the disk through `import_part`. One process-wide lock
+//! serializes every write, from the size check through the rename, so
+//! concurrent imports cannot pass the caps together.
 //!
 //! The bytes are data. Nothing here or in the kind that reads them runs them.
 
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, PoisonError};
 
 use super::revisions::Sha256Hex;
 
@@ -26,11 +30,24 @@ use super::revisions::Sha256Hex;
 /// cap it is refused; a 3MF from Fusion of a printable part is far smaller.
 pub const MAX_INPUT_BYTES: u64 = 64 << 20;
 
-/// Most bytes the whole store may hold: sixteen files at the per-file cap,
-/// or hundreds of typical parts of a few MiB. A file that would pass it is
+/// Most disk space the store's files may take: sixteen files at the
+/// per-file cap, or hundreds of typical parts of a few MiB. Each file is
+/// charged its allocated space ([`charge`]), not its length, so many tiny
+/// files cannot hold more disk than this. A file that would pass it is
 /// refused. Nothing evicts a stored input, because a revision's spec names
 /// it and a revise rebuilds from it.
 pub const MAX_STORE_BYTES: u64 = 1 << 30;
+/// Most files the store may hold.
+pub const MAX_STORE_FILES: usize = 10_000;
+/// The block a file's space is rounded up to where the filesystem does not
+/// say, and the least one file is charged.
+const BLOCK: u64 = 4096;
+/// What a file being written is named until its rename. Any such file found
+/// while the store's lock is held was left by a crash.
+const STAGED_PREFIX: &str = ".staged-";
+
+/// Serializes every write to any input store in this process.
+static STORE_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Debug, thiserror::Error)]
 pub enum InputError {
@@ -50,20 +67,47 @@ pub enum InputError {
     Changed { expected: Sha256Hex, actual: Sha256Hex },
     #[error("cannot store the input: {0}")]
     Store(io::Error),
-    #[error("the input store at {root} holds {held} bytes; this file would take it past its {max}-byte cap")]
+    #[error("the input store at {root} takes {held} bytes of disk; this file would take it past its {max}-byte cap")]
     StoreFull { root: PathBuf, held: u64, max: u64 },
+    #[error("the input store at {root} holds {max} files, its most")]
+    TooManyFiles { root: PathBuf, max: usize },
 }
 
 /// Content-addressed files under one directory.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InputStore {
     root: PathBuf,
+    max_bytes: u64,
+    max_files: usize,
+}
+
+/// What the store's files take now.
+struct Usage {
+    bytes: u64,
+    files: usize,
+}
+
+/// The disk space `metadata`'s file is charged: its allocated space, and at
+/// least its length rounded up to [`BLOCK`]. A sparse file is charged its
+/// length, and a file a filesystem stores inline still a whole block.
+fn charge(metadata: &fs::Metadata) -> u64 {
+    #[cfg(unix)]
+    let allocated = std::os::unix::fs::MetadataExt::blocks(metadata).saturating_mul(512);
+    #[cfg(not(unix))]
+    let allocated = 0;
+    allocated.max(metadata.len().div_ceil(BLOCK).saturating_mul(BLOCK))
 }
 
 impl InputStore {
     /// The store in `root`, created on first write.
     pub fn new(root: PathBuf) -> Self {
-        Self { root }
+        Self { root, max_bytes: MAX_STORE_BYTES, max_files: MAX_STORE_FILES }
+    }
+
+    /// The store in `root` with smaller caps, so a test can reach them.
+    #[cfg(test)]
+    fn with_caps(root: PathBuf, max_bytes: u64, max_files: usize) -> Self {
+        Self { root, max_bytes, max_files }
     }
 
     fn path_of(&self, sha256: &Sha256Hex) -> PathBuf {
@@ -72,24 +116,30 @@ impl InputStore {
 
     /// Keeps `bytes` under their hash and returns it. Bytes already stored
     /// intact are not written again; a stored copy that changed is replaced.
-    /// New bytes that would take the store past [`MAX_STORE_BYTES`] are
-    /// refused. Two imports at the same moment can each pass the check, so
-    /// the store can exceed the cap by at most one file per concurrent call.
+    /// New bytes are refused when they would take the store past
+    /// `max_bytes` of disk, charged as the growth (a replaced file's space
+    /// is credited), or past `max_files` files. The store's lock is held
+    /// from the check through the rename.
     pub fn put(&self, bytes: &[u8]) -> Result<Sha256Hex, InputError> {
         let sha256 = Sha256Hex::of_bytes(bytes);
         let path = self.path_of(&sha256);
-        match Sha256Hex::of_file(&path) {
+        let _writing = STORE_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
+        let replaced = match Sha256Hex::of_file(&path) {
             Ok(stored) if stored == sha256 => return Ok(sha256),
-            Ok(_) => {}
-            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+            Ok(_) => fs::metadata(&path).map(|m| charge(&m)).map_err(InputError::Store)?,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => 0,
             Err(err) => return Err(InputError::Store(err)),
-        }
-        let held = self.held()?;
-        if held.saturating_add(bytes.len() as u64) > MAX_STORE_BYTES {
-            return Err(InputError::StoreFull { root: self.root.clone(), held, max: MAX_STORE_BYTES });
-        }
+        };
         fs::create_dir_all(&self.root).map_err(InputError::Store)?;
-        let mut staged = tempfile::NamedTempFile::new_in(&self.root).map_err(InputError::Store)?;
+        let usage = self.usage()?;
+        let new = (bytes.len() as u64).div_ceil(BLOCK).saturating_mul(BLOCK);
+        if usage.bytes.saturating_sub(replaced).saturating_add(new) > self.max_bytes {
+            return Err(InputError::StoreFull { root: self.root.clone(), held: usage.bytes, max: self.max_bytes });
+        }
+        if replaced == 0 && usage.files >= self.max_files {
+            return Err(InputError::TooManyFiles { root: self.root.clone(), max: self.max_files });
+        }
+        let mut staged = tempfile::Builder::new().prefix(STAGED_PREFIX).tempfile_in(&self.root).map_err(InputError::Store)?;
         staged.write_all(bytes).map_err(InputError::Store)?;
         staged.as_file().sync_all().map_err(InputError::Store)?;
         let mut read_only = staged.as_file().metadata().map_err(InputError::Store)?.permissions();
@@ -99,21 +149,30 @@ impl InputStore {
         Ok(sha256)
     }
 
-    /// Bytes the store's files hold now.
-    fn held(&self) -> Result<u64, InputError> {
-        let entries = match fs::read_dir(&self.root) {
-            Ok(entries) => entries,
-            Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(0),
-            Err(err) => return Err(InputError::Store(err)),
-        };
-        let mut held = 0u64;
-        for entry in entries {
-            let metadata = entry.and_then(|entry| entry.metadata()).map_err(InputError::Store)?;
+    /// The space and count of the stored files. Called with the store's lock
+    /// held, so a staged file it finds was left by a crash and is removed. An
+    /// entry that is gone before it is read is skipped.
+    fn usage(&self) -> Result<Usage, InputError> {
+        let mut usage = Usage { bytes: 0, files: 0 };
+        for entry in fs::read_dir(&self.root).map_err(InputError::Store)? {
+            let entry = entry.map_err(InputError::Store)?;
+            if entry.file_name().to_string_lossy().starts_with(STAGED_PREFIX) {
+                match fs::remove_file(entry.path()) {
+                    Err(err) if err.kind() != io::ErrorKind::NotFound => return Err(InputError::Store(err)),
+                    _ => continue,
+                }
+            }
+            let metadata = match entry.metadata() {
+                Ok(metadata) => metadata,
+                Err(err) if err.kind() == io::ErrorKind::NotFound => continue,
+                Err(err) => return Err(InputError::Store(err)),
+            };
             if metadata.is_file() {
-                held = held.saturating_add(metadata.len());
+                usage.bytes = usage.bytes.saturating_add(charge(&metadata));
+                usage.files += 1;
             }
         }
-        Ok(held)
+        Ok(usage)
     }
 
     /// The stored bytes of `sha256`, hashed again on the way out.
@@ -220,21 +279,80 @@ mod tests {
         assert_eq!(read_source(&ok).expect("read"), b"solid x");
     }
 
-    /// New bytes that would take the store past its total cap are refused and
-    /// not written; bytes already stored are still reused.
+    /// Every file is charged at least a whole block of disk, so tiny files
+    /// reach the space cap long before their lengths add up to it; the count
+    /// cap refuses one file more; and bytes already stored are still reused.
     #[test]
-    fn the_store_refuses_new_bytes_past_its_total_cap() {
+    fn the_store_charges_disk_space_and_caps_the_file_count() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let store = InputStore::new(dir.path().join("inputs"));
-        let kept = store.put(b"kept mesh").expect("put");
-        // Sparse files: their length counts, and no disk is used.
-        let filler = MAX_STORE_BYTES - b"kept mesh".len() as u64 - 4;
-        File::create(dir.path().join("inputs").join("filler")).expect("create").set_len(filler).expect("grow");
-        assert_eq!(store.put(b"four").expect("exactly at the cap"), Sha256Hex::of_bytes(b"four"));
-        let refused = store.put(b"one more");
-        assert!(matches!(refused, Err(InputError::StoreFull { max: MAX_STORE_BYTES, .. })), "{refused:?}");
-        assert!(matches!(store.get(&Sha256Hex::of_bytes(b"one more")), Err(InputError::Missing(_))), "nothing was written");
-        assert_eq!(store.put(b"kept mesh").expect("reused"), kept, "stored bytes are reused at the cap");
+        let store = InputStore::with_caps(dir.path().join("inputs"), 8 * BLOCK, MAX_STORE_FILES);
+        let mut kept = Vec::new();
+        let refused = loop {
+            match store.put(format!("tiny mesh {}", kept.len()).as_bytes()) {
+                Ok(sha) => kept.push(sha),
+                Err(err) => break err,
+            }
+            assert!(kept.len() <= 8, "{} tiny files passed a cap of 8 blocks", kept.len());
+        };
+        assert!(matches!(refused, InputError::StoreFull { .. }), "{refused:?}");
+        assert!(!kept.is_empty() && kept.len() <= 8, "{} files, about {} bytes long in all", kept.len(), 12 * kept.len());
+        assert_eq!(store.put(b"tiny mesh 0").expect("reused"), kept[0], "stored bytes are reused at the cap");
+
+        let counted = InputStore::with_caps(dir.path().join("counted"), MAX_STORE_BYTES, 3);
+        for i in 0..3 {
+            counted.put(format!("mesh {i}").as_bytes()).expect("within the count");
+        }
+        assert!(matches!(counted.put(b"mesh 3"), Err(InputError::TooManyFiles { max: 3, .. })));
+        counted.put(b"mesh 0").expect("a stored file is reused at the count cap");
+    }
+
+    /// Repairing a stored input that changed is charged its growth only, so
+    /// it succeeds at the cap.
+    #[test]
+    fn replacing_a_changed_input_at_the_cap_is_charged_only_its_growth() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = InputStore::with_caps(dir.path().join("inputs"), 2 * BLOCK, 2);
+        let sha = store.put(b"first mesh").expect("first");
+        store.put(b"second mesh").expect("second, now at the cap");
+        let path = dir.path().join("inputs").join(sha.as_str());
+        let mut writable = fs::metadata(&path).expect("meta").permissions();
+        #[allow(clippy::permissions_set_readonly_false)]
+        writable.set_readonly(false);
+        fs::set_permissions(&path, writable).expect("chmod");
+        fs::write(&path, b"changed!!!").expect("tamper");
+        assert_eq!(store.put(b"first mesh").expect("repair at the cap"), sha);
+        assert_eq!(store.get(&sha).expect("repaired"), b"first mesh");
+    }
+
+    /// Writes are serialized from the check through the rename: concurrent
+    /// puts never fail on a file renamed under the scan, never pass the cap
+    /// together, and a staged file a crash left behind is removed.
+    #[test]
+    fn concurrent_puts_never_pass_the_cap_or_trip_over_each_other() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().join("inputs");
+        fs::create_dir_all(&root).expect("dir");
+        fs::write(root.join(format!("{STAGED_PREFIX}crashed")), vec![0u8; 3 * BLOCK as usize]).expect("left by a crash");
+        let store = InputStore::with_caps(root.clone(), 10 * BLOCK, MAX_STORE_FILES);
+        let start = std::sync::Arc::new(std::sync::Barrier::new(64));
+        let results: Vec<Result<Sha256Hex, InputError>> = std::thread::scope(|scope| {
+            let threads: Vec<_> = (0..64)
+                .map(|i| {
+                    let (store, start) = (store.clone(), start.clone());
+                    scope.spawn(move || {
+                        start.wait();
+                        store.put(format!("concurrent mesh {i}").as_bytes())
+                    })
+                })
+                .collect();
+            threads.into_iter().map(|t| t.join().expect("thread")).collect()
+        });
+        let stored = results.iter().filter(|r| r.is_ok()).count();
+        let others: Vec<_> = results.iter().filter_map(|r| r.as_ref().err()).filter(|e| !matches!(e, InputError::StoreFull { .. })).collect();
+        assert!(others.is_empty(), "{others:?}");
+        assert_eq!(stored, 10, "exactly the cap's worth is stored");
+        assert!(!root.join(format!("{STAGED_PREFIX}crashed")).exists(), "the crashed staged file is gone");
+        assert!(store.usage().expect("usage").bytes <= 10 * BLOCK);
     }
 
     #[cfg(unix)]
