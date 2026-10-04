@@ -1,0 +1,13 @@
+# What the CAD runtime is built, bundled, or tested from. One path per line, relative to the repository root:
+# a directory ends in "/", anything else names one file. Blank lines and lines starting with "#" are ignored.
+# Two scripts read this list as literal git pathspecs:
+#   scripts/ci/cad-runtime-scope.sh  does a pull request change any of these paths?
+#   scripts/ci/cad-runtime-key.sh    the key a passed CAD runtime run is recorded under
+# An app file that compiles in or reads the CAD runtime pins (none yet; PR 7's cad_worker.rs will) belongs here.
+cad-runtime/
+cad-host/
+scripts/release/
+scripts/ci/cad-runtime-paths.txt
+scripts/ci/cad-runtime-scope.sh
+scripts/ci/cad-runtime-key.sh
+.github/workflows/cad-runtime.yml

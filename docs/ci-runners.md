@@ -1,13 +1,48 @@
 # Self-hosted CI runners
 
-Two jobs in `.github/workflows/cad-runtime.yml` run on machines Ossie owns: all CI that touches the CAD runtime is self-hosted (Ossie, 2026-10-02, in the CAD engine design). The Mac job could not run anywhere else, because hosted macOS runners are themselves Virtualization-framework VMs without nested virtualization and cannot boot the CAD guest. Every other job (`ci.yml`, `pullfrog.yml`) runs on GitHub-hosted runners.
+Two jobs in `.github/workflows/cad-runtime.yml` run on machines Ossie owns: all CI that touches the CAD runtime is self-hosted (Ossie, 2026-10-02, in the CAD engine design). The Mac job could not run anywhere else, because hosted macOS runners are themselves Virtualization-framework VMs without nested virtualization and cannot boot the CAD guest. Every other job (`ci.yml`, `pullfrog.yml`, and the `CAD runtime pass record` job described below) runs on GitHub-hosted runners.
 
 | Job (check-run name) | Runner | Host | Labels | What it proves |
 |---|---|---|---|---|
 | `CAD runtime images reproduce` | `dev-substrate-materialize-3d` | `dev-substrate`, an x86_64 Ubuntu 24.04 VM (8 vCPUs, `/dev/kvm`) | `self-hosted`, `Linux`, `X64`, `m3d-linux-kvm` | Two clean builds per architecture (`cad-runtime/reproduce.sh arm64` and `amd64`) give identical digests that match `cad-runtime/pins-<arch>.json`. Uploads the arm64 runtime for the next job. |
 | `CAD helper restriction tests` | `mac-mini-m4-materialize-3d-cad` | the Mac mini (Apple M4, macOS 26) | `self-hosted`, `macOS`, `ARM64`, `m3d-mac-vz` | The helper's tests and clippy, the runtime against the helper's compiled-in pins, the ten restriction tests on the real Virtualization framework, and the cable clip through both guests. |
 
-Both jobs run on every push to `main`, every manual dispatch, and every same-repository pull request, so their check-runs are always present. The full work takes about 85 minutes, most of it two arm64 builds under qemu. A pull request that changes none of `cad-runtime/`, `cad-host/`, `scripts/release/`, `scripts/ci/cad-runtime-scope.sh`, or the workflow (decided against its merge base by `scripts/ci/cad-runtime-scope.sh`) skips the heavy steps, and both jobs pass in seconds. Pushes to `main` and manual dispatches always do the full work. When an app file starts compiling in or reading the runtime pins (PR 7's `cad_worker.rs`), add it to that script.
+Both jobs run on every push to `main`, every manual dispatch, and every same-repository pull request, so their check-runs are always present. The full work takes about 85 minutes, most of it two arm64 builds under qemu. Pushes to `main` and manual dispatches always do the full work. On a pull request, the images job decides once for both jobs:
+
+- **None.** The pull request changes no path in `scripts/ci/cad-runtime-paths.txt`, compared with its merge base (`scripts/ci/cad-runtime-scope.sh`). Both jobs skip the heavy steps and pass in seconds.
+- **Reuse.** The runtime key has a record of a run in which both jobs did their full work and passed. Both jobs skip the heavy steps, pass, and print the source run id and the key in the log and the step summary.
+- **Full.** Everything else, including a record that cannot be looked up or read.
+
+`scripts/ci/cad-runtime-paths.txt` lists `cad-runtime/`, `cad-host/`, `scripts/release/`, the workflow, the list itself, and the scope and key scripts. When an app file starts compiling in or reading the runtime pins (PR 7's `cad_worker.rs`), add it to that list.
+
+## Reusing a passed run
+
+The key is the sha256 of `git ls-files -s -z` over the listed paths (`scripts/ci/cad-runtime-key.sh`), taken from the commit the run checks out: for a pull request, its merge commit with `main`. Each entry carries the mode, the blob id, and the path, so changed content, a changed mode, or an added or deleted file under a listed path gives a new key. A change anywhere else does not. The scope and key scripts read the same list, as literal git pathspecs. `scripts/ci/test/cad-runtime-key.sh` checks all of this in a scratch repository, and the images job runs it before the scope step on every event.
+
+**Where the record lives.** In the run that passed, as the artifact `cad-runtime-pass-<key>`, kept 90 days. It holds one file with two lines, `run_id=<id>` and `hash=<key>`. GitHub binds every artifact to the run that uploaded it, and only that run's own jobs can upload into it. The lookup therefore reads no record content: it reads every page of the API's list of artifacts with this name, then checks every run that carries one. The first page's `total_count` fixes the number of pages. It must be an integer from 1 to 5000, so at most 50 pages. Any other value is a miss. A page that reports another total or repeats earlier artifacts is also a miss.
+
+**When a record is written.** Only by the `CAD runtime pass record` job, which `needs` both jobs and carries their `if:` guard. GitHub runs it only when both jobs passed. It writes only when both jobs set `done`, which each job does in a step after its last heavy step, so the step runs only when every step before it passed. A failed, cancelled, skipped, or reused run writes nothing. A re-run of a run that passed replaces its record under the same name. The job recomputes the key from its own checkout and refuses to write when it differs from the images job's key. It is the one job in the workflow on a GitHub-hosted runner (`ubuntu-latest`): it builds nothing, holds no secret, and so does not wait behind a long build on the Linux runner.
+
+**When a record is used.** Only on a `pull_request` event whose scope is not none. The lookup (`cad-runtime-key.sh lookup`) uses the job's `GITHUB_TOKEN`, which the images job grants `actions: read` for this. It accepts a run only when all of these hold:
+
+- An artifact named exactly `cad-runtime-pass-<key>` belongs to the run.
+- The run is of `.github/workflows/cad-runtime.yml`, and its event is `pull_request`, `push`, or `workflow_dispatch`.
+- The run is completed with the conclusion `success`, so both jobs and the record job passed.
+- The run's repository and head repository are both this repository.
+- The run names both its actor and its triggering actor, and neither of them is `dependabot[bot]`.
+
+A failed API call, an answer that is not the JSON expected, or no run that passes every check is a miss, and the run does the full work. It never passes on a record it could not read. On a hit, the log and the step summary of both jobs show `CAD runtime reused: run <id> passed both jobs with full work under the key <key>`, with a link to that run. On a miss, the images job's log shows `cad-runtime key: miss,` and the reason.
+
+**Who can write a record that a pull request reads.** Only a passed run of this workflow from a same-repository head, because every other run fails the checks above:
+
+- A run of another workflow fails the path check. This covers Pullfrog's runs, which are `workflow_dispatch` runs on `main` that read pull request content. Those runs can write into `main`'s Actions cache scope, so an Actions cache entry would not be a trustworthy record.
+- A fork's run fails the head repository check, and the record job never runs for one.
+- A Dependabot run fails the actor checks, and the record job never runs for one.
+- A same-repository branch can carry a workflow that uploads any artifact. Anyone who can push such a branch can already edit this workflow, so the record adds no writer that the branch did not already have.
+
+A record from any passed run counts, in any pull request or on `main`, because the key covers every path in `scripts/ci/cad-runtime-paths.txt`, the inputs the runtime is built, bundled, and tested from. The images job also runs `scripts/ci/check-image-host.sh` and the key test, which check the host and the scripts but do not change what is built, so they are not on the list.
+
+**What the key does not cover.** The runner hosts themselves: Docker, qemu, the Rust toolchain on the Mac, and the cached kernel and wheels. The image builds still compare every digest with the committed `pins-<arch>.json`, and pushes to `main` always do the full work, so host drift shows up on the next push to `main`.
 
 ## Keeping fork pull requests off these machines
 
