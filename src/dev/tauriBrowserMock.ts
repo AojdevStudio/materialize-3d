@@ -241,8 +241,10 @@ const mockPart: PartRevision = {
   updated_at: '2026-10-04T14:12:00Z',
 }
 
-// The clip's first build, which failed at generate before its repair.
-const mockFailedPart: PartRevision = {
+// The clip's first build, which failed at generate before its repair. Made on
+// demand: a module-level spread would keep the mock in the production bundle,
+// which `dist` must not hold.
+const mockFailedPart = (): PartRevision => ({
   ...mockPart,
   id: '2c3d4e5f-6a7b-4c8d-9e0f-1a2b3c4d5e6f',
   number: 1,
@@ -254,7 +256,7 @@ const mockFailedPart: PartRevision = {
     reason: 'generate: line 10: ValueError: Failed creating a fillet with radius of 99, try a smaller value',
     artifacts: null,
   },
-}
+})
 
 // The part revisions the scripted turn has made so far: none until it runs.
 let mockPartsMade: PartRevision[] = []
@@ -915,9 +917,9 @@ async function runMockPartTurn(
     {
       args: { kind: 'part', spec: { title: mockPart.title, params: { ...mockPart.spec.params, fillet: 99 } } },
       steps: ['spec_validated'] as BuildStep[],
-      revision: mockFailedPart,
+      revision: mockFailedPart(),
       result: mockPartResult({
-        revision_id: mockFailedPart.id,
+        revision_id: mockPart.parent_id ?? mockPart.id,
         number: 1,
         build: 'failed',
         stage: 'generate',
