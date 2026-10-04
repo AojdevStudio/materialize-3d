@@ -165,6 +165,10 @@ impl RequestActions for FakeActions {
     fn kinds(&self) -> Vec<&'static dyn crate::fabrication::kind::KindDriver> {
         crate::fabrication::kind::available(&crate::fabrication::kind::KernelContext::without_runtime(crate::fabrication::printer::P2S_04))
     }
+
+    fn views(&self, _revision: &Revision) -> pipeline::KeptViews {
+        pipeline::KeptViews::default()
+    }
 }
 
 /// The real build pipeline and revision store, without a window to notify.
@@ -226,6 +230,10 @@ impl RequestActions for PipelineActions {
 
     fn kinds(&self) -> Vec<&'static dyn crate::fabrication::kind::KindDriver> {
         crate::fabrication::kind::available(&self.workspace.kernel_context())
+    }
+
+    fn views(&self, revision: &Revision) -> pipeline::KeptViews {
+        pipeline::read_views(&self.workspace.builds_dir, revision)
     }
 }
 
@@ -626,6 +634,10 @@ impl RequestActions for ScriptedBuilds {
 
     fn kinds(&self) -> Vec<&'static dyn KindDriver> {
         self.kinds.clone()
+    }
+
+    fn views(&self, revision: &Revision) -> pipeline::KeptViews {
+        pipeline::read_views(&self.dir, revision)
     }
 }
 
@@ -1107,7 +1119,7 @@ async fn rig_sends_the_view_images_inside_the_tool_result_to_anthropic_and_opena
     let revision = results_of(&events, "build")[0]["revision_id"].as_str().expect("id").to_owned();
     let revision = actions.get(&revision).expect("revision");
     let views: Vec<String> =
-        crate::fabrication::pipeline::read_views(&revision).views.iter().map(|(_, png)| crate::tools::base64(png)).collect();
+        actions.views(&revision).views.iter().map(|(_, png)| crate::tools::base64(png)).collect();
     assert_eq!(views.len(), 3);
 
     let preamble = request.chat_history.iter().find_map(|m| match m {

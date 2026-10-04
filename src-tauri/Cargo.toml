@@ -21,7 +21,7 @@ tauri-build = { version = "~2.6.3", features = [] }
 e2e = ["dep:objc2", "dep:objc2-web-kit", "dep:objc2-app-kit", "dep:objc2-foundation", "dep:block2"]
 # The CAD worker's Linux test backend (QEMU microvm on KVM), for the self-hosted Linux runner. The macOS release
 # never enables it, so it cannot ship.
-linux-cad-test = ["dep:libc"]
+linux-cad-test = []
 
 [dependencies]
 log = "0.4"
@@ -97,6 +97,7 @@ keyring = { version = "3", features = ["windows-native"] }
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
 keyring = { version = "3", features = ["linux-native"] }
 
-[target.'cfg(target_os = "linux")'.dependencies]
-libc = { version = "0.2", optional = true }
+# openat and fstat for reading a build's views without following symlinks; the CAD worker's Linux backend too.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 

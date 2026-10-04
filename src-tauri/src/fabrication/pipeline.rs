@@ -625,23 +625,43 @@ pub struct KeptViews {
     pub missing: Vec<String>,
 }
 
-/// The views of `revision`'s build, in the order its kind declares them
-/// ([`KindDriver::views`]). A build without artifacts has none to keep.
-pub fn read_views(revision: &Revision) -> KeptViews {
-    match (revision.artifacts(), kind::find(&revision.kind)) {
-        (Some(artifacts), Some(kind)) => read_view_files(&artifacts.files().revision_dir, kind.views()),
-        _ => KeptViews::default(),
+impl KeptViews {
+    /// Every one of `expected` left out for the same reason.
+    fn none_of(expected: &[View], why: &str) -> Self {
+        Self { views: Vec::new(), missing: expected.iter().map(|view| format!("{}: {why}", view.as_str())).collect() }
     }
 }
 
-/// Reads each of `expected` from `dir`: a regular file, never through a
-/// symlink, at most [`MAX_VIEW_BYTES`], and at most [`MAX_VIEWS_BYTES`] in
-/// all. Every view left out is named in `missing` with the reason.
-fn read_view_files(dir: &Path, expected: &[View]) -> KeptViews {
+/// The views of `revision`'s build, in the order its kind declares them
+/// ([`KindDriver::views`]), read from `builds_dir`, the app's own build root
+/// ([`Workspace::builds_dir`]). The build's directory is that root plus the
+/// build's id, never a path a record holds; a build recorded anywhere else
+/// kept no views there. A build without artifacts has none to keep.
+pub fn read_views(builds_dir: &Path, revision: &Revision) -> KeptViews {
+    let (Some(artifacts), Some(kind)) = (revision.artifacts(), kind::find(&revision.kind)) else {
+        return KeptViews::default();
+    };
+    let build = revision.build_id.as_str();
+    // A hyphenated UUID is one path component: no separator, no `..`.
+    let one_component = uuid::Uuid::parse_str(build).is_ok_and(|id| id.hyphenated().to_string() == build);
+    if !one_component || artifacts.files().revision_dir != builds_dir.join(build) {
+        return KeptViews::none_of(kind.views(), "the build kept no views in the app's build directory");
+    }
+    read_view_files(builds_dir, build, kind.views())
+}
+
+/// Reads each of `expected` from `root`/`build`: a regular file, at most
+/// [`MAX_VIEW_BYTES`], and at most [`MAX_VIEWS_BYTES`] in all. Every view
+/// left out is named in `missing` with the reason.
+fn read_view_files(root: &Path, build: &str, expected: &[View]) -> KeptViews {
+    let directory = match views::open_build_directory(root, build) {
+        Ok(directory) => directory,
+        Err(why) => return KeptViews::none_of(expected, &why),
+    };
     let mut kept = KeptViews::default();
     let mut budget = MAX_VIEWS_BYTES;
     for &view in expected {
-        match read_view_file(dir, view, budget) {
+        match views::read_view(&directory, view, budget) {
             Ok(png) => {
                 budget -= png.len() as u64;
                 kept.views.push((view, png));
@@ -652,48 +672,133 @@ fn read_view_files(dir: &Path, expected: &[View]) -> KeptViews {
     kept
 }
 
-fn read_view_file(dir: &Path, view: View, budget: u64) -> Result<Vec<u8>, String> {
-    use std::io::Read;
-    let directory = fs::symlink_metadata(dir).map_err(|e| format!("its build directory cannot be read: {e}"))?;
-    if !directory.file_type().is_dir() {
-        return Err("its build directory is not a directory".into());
+/// Why a view of `bytes` bytes cannot ride in a result with `budget` left.
+fn over_cap(bytes: u64, budget: u64) -> Option<String> {
+    if bytes > MAX_VIEW_BYTES {
+        Some(format!("{bytes} bytes, over the {MAX_VIEW_BYTES}-byte cap for one view"))
+    } else if bytes > budget {
+        Some(format!("{bytes} bytes, over the {MAX_VIEWS_BYTES}-byte cap for one result's views"))
+    } else {
+        None
     }
-    let path = dir.join(view.file_name());
-    let checked = match fs::symlink_metadata(&path) {
-        Ok(meta) => meta,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Err("not found".into()),
-        Err(err) => return Err(err.to_string()),
-    };
-    if !checked.file_type().is_file() {
+}
+
+/// Reads an opened view: the file must be regular, and only up to the caps.
+fn read_capped(file: fs::File, budget: u64) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let meta = file.metadata().map_err(|e| e.to_string())?;
+    if !meta.file_type().is_file() {
         return Err("not a regular file".into());
     }
-    let over = |bytes: u64| {
-        if bytes > MAX_VIEW_BYTES {
-            Some(format!("{bytes} bytes, over the {MAX_VIEW_BYTES}-byte cap for one view"))
-        } else if bytes > budget {
-            Some(format!("{bytes} bytes, over the {MAX_VIEWS_BYTES}-byte cap for one result's views"))
-        } else {
-            None
-        }
-    };
-    if let Some(why) = over(checked.len()) {
+    if let Some(why) = over_cap(meta.len(), budget) {
         return Err(why);
-    }
-    let file = fs::File::open(&path).map_err(|e| e.to_string())?;
-    // The path may have changed since it was checked: read only the file that was.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        let opened = file.metadata().map_err(|e| e.to_string())?;
-        if !opened.file_type().is_file() || (opened.dev(), opened.ino()) != (checked.dev(), checked.ino()) {
-            return Err("changed while it was read".into());
-        }
     }
     let mut png = Vec::new();
     file.take(MAX_VIEW_BYTES + 1).read_to_end(&mut png).map_err(|e| e.to_string())?;
-    match over(png.len() as u64) {
+    match over_cap(png.len() as u64, budget) {
         Some(why) => Err(why),
         None => Ok(png),
+    }
+}
+
+/// View files opened through descriptors: the build directory relative to
+/// the app's root without following a symlink, each view relative to that
+/// directory without following a symlink or blocking on a FIFO, and the
+/// opened descriptor checked with `fstat` before a byte is read. Nothing a
+/// path check races.
+#[cfg(unix)]
+mod views {
+    use std::ffi::CString;
+    use std::fs::File;
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    use std::os::unix::ffi::OsStrExt;
+    use std::path::Path;
+
+    use super::{read_capped, View};
+
+    pub(super) struct BuildDirectory(OwnedFd);
+
+    fn c_string(bytes: &[u8]) -> Result<CString, String> {
+        CString::new(bytes).map_err(|_| "a path holds a NUL byte".to_owned())
+    }
+
+    /// `fd` as owned, or the error `open` or `openat` set.
+    fn owned(fd: libc::c_int) -> std::io::Result<OwnedFd> {
+        if fd < 0 {
+            Err(std::io::Error::last_os_error())
+        } else {
+            // SAFETY: a non-negative return of open or openat is a new descriptor this code owns.
+            Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+        }
+    }
+
+    fn refused_link(err: &std::io::Error) -> bool {
+        matches!(err.raw_os_error(), Some(libc::ELOOP | libc::ENOTDIR))
+    }
+
+    /// Opens `root` (the app's own build root, whose path the app chose)
+    /// and then its entry `build`, which must be a directory and not a symlink.
+    pub(super) fn open_build_directory(root: &Path, build: &str) -> Result<BuildDirectory, String> {
+        let root = c_string(root.as_os_str().as_bytes())?;
+        // SAFETY: `root` is a NUL-terminated path; the flags take no mode.
+        let root = owned(unsafe { libc::open(root.as_ptr(), libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC) })
+            .map_err(|e| format!("the build root cannot be opened: {e}"))?;
+        let name = c_string(build.as_bytes())?;
+        let flags = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC;
+        // SAFETY: `root` is an open directory and `name` a NUL-terminated name in it.
+        match owned(unsafe { libc::openat(root.as_raw_fd(), name.as_ptr(), flags) }) {
+            Ok(directory) => Ok(BuildDirectory(directory)),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Err("its build directory is not found".into()),
+            Err(err) if refused_link(&err) => Err("its build directory is not a directory".into()),
+            Err(err) => Err(format!("its build directory cannot be opened: {err}")),
+        }
+    }
+
+    pub(super) fn read_view(directory: &BuildDirectory, view: View, budget: u64) -> Result<Vec<u8>, String> {
+        let name = view.file_name();
+        assert!(!name.contains('/'), "a view's file name is one path component: {name}");
+        let name = c_string(name.as_bytes())?;
+        let flags = libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC;
+        // SAFETY: `directory` is an open directory and `name` a NUL-terminated name in it.
+        let file = match owned(unsafe { libc::openat(directory.0.as_raw_fd(), name.as_ptr(), flags) }) {
+            Ok(fd) => File::from(fd),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Err("not found".into()),
+            Err(err) if refused_link(&err) => return Err("not a regular file".into()),
+            Err(err) => return Err(err.to_string()),
+        };
+        read_capped(file, budget)
+    }
+}
+
+/// Outside unix (no shipped target), path checks stand in for descriptors.
+#[cfg(not(unix))]
+mod views {
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    use super::{read_capped, View};
+
+    pub(super) struct BuildDirectory(PathBuf);
+
+    pub(super) fn open_build_directory(root: &Path, build: &str) -> Result<BuildDirectory, String> {
+        let dir = root.join(build);
+        match fs::symlink_metadata(&dir) {
+            Ok(meta) if meta.file_type().is_dir() => Ok(BuildDirectory(dir)),
+            Ok(_) => Err("its build directory is not a directory".into()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Err("its build directory is not found".into()),
+            Err(err) => Err(format!("its build directory cannot be opened: {err}")),
+        }
+    }
+
+    pub(super) fn read_view(directory: &BuildDirectory, view: View, budget: u64) -> Result<Vec<u8>, String> {
+        let path = directory.0.join(view.file_name());
+        match fs::symlink_metadata(&path) {
+            Ok(meta) if meta.file_type().is_file() => {}
+            Ok(_) => return Err("not a regular file".into()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Err("not found".into()),
+            Err(err) => return Err(err.to_string()),
+        }
+        read_capped(fs::File::open(&path).map_err(|e| e.to_string())?, budget)
     }
 }
 
@@ -1134,43 +1239,177 @@ mod tests {
         }
     }
 
-    /// `dir` with each named view written with `bytes` bytes.
-    fn view_dir(views: &[(View, usize)]) -> tempfile::TempDir {
-        let dir = tempfile::tempdir().expect("tempdir");
+    /// The build every view test reads: `<root>/<BUILD>`.
+    const BUILD: &str = "3f2b1c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d";
+
+    /// A build root holding one build directory with each named view written
+    /// with `bytes` bytes of 7.
+    fn view_root(views: &[(View, usize)]) -> tempfile::TempDir {
+        let root = tempfile::tempdir().expect("tempdir");
+        fs::create_dir(root.path().join(BUILD)).expect("build dir");
         for (view, bytes) in views {
-            fs::write(dir.path().join(view.file_name()), vec![7u8; *bytes]).expect("view");
+            fs::write(root.path().join(BUILD).join(view.file_name()), vec![7u8; *bytes]).expect("view");
         }
-        dir
+        root
     }
 
     const PART_VIEWS: [View; 3] = [View::Isometric, View::Front, View::Top];
+    /// What an outside file holds; no read may ever return it.
+    const OUTSIDE: &[u8] = b"OUTSIDE THE BUILD";
+
+    fn no_outside_bytes(kept: &KeptViews) {
+        for (view, png) in &kept.views {
+            assert!(!png.windows(OUTSIDE.len()).any(|w| w == OUTSIDE), "{view:?} read outside bytes");
+        }
+    }
+
+    #[test]
+    fn view_file_names_are_one_path_component() {
+        for view in View::ALL {
+            let name = view.file_name();
+            assert!(!name.contains('/') && !name.contains('\\') && name != ".." && !name.is_empty(), "{name}");
+        }
+    }
 
     #[test]
     fn views_are_read_in_the_kinds_order_and_a_missing_one_is_named() {
-        let dir = view_dir(&[(View::Top, 30), (View::Isometric, 10)]);
-        let kept = read_view_files(dir.path(), &PART_VIEWS);
+        let root = view_root(&[(View::Top, 30), (View::Isometric, 10)]);
+        let kept = read_view_files(root.path(), BUILD, &PART_VIEWS);
         assert_eq!(kept.views, [(View::Isometric, vec![7; 10]), (View::Top, vec![7; 30])]);
         assert_eq!(kept.missing, ["front: not found"]);
+        let kept = read_view_files(root.path(), "4f2b1c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d", &[View::Top]);
+        assert_eq!(kept.missing, ["top: its build directory is not found"]);
+    }
+
+    /// The build's directory comes from the app's build root and its id; a
+    /// record that names any other directory, or an id that is not one path
+    /// component, keeps no views.
+    #[test]
+    fn views_are_read_only_from_the_apps_build_directory() {
+        let root = view_root(&[(View::Face, 10)]);
+        let mut revision = claim(&app_state(root.path()), "views");
+        let mut artifacts = serde_json::to_value(staged(&root.path().join("p"), &root.path().join(BUILD))).expect("files");
+        artifacts["checks"] = json!([]);
+        revision.build = BuildState::Verified { artifacts: Box::new(serde_json::from_value(artifacts).expect("artifacts")) };
+        revision.build_id = serde_json::from_value(json!(BUILD)).expect("id");
+        assert_eq!(read_views(root.path(), &revision).views, [(View::Face, vec![7; 10])]);
+
+        let elsewhere = tempfile::tempdir().expect("tempdir");
+        assert_eq!(read_views(elsewhere.path(), &revision).missing, ["face: the build kept no views in the app's build directory"]);
+        revision.build_id = serde_json::from_value(json!("../escape")).expect("id");
+        assert_eq!(read_views(root.path(), &revision).missing, ["face: the build kept no views in the app's build directory"]);
     }
 
     /// A view that is a symlink is never followed, even to a file inside the
-    /// build directory; the result says so instead.
+    /// build directory, and neither is a build directory that is a symlink.
     #[cfg(unix)]
     #[test]
-    fn a_symlinked_view_is_not_read() {
+    fn a_symlinked_view_or_build_directory_is_not_read() {
         let outside = tempfile::tempdir().expect("tempdir");
-        fs::write(outside.path().join("secret.png"), b"outside the build").expect("secret");
-        let dir = view_dir(&[(View::Isometric, 10)]);
-        std::os::unix::fs::symlink(outside.path().join("secret.png"), dir.path().join(View::Front.file_name())).expect("symlink");
-        std::os::unix::fs::symlink(dir.path().join(View::Isometric.file_name()), dir.path().join(View::Top.file_name())).expect("symlink");
-        let kept = read_view_files(dir.path(), &PART_VIEWS);
+        fs::write(outside.path().join("secret.png"), OUTSIDE).expect("secret");
+        let root = view_root(&[(View::Isometric, 10)]);
+        let dir = root.path().join(BUILD);
+        std::os::unix::fs::symlink(outside.path().join("secret.png"), dir.join(View::Front.file_name())).expect("symlink");
+        std::os::unix::fs::symlink(dir.join(View::Isometric.file_name()), dir.join(View::Top.file_name())).expect("symlink");
+        let kept = read_view_files(root.path(), BUILD, &PART_VIEWS);
         assert_eq!(kept.views, [(View::Isometric, vec![7; 10])]);
         assert_eq!(kept.missing, ["front: not a regular file", "top: not a regular file"]);
 
         let linked = tempfile::tempdir().expect("tempdir");
-        std::os::unix::fs::symlink(dir.path(), linked.path().join("build")).expect("symlink");
-        let kept = read_view_files(&linked.path().join("build"), &[View::Isometric]);
+        std::os::unix::fs::symlink(&dir, linked.path().join(BUILD)).expect("symlink");
+        let kept = read_view_files(linked.path(), BUILD, &[View::Isometric]);
         assert_eq!(kept.missing, ["isometric: its build directory is not a directory"]);
+    }
+
+    /// `read` on its own thread, failing the test if it does not return in
+    /// five seconds (a FIFO used to block its open forever).
+    fn within_five_seconds(read: impl FnOnce() -> KeptViews + Send + 'static) -> KeptViews {
+        let (done, result) = std::sync::mpsc::channel();
+        std::thread::spawn(move || done.send(read()));
+        result.recv_timeout(std::time::Duration::from_secs(5)).expect("the read returned within five seconds")
+    }
+
+    /// A FIFO in a view's place neither blocks the read nor is read.
+    #[cfg(unix)]
+    #[test]
+    fn a_fifo_in_place_of_a_view_does_not_block_and_is_named() {
+        let root = view_root(&[(View::Isometric, 10)]);
+        let fifo = std::ffi::CString::new(root.path().join(BUILD).join(View::Front.file_name()).into_os_string().into_encoded_bytes())
+            .expect("path");
+        // SAFETY: `fifo` is a NUL-terminated path.
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0, "mkfifo");
+        let path = root.path().to_path_buf();
+        let kept = within_five_seconds(move || read_view_files(&path, BUILD, &PART_VIEWS));
+        assert_eq!(kept.views, [(View::Isometric, vec![7; 10])]);
+        assert_eq!(kept.missing, ["front: not a regular file", "top: not found"]);
+    }
+
+    /// Races a swapper thread that keeps replacing a view with a symlink to an
+    /// outside file, and the build directory with a symlink to an outside
+    /// directory of views, and a view with a FIFO. Every read returns quickly,
+    /// and none returns an outside byte.
+    #[cfg(unix)]
+    #[test]
+    fn swapping_views_and_the_build_directory_for_symlinks_or_a_fifo_never_reads_outside() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+        let outside = tempfile::tempdir().expect("tempdir");
+        fs::write(outside.path().join("secret.png"), OUTSIDE).expect("secret");
+        let fake_build = outside.path().join("fake-build");
+        fs::create_dir(&fake_build).expect("fake build");
+        for view in PART_VIEWS {
+            fs::write(fake_build.join(view.file_name()), OUTSIDE).expect("outside view");
+        }
+        let root = view_root(&[(View::Isometric, 10), (View::Front, 10), (View::Top, 10)]);
+        let (root_path, outside_path) = (root.path().to_path_buf(), outside.path().to_path_buf());
+        let stop = Arc::new(AtomicBool::new(false));
+        let swapper = std::thread::spawn({
+            let stop = stop.clone();
+            move || {
+                let dir = root_path.join(BUILD);
+                let front = dir.join(View::Front.file_name());
+                let top = dir.join(View::Top.file_name());
+                let (staged_file, staged_link, staged_fifo) = (dir.join("staged.png"), dir.join("staged-link"), dir.join("staged-fifo"));
+                let (aside, link) = (root_path.join("aside"), root_path.join("link"));
+                let fifo = std::ffi::CString::new(staged_fifo.clone().into_os_string().into_encoded_bytes()).expect("path");
+                let mut swaps = 0u64;
+                while !stop.load(Ordering::SeqCst) {
+                    // The front view: a file, then a symlink out, by atomic renames.
+                    fs::write(&staged_file, [7u8; 10]).expect("staged");
+                    fs::rename(&staged_file, &front).expect("file in");
+                    std::os::unix::fs::symlink(outside_path.join("secret.png"), &staged_link).expect("link");
+                    fs::rename(&staged_link, &front).expect("link in");
+                    // The top view: a FIFO, then a file again.
+                    // SAFETY: `fifo` is a NUL-terminated path.
+                    if unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) } == 0 {
+                        fs::rename(&staged_fifo, &top).expect("fifo in");
+                    }
+                    fs::write(&staged_file, [7u8; 10]).expect("staged");
+                    fs::rename(&staged_file, &top).expect("file in");
+                    // The build directory: aside, a symlink out in its place, then back.
+                    fs::rename(&dir, &aside).expect("dir aside");
+                    std::os::unix::fs::symlink(&fake_build, &link).expect("dir link");
+                    fs::rename(&link, &dir).expect("link in place of the dir");
+                    fs::remove_file(&dir).expect("link out");
+                    fs::rename(&aside, &dir).expect("dir back");
+                    swaps += 1;
+                }
+                swaps
+            }
+        });
+        let mut reads = 0;
+        let started = std::time::Instant::now();
+        while started.elapsed() < std::time::Duration::from_secs(3) {
+            let path = root.path().to_path_buf();
+            let kept = within_five_seconds(move || read_view_files(&path, BUILD, &PART_VIEWS));
+            no_outside_bytes(&kept);
+            assert_eq!(kept.views.len() + kept.missing.len(), PART_VIEWS.len(), "{kept:?}");
+            reads += 1;
+        }
+        stop.store(true, Ordering::SeqCst);
+        let swaps = swapper.join().expect("swapper");
+        println!("{reads} reads raced {swaps} swap rounds");
+        assert!(reads > 100 && swaps > 100, "the race ran: {reads} reads, {swaps} swaps");
     }
 
     /// One view may not pass [`MAX_VIEW_BYTES`], and one result's views may
@@ -1178,14 +1417,14 @@ mod tests {
     #[test]
     fn views_over_the_byte_caps_are_left_out_and_named() {
         let big = MAX_VIEW_BYTES as usize;
-        let dir = view_dir(&[(View::Isometric, big + 1), (View::Front, big), (View::Top, big)]);
-        let kept = read_view_files(dir.path(), &PART_VIEWS);
+        let root = view_root(&[(View::Isometric, big + 1), (View::Front, big), (View::Top, big)]);
+        let kept = read_view_files(root.path(), BUILD, &PART_VIEWS);
         assert_eq!(kept.views.iter().map(|(view, png)| (*view, png.len())).collect::<Vec<_>>(), [(View::Front, big), (View::Top, big)]);
         assert_eq!(kept.missing, [format!("isometric: {} bytes, over the {MAX_VIEW_BYTES}-byte cap for one view", big + 1)]);
 
         let most = (MAX_VIEWS_BYTES / 3 + 1) as usize;
-        let dir = view_dir(&[(View::Isometric, most), (View::Front, most), (View::Top, most)]);
-        let kept = read_view_files(dir.path(), &PART_VIEWS);
+        let root = view_root(&[(View::Isometric, most), (View::Front, most), (View::Top, most)]);
+        let kept = read_view_files(root.path(), BUILD, &PART_VIEWS);
         assert_eq!(kept.views.len(), 2);
         assert_eq!(kept.missing, [format!("top: {most} bytes, over the {MAX_VIEWS_BYTES}-byte cap for one result's views")]);
         assert!(kept.views.iter().map(|(_, png)| png.len() as u64).sum::<u64>() <= MAX_VIEWS_BYTES);

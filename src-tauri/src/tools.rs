@@ -24,7 +24,7 @@ use crate::actions::{ActionError, RequestActions, RequestActor};
 use crate::fabrication::checks::CheckId;
 use crate::fabrication::kind::{inlined_schema, BuildControl, KindDriver, View};
 use crate::fabrication::kinds::part::is_requirement_check;
-use crate::fabrication::pipeline::{self, BuildOutcome, BuildStep, KeptViews, Stage};
+use crate::fabrication::pipeline::{BuildOutcome, BuildStep, KeptViews, Stage};
 use crate::fabrication::revisions::{Actor, Approval, Artifacts, BuildState, PrintValidation, RecordedCheck, Revision};
 
 /// Where a model meets the tools. The surface fixes the caller's
@@ -413,7 +413,7 @@ async fn build_result(
             if surface == Surface::InAppAgent {
                 actions.show(outcome.revision.id.as_str())?;
             }
-            Ok((pipeline::read_views(&outcome.revision), outcome))
+            Ok((actions.views(&outcome.revision), outcome))
         })
         .await?;
     let KeptViews { views, missing } = views;

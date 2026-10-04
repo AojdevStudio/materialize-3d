@@ -90,6 +90,10 @@ impl RequestActions for ListingActions {
     fn kinds(&self) -> Vec<&'static dyn KindDriver> {
         self.kinds.clone().unwrap_or_else(signs_only)
     }
+
+    fn views(&self, _revision: &Revision) -> crate::fabrication::pipeline::KeptViews {
+        Default::default()
+    }
 }
 
 #[tokio::test]

@@ -18,7 +18,7 @@ pub use gui::HumanActor;
 
 use crate::fabrication::checks::CheckId;
 use crate::fabrication::kind::{self, BuildControl, KindDriver};
-use crate::fabrication::pipeline::{self, BuildError, BuildOutcome, BuildRequest, Workspace};
+use crate::fabrication::pipeline::{self, BuildError, BuildOutcome, BuildRequest, KeptViews, Workspace};
 use crate::fabrication::revisions::{self, Actor, ExportFormat, LineageId, Revision, RevisionId, Sha256Hex};
 use crate::state::{AppState, PrinterState};
 
@@ -129,6 +129,10 @@ pub trait RequestActions: Send + Sync + 'static {
     /// The kinds this app can build now, in registry order: `part` only with a
     /// verified CAD runtime. See [`Actions::kinds`].
     fn kinds(&self) -> Vec<&'static dyn KindDriver>;
+
+    /// The views `revision`'s build kept in the app's build directory, and why
+    /// any other view its kind renders is left out. See [`pipeline::read_views`].
+    fn views(&self, revision: &Revision) -> KeptViews;
 
     /// Blocking, like [`RequestActions::build`], but always records a new
     /// revision of `lineage_id`'s design with approval pending, even when the
@@ -365,6 +369,10 @@ impl RequestActions for Actions {
 
     fn kinds(&self) -> Vec<&'static dyn KindDriver> {
         Actions::kinds(self)
+    }
+
+    fn views(&self, revision: &Revision) -> KeptViews {
+        pipeline::read_views(&self.workspace.builds_dir, revision)
     }
 }
 
