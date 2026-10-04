@@ -202,6 +202,8 @@ const mockPart: PartRevision = {
       package_path: '/mock/signs/4d5e6f7a-8b9c-4d0e-9f1a-2b3c4d5e6f7a/part.3mf',
       package_sha256: 'e1'.repeat(32),
       preview_path: '/mock/signs/4d5e6f7a-8b9c-4d0e-9f1a-2b3c4d5e6f7a/preview.png',
+      // The part plan for one body and one requirement, in recorded order:
+      // 14 blocking checks, and 4 advisory ones of which the overhang failed.
       checks: [
         ...['closed_manifold', 'non_degenerate', 'outward_orientation', 'bounds'].map((name) => ({
           id: `geometry.${name}.clip`,
@@ -211,14 +213,25 @@ const mockPart: PartRevision = {
         })),
         { id: 'geometry.requirement.0', passed: true, advisory: false, detail: 'width 60.02 mm (60 ± 0.2)' },
         { id: 'print.overhang.clip', passed: false, advisory: true, detail: 'about 1218 mm² unsupported at z 21.4 mm' },
-        { id: 'slice.slice_succeeded', passed: true, advisory: false, detail: 'exit 0, return_code 0, 1 plate(s)' },
-        { id: 'slice.no_warnings', passed: true, advisory: false, detail: 'no plate warnings besides support warnings' },
+        { id: 'print.min_wall.clip', passed: true, advisory: true, detail: 'no wall narrower than 0.4 mm' },
+        { id: 'print.first_layer.clip', passed: true, advisory: true, detail: 'touches the bed over 1500 mm²' },
+        ...[
+          'slice_succeeded',
+          'no_warnings',
+          'presets_applied',
+          'start_gcode_intact',
+          'input_unchanged',
+          'filaments_preserved',
+          'placement_preserved',
+          'layer1_coverage',
+        ].map((name) => ({ id: `slice.${name}`, passed: true, advisory: false, detail: 'ok' })),
         {
           id: 'handoff.settings_match_slice',
           passed: true,
           advisory: false,
           detail: 'package settings and colors match the verified slice',
         },
+        { id: 'slice.support_warning', passed: true, advisory: true, detail: 'Bambu Studio raised no support warning' },
       ],
     },
   },
@@ -228,7 +241,25 @@ const mockPart: PartRevision = {
   updated_at: '2026-10-04T14:12:00Z',
 }
 
-const mockRevisions = (): Revision[] => [structuredClone(mockPart), structuredClone(mockSign)]
+// The clip's first build, which failed at generate before its repair.
+const mockFailedPart: PartRevision = {
+  ...mockPart,
+  id: '2c3d4e5f-6a7b-4c8d-9e0f-1a2b3c4d5e6f',
+  number: 1,
+  parent_id: null,
+  spec: { ...mockPart.spec, params: { ...mockPart.spec.params, fillet: 99 } },
+  build_id: '5e6f7a8b-9c0d-4e1f-8a2b-3c4d5e6f7a8b',
+  build: {
+    status: 'failed',
+    reason: 'generate: line 10: ValueError: Failed creating a fillet with radius of 99, try a smaller value',
+    artifacts: null,
+  },
+}
+
+// The part revisions the scripted turn has made so far: none until it runs.
+let mockPartsMade: PartRevision[] = []
+
+const mockRevisions = (): Revision[] => [...mockPartsMade.map((part) => structuredClone(part)), structuredClone(mockSign)]
 
 /** Draws a stand-in finished face and returns PNG bytes, like `design_preview`. */
 async function mockSignPreview(): Promise<ArrayBuffer> {
@@ -854,8 +885,8 @@ function mockPartResult(overrides: Partial<BuildResult>): BuildResult {
     build: 'verified',
     failure_reason: null,
     stage: null,
-    checks_passed: 8,
-    checks_total: 8,
+    checks_passed: 14,
+    checks_total: 14,
     failed_checks: [],
     warnings: ['print.overhang.clip: about 1218 mm² unsupported at z 21.4 mm'],
     requirements: ['width 60.02 mm (60 ± 0.2)'],
@@ -884,8 +915,9 @@ async function runMockPartTurn(
     {
       args: { kind: 'part', spec: { title: mockPart.title, params: { ...mockPart.spec.params, fillet: 99 } } },
       steps: ['spec_validated'] as BuildStep[],
+      revision: mockFailedPart,
       result: mockPartResult({
-        revision_id: mockPart.parent_id ?? mockPart.id,
+        revision_id: mockFailedPart.id,
         number: 1,
         build: 'failed',
         stage: 'generate',
@@ -903,8 +935,9 @@ async function runMockPartTurn(
     {
       args: { kind: 'part', spec: { title: mockPart.title, params: mockPart.spec.params }, lineage_id: mockPart.lineage_id },
       steps: BUILD_STEPS,
+      revision: mockPart,
       result: mockPartResult({}),
-      reply: 'Revision r2 verified, 8 of 8 checks, with one overhang warning. It waits for your approval in the app.',
+      reply: 'Revision r2 verified, 14 of 14 checks, with one overhang warning. It waits for your approval in the app.',
     },
   ]
   await say('Building a six-cable desk clip, 60 mm wide, for an 18 mm desk.')
@@ -919,8 +952,12 @@ async function runMockPartTurn(
       }
       send({ type: 'toolProgress', callId, step })
     }
+    // As the in-app agent's build does: the revision is recorded, then shown.
+    mockPartsMade = [build.revision, ...mockPartsMade.filter((part) => part.id !== build.revision.id)]
     send({ type: 'toolResult', callId, ok: true, output: build.result })
     mockAgent.history.push({ role: 'tool', callId, name: 'build', args: build.args, status: 'completed', output: build.result, createdAt: now() })
+    await emit('designs:changed', build.revision.id)
+    await emit('designs:open', { revisionId: build.revision.id })
     await say(build.reply)
   }
   send({ type: 'turnFinished' })
