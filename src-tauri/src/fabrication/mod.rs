@@ -1,7 +1,9 @@
 pub mod bambu;
+pub mod cad_worker;
 pub mod checks;
 pub mod kind;
 pub mod kinds;
+pub mod layers;
 pub mod model;
 pub mod package;
 pub mod pipeline;
