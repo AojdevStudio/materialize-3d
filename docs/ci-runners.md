@@ -21,17 +21,19 @@ Every job runs on every push to `main`, every manual dispatch, and every same-re
 
 The images job makes the same none, reuse, or full decision a second time for the two part-kind jobs, as `backend_work`. It passes `--backend` to the scope and key scripts, which then read `scripts/ci/cad-backend-paths.txt` together with `scripts/ci/cad-runtime-paths.txt`. The part-kind list holds what those jobs build and test beyond the runtime:
 
-- `src-tauri/Cargo.toml`, `Cargo.lock`, `build.rs`, `tauri.conf.json`, and `capabilities/`, which change what the app build compiles.
-- `src-tauri/src/`: the CAD worker, the `part` kind, the layer slicer, the Bambu Studio driver, the pipeline, the checks, and the package.
-- `src-tauri/tests/fixtures/` and `src-tauri/resources/bambu/`, which the tests read.
+- All of `src-tauri/`: the crate the jobs compile and test, with its sources, fixtures, fonts, certificate, icons, and tauri-build inputs.
+- `docs/acceptance/p2s-test-sign.json` and `src/types/generated.ts`, which the crate's tests compile in.
+- `LICENSE` and `THIRD_PARTY_NOTICES.md`, which tauri-build copies as bundle resources.
 - `scripts/ci/install-bambu-linux.sh`, `scripts/ci/install-bambu-macos.sh`, `scripts/ci/cad-runtime-cache.sh`, and the list itself.
 
-The part-kind key is the sha256 over both lists, so a runtime change moves both keys, and a change to the app alone moves only the part-kind key. That second case runs the part-kind jobs in full and rebuilds no image. `scripts/ci/test/cad-backend-scope.sh` checks this in a scratch repository, and the images job runs it on every event.
+The part-kind key is the sha256 over both lists, so a runtime change moves both keys, and a change to the app alone moves only the part-kind key. That second case runs the part-kind jobs in full and rebuilds no image. `scripts/ci/test/cad-backend-scope.sh` checks this in a scratch repository, and the images job runs it on every event. `scripts/ci/test/cad-backend-inputs.sh` walks this checkout for every `include_str!` and `include_bytes!` path, every path joined to `CARGO_MANIFEST_DIR`, the bundle icons and resources in `tauri.conf.json`, and tauri-build's own inputs. It fails when any of them is outside both lists, and the images job runs it on every event too.
 
 **Where the part-kind jobs get the runtime.** When the images job builds the runtime, it stores both architectures in a cache on dev-substrate (`scripts/ci/cad-runtime-cache.sh store`) and hands them on. When it builds nothing but `backend_work` is full, it runs `scripts/ci/check-image-host.sh`, then fills `cad-runtime/out/<arch>` from that cache (`cad-runtime-cache.sh fetch`), and hands the runtime on the same way. The cache follows these rules:
 
 - It lives in `~/.cache/m3d-tool-cache/cad-runtime/<arch>-<sha256 of pins-<arch>.json>/`, so a change to the pins selects a new slot.
 - Every file the pins name must be a regular file, not a symlink, with its pinned size and sha256. The script checks this when it stores, after it copies into the slot, and after it copies out.
+- The pins must name the requested architecture and only plain file names: one path segment that starts with a letter or digit, with no `..`. The script refuses any other pins before it builds, copies, or stores anything.
+- A lock file per slot (`flock`) serializes the cache. A fetch copies out of the slot under the shared lock. A store copies into a staging directory beside the slot and checks it there, then swaps it in under the exclusive lock. A fetch therefore never sees a slot that is half replaced.
 - A slot that fails the check is a miss. On a miss, `fetch` builds the runtime once with `cad-runtime/build.sh`, checks it against the pins, and only then stores it. Nothing that fails the check is handed out or stored.
 - The tests that boot the runtime check it against the pins compiled into the app (and the helper) once more.
 

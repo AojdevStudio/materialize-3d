@@ -90,6 +90,8 @@ jobs:
         run: scripts/ci/test/cad-runtime-key.sh
       - name: The part-kind key and scope cover the app too, and the image key does not
         run: scripts/ci/test/cad-backend-scope.sh
+      - name: Every file the app compiles in or its tests read is on the part-kind lists
+        run: scripts/ci/test/cad-backend-inputs.sh
       - name: The runtime cache hands out only the pinned runtime
         run: scripts/ci/test/cad-runtime-cache.sh
       - name: Does this change touch the CAD runtime?

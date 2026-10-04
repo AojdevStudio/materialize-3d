@@ -27,9 +27,11 @@ while IFS= read -r path; do
     echo "placeholder for $path" > "$repo/$path"
   fi
 done < <(grep -hEv '^[[:space:]]*(#|$)' "$ci/cad-runtime-paths.txt" "$ci/cad-backend-paths.txt")
-for listed in src-tauri/src/placeholder src-tauri/tests/fixtures/placeholder src-tauri/Cargo.lock; do
-  [[ -f "$repo/$listed" ]] || fail "the part-kind list no longer covers $listed"
-done
+# The files the cases below change; each case proves that the lists cover its file.
+mkdir -p "$repo/src-tauri/src" "$repo/src-tauri/tests/fixtures"
+echo "app" > "$repo/src-tauri/src/placeholder"
+echo "fixture" > "$repo/src-tauri/tests/fixtures/placeholder"
+[[ -f "$repo/docs/acceptance/p2s-test-sign.json" ]] || fail "the part-kind list no longer names docs/acceptance/p2s-test-sign.json"
 mkdir -p "$repo/docs" "$repo/src"
 echo "docs" > "$repo/docs/ci-runners.md"
 echo "frontend" > "$repo/src/App.tsx"
@@ -65,6 +67,13 @@ echo "changed" >> "$repo/src-tauri/tests/fixtures/placeholder"
 commit "fixture"
 [[ "$(key)" == "$image" && "$(scope)" == relevant=false ]] || fail "a fixture change reached the images"
 [[ "$(key --backend)" != "$part" && "$(scope --backend)" == relevant=true ]] || fail "a fixture change missed the part-kind jobs"
+back
+# The acceptance sign outside src-tauri/ that the sign tests compile in.
+echo "changed" >> "$repo/docs/acceptance/p2s-test-sign.json"
+commit "acceptance sign"
+[[ "$(key)" == "$image" && "$(scope)" == relevant=false ]] || fail "an acceptance sign change reached the images"
+[[ "$(key --backend)" != "$part" && "$(scope --backend)" == relevant=true ]] \
+  || fail "an acceptance sign change missed the part-kind jobs"
 back
 echo "# edited" >> "$repo/scripts/ci/cad-backend-paths.txt"
 commit "list"

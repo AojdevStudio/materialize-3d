@@ -63,7 +63,61 @@ if cache store amd64 "$work/wrong"; then fail "store took a runtime that misses 
 cache store amd64 "$work/first" > /dev/null || fail "store refused the pinned runtime"
 mkdir -p "$work/full" && echo stale > "$work/full/stale"
 if cache fetch amd64 "$work/full"; then fail "fetch wrote into a directory that was not empty"; fi
+good_pins="$(cat "$repo/cad-runtime/pins-amd64.json")"
 echo '{"arch":"amd64","files":{}}' > "$repo/cad-runtime/pins-amd64.json"
 if cache fetch amd64 "$work/seventh"; then fail "pins that name no files were accepted"; fi
+
+# A pinned name is one plain file name. Pins that name a path, or that pin another architecture, are refused before
+# anything is built, copied, or stored. Each case starts from an empty cache and a runtime directory that holds the
+# named path with the pinned bytes, so only the name check can refuse it.
+# refused <case> <name>: pins naming <name> make both store and fetch fail, with no build and nothing written.
+refused() {
+  local label="$1" name="$2" src="$work/named-$1" before after builds_before
+  rm -rf "$M3D_CAD_RUNTIME_CACHE" "$work/outside" "$work/dest-$label" "$src"
+  mkdir -p "$src/sub" "$src/$(dirname "$name")" "$M3D_CAD_RUNTIME_CACHE/amd64-slot"
+  cp "$work/vmlinux" "$src/$name"
+  printf '{"arch":"amd64","files":{"%s":{"sha256":"%s","bytes":%s}}}\n' "$name" \
+    "$(sha256sum "$work/vmlinux" | cut -d' ' -f1)" "$(stat -c %s "$work/vmlinux")" > "$repo/cad-runtime/pins-amd64.json"
+  before="$(cd "$work" && find . -path ./builds -prune -o -print | sort)" builds_before="$(builds)"
+  if cache store amd64 "$src"; then fail "store accepted the pinned name $label"; fi
+  if cache fetch amd64 "$work/dest-$label"; then fail "fetch accepted the pinned name $label"; fi
+  rm -rf "$work/dest-$label"
+  after="$(cd "$work" && find . -path ./builds -prune -o -print | sort)"
+  [[ "$before" == "$after" ]] || fail "the pinned name $label wrote: $(comm -13 <(echo "$before") <(echo "$after") | tr '\n' ' ')"
+  [[ "$(builds)" == "$builds_before" ]] || fail "the pinned name $label started a build"
+}
+refused parent ../outside
+refused absolute "$work/abs/vmlinux"
+refused nested sub/vmlinux
+refused dotdot vm..linux
+rm -rf "$M3D_CAD_RUNTIME_CACHE"
+# Pins for another architecture under this architecture's file name.
+builds_before="$(builds)"
+echo "${good_pins//\"arch\":\"amd64\"/\"arch\":\"arm64\"}" > "$repo/cad-runtime/pins-amd64.json"
+if cache store amd64 "$work/first"; then fail "store accepted pins whose arch is arm64"; fi
+if cache fetch amd64 "$work/cross"; then fail "fetch accepted pins whose arch is arm64"; fi
+[[ ! -e "$M3D_CAD_RUNTIME_CACHE" && ! -e "$work/cross" && "$(builds)" == "$builds_before" ]] \
+  || fail "pins for another architecture wrote something or started a build"
+echo "$good_pins" > "$repo/cad-runtime/pins-amd64.json"
+
+# store and fetch at the same time: every fetch ends with the pinned runtime, from the cache or from a clean miss.
+# Larger files widen the window in which a store replaces the slot while a fetch copies out of it.
+head -c 8000000 /dev/urandom > "$work/vmlinux" && head -c 8000000 /dev/urandom > "$work/rootfs.img"
+echo "{\"arch\":\"amd64\",\"files\":{$(pin vmlinux),$(pin rootfs.img)}}" > "$repo/cad-runtime/pins-amd64.json"
+rm -rf "$M3D_CAD_RUNTIME_CACHE" "$work/race" && mkdir -p "$work/race"
+cache fetch amd64 "$work/race/source" > /dev/null || fail "the race setup could not build"
+touch "$work/race/storing"
+( while [[ -f "$work/race/storing" ]]; do cache store amd64 "$work/race/source" > /dev/null || echo x >> "$work/race/store-failed"; done ) &
+storer=$!
+for i in $(seq 1 40); do
+  if ! cache fetch amd64 "$work/race/$i" > /dev/null; then
+    rm "$work/race/storing"; wait "$storer" || true
+    fail "fetch $i failed while a store replaced the slot"
+  fi
+  pinned "$work/race/$i" || { rm "$work/race/storing"; wait "$storer" || true; fail "fetch $i handed out a wrong runtime"; }
+  rm -rf "${work:?}/race/$i"
+done
+rm "$work/race/storing" && wait "$storer"
+[[ ! -f "$work/race/store-failed" ]] || fail "a store failed while fetches read the slot"
 
 echo "cad-runtime cache: ok"
