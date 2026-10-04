@@ -27,7 +27,8 @@ mod backend_tests;
 
 pub use spec::{Axis, Filament, MeasuredRequirement, ParamValue, PartSpec, Requirement, ValidPart, PART_SCHEMA_VERSION};
 
-use crate::fabrication::cad_worker::{CadJob, CadRuntime, WorkerError, WorkerLimits};
+use crate::fabrication::cad_worker::{CadJob, CadRuntime, RawBody, WorkerError, WorkerLimits};
+use crate::fabrication::layers::slice::MAX_TRIANGLES;
 use crate::fabrication::checks::{slice_and_handoff_checks, slice_support_warning, CheckId, CheckOutcome, CheckPhase, CheckPlan, CheckPlanId, InvalidPlan};
 use crate::fabrication::kind::{BuildControl, Built, ExtraArtifact, KernelContext, KernelError, KindId, ObjectKind, ObjectNaming, SpecError};
 use crate::fabrication::model::{Body, PrintableModel};
@@ -108,6 +109,7 @@ impl ObjectKind for Part {
         let normalized = runtime
             .normalize(generated.step, &generated.bodies, &WorkerLimits::PART, control)
             .map_err(|e| worker_error(Stage::Inspect, e))?;
+        within_slicing_limit(&normalized.bodies)?;
         let names = generated.bodies.bodies();
         if normalized.bodies.len() != names.len() {
             return Err(stage(
@@ -148,6 +150,19 @@ fn plan(valid: &ValidPart, bodies: &[&str]) -> Result<CheckPlan, InvalidPlan> {
     required.extend(slice_and_handoff_checks());
     required.push(slice_support_warning());
     CheckPlan::new(PART_CHECK_PLAN, required)
+}
+
+/// Refuses a mesh with more triangles than the layer checks slice, so a part
+/// is never verified without its print checks.
+fn within_slicing_limit(bodies: &[RawBody]) -> Result<(), KernelError> {
+    let triangles: usize = bodies.iter().map(RawBody::triangle_count).sum();
+    if triangles > MAX_TRIANGLES {
+        return Err(stage(
+            Stage::Inspect,
+            format!("the solid tessellates into {triangles} triangles; at most {MAX_TRIANGLES} are allowed, so simplify the model"),
+        ));
+    }
+    Ok(())
 }
 
 fn stage(stage: Stage, error: String) -> KernelError {

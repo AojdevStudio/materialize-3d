@@ -408,3 +408,59 @@ fn a_part_too_big_for_the_printer_is_not_sliced() {
     }
     assert!(started.elapsed() < std::time::Duration::from_secs(5), "{:?}", started.elapsed());
 }
+
+/// A probe outside the material never gets a wall reading: in the void
+/// between two bodies, in the gap of a U, or where every axis ray from it
+/// runs through shared edges.
+#[test]
+fn a_probe_outside_the_material_never_gets_a_wall_reading() {
+    let wall_at = |at: [f64; 3]| {
+        let mut spec = clip_spec();
+        spec["requirements"] = json!([{ "measure": "min_wall", "name": "wall", "at": at, "mm": 0.5 }]);
+        valid(spec)
+    };
+    let not_material = |m: &PrintableModel, at: [f64; 3]| {
+        let measured = outcome(&Part::measure(&wall_at(at), m), "geometry.requirement.0");
+        assert!(!measured.passed, "{at:?}: {measured:?}");
+        assert!(measured.detail.ends_with("is not inside material"), "{at:?}: {}", measured.detail);
+    };
+    // Two bodies with a 0.6 mm gap between them.
+    let apart = model(vec![
+        ("left", mesh(&[cuboid([-10_000, -10_000, 0], [-300, 10_000, 10_000])])),
+        ("right", mesh(&[cuboid([300, -10_000, 0], [10_000, 10_000, 10_000])])),
+    ]);
+    not_material(&apart, [0.0, 0.0, 5.0]);
+    // The gap of a U: a base and two arms in one body.
+    let u = model(vec![(
+        "u",
+        mesh(&[
+            cuboid([-10_000, -5_000, 0], [10_000, 5_000, 2_000]),
+            cuboid([-10_000, -5_000, 2_000], [-300, 5_000, 10_000]),
+            cuboid([300, -5_000, 2_000], [10_000, 5_000, 10_000]),
+        ]),
+    )]);
+    not_material(&u, [0.0, 0.0, 5.0]);
+    // Outside a single box, level with its edges and corners on every axis.
+    let boxed = model(vec![("box", mesh(&[cuboid([0, 0, 0], [10_000, 10_000, 10_000])]))]);
+    not_material(&boxed, [-5.0, 5.0, 5.0]);
+    not_material(&boxed, [15.0, 10.0, 10.0]);
+}
+
+/// A mesh with more triangles than the layer checks slice fails at
+/// inspection, so no part verifies without its print checks.
+#[test]
+fn a_mesh_over_the_slicing_limit_fails_at_inspect() {
+    use crate::fabrication::cad_worker::{decode_mesh, MeshLimits};
+    let mesh = |triangles: u32| {
+        let mut bytes = b"M3DMESH1".to_vec();
+        bytes.extend(1u32.to_le_bytes());
+        bytes.extend(3u32.to_le_bytes());
+        bytes.extend(triangles.to_le_bytes());
+        [[0.0f64, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]].iter().flatten().for_each(|c| bytes.extend(c.to_le_bytes()));
+        (0..triangles).for_each(|_| [0u32, 1, 2].iter().for_each(|i| bytes.extend(i.to_le_bytes())));
+        decode_mesh(&bytes, &MeshLimits::PART).expect("within the decoder's limits")
+    };
+    within_slicing_limit(&mesh(1_000_000)).expect("at the limit");
+    let err = within_slicing_limit(&mesh(1_000_001)).expect_err("over the limit");
+    assert_eq!(err.to_string(), "inspect: the solid tessellates into 1000001 triangles; at most 1000000 are allowed, so simplify the model");
+}

@@ -28,17 +28,19 @@ pub fn measure(valid: &ValidPart, model: &PrintableModel) -> Vec<CheckOutcome> {
     let mut outcomes: Vec<CheckOutcome> = model.bodies().iter().flat_map(|body| mesh_checks(body, model, valid.bed())).collect();
     let fits = outcomes.iter().filter(|o| o.id.as_str().starts_with("geometry.bounds.")).all(|o| o.passed);
     outcomes.extend(valid.requirements().iter().map(|r| requirement(r, model)));
-    if fits {
-        for (body, print) in model.bodies().iter().zip(slice::measure(model)) {
-            outcomes.extend(print_checks(&print, body));
+    // A part that fails its bounds is not sliced: a model the printer cannot
+    // hold could be as tall as the decoder admits.
+    let sliced = if fits { slice::measure(model).map_err(|e| e.to_string()) } else { Err("the part does not fit the printer".into()) };
+    match sliced {
+        Ok(prints) => {
+            for (body, print) in model.bodies().iter().zip(prints) {
+                outcomes.extend(print_checks(&print, body));
+            }
         }
-    } else {
-        // The build already fails its bounds, so nothing is sliced: a model the
-        // printer cannot hold could be as tall as the decoder admits.
-        for body in model.bodies() {
-            outcomes.extend(PRINT_CHECKS.map(|name| {
-                outcome(CheckPhase::Print, name, body, false, "not measured: the part does not fit the printer".into())
-            }));
+        Err(why) => {
+            for body in model.bodies() {
+                outcomes.extend(PRINT_CHECKS.map(|name| outcome(CheckPhase::Print, name, body, false, format!("not measured: {why}"))));
+            }
         }
     }
     outcomes
@@ -286,14 +288,25 @@ impl Triangles {
             .min_by(|a, b| a.0.total_cmp(&b.0))
     }
 
-    /// Inside a closed solid: a ray from the point crosses its surface an odd
-    /// number of times. Three rays vote, so one grazing ray cannot decide it.
+    /// Inside the material: the generalized winding number of the surface
+    /// around the point is more than one half. It sums each triangle's solid
+    /// angle (Van Oosterom and Strackee), so no ray meets an edge or a vertex
+    /// twice: a closed outward body winds once around every point inside it
+    /// and not at all around any point outside, whatever its triangles share.
     fn inside(&self, at: [f64; 3]) -> bool {
-        let dirs = [[1.0, 1.0, 1.0], [-1.0, 2.0, 3.0], [1.0, -1.0, 0.0]].map(|d: [f64; 3]| {
-            let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
-            d.map(|c| c / len)
-        });
-        dirs.iter().filter(|dir| self.hits(at, **dir).len() % 2 == 1).count() >= 2
+        let mut solid_angle = 0.0;
+        for t in &self.0 {
+            let [a, b, c] = t.map(|v| sub3(v, at));
+            let (la, lb, lc) = (dot3(a, a).sqrt(), dot3(b, b).sqrt(), dot3(c, c).sqrt());
+            if la == 0.0 || lb == 0.0 || lc == 0.0 {
+                return false;
+            }
+            let bc = [b[1] * c[2] - b[2] * c[1], b[2] * c[0] - b[0] * c[2], b[0] * c[1] - b[1] * c[0]];
+            let numerator = dot3(a, bc);
+            let denominator = la * lb * lc + dot3(a, b) * lc + dot3(b, c) * la + dot3(c, a) * lb;
+            solid_angle += 2.0 * numerator.atan2(denominator);
+        }
+        solid_angle / (4.0 * std::f64::consts::PI) > 0.5
     }
 }
 
@@ -396,12 +409,13 @@ fn solve3(m: [[f64; 3]; 3], rhs: [f64; 3]) -> Option<[f64; 3]> {
     Some(out)
 }
 
-/// The material's thickness at `at`: the diameter of the largest ball of
-/// material that contains `at`, as far as this search finds one.
+/// The material's thickness at `at`, which must be inside the material: the
+/// diameter of the largest ball of material that contains `at`, as far as this
+/// search finds one.
 ///
 /// Every candidate is a ball the search proves lies inside the material (its
-/// center is inside, and its radius is the center's distance to the nearest
-/// surface) and contains `at`, so the answer never exceeds the real
+/// center is inside by the winding number, and its radius is the center's
+/// distance to the nearest surface) and contains `at`, so the answer never exceeds the real
 /// thickness: a wall `t` thick holds no ball wider than `t`, at any angle.
 /// The candidates are the ball centered at `at`, and the ball centered at the
 /// midpoint of each chord through `at` along the direction to the nearest
@@ -431,7 +445,7 @@ fn wall_thickness(triangles: &Triangles, at: [f64; 3]) -> Option<f64> {
         let shift = (ahead - behind) / 2.0;
         let center = [at[0] + d[0] * shift, at[1] + d[1] * shift, at[2] + d[2] * shift];
         let Some((radius, _, _)) = triangles.closest(center) else { continue };
-        if shift.abs() <= radius {
+        if shift.abs() <= radius && triangles.inside(center) {
             best = best.max(2.0 * radius);
         }
     }
@@ -486,4 +500,33 @@ fn closest_on_triangle(p: [f64; 3], [a, b, c]: &[[f64; 3]; 3]) -> [f64; 3] {
     }
     let denom = 1.0 / (va + vb + vc);
     at(vb * denom, ab, vc * denom, ac)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A closed, outward cube from 0 to 10 mm, two triangles a face.
+    fn cube() -> Triangles {
+        let p = |i: usize| [if i & 1 == 0 { 0.0 } else { 10.0 }, if i & 2 == 0 { 0.0 } else { 10.0 }, if i & 4 == 0 { 0.0 } else { 10.0 }];
+        let faces = [[0, 2, 1], [1, 2, 3], [4, 5, 6], [5, 7, 6], [0, 1, 4], [1, 5, 4], [2, 6, 3], [3, 6, 7], [0, 4, 2], [2, 4, 6], [1, 3, 5], [3, 7, 5]];
+        Triangles(faces.iter().map(|f| f.map(p)).collect())
+    }
+
+    /// Every point of a lattice is classed by where it is, including points
+    /// whose rays along the axes and diagonals run exactly through the cube's
+    /// shared edges and corners.
+    #[test]
+    fn containment_does_not_count_a_shared_edge_or_corner_twice() {
+        let cube = cube();
+        let steps = [-2.5, 2.5, 5.0, 7.5, 12.5];
+        for x in steps {
+            for y in steps {
+                for z in steps {
+                    let inside = [x, y, z].iter().all(|c| (0.0..10.0).contains(c));
+                    assert_eq!(cube.inside([x, y, z]), inside, "[{x}, {y}, {z}]");
+                }
+            }
+        }
+    }
 }
