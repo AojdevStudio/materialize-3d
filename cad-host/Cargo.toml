@@ -31,6 +31,10 @@ objc2 = "0.6"
 objc2-foundation = "0.3"
 objc2-virtualization = "0.3"
 
+[features]
+# The `hostile` command and its test initramfs, for the restriction tests only. The release never enables it.
+restriction-tests = []
+
 [profile.release]
 debug = false
 strip = true

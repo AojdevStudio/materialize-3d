@@ -2,9 +2,9 @@
 //!
 //! ```text
 //! materialize-cad-host generate --runtime DIR --source FILE --params FILE --out DIR [options]
-//! materialize-cad-host inspect  --runtime DIR --step FILE --out DIR [options]
+//! materialize-cad-host inspect  --runtime DIR --step FILE --names FILE --out DIR [options]
 //! materialize-cad-host build    --runtime DIR --source FILE --params FILE --out DIR [options]
-//! materialize-cad-host hostile  --runtime DIR --case NAME --out DIR [options]
+//! materialize-cad-host hostile  --runtime DIR --case NAME --out DIR [options]   (restriction-tests builds only)
 //! materialize-cad-host verify   --runtime DIR
 //! materialize-cad-host pins
 //! options: --deadline-s N --cancel-after-s N --cpus N --memory-mib N
@@ -14,9 +14,12 @@
 //! (see [`cad_host::runtime`]) before it boots anything, gives each guest a fresh job disk cloned from the template,
 //! and writes only host-named files into `--out`: `result.json` always, plus the accepted payloads. `--out` must be
 //! absent or empty when the run starts, so every file in it belongs to this run, and a file that cannot be saved
-//! fails the run as internal. `verify` runs only that check on the shipped files, and `pins` prints the compiled-in
-//! pins; both also run off macOS. Exit codes: 0 accepted, 1 the job failed (a bounded, structured error), 2 the
-//! guest's output was rejected, 3 deadline or cancel, 4 runtime verification failed, 64 usage, 70 internal.
+//! fails the run as internal. `inspect` names the STEP's bodies with `--names`, a JSON array of the body names the
+//! app checked; `build` uses the generation guest's manifest. `verify` runs only that check on the shipped files, and
+//! `pins` prints the compiled-in pins; both also run off macOS. `hostile` exists only in a helper built with the
+//! `restriction-tests` feature, which the release never enables. Exit codes: 0 accepted, 1 the job failed (a
+//! bounded, structured error), 2 the guest's output was rejected, 3 deadline or cancel, 4 runtime verification
+//! failed, 64 usage, 70 internal.
 
 #[cfg(target_os = "macos")]
 mod vm;
@@ -244,45 +247,42 @@ fn run_guests(_args: &Args, _out: Option<&OutDir>) -> Result<Report, String> {
 
 #[cfg(target_os = "macos")]
 fn run_guests(args: &Args, out: Option<&OutDir>) -> Result<Report, String> {
-    use cad_host::frame::{FrameLimits, Role};
-    use cad_host::runtime::HOSTILE_INITRAMFS;
-
     let out = out.ok_or("--out is required")?;
     let runtime = Runtime {
         dir: args.path("runtime")?,
     };
     let limits = VmLimits::from_args(args)?;
+    #[cfg(feature = "restriction-tests")]
+    if args.command == "hostile" {
+        return hostile(args, &runtime, &limits, out);
+    }
     let job = match args.command.as_str() {
         "generate" | "build" => Some(generate_request(args)?),
-        "inspect" | "hostile" => None,
+        "inspect" => None,
         other => return Err(format!("unknown command {other}")),
     };
-    let step = match args.command.as_str() {
-        "inspect" => Some(std::fs::read(args.path("step")?).map_err(|e| format!("--step: {e}"))?),
+    let inspection = match args.command.as_str() {
+        "inspect" => {
+            let step = std::fs::read(args.path("step")?).map_err(|e| format!("--step: {e}"))?;
+            Some((step, body_names(args)?))
+        }
         _ => None,
     };
-    let case = args.opts.get("case");
-    if args.command == "hostile" && case.is_none() {
-        return Err("--case is required".into());
-    }
     // Each command boots only the files it names, and each must match its compiled-in pin first.
-    let used: &[&str] = match args.command.as_str() {
-        "hostile" => &["Image", HOSTILE_INITRAMFS],
-        _ => &SHIPPED,
-    };
-    let verified = verify_runtime(&runtime.dir, used);
+    let verified = verify_runtime(&runtime.dir, &SHIPPED);
     if verified.outcome != Outcome::Accepted {
         return Ok(verified);
     }
-    Ok(match (args.command.as_str(), job, step) {
+    Ok(match (args.command.as_str(), job, inspection) {
         ("generate", Some(job), _) => runtime.generate(job, &limits, out).0,
-        ("inspect", _, Some(step)) => runtime.inspect(step, &limits, out, None),
+        ("inspect", _, Some((step, names))) => runtime.inspect(step, names, &limits, out, None),
         ("build", Some(job), _) => {
             let (generated, accepted) = runtime.generate(job, &limits, out);
             let Some((step, manifest)) = accepted else {
                 return Ok(generated);
             };
-            let mut inspected = runtime.inspect(step, &limits, out, Some(&manifest));
+            let names = manifest.bodies.iter().map(|b| b.name.clone()).collect();
+            let mut inspected = runtime.inspect(step, names, &limits, out, Some(&manifest));
             let guests = [generated.fields.get("guest"), inspected.fields.get("guest")]
                 .map(|g| g.cloned().unwrap_or(Value::Null));
             inspected.fields.remove("guest");
@@ -291,25 +291,42 @@ fn run_guests(args: &Args, out: Option<&OutDir>) -> Result<Report, String> {
                 .insert("guests".into(), Value::Array(guests.into()));
             inspected
         }
-        _ => {
-            // A stand-in for a fully compromised inspection guest; see cad-runtime/test/hostile-guest.c.
-            let cfg = vm::GuestConfig {
-                kernel: runtime.file("Image"),
-                initrd: Some(runtime.file(HOSTILE_INITRAMFS)),
-                cmdline: format!(
-                    "console=hvc0 rdinit=/init panic=1 m3d.case={}",
-                    case.expect("checked")
-                ),
-                ..limits.guest()
-            };
-            let request = vec![
-                (*b"JOBS", br#"{"role":"inspect","timeout_s":10}"#.to_vec()),
-                (*b"INPT", b"ISO-10303-21;".to_vec()),
-            ];
-            let outcome = vm::run_guest(&cfg, request, Role::Inspect, FrameLimits::SPIKE);
-            finish_inspect(outcome, out, None, None)
-        }
+        _ => unreachable!("each command was matched above"),
     })
+}
+
+/// A stand-in for a fully compromised inspection guest (cad-runtime/test/hostile-guest.c), for the restriction
+/// tests. Never in a release helper: the test initramfs it boots is never bundled.
+#[cfg(all(target_os = "macos", feature = "restriction-tests"))]
+fn hostile(args: &Args, runtime: &Runtime, limits: &VmLimits, out: &OutDir) -> Result<Report, String> {
+    use cad_host::frame::{FrameLimits, Role};
+    use cad_host::runtime::HOSTILE_INITRAMFS;
+
+    let case = args.opts.get("case").ok_or("--case is required")?;
+    let verified = verify_runtime(&runtime.dir, &["Image", HOSTILE_INITRAMFS]);
+    if verified.outcome != Outcome::Accepted {
+        return Ok(verified);
+    }
+    let cfg = vm::GuestConfig {
+        kernel: runtime.file("Image"),
+        initrd: Some(runtime.file(HOSTILE_INITRAMFS)),
+        cmdline: format!("console=hvc0 rdinit=/init panic=1 m3d.case={case}"),
+        ..limits.guest()
+    };
+    let request = vec![
+        (*b"JOBS", br#"{"role":"inspect","timeout_s":10}"#.to_vec()),
+        (*b"INPT", b"ISO-10303-21;".to_vec()),
+    ];
+    let outcome = vm::run_guest(&cfg, request, Role::Inspect, FrameLimits::SPIKE);
+    Ok(finish_inspect(outcome, out, None, None))
+}
+
+/// `--names`: a JSON array of the body names the app checked, which the inspector writes into the STEP it
+/// re-exports.
+#[cfg(target_os = "macos")]
+fn body_names(args: &Args) -> Result<Vec<String>, String> {
+    let bytes = std::fs::read(args.path("names")?).map_err(|e| format!("--names: {e}"))?;
+    serde_json::from_slice(&bytes).map_err(|e| format!("--names must be a JSON array of strings: {e}"))
 }
 
 /// The job spec the generation guest receives.
@@ -460,6 +477,7 @@ impl Runtime {
     fn inspect(
         &self,
         step: Vec<u8>,
+        names: Vec<String>,
         limits: &VmLimits,
         out: &OutDir,
         manifest: Option<&cad_host::manifest::BodyManifest>,
@@ -469,7 +487,7 @@ impl Runtime {
             Ok(disk) => disk,
             Err(report) => return report,
         };
-        let job = json!({ "role": "inspect", "timeout_s": limits.guest_timeout_s() });
+        let job = json!({ "role": "inspect", "timeout_s": limits.guest_timeout_s(), "names": names });
         let request = vec![
             (*b"JOBS", serde_json::to_vec(&job).expect("json")),
             (*b"INPT", step),
