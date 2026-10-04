@@ -56,11 +56,11 @@ impl ObjectKind for Probe {
         Ok(Built { model: test_support::model(), extra: Vec::new() })
     }
 
-    fn measure(valid: &ValidProbe, _model: &PrintableModel) -> Vec<CheckOutcome> {
-        vec![
+    fn measure(valid: &ValidProbe, _model: &PrintableModel, _control: &BuildControl<'_>) -> Result<Vec<CheckOutcome>, KernelError> {
+        Ok(vec![
             CheckOutcome { id: tip(), passed: valid.geometry_passes, detail: "tip".into() },
             CheckOutcome { id: overhang(), passed: valid.print_passes, detail: "62 degrees".into() },
-        ]
+        ])
     }
 
     fn preview(_valid: &ValidProbe, _model: &PrintableModel) -> Result<Vec<u8>, KernelError> {

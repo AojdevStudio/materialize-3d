@@ -128,8 +128,8 @@ impl ObjectKind for Part {
         Ok(Built { model, extra: vec![ExtraArtifact::Step(normalized.step)] })
     }
 
-    fn measure(valid: &ValidPart, model: &PrintableModel) -> Vec<CheckOutcome> {
-        measure::measure(valid, model)
+    fn measure(valid: &ValidPart, model: &PrintableModel, control: &BuildControl<'_>) -> Result<Vec<CheckOutcome>, KernelError> {
+        measure::measure(valid, model, &|| control.is_cancelled())
     }
 
     fn preview(_valid: &ValidPart, model: &PrintableModel) -> Result<Vec<u8>, KernelError> {

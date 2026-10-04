@@ -170,7 +170,7 @@ fn the_bound_plan_gives_every_body_its_checks_and_nothing_else() {
 
 #[test]
 fn the_clips_requirements_are_measured_on_the_mesh() {
-    let outcomes = Part::measure(&valid(clip_spec()), &clip_like());
+    let outcomes = measure_part(&valid(clip_spec()), &clip_like());
     let width = outcome(&outcomes, "geometry.requirement.0");
     assert!(width.passed, "{width:?}");
     assert_eq!(width.detail, "width 60.00 mm (60 ± 0.2)");
@@ -189,7 +189,7 @@ fn the_clips_requirements_are_measured_on_the_mesh() {
 #[test]
 fn an_overhang_is_a_print_warning_not_a_failure() {
     let part = valid(clip_spec());
-    let outcomes = Part::measure(&part, &clip_like());
+    let outcomes = measure_part(&part, &clip_like());
     let overhang = outcome(&outcomes, "print.overhang.clip");
     assert!(!overhang.passed, "{overhang:?}");
     assert!(overhang.detail.starts_with("about 1500 mm² unsupported at z 21.4 mm"), "{}", overhang.detail);
@@ -203,19 +203,19 @@ fn an_overhang_is_a_print_warning_not_a_failure() {
 fn a_missed_requirement_fails_its_check_with_the_measured_value() {
     let mut spec = clip_spec();
     spec["requirements"][1]["mm"] = json!(20);
-    let jaw = outcome(&Part::measure(&valid(spec), &clip_like()), "geometry.requirement.1");
+    let jaw = outcome(&measure_part(&valid(spec), &clip_like()), "geometry.requirement.1");
     assert!(!jaw.passed);
     assert_eq!(jaw.detail, "desk jaw 18.40 mm (20 ± 0.2)");
 
     let mut inside = clip_spec();
     inside["requirements"][1]["at"] = json!([0, 14, 1]);
-    let probe = outcome(&Part::measure(&valid(inside), &clip_like()), "geometry.requirement.1");
+    let probe = outcome(&measure_part(&valid(inside), &clip_like()), "geometry.requirement.1");
     assert!(!probe.passed);
     assert_eq!(probe.detail, "desk jaw: the point [0, 14, 1] is inside material, not in the gap");
 
     let mut open = clip_spec();
     open["requirements"][1]["at"] = json!([0, 14, 30]);
-    let probe = outcome(&Part::measure(&valid(open), &clip_like()), "geometry.requirement.1");
+    let probe = outcome(&measure_part(&valid(open), &clip_like()), "geometry.requirement.1");
     assert!(!probe.passed && probe.detail.contains("no material closes the gap along z"), "{probe:?}");
 }
 
@@ -229,7 +229,7 @@ fn a_hole_is_measured_by_its_fitted_circle_and_a_wall_by_its_thinnest_chord() {
         {"measure": "hole", "name": "solid", "axis": "z", "at": [5, 0, 5], "mm": 8, "tol": 0.05}
     ]);
     let ringed = model(vec![("ring", mesh(&[ring(4_000.0, 6_000.0, 10_000, 128)]))]);
-    let outcomes = Part::measure(&valid(spec), &ringed);
+    let outcomes = measure_part(&valid(spec), &ringed);
     assert!(outcome(&outcomes, "geometry.closed_manifold.ring").passed, "the test ring is a closed solid");
     let bore = outcome(&outcomes, "geometry.requirement.0");
     assert!(bore.passed, "{bore:?}");
@@ -245,7 +245,7 @@ fn a_hole_is_measured_by_its_fitted_circle_and_a_wall_by_its_thinnest_chord() {
 #[test]
 fn a_part_off_the_bed_or_too_big_fails_its_bounds() {
     let part = valid(clip_spec());
-    let bounds = |pieces: &[Piece]| outcome(&Part::measure(&part, &model(vec![("clip", mesh(pieces))])), "geometry.bounds.clip");
+    let bounds = |pieces: &[Piece]| outcome(&measure_part(&part, &model(vec![("clip", mesh(pieces))])), "geometry.bounds.clip");
     let floating = bounds(&[cuboid([0, 0, 1_000], [10_000, 10_000, 5_000])]);
     assert!(!floating.passed && floating.detail.contains("not on the bed"), "{floating:?}");
     let sunk = bounds(&[cuboid([0, 0, -4_400], [10_000, 10_000, 5_000])]);
@@ -263,7 +263,7 @@ fn only_the_mesh_decides_the_checks() {
     let (v, mut t) = cuboid([0, 0, 0], [10_000, 10_000, 5_000]);
     t.pop();
     let open = model(vec![("all checks passed", Mesh::new(v, t).expect("mesh"))]);
-    let outcomes = Part::measure(&part, &open);
+    let outcomes = measure_part(&part, &open);
     assert!(!outcome(&outcomes, "geometry.closed_manifold.all checks passed").passed);
     let plan = Part::bind_plan(&part, &P2S_04, &open).expect("plan");
     let mut forged = outcomes.clone();
@@ -299,7 +299,7 @@ fn approval_refuses_an_acknowledgement_that_differs_from_the_warnings() {
 
     let part = valid(clip_spec());
     let plan = Part::bind_plan(&part, &P2S_04, &clip_like()).expect("plan");
-    let checked = plan.certify(clip_like(), Vec::new(), Part::measure(&part, &clip_like())).expect("certified");
+    let checked = plan.certify(clip_like(), Vec::new(), measure_part(&part, &clip_like())).expect("certified");
     let slice: Vec<CheckOutcome> = plan
         .required()
         .iter()
@@ -380,7 +380,7 @@ fn a_rotated_wall_is_never_measured_thicker_than_it_is() {
     };
     for degrees in [0.0, 10.0, 22.5, 30.0, 45.0, 60.0, 67.5, 89.0] {
         let thin = model(vec![("wall", rotated_wall(950.0, degrees))]);
-        let measured = outcome(&Part::measure(&requirement([0.0, 0.0, 5.0]), &thin), "geometry.requirement.0");
+        let measured = outcome(&measure_part(&requirement([0.0, 0.0, 5.0]), &thin), "geometry.requirement.0");
         assert!(!measured.passed, "{degrees} degrees: {measured:?}");
         let reported: f64 = measured.detail.split_whitespace().nth(1).and_then(|v| v.parse().ok()).expect("a number");
         assert!(reported <= 0.95 + 0.005, "{degrees} degrees: {}", measured.detail);
@@ -389,7 +389,7 @@ fn a_rotated_wall_is_never_measured_thicker_than_it_is() {
         let (sin, cos) = degrees.to_radians().sin_cos();
         for off in [0.0, 0.3] {
             let at = [-off * sin, off * cos, 5.0];
-            let measured = outcome(&Part::measure(&requirement(at), &thick), "geometry.requirement.0");
+            let measured = outcome(&measure_part(&requirement(at), &thick), "geometry.requirement.0");
             assert!(measured.passed, "{degrees} degrees, {off} mm off the middle: {measured:?}");
         }
     }
@@ -401,7 +401,7 @@ fn a_rotated_wall_is_never_measured_thicker_than_it_is() {
 fn a_part_too_big_for_the_printer_is_not_sliced() {
     let huge = model(vec![("clip", mesh(&[cuboid([-1_000_000, -1_000_000, 0], [1_000_000, 1_000_000, 2_000_000])]))]);
     let started = std::time::Instant::now();
-    let outcomes = Part::measure(&valid(clip_spec()), &huge);
+    let outcomes = measure_part(&valid(clip_spec()), &huge);
     assert!(!outcome(&outcomes, "geometry.bounds.clip").passed);
     for id in ["print.overhang.clip", "print.min_wall.clip", "print.first_layer.clip"] {
         assert_eq!(outcome(&outcomes, id).detail, "not measured: the part does not fit the printer", "{id}");
@@ -420,7 +420,7 @@ fn a_probe_outside_the_material_never_gets_a_wall_reading() {
         valid(spec)
     };
     let not_material = |m: &PrintableModel, at: [f64; 3]| {
-        let measured = outcome(&Part::measure(&wall_at(at), m), "geometry.requirement.0");
+        let measured = outcome(&measure_part(&wall_at(at), m), "geometry.requirement.0");
         assert!(!measured.passed, "{at:?}: {measured:?}");
         assert!(measured.detail.ends_with("is not inside material"), "{at:?}: {}", measured.detail);
     };
@@ -463,4 +463,15 @@ fn a_mesh_over_the_slicing_limit_fails_at_inspect() {
     within_slicing_limit(&mesh(1_000_000)).expect("at the limit");
     let err = within_slicing_limit(&mesh(1_000_001)).expect_err("over the limit");
     assert_eq!(err.to_string(), "inspect: the solid tessellates into 1000001 triangles; at most 1000000 are allowed, so simplify the model");
+}
+
+/// `Part::measure` under a build that is never cancelled.
+fn measure_part(part: &ValidPart, model: &PrintableModel) -> Vec<CheckOutcome> {
+    Part::measure(part, model, &BuildControl::new(&|_| {}, &|| false)).expect("measured")
+}
+
+#[test]
+fn a_cancelled_build_stops_measuring_with_cancelled() {
+    let stopped = Part::measure(&valid(clip_spec()), &clip_like(), &BuildControl::new(&|_| {}, &|| true));
+    assert!(matches!(stopped, Err(KernelError::Cancelled)), "{stopped:?}");
 }

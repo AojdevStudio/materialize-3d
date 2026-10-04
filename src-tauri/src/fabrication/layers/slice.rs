@@ -276,19 +276,26 @@ fn fill(grid: &Grid, segments: &[[[f32; 2]; 2]]) -> Bitmap {
     bitmap
 }
 
-/// A model with more triangles than [`measure`] slices.
+/// Why [`measure`] gave no layers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-#[error("the model has {0} triangles; the layer checks slice at most {MAX_TRIANGLES}")]
-pub struct TooManyTriangles(pub usize);
+pub enum NotMeasured {
+    /// A model with more triangles or bodies than [`measure`] slices.
+    #[error("the model has {0} triangles; the layer checks slice at most {MAX_TRIANGLES}")]
+    TooManyTriangles(usize),
+    /// `cancelled` answered true at a layer boundary.
+    #[error("the build was cancelled")]
+    Cancelled,
+}
 
 /// Slices every body of `model` on one grid, layer by layer, and measures
 /// each body's overhang, thin walls, and bed contact, in body order. Holds at
 /// most [`working_set_bytes`] while it runs, and refuses a model of more than
-/// [`MAX_TRIANGLES`] triangles or [`MAX_BODIES`] bodies.
-pub fn measure(model: &PrintableModel) -> Result<Vec<BodyPrint>, TooManyTriangles> {
+/// [`MAX_TRIANGLES`] triangles or [`MAX_BODIES`] bodies. It asks `cancelled`
+/// before every layer and stops at the first true.
+pub fn measure(model: &PrintableModel, cancelled: &dyn Fn() -> bool) -> Result<Vec<BodyPrint>, NotMeasured> {
     let triangles: usize = model.bodies().iter().map(|b| b.mesh.triangles().len()).sum();
     if triangles > MAX_TRIANGLES || model.bodies().len() > MAX_BODIES {
-        return Err(TooManyTriangles(triangles));
+        return Err(NotMeasured::TooManyTriangles(triangles));
     }
     let grid = Grid::of(model);
     let area = |bitmap: &Bitmap| bitmap.count() as f64 * grid.pixel_area_mm2();
@@ -305,6 +312,9 @@ pub fn measure(model: &PrintableModel) -> Result<Vec<BodyPrint>, TooManyTriangle
         .collect();
     let mut previous: Vec<Bitmap> = Vec::new();
     for index in 0..grid.layers {
+        if cancelled() {
+            return Err(NotMeasured::Cancelled);
+        }
         let current: Vec<Bitmap> = sweeps.iter_mut().map(|sweep| sweep.section(&grid, index)).collect();
         // Everything any body printed in the layer below supports this one.
         let mut below = Bitmap::empty(&grid);
@@ -441,7 +451,7 @@ mod tests {
     fn a_box_measures_its_footprint_and_nothing_else() {
         let model = model(cuboid([0, 0, 0], [10_000, 5_000, 2_000]));
         assert_eq!(Grid::of(&model).layers, 11);
-        let found = measure(&model).expect("sliced")[0];
+        let found = measure(&model, &|| false).expect("sliced")[0];
         assert!((found.contact.bed_mm2 - 50.0).abs() < 0.01, "{found:?}");
         assert_eq!(found.contact.largest_mm2, found.contact.bed_mm2);
         assert_eq!(found.contact.starts_mm, Some(0.0));
@@ -454,7 +464,7 @@ mod tests {
     #[test]
     fn a_slab_on_a_post_overhangs_where_the_slab_begins() {
         let model = model(join(&[cuboid([18_000, 18_000, 0], [22_000, 22_000, 10_000]), cuboid([0, 0, 10_000], [40_000, 40_000, 13_000])]));
-        let found = measure(&model).expect("sliced")[0].overhang;
+        let found = measure(&model, &|| false).expect("sliced")[0].overhang;
         assert!((found.z_mm - 10.0).abs() < 1e-9, "{found:?}");
         assert!(found.area_mm2 > 1_570.0 && found.area_mm2 < 1_584.0, "{found:?}");
     }
@@ -468,24 +478,24 @@ mod tests {
             model(join(&boxes))
         };
         let (model_45, model_60) = (stairs(200), stairs(400));
-        assert_eq!(measure(&model_45).expect("sliced")[0].overhang.area_mm2, 0.0);
-        let steep = measure(&model_60).expect("sliced")[0].overhang;
+        assert_eq!(measure(&model_45, &|| false).expect("sliced")[0].overhang.area_mm2, 0.0);
+        let steep = measure(&model_60, &|| false).expect("sliced")[0].overhang;
         assert!(steep.area_mm2 > 0.5, "{steep:?}");
     }
 
     #[test]
     fn a_wall_thinner_than_one_line_is_thin() {
         let thin = model(join(&[cuboid([0, 0, 0], [10_000, 10_000, 1_000]), cuboid([0, 0, 1_000], [10_000, 200, 5_000])]));
-        let found = measure(&thin).expect("sliced")[0].thin;
+        let found = measure(&thin, &|| false).expect("sliced")[0].thin;
         assert!(found.area_mm2 > 1.5, "a 0.2 mm wall: {found:?}");
         let thick = model(join(&[cuboid([0, 0, 0], [10_000, 10_000, 1_000]), cuboid([0, 0, 1_000], [10_000, 1_200, 5_000])]));
-        assert_eq!(measure(&thick).expect("sliced")[0].thin.area_mm2, 0.0, "a 1.2 mm wall");
+        assert_eq!(measure(&thick, &|| false).expect("sliced")[0].thin.area_mm2, 0.0, "a 1.2 mm wall");
     }
 
     #[test]
     fn a_body_that_starts_above_the_bed_has_no_contact() {
         let model = model(cuboid([0, 0, 1_000], [5_000, 5_000, 3_000]));
-        let measured = measure(&model).expect("sliced")[0];
+        let measured = measure(&model, &|| false).expect("sliced")[0];
         let found = measured.contact;
         assert_eq!(found.bed_mm2, 0.0);
         assert_eq!(found.starts_mm, Some(1.0));
@@ -530,7 +540,7 @@ mod tests {
         assert!(triangles <= MAX_TRIANGLES && triangles > MAX_TRIANGLES - 100, "{triangles}");
         assert!(grid.pixels() <= MAX_PIXELS && grid.pixels() > MAX_PIXELS * 98 / 100, "{grid:?}");
 
-        let (found, peak) = super::super::alloc_count::peak_during(|| measure(&model));
+        let (found, peak) = super::super::alloc_count::peak_during(|| measure(&model, &|| false));
         let bound = working_set_bytes(&grid, MAX_BODIES, triangles);
         println!("peak {peak} bytes, bound {bound}, largest bound {MAX_WORKING_SET_BYTES}");
         assert_eq!(found.expect("sliced").len(), MAX_BODIES);
@@ -540,9 +550,21 @@ mod tests {
     #[test]
     fn a_model_over_the_triangle_limit_is_refused() {
         let model = model(prism(250_002, 10_000.0, LAYER_UM));
-        let (refused, peak) = super::super::alloc_count::peak_during(|| measure(&model));
-        assert_eq!(refused.expect_err("refused"), TooManyTriangles(1_000_004));
+        let (refused, peak) = super::super::alloc_count::peak_during(|| measure(&model, &|| false));
+        assert_eq!(refused.expect_err("refused"), NotMeasured::TooManyTriangles(1_000_004));
         assert!(peak < 1 << 20, "{peak} bytes before refusing");
+    }
+
+    #[test]
+    fn a_cancel_stops_the_slicing_at_the_next_layer() {
+        let tall = model(cuboid([0, 0, 0], [20_000, 20_000, 100_000]));
+        let polls = std::cell::Cell::new(0_u32);
+        let stopped = measure(&tall, &|| {
+            polls.set(polls.get() + 1);
+            polls.get() > 3
+        });
+        assert_eq!(stopped.expect_err("cancelled"), NotMeasured::Cancelled);
+        assert_eq!(polls.get(), 4, "asked once a layer and stopped at the first yes, of 500 layers");
     }
 
     #[test]

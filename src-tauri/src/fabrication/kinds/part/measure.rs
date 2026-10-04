@@ -6,7 +6,8 @@ use std::collections::HashMap;
 use super::spec::{Axis, Measure, MeasuredRequirement, ValidPart};
 use super::{MESH_CHECKS, PRINT_CHECKS};
 use crate::fabrication::checks::{CheckId, CheckOutcome, CheckPhase};
-use crate::fabrication::layers::slice::{self, BodyPrint, MIN_WALL_MM};
+use crate::fabrication::kind::KernelError;
+use crate::fabrication::layers::slice::{self, BodyPrint, NotMeasured, MIN_WALL_MM};
 use crate::fabrication::model::{Body, PrintableModel};
 use crate::fabrication::printer::Um;
 
@@ -23,14 +24,23 @@ const MIN_CONTACT_MM2: f64 = 25.0;
 const MIN_CONTACT_SHARE: f64 = 0.1;
 
 /// Every geometry and print check of `model`, in the bound plan's order:
-/// each body's mesh checks, every requirement, each body's print checks.
-pub fn measure(valid: &ValidPart, model: &PrintableModel) -> Vec<CheckOutcome> {
+/// each body's mesh checks, every requirement, each body's print checks. The
+/// layer slicing asks `cancelled` once a layer and returns
+/// [`KernelError::Cancelled`] at the first yes.
+pub fn measure(valid: &ValidPart, model: &PrintableModel, cancelled: &dyn Fn() -> bool) -> Result<Vec<CheckOutcome>, KernelError> {
     let mut outcomes: Vec<CheckOutcome> = model.bodies().iter().flat_map(|body| mesh_checks(body, model, valid.bed())).collect();
     let fits = outcomes.iter().filter(|o| o.id.as_str().starts_with("geometry.bounds.")).all(|o| o.passed);
     outcomes.extend(valid.requirements().iter().map(|r| requirement(r, model)));
     // A part that fails its bounds is not sliced: a model the printer cannot
     // hold could be as tall as the decoder admits.
-    let sliced = if fits { slice::measure(model).map_err(|e| e.to_string()) } else { Err("the part does not fit the printer".into()) };
+    let sliced = if fits {
+        match slice::measure(model, cancelled) {
+            Err(NotMeasured::Cancelled) => return Err(KernelError::Cancelled),
+            sliced => sliced.map_err(|e| e.to_string()),
+        }
+    } else {
+        Err("the part does not fit the printer".into())
+    };
     match sliced {
         Ok(prints) => {
             for (body, print) in model.bodies().iter().zip(prints) {
@@ -43,7 +53,7 @@ pub fn measure(valid: &ValidPart, model: &PrintableModel) -> Vec<CheckOutcome> {
             }
         }
     }
-    outcomes
+    Ok(outcomes)
 }
 
 fn outcome(phase: CheckPhase, name: &str, body: &Body, passed: bool, detail: String) -> CheckOutcome {

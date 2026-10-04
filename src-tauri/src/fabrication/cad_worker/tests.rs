@@ -228,6 +228,19 @@ fn the_compiled_pins_cover_the_shipped_runtime_and_the_inspector_settings_match(
     assert!(inspector.contains("ANGULAR_DEFLECTION_RAD = 0.2\n"), "TESSELLATION must follow the inspector");
 }
 
+/// The build key names the limits a script ran under, so a change to the limits must change the key.
+#[test]
+fn the_sandbox_policy_in_the_build_key_names_the_part_limits() {
+    let limits = WorkerLimits::PART;
+    let named = format!(
+        "m3d-cad-sandbox-1 vcpus={} memory_mib={} deadline_s={}",
+        limits.vcpus,
+        limits.memory_mib,
+        limits.deadline.as_secs()
+    );
+    assert_eq!(SANDBOX_POLICY, named, "bump SANDBOX_POLICY with WorkerLimits::PART");
+}
+
 #[test]
 fn an_app_without_a_bundled_runtime_has_none() {
     // Test binaries live in target/, where no app bundle surrounds them.

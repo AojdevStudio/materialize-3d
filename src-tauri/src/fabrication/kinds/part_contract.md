@@ -23,4 +23,4 @@ def build(p):
   and small bed contact come back as warnings for the person to accept; they do not fail the build.
 - A failed script returns its error with the line number (stage `generate`); fix it and build again.
 - Fillet or chamfer a block before cutting holes and channels into it: a fillet after the cuts often leaves a
-  solid that intersects itself, which fails the mesh checks.
+  solid that intersects itself, which fails at stage `generate` with an error that names the body.

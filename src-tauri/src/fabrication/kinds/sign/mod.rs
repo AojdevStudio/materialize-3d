@@ -113,8 +113,12 @@ impl ObjectKind for Sign {
         Ok(Built { model, extra: Vec::new() })
     }
 
-    fn measure(valid: &SignDesign, model: &PrintableModel) -> Vec<CheckOutcome> {
-        check_geometry(&valid.layout, model).iter().map(GeometryCheck::outcome).collect()
+    fn measure(
+        valid: &SignDesign,
+        model: &PrintableModel,
+        _control: &BuildControl<'_>,
+    ) -> std::result::Result<Vec<CheckOutcome>, KernelError> {
+        Ok(check_geometry(&valid.layout, model).iter().map(GeometryCheck::outcome).collect())
     }
 
     fn preview(valid: &SignDesign, _model: &PrintableModel) -> std::result::Result<Vec<u8>, KernelError> {

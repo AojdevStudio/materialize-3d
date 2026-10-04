@@ -52,8 +52,6 @@ pub struct WorkerLimits {
     pub memory_mib: u32,
     /// The host stops the VM at this deadline, whatever the guest is doing.
     pub deadline: Duration,
-    /// Everything one guest may send, all frames together.
-    pub output: u64,
     /// Console bytes kept for diagnostics; the rest is read and dropped.
     pub log: usize,
 }
@@ -64,7 +62,6 @@ impl WorkerLimits {
         vcpus: 2,
         memory_mib: 2048,
         deadline: Duration::from_secs(120),
-        output: FrameLimits::PART.total,
         log: 64 << 10,
     };
 
@@ -77,7 +74,7 @@ impl WorkerLimits {
 }
 
 /// Joins the build key: bump it whenever the isolation or the limits a script
-/// runs under change.
+/// runs under change. A test holds it to [`WorkerLimits::PART`].
 pub const SANDBOX_POLICY: &str = "m3d-cad-sandbox-1 vcpus=2 memory_mib=2048 deadline_s=120";
 
 /// The inspector's tessellation settings (`cad-runtime/guest/inspector.py`),

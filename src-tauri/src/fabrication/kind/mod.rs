@@ -99,8 +99,9 @@ pub trait ObjectKind: Send + Sync + 'static {
     /// Builds the bodies on the bed. Blocking, like the slicer; a long kernel
     /// polls `control` and returns [`KernelError::Cancelled`].
     fn model(valid: &Self::Valid, ctx: &KernelContext, control: &BuildControl<'_>) -> Result<Built, KernelError>;
-    /// Measures `model` for every geometry and print check the plan names.
-    fn measure(valid: &Self::Valid, model: &PrintableModel) -> Vec<CheckOutcome>;
+    /// Measures `model` for every geometry and print check the plan names. A
+    /// long measurement polls `control` and returns [`KernelError::Cancelled`].
+    fn measure(valid: &Self::Valid, model: &PrintableModel, control: &BuildControl<'_>) -> Result<Vec<CheckOutcome>, KernelError>;
     /// The PNG the app shows for the build.
     fn preview(valid: &Self::Valid, model: &PrintableModel) -> Result<Vec<u8>, KernelError>;
 }
@@ -320,7 +321,7 @@ impl<K: ObjectKind> KindDriver for Kind<K> {
             .ok_or_else(|| BuildError::Failed(format!("a {} spec cannot build as {}", parsed.kind, K::ID)))?;
         let Built { model, extra } = K::model(valid, ctx, control)?;
         let plan = bound_plan(&parsed.plan, K::bind_plan(valid, &ctx.printer, &model))?;
-        let evidence = K::measure(valid, &model);
+        let evidence = K::measure(valid, &model, control)?;
         control.report(BuildStep::GeometryBuilt);
         if control.is_cancelled() {
             return Err(BuildError::Cancelled);
