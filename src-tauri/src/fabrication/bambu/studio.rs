@@ -419,6 +419,11 @@ mod tests {
     }
 
     /// A macOS-style bundle whose executable prints `version` the way `--help` does.
+    ///
+    /// The script is written under a temporary name, closed, and renamed into place, then run once before the
+    /// helper returns. Another test thread that forks while the script's write descriptor is open keeps that
+    /// descriptor until its child execs, and until then running the script fails with ETXTBSY. The probe waits
+    /// that out, so the code under test never sees it. Any other spawn error fails the helper.
     #[cfg(unix)]
     fn fake_app(root: &Path, name: &str, version: &str) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
@@ -426,10 +431,33 @@ mod tests {
         std::fs::create_dir_all(app.join("Contents/MacOS")).expect("MacOS dir");
         std::fs::create_dir_all(app.join("Contents/Resources/profiles/BBL")).expect("profiles dir");
         let exe = app.join("Contents/MacOS/BambuStudio");
-        std::fs::write(&exe, format!("#!/bin/sh\necho 'BambuStudio-{version}:'\n"))
-            .expect("script");
-        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).expect("chmod");
-        app
+        let staged = app.join("Contents/MacOS/.BambuStudio.writing");
+        std::fs::write(
+            &staged,
+            format!("#!/bin/sh\necho 'BambuStudio-{version}:'\n"),
+        )
+        .expect("script");
+        std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        std::fs::rename(&staged, &exe).expect("rename the script into place");
+        for _ in 0..50 {
+            match std::process::Command::new(&exe).output() {
+                Ok(output) => {
+                    assert!(
+                        output.status.success(),
+                        "{} exited {}",
+                        exe.display(),
+                        output.status
+                    );
+                    return app;
+                }
+                // ETXTBSY: an inherited write descriptor is still open in another thread's forked child.
+                Err(err) if err.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                Err(err) => panic!("running {}: {err}", exe.display()),
+            }
+        }
+        panic!("{} stayed busy (ETXTBSY) for 50 tries", exe.display());
     }
 
     #[cfg(unix)]
