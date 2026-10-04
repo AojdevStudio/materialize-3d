@@ -1,6 +1,6 @@
 # CAD runtime: the reproducible guest images, and the CAD helper's restriction
-# tests against Apple's real Virtualization framework. Every job here runs on a
-# machine we own (setup in docs/ci-runners.md), so two guards keep pull requests
+# tests against Apple's real Virtualization framework. Both of those jobs run on
+# a machine we own (setup in docs/ci-runners.md), so two guards keep pull requests
 # from forks off them:
 #   1. The repository's fork approval policy, all_external_contributors: no
 #      workflow run from a fork starts until a maintainer approves it, and a
@@ -18,9 +18,17 @@
 # host stops that host's runner if the policy ever reads differently.
 #
 # Both jobs run on every event, so their check-runs exist on every pull request.
-# On a pull request that changes nothing the runtime is built, bundled, or tested
-# from (scripts/ci/cad-runtime-paths.txt), they skip the heavy steps and succeed
-# in seconds. Pushes to main and manual runs always do the full work.
+# The images job decides once, for both jobs, how much work this run does:
+#   none   a pull request that changes nothing the runtime is built, bundled, or
+#          tested from (scripts/ci/cad-runtime-paths.txt): both jobs pass in seconds.
+#   reuse  a pull request whose runtime key (scripts/ci/cad-runtime-key.sh) has a
+#          record from a run where both jobs did their full work and passed: both
+#          jobs pass and print that run's id and the key.
+#   full   everything else. Pushes to main and manual runs always do the full work.
+# The record is the artifact cad-runtime-pass-<key> that the record job uploads
+# after a full run in which both jobs passed. The lookup trusts it only through
+# its run (docs/ci-runners.md says who can write one). The record job is the one
+# job here on a GitHub-hosted runner: it runs no build and holds no secret.
 name: CAD runtime
 
 on:
@@ -46,8 +54,15 @@ jobs:
       && github.event.pull_request.user.login != 'dependabot[bot]'))
     runs-on: [self-hosted, Linux, X64, m3d-linux-kvm]
     timeout-minutes: 150
+    # actions: read lets the lookup list artifacts and read their runs.
+    permissions:
+      contents: read
+      actions: read
     outputs:
-      relevant: ${{ steps.scope.outputs.relevant }}
+      work: ${{ steps.work.outputs.work }}
+      key: ${{ steps.key.outputs.key }}
+      source_run: ${{ steps.work.outputs.source_run }}
+      done: ${{ steps.done.outputs.done }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -62,23 +77,48 @@ jobs:
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
         run: scripts/ci/cad-runtime-scope.sh "$EVENT" "$BASE" "$HEAD" >> "$GITHUB_OUTPUT"
-      - name: Nothing the CAD runtime is built, bundled, or tested from changed
-        if: steps.scope.outputs.relevant != 'true'
-        run: echo "No CAD runtime path changed; the image builds are skipped and this check passes." >> "$GITHUB_STEP_SUMMARY"
-      - name: The runner host has Docker, buildx, and arm64 binfmt
+      - name: The CAD runtime key
+        id: key
         if: steps.scope.outputs.relevant == 'true'
+        run: scripts/ci/cad-runtime-key.sh >> "$GITHUB_OUTPUT"
+      # Only a pull request looks for a record. Any lookup failure is a miss, and
+      # the run then does the full work.
+      - name: Decide this run's work for both jobs
+        id: work
+        env:
+          EVENT: ${{ github.event_name }}
+          RELEVANT: ${{ steps.scope.outputs.relevant }}
+          KEY: ${{ steps.key.outputs.key }}
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs
+        run: |
+          if [[ "$RELEVANT" != true ]]; then
+            echo "work=none" >> "$GITHUB_OUTPUT"
+            echo "No CAD runtime path changed; the image builds are skipped and this check passes." >> "$GITHUB_STEP_SUMMARY"
+          elif [[ "$EVENT" == pull_request ]] && found="$(scripts/ci/cad-runtime-key.sh lookup "$REPO")" \
+            && [[ "$found" == *"key=$KEY" ]]; then
+            source_run="$(sed -n 's/^source_run=//p' <<< "$found")"
+            printf 'work=reuse\nsource_run=%s\n' "$source_run" >> "$GITHUB_OUTPUT"
+            printf 'CAD runtime reused: run %s passed both jobs with full work under the key %s (%s/%s). The image builds are skipped and this check passes.\n' \
+              "$source_run" "$KEY" "$RUN_URL" "$source_run" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "work=full" >> "$GITHUB_OUTPUT"
+          fi
+      - name: The runner host has Docker, buildx, and arm64 binfmt
+        if: steps.work.outputs.work == 'full'
         run: scripts/ci/check-image-host.sh
       - name: Two clean arm64 builds match each other and pins-arm64.json
-        if: steps.scope.outputs.relevant == 'true'
+        if: steps.work.outputs.work == 'full'
         run: cad-runtime/reproduce.sh arm64
       - name: Two clean amd64 builds match each other and pins-amd64.json
-        if: steps.scope.outputs.relevant == 'true'
+        if: steps.work.outputs.work == 'full'
         run: cad-runtime/reproduce.sh amd64
       - name: A rebuild from the same inputs reuses the tools image and the kernel
-        if: steps.scope.outputs.relevant == 'true'
+        if: steps.work.outputs.work == 'full'
         run: cad-runtime/test/kernel-stamp.sh amd64
       - name: Record the digests
-        if: steps.scope.outputs.relevant == 'true'
+        if: steps.work.outputs.work == 'full'
         run: |
           {
             echo "### CAD runtime digests"
@@ -87,7 +127,7 @@ jobs:
             done
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Hand the arm64 runtime to the Mac job
-        if: steps.scope.outputs.relevant == 'true'
+        if: steps.work.outputs.work == 'full'
         uses: actions/upload-artifact@v4
         with:
           name: cad-runtime-arm64
@@ -99,6 +139,11 @@ jobs:
             cad-runtime/out/arm64/pins.json
           if-no-files-found: error
           retention-days: 7
+      # Set only when every step above ran and passed; the record job reads it.
+      - name: The full work is done
+        id: done
+        if: steps.work.outputs.work == 'full'
+        run: echo "done=true" >> "$GITHUB_OUTPUT"
 
   helper:
     name: CAD helper restriction tests
@@ -113,48 +158,69 @@ jobs:
     defaults:
       run:
         working-directory: cad-host
+    outputs:
+      done: ${{ steps.done.outputs.done }}
     env:
-      RELEVANT: ${{ needs.images.outputs.relevant }}
+      WORK: ${{ needs.images.outputs.work }}
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - name: The images job decided this run's work
+        if: env.WORK != 'none' && env.WORK != 'reuse' && env.WORK != 'full'
+        run: |
+          echo "::error::The images job gave no work decision ('$WORK')."
+          exit 1
       - name: Nothing the CAD runtime is built, bundled, or tested from changed
-        if: env.RELEVANT != 'true'
+        if: env.WORK == 'none'
         run: echo "No CAD runtime path changed; the restriction tests are skipped and this check passes." >> "$GITHUB_STEP_SUMMARY"
+      - name: Reuse the passed run with the same runtime key
+        if: env.WORK == 'reuse'
+        env:
+          SOURCE_RUN: ${{ needs.images.outputs.source_run }}
+          KEY: ${{ needs.images.outputs.key }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs
+        run: |
+          printf 'CAD runtime reused: run %s passed both jobs with full work under the key %s (%s/%s). The restriction tests are skipped and this check passes.\n' \
+            "$SOURCE_RUN" "$KEY" "$RUN_URL" "$SOURCE_RUN" | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/download-artifact@v4
-        if: env.RELEVANT == 'true'
+        if: env.WORK == 'full'
         with:
           name: cad-runtime-arm64
           path: cad-runtime/out/arm64
       - name: Library tests
-        if: env.RELEVANT == 'true'
+        if: env.WORK == 'full'
         run: cargo test --locked
       - name: Clippy, including the macOS VM driver
-        if: env.RELEVANT == 'true'
+        if: env.WORK == 'full'
         run: cargo clippy --locked --all-targets -- -D warnings
       - name: Build the helper and sign it ad hoc with the virtualization entitlement
-        if: env.RELEVANT == 'true'
+        if: env.WORK == 'full'
         run: |
           cargo build --release --locked
           codesign -s - -f --options runtime --entitlements entitlements.plist target/release/materialize-cad-host
       - name: The runtime matches the pins compiled into the helper
-        if: env.RELEVANT == 'true'
+        if: env.WORK == 'full'
         run: target/release/materialize-cad-host verify --runtime ../cad-runtime/out/arm64
       - name: Ten restriction tests on the real Virtualization framework
-        if: env.RELEVANT == 'true'
+        if: env.WORK == 'full'
         run: >
           HELPER="$PWD/target/release/materialize-cad-host" RUNTIME="$PWD/../cad-runtime/out/arm64"
           restriction-tests/run-all.sh out/restriction-tests.log
       - name: The cable clip builds through both guests into a closed mesh
-        if: env.RELEVANT == 'true'
+        if: env.WORK == 'full'
         run: |
           target/release/materialize-cad-host build --runtime ../cad-runtime/out/arm64 \
             --source spike/cable-clip-fillet-first.py --params spike/cable-clip.params.json --out out/clip
           jq -e '.outcome == "accepted" and (.bodies | length) == 1 and .bodies[0].mesh.closed_manifold
             and .bodies[0].mesh.non_degenerate and .bodies[0].mesh.outward' out/clip/result.json
+      # Set only when every step above ran and passed; the record job reads it.
+      - name: The full work is done
+        id: done
+        if: env.WORK == 'full'
+        run: echo "done=true" >> "$GITHUB_OUTPUT"
       - name: Keep the logs
-        if: always() && env.RELEVANT == 'true'
+        if: always() && env.WORK == 'full'
         uses: actions/upload-artifact@v4
         with:
           name: cad-helper-logs
@@ -163,3 +229,54 @@ jobs:
             cad-host/out/clip/result.json
           if-no-files-found: ignore
           retention-days: 14
+
+  # Writes the record a later pull request reuses: the artifact
+  # cad-runtime-pass-<key> in this run, holding the key and this run's id. It runs
+  # only after both jobs passed (the implicit success() in `if:`), and it writes
+  # only when both set `done`, which each job does after its full work. A failed,
+  # cancelled, skipped, or reused run writes nothing. It carries the same guard as
+  # the other jobs, so a fork or Dependabot run never writes a record.
+  record:
+    name: CAD runtime pass record
+    needs: [images, helper]
+    if: >-
+      github.actor != 'dependabot[bot]' && (
+      github.event_name == 'push' || github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+      && github.event.pull_request.user.login != 'dependabot[bot]'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      FULL: ${{ needs.images.outputs.done == 'true' && needs.helper.outputs.done == 'true' }}
+    steps:
+      - name: Nothing to record unless both jobs did their full work
+        if: env.FULL != 'true'
+        env:
+          WORK: ${{ needs.images.outputs.work }}
+        run: echo "This run's work was '$WORK', not the full work in both jobs, so it records nothing." >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/checkout@v4
+        if: env.FULL == 'true'
+        with:
+          persist-credentials: false
+      - name: Write the record for this run's key
+        id: record
+        if: env.FULL == 'true'
+        env:
+          IMAGES_KEY: ${{ needs.images.outputs.key }}
+        run: |
+          out="$(scripts/ci/cad-runtime-key.sh record "$GITHUB_RUN_ID" cad-runtime-pass-record.txt)"
+          if [[ "$out" != "key=$IMAGES_KEY" ]]; then
+            rm -f cad-runtime-pass-record.txt
+            echo "::error::This checkout's $out differs from the images job's key '$IMAGES_KEY'; nothing is recorded."
+            exit 1
+          fi
+          echo "$out" >> "$GITHUB_OUTPUT"
+          printf 'Recorded run %s under the CAD runtime key %s.\n' "$GITHUB_RUN_ID" "${out#key=}" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Upload the record
+        if: env.FULL == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: cad-runtime-pass-${{ steps.record.outputs.key }}
+          path: cad-runtime-pass-record.txt
+          if-no-files-found: error
+          retention-days: 90
