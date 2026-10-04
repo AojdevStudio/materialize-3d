@@ -549,8 +549,10 @@ impl RequestActions for ScriptedBuilds {
             Claim::Busy(build) => return Err(ActionError::State(format!("build {build} is running"))),
         };
         self.run(&revision, &spec)?;
-        control.report(BuildStep::Verified);
         let revision = pipeline::with_db(&self.state, |conn| revisions::get(conn, &revision.id))?;
+        if matches!(revision.build, BuildState::Verified { .. }) {
+            control.report(BuildStep::Verified);
+        }
         Ok(BuildOutcome { revision, reused: false })
     }
 
@@ -691,6 +693,14 @@ async fn a_scripted_model_describes_builds_repairs_and_revises_a_part() {
     assert_eq!(repaired["requirements"], json!(["ok"]));
     assert_eq!(repaired["shown"], true, "the in-app agent's build opens for the person");
     assert_eq!(actions.shown.lock().expect("shown").len(), 2, "both revisions were opened");
+    let steps: Vec<BuildStep> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::ToolProgress { step, .. } => Some(*step),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(steps, [BuildStep::SpecValidated, BuildStep::SpecValidated, BuildStep::Verified], "only the repair verified");
 
     // What the model read: the repair request sees the failure as JSON with
     // its stage; the reply request sees the repaired build with its three views.
