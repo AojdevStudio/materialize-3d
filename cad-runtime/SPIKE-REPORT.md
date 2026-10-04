@@ -4,6 +4,14 @@ A signed Rust helper boots a sealed arm64 Linux guest with Apple's Virtualizatio
 
 Everything here was measured on the Mac mini (Apple M4, 10 cores, 24 GiB, macOS 26.7) and on aojdevlinux (x86_64) on 2026-10-02. The app does not use any of it yet.
 
+## Settled since the spike (PR 6)
+
+- **Stop line.** Ossie raised the app's minimum macOS to 26.0 (gate G1, option D), so nothing here needs a macOS 13.0 run any more, and the 13.0 guest test below was dropped. The helper passed notarization (gate G2), and the release script now signs it inside the app bundle, where one notarization and the app's staple cover both.
+- **Reproducible image.** Two clean builds per architecture give identical digests, and they match the committed `pins-<arch>.json` (`cad-runtime/reproduce.sh`, run by the `CAD runtime images reproduce` job). The `.pyc` differences came from parallel `compileall` with randomized string hashing; bytecode is now compiled in one process with a fixed hash seed. Logs are deleted, Debian packages come from snapshot.debian.org at the base images' own snapshot, file modes are set in the Dockerfile, the kernel tarball's kernel.org signature is verified, and the test initramfs has fixed owners and mtimes.
+- **Faster generation guest.** pip's own bytecode was timestamp-based, and the erofs build clamps every mtime to 0, so CPython rejected that bytecode and compiled build123d from source on every import. With hash-based bytecode everywhere, the clip's generation guest took 1.7 s instead of the 4.0 s measured below.
+- **Pins compiled in.** The helper compiles `pins-arm64.json` in (`cad-host/src/runtime.rs`) and has no `--pins` option; a `pins.json` next to a tampered image cannot vouch for it (restriction test 09).
+- **amd64 kernel.** `vmlinux` (PVH, virtio-mmio, 8250 console) sits beside the amd64 root. One boot under QEMU's microvm machine on KVM ran the clip's generation job end to end.
+
 ## Stop-line facts
 
 | Item | Result |

@@ -1,6 +1,19 @@
-# Required gates for every PR. Both jobs run on GitHub-hosted runners, so a
-# pull request, including one from a fork, never executes on a machine we own.
-# Each job installs its own toolchain.
+# Required gates for every PR. Every job in this file runs on a GitHub-hosted
+# runner and installs its own toolchain.
+#
+# The jobs that run on machines we own live in cad-runtime.yml (setup in
+# docs/ci-runners.md). Two guards keep a pull request from a fork off them:
+#   1. The fork approval policy, all_external_contributors: no workflow run
+#      from a fork starts until a maintainer approves it, and a maintainer
+#      approves only after reading every change under .github/. Agents never
+#      approve one. A fork's pull request runs the workflow files from its own
+#      head, so this is the guard that holds when a fork edits them.
+#   2. Every self-hosted job runs only on a push to main, a manual dispatch, or
+#      a pull request whose head branch is in this repository
+#      (github.event.pull_request.head.repo.full_name == github.repository),
+#      and never for Dependabot, as the actor or as a pull request's author.
+# Outside the jobs, scripts/ci/runner-guard.sh on each runner host reads the
+# policy every 5 minutes and stops that host's runner if it ever changes.
 name: CI
 
 on:

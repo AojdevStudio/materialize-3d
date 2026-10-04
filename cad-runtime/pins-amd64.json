@@ -1,20 +1,26 @@
 {
   "arch": "amd64",
   "files": {
+    "vmlinux": {
+      "sha256": "dcaa0206fa00eae5fa07b921118de8ed8d6c2a8b979470b09e9f6bff0664cf54",
+      "bytes": 17148104
+    },
     "rootfs.img": {
-      "sha256": "7a43782563d6cdf68bc6647f3f0b677c98e3df5c34a1709fe9f9e86ee3d9fc2e",
-      "bytes": 606433280
+      "sha256": "312eb5a4c739d20f4e8fcc644dcd0ed8dea3ce11aea0b76183c85bc5240f519c",
+      "bytes": 606318592
     },
     "job.img": {
       "sha256": "71045302f36c872d522346e3211a59ea4753d7708d28f438973cdfb43b3ed697",
       "bytes": 268435456
     }
   },
-  "rootfs_installed_bytes": 1299548590,
+  "rootfs_installed_bytes": 1298937552,
   "inputs": {
     "python_base": "python:3.13-slim-trixie@sha256:bb2988715db2cf7ace7b53f38f3cffbef7c7046a656bee66245eb0ed386e2e81",
+    "debian_snapshot": "20260918T000000Z",
     "kernel_version": "6.18.54",
     "kernel_sha256": "9df30b02dd8102bbd0be52556288ef6889ddbe7f1ddb96fbf847d0becf3eacac",
+    "kernel_signer": "647F28654894E3BD457199BE38DBBDC86092693E",
     "lock_sha256": "46f1b56a3f335ab9e697ca4892090489fe3e96e7365edfdeb5ca2eb4865fd0db"
   }
 }

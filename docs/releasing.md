@@ -4,9 +4,10 @@ Releases are built on an Apple Silicon Mac by `scripts/release/build-macos.sh`, 
 
 ## What you need
 
-- An Apple Silicon Mac with Xcode command line tools, Bun, and Rust.
+- An Apple Silicon Mac on macOS 26 or later with Xcode command line tools, Bun, and Rust. The app requires macOS 26.0.
 - A keychain that holds a Developer ID Application identity, and its password.
 - An App Store Connect API key for `notarytool`: key id, issuer id, and the `.p8` content.
+- The arm64 CAD runtime for the tagged commit: the `cad-runtime-arm64` artifact of that commit's `CAD runtime` workflow run, or the output of `cad-runtime/build.sh arm64` on a Linux machine with Docker, buildx, and arm64 binfmt. Either way it must match `cad-runtime/pins-arm64.json`, which the CAD helper compiles in.
 
 ## Steps
 
@@ -18,23 +19,36 @@ Releases are built on an Apple Silicon Mac by `scripts/release/build-macos.sh`, 
    git tag v0.1.0 && git push origin v0.1.0
    ```
 
-3. In a clean checkout of the tag, export the credentials and run the script:
+3. In a clean checkout of the tag, export the credentials and the runtime's location, and run the script:
 
    ```bash
    export RELEASE_KEYCHAIN=~/Library/Keychains/<release>.keychain-db
    export RELEASE_KEYCHAIN_PASSWORD=... APPLE_API_KEY_ID=... APPLE_API_ISSUER_ID=... APPLE_API_PRIVATE_KEY="$(cat AuthKey.p8)"
+   export CAD_RUNTIME_DIR=~/cad-runtime-arm64   # holds Image, rootfs.img, job.img
    scripts/release/build-macos.sh
    ```
 
-   The script refuses a dirty tree, an untagged commit, or mismatched versions. It signs with the hardened runtime and notarizes and staples both the app and the DMG. Then it checks Gatekeeper acceptance, the architecture, the absence of the e2e harness and of build-machine paths, and the exact file list of the app bundle. It writes `dist-release/Materialize-3D-<version>-macos-arm64.dmg` and a `.sha256` file.
+   The script refuses a dirty tree, an untagged commit, mismatched versions, or a CAD runtime that does not match the helper's pins. It builds the CAD helper from `cad-host/` and places it at `Contents/MacOS/materialize-cad-host`, with the runtime at `Contents/Resources/cad-runtime/{Image,rootfs.img,job.img}`. It signs the helper first, with the hardened runtime and the virtualization entitlement, then the app around it, and notarizes and staples both the app and the DMG; the app's staple covers the helper. Then it checks Gatekeeper acceptance, the architecture, the absence of the e2e harness and of build-machine paths in both executables, and runs `scripts/release/check-app-bundle.sh`: the exact file list of the app bundle, macOS 26.0 as the minimum, the helper's signature and its only entitlement, and the bundled runtime against the helper's pins. It writes `dist-release/Materialize-3D-<version>-macos-arm64.dmg` and a `.sha256` file.
 
-4. Install the DMG on a Mac and run through `docs/install-macos.md` before publishing.
+4. Run the clean-install test on the DMG (below), then install the DMG on a Mac and run through `docs/install-macos.md` before publishing.
 5. Write the release notes in `docs/releases/v<version>.md`, land them with the version change, and publish the release with the DMG and its checksum:
 
    ```bash
    gh release create v0.1.0 --title "Materialize 3D 0.1.0" --notes-file docs/releases/v0.1.0.md \
      dist-release/Materialize-3D-0.1.0-macos-arm64.dmg dist-release/Materialize-3D-0.1.0-macos-arm64.dmg.sha256
    ```
+
+## Clean-install test
+
+`scripts/release/clean-install-test-macos.sh` installs the DMG the way a new person meets it and runs the CAD helper from the installed app:
+
+```bash
+scripts/release/clean-install-test-macos.sh dist-release/Materialize-3D-0.1.0-macos-arm64.dmg
+```
+
+It creates a fresh standard account (not an admin, no password, so nobody can log in as it) and works as that account with an empty home and only the system `PATH`. The DMG lands in `~/Downloads` with the quarantine attribute a browser sets, Gatekeeper assesses the DMG and then the app copied into `~/Applications` (a standard account cannot write `/Applications`), `check-app-bundle.sh` checks the installed copy, and the bundled helper, still quarantined, verifies its runtime, boots both guests, and builds the cable clip from `cad-host/spike/cable-clip-fillet-first.py` into a closed mesh. Each step fails the run. The account and its home are deleted on exit, and the evidence stays in `~/m3d-verify/clean-install-<timestamp>/`. It needs macOS 26 or later and `sudo` without a password prompt.
+
+What "clean" covers: an account that has never run, approved, or installed Materialize 3D, with no developer tools on its `PATH`, so nothing it owns can vouch for the app. What it does not cover: the Mac itself is shared. Gatekeeper's system-wide records (its assessment cache and any notarization ticket it has already fetched) belong to the machine, so a build that `build-macos.sh` already assessed on the same Mac is not new to Gatekeeper there. The Xcode command line tools are installed system-wide, which `check-app-bundle.sh` uses for `lipo`. The account never logs in at the console, so the app's own first-launch prompt and its window are not exercised; the helper runs from the shell. Run it on a Mac that did not build the DMG to take the build machine's records out of the picture.
 
 ## Verify the installed release
 

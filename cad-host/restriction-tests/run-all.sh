@@ -11,7 +11,7 @@ mkdir -p "$(dirname "$log")"
   echo "host: $(sysctl -n machdep.cpu.brand_string), $(($(sysctl -n hw.memsize) >> 30)) GiB, macOS $(sw_vers -productVersion) ($(sw_vers -buildVersion))"
   echo "helper: sha256 $(shasum -a 256 "$HELPER" | cut -d' ' -f1)"
   codesign -dv --entitlements - "$HELPER" 2>&1 | grep -E 'Signature=|flags=|com.apple.security' | sed 's/^/  /'
-  echo "runtime pins: sha256 $(shasum -a 256 "$RUNTIME/pins.json" | cut -d' ' -f1)"
+  echo "runtime pins compiled into the helper: sha256 $("$HELPER" pins | shasum -a 256 | cut -d' ' -f1)"
   pass=0 fail=0
   for t in "$here"/[0-9][0-9]-*.sh; do
     echo

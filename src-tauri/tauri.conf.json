@@ -45,7 +45,7 @@
       "resources/bambu/AGPL-3.0.txt": "AGPL-3.0.txt"
     },
     "macOS": {
-      "minimumSystemVersion": "13.0",
+      "minimumSystemVersion": "26.0",
       "hardenedRuntime": true
     }
   }
