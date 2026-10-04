@@ -445,7 +445,7 @@ fn shells_join_through_edges_and_a_pinched_vertex_is_refused() {
     let a = shell([0.0, 0.0, 0.0], 10.0, false);
     let touching = joined(&[a.clone(), shell([10.0, 10.0, 10.0], 10.0, false)]);
     let welded_gap = joined(&[a.clone(), shell([10.0004, 10.0004, 10.0004], 10.0, false)]);
-    let mut one_solid = String::from_utf8(ascii_stl(&touching)).expect("text");
+    let one_solid = String::from_utf8(ascii_stl(&touching)).expect("text");
     for (why, bytes) in [
         ("binary STL", binary_stl(&touching)),
         ("ASCII STL", one_solid.into_bytes()),
@@ -464,6 +464,40 @@ fn shells_join_through_edges_and_a_pinched_vertex_is_refused() {
 
     for (why, bytes) in [("a cube", binary_stl(&a)), ("the slab on a post", one_body_3mf(&slab_on_a_post(0.0)))] {
         assert!(read(&bytes, Units::Mm).is_ok(), "{why}");
+    }
+}
+
+/// A 10 mm cube with one corner cut by a cap 0.4 µm across: the weld
+/// collapses the cap and three face triangles onto the corner.
+fn cube_with_a_welded_cap() -> Piece {
+    let e = 0.0004;
+    let (mut v, _) = cuboid([0.0; 3], [10.0; 3]);
+    v.truncate(7); // corner 7, (10, 10, 10), becomes the cap's three points
+    v.extend([[10.0 - e, 10.0, 10.0], [10.0, 10.0 - e, 10.0], [10.0, 10.0, 10.0 - e]]);
+    let (px, py, pz) = (7, 8, 9);
+    let t = vec![
+        [0, 2, 1], [1, 2, 3], [0, 1, 4], [1, 5, 4], [0, 4, 2], [2, 4, 6], // untouched faces
+        [4, 5, py], [4, py, px], [4, px, 6], // +z
+        [2, 6, px], [2, px, pz], [2, pz, 3], // +y
+        [1, 3, pz], [1, pz, py], [1, py, 5], // +x
+        [px, py, pz], // the cap
+    ];
+    (v, t)
+}
+
+/// Triangles the weld collapses take no part in shell or fan grouping: the
+/// mesh reads as one shell, and `non_degenerate` refuses it.
+#[test]
+fn a_triangle_the_weld_collapses_is_left_to_the_non_degenerate_check() {
+    let cube = cube_with_a_welded_cap();
+    for (format, bytes) in [("binary STL", binary_stl(&cube)), ("ASCII STL", ascii_stl(&cube)), ("3MF", one_body_3mf(&cube))] {
+        let mesh = read(&bytes, Units::Mm).unwrap_or_else(|e| panic!("{format}: {e}"));
+        let palette = crate::fabrication::model::Palette::new(vec!["#808080".into()], &P2S_04).expect("palette");
+        let body = crate::fabrication::model::Body { name: BODY.into(), slot: palette.slot(0).expect("slot"), mesh };
+        let model = PrintableModel::new("capped".into(), palette, vec![body]).expect("model");
+        let checks = crate::fabrication::kinds::part::measure::measure(P2S_04.bed, &[], &model, &|| false).expect("measured");
+        let degenerate = checks.iter().find(|c| c.id.as_str() == "geometry.non_degenerate.body").expect("non_degenerate");
+        assert!(!degenerate.passed && degenerate.detail.starts_with("4 zero-area"), "{format}: {}", degenerate.detail);
     }
 }
 

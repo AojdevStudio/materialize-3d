@@ -223,9 +223,11 @@ impl Groups {
         i as u32
     }
 
-    fn join(&mut self, a: usize, b: usize) {
+    /// Joins the groups of `a` and `b`; true when they were apart.
+    fn join(&mut self, a: usize, b: usize) -> bool {
         let (a, b) = (self.root(a), self.root(b));
         self.0[b as usize] = a;
+        a != b
     }
 }
 
@@ -244,45 +246,48 @@ impl Groups {
 ///   holds two fans there. The blocking `closed_manifold` check, which wants
 ///   one twin for every edge, then closes that one fan into a cycle.
 ///
+/// A triangle the weld collapsed to fewer than three distinct vertices takes
+/// no part in either: it has no area, and the blocking `non_degenerate`
+/// check reports it.
+///
 /// Both are union-finds over the triangles and their corners, with one map
 /// from each edge to the first triangle on it: linear in the capped counts.
-/// A single shell that crosses itself is not caught here or by any check.
+/// The shells are counted as the triangles taking part less the joins that
+/// merged two groups, so nothing is sorted. A single shell that crosses
+/// itself is not caught here or by any check.
 fn one_shell(vertices: usize, triangles: &[[u32; 3]]) -> Result<()> {
+    let whole = |t: &[u32; 3]| t[0] != t[1] && t[1] != t[2] && t[0] != t[2];
     let mut shells = Groups::new(triangles.len());
     let mut corners = Groups::new(3 * triangles.len());
     let mut first_on: HashMap<(u32, u32), usize> = HashMap::with_capacity(triangles.len() * 3 / 2);
     let at = |t: &[u32; 3], v: u32| t.iter().position(|&w| w == v).expect("an edge's ends are its triangle's corners");
-    for (i, t) in triangles.iter().enumerate() {
-        // A triangle the weld collapsed meets one vertex twice; those corners are one point.
-        for k in 0..3 {
-            corners.join(3 * i + at(t, t[k]), 3 * i + k);
-        }
+    let mut groups = 0usize;
+    for (i, t) in triangles.iter().enumerate().filter(|(_, t)| whole(t)) {
+        groups += 1;
         for k in 0..3 {
             let (a, b) = (t[k], t[(k + 1) % 3]);
-            if a == b {
-                continue;
-            }
             match first_on.entry((a.min(b), a.max(b))) {
                 std::collections::hash_map::Entry::Vacant(slot) => {
                     slot.insert(i);
                 }
                 std::collections::hash_map::Entry::Occupied(slot) => {
                     let j = *slot.get();
-                    shells.join(j, i);
+                    if shells.join(j, i) {
+                        groups -= 1;
+                    }
                     corners.join(3 * j + at(&triangles[j], a), 3 * i + k);
                     corners.join(3 * j + at(&triangles[j], b), 3 * i + (k + 1) % 3);
                 }
             }
         }
     }
-    let mut roots: Vec<u32> = (0..triangles.len()).map(|i| shells.root(i)).collect();
-    roots.sort_unstable();
-    roots.dedup();
-    if roots.len() != 1 {
-        return Err(MeshImportError::SeparateShells(roots.len()));
+    // No whole triangle at all is left to the mesh checks.
+    if groups > 1 {
+        return Err(MeshImportError::SeparateShells(groups));
     }
     let mut fan = vec![u32::MAX; vertices];
-    for (c, &v) in triangles.iter().flatten().enumerate() {
+    let corners_of_whole = triangles.iter().enumerate().filter(|(_, t)| whole(t)).flat_map(|(i, t)| (0..3).map(move |k| (3 * i + k, t[k])));
+    for (c, v) in corners_of_whole {
         let root = corners.root(c);
         let seen = &mut fan[v as usize];
         if *seen == u32::MAX {
