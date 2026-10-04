@@ -1,25 +1,40 @@
-//! An isometric view of any printable model: every triangle, flat-shaded in
+//! Orthographic views of any printable model: every triangle, flat-shaded in
 //! its body's filament colour, drawn back to front.
 
 use tiny_skia::{Color, FillRule, Paint, PathBuilder, Pixmap, Transform};
 
+use crate::fabrication::kind::View;
 use crate::fabrication::model::PrintableModel;
 
 const SIZE_PX: u32 = 640;
 const MARGIN_PX: f64 = 24.0;
 
-/// PNG of `model` seen from the front right, above the bed. The background is
-/// transparent.
-pub fn render(model: &PrintableModel) -> Result<Vec<u8>, String> {
-    let normalize = |v: [f64; 3]| {
-        let len = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
-        v.map(|c| c / len)
-    };
+fn normalize(v: [f64; 3]) -> [f64; 3] {
+    let len = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+    v.map(|c| c / len)
+}
+
+/// Where a view's camera sits: `toward` points from the model to the camera,
+/// and `right` and `up` are the screen axes, all unit length and orthogonal.
+fn camera(view: View) -> Result<([f64; 3], [f64; 3], [f64; 3]), String> {
+    match view {
+        View::Isometric => {
+            let toward = normalize([1.0, -1.0, 0.8]);
+            let up = normalize([-toward[0] * toward[2], -toward[1] * toward[2], 1.0 - toward[2] * toward[2]]);
+            Ok((toward, normalize([1.0, 1.0, 0.0]), up))
+        }
+        // From the front edge of the bed (low y), x to the right and z up.
+        View::Front => Ok(([0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0])),
+        // From above, x to the right and y (toward the back of the bed) up.
+        View::Top => Ok(([0.0, 0.0, 1.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0])),
+        View::Face => Err("preview: a part has no face view".into()),
+    }
+}
+
+/// PNG of `model` from `view`. The background is transparent.
+pub fn render(model: &PrintableModel, view: View) -> Result<Vec<u8>, String> {
     let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-    // Camera looks along -view; screen right and up are perpendicular to it.
-    let view = normalize([1.0, -1.0, 0.8]);
-    let right = normalize([1.0, 1.0, 0.0]);
-    let up = normalize([-view[0] * view[2], -view[1] * view[2], 1.0 - view[2] * view[2]]);
+    let (view, right, up) = camera(view)?;
     let light = normalize([0.4, -0.7, 1.0]);
 
     let mut faces = Vec::new();

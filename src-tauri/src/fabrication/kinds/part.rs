@@ -20,17 +20,21 @@ pub mod self_test;
 mod spec;
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 #[cfg(all(test, any(target_os = "macos", all(target_os = "linux", feature = "linux-cad-test"))))]
 mod backend_tests;
 
-pub use spec::{Axis, Filament, MeasuredRequirement, ParamValue, PartSpec, Requirement, ValidPart, PART_SCHEMA_VERSION};
+pub use spec::{
+    is_requirement_check, Axis, Filament, MeasuredRequirement, ParamValue, PartSpec, Requirement, ValidPart, PART_SCHEMA_VERSION,
+};
 
 use crate::fabrication::cad_worker::{CadJob, CadRuntime, RawBody, WorkerError, WorkerLimits};
 use crate::fabrication::layers::slice::MAX_TRIANGLES;
 use crate::fabrication::checks::{slice_and_handoff_checks, slice_support_warning, CheckId, CheckOutcome, CheckPhase, CheckPlan, CheckPlanId, InvalidPlan};
-use crate::fabrication::kind::{BuildControl, Built, ExtraArtifact, KernelContext, KernelError, KindId, ObjectKind, ObjectNaming, SpecError};
+use crate::fabrication::kind::{
+    BuildControl, Built, ExtraArtifact, KernelContext, KernelError, KindId, ObjectKind, ObjectNaming, SpecError, View, ViewSet,
+};
 use crate::fabrication::model::{Body, PrintableModel};
 use crate::fabrication::pipeline::Stage;
 use crate::fabrication::printer::PrinterProfile;
@@ -48,13 +52,6 @@ const PRINT_CHECKS: [&str; 3] = ["overhang", "min_wall", "first_layer"];
 /// The `part` kind.
 pub struct Part;
 
-impl Part {
-    /// `describe_kind` text: worked examples and build123d idioms.
-    pub const GUIDE: &'static str = include_str!("part_guide.md");
-    /// The script contract, for the system prompt.
-    pub const CONTRACT: &'static str = include_str!("part_contract.md");
-}
-
 impl ObjectKind for Part {
     type Spec = PartSpec;
     type Valid = ValidPart;
@@ -64,6 +61,10 @@ impl ObjectKind for Part {
     /// policy join the build key too ([`Part::key_inputs`]).
     const TAG: &'static str = "part-1";
     const SUMMARY: &'static str = "any solid, written as build123d";
+    /// `describe_kind` text: a worked example and build123d idioms.
+    const GUIDE: &'static str = include_str!("part_guide.md");
+    /// The script contract, which the system prompt carries.
+    const PROMPT_GUIDE: &'static str = include_str!("part_contract.md");
     const NAMING: ObjectNaming = ObjectNaming::BuildKey;
 
     fn available(ctx: &KernelContext) -> bool {
@@ -132,8 +133,14 @@ impl ObjectKind for Part {
         measure::measure(valid, model, &|| control.is_cancelled())
     }
 
-    fn preview(_valid: &ValidPart, model: &PrintableModel) -> Result<Vec<u8>, KernelError> {
-        preview::render(model).map_err(KernelError::Failed)
+    /// Isometric, front, and top views of the welded mesh.
+    fn preview(_valid: &ValidPart, model: &PrintableModel) -> Result<ViewSet, KernelError> {
+        let views = [View::Isometric, View::Front, View::Top]
+            .into_iter()
+            .map(|view| preview::render(model, view).map(|png| (view, png)))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(KernelError::Failed)?;
+        ViewSet::new(views)
     }
 }
 

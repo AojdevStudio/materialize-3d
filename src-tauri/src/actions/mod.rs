@@ -129,6 +129,42 @@ pub trait RequestActions: Send + Sync + 'static {
     /// The kinds this app can build now, in registry order: `part` only with a
     /// verified CAD runtime. See [`Actions::kinds`].
     fn kinds(&self) -> Vec<&'static dyn KindDriver>;
+
+    /// Builds revision n+1 of `revision_id`'s design from its stored spec with
+    /// `changes` applied as an RFC 7396 merge patch ([`merge_patch`]). The
+    /// patched spec is validated like any spec, so a patch can make nothing
+    /// a fresh spec could not, and the new revision needs its own approval.
+    fn revise(
+        &self,
+        revision_id: &str,
+        changes: &Value,
+        requester: RequestActor,
+        control: &BuildControl<'_>,
+    ) -> Result<BuildOutcome, ActionError> {
+        let parent = self.get(revision_id)?;
+        let spec = merge_patch(parent.spec, changes);
+        self.build(&parent.kind, spec, Some(parent.lineage_id.as_str()), requester, control)
+    }
+}
+
+/// `target` with `patch` applied as an RFC 7396 JSON merge patch: an object
+/// patch sets each key it names, removes a key whose value is null, and
+/// merges nested objects; any other patch replaces the target.
+pub fn merge_patch(target: Value, patch: &Value) -> Value {
+    let Value::Object(changes) = patch else { return patch.clone() };
+    let mut merged = match target {
+        Value::Object(fields) => fields,
+        _ => serde_json::Map::new(),
+    };
+    for (key, change) in changes {
+        if change.is_null() {
+            merged.remove(key);
+        } else {
+            let current = merged.remove(key).unwrap_or(Value::Null);
+            merged.insert(key.clone(), merge_patch(current, change));
+        }
+    }
+    Value::Object(merged)
 }
 
 #[derive(Clone)]
@@ -289,7 +325,34 @@ impl RequestActions for Actions {
 mod tests {
     use std::sync::Mutex;
 
+    use serde_json::json;
+
     use super::*;
+
+    /// The examples of RFC 7396, appendix A.
+    #[test]
+    fn merge_patch_follows_rfc_7396() {
+        let cases = [
+            (json!({"a": "b"}), json!({"a": "c"}), json!({"a": "c"})),
+            (json!({"a": "b"}), json!({"b": "c"}), json!({"a": "b", "b": "c"})),
+            (json!({"a": "b"}), json!({"a": null}), json!({})),
+            (json!({"a": "b", "b": "c"}), json!({"a": null}), json!({"b": "c"})),
+            (json!({"a": ["b"]}), json!({"a": "c"}), json!({"a": "c"})),
+            (json!({"a": "c"}), json!({"a": ["b"]}), json!({"a": ["b"]})),
+            (json!({"a": {"b": "c"}}), json!({"a": {"b": "d", "c": null}}), json!({"a": {"b": "d"}})),
+            (json!({"a": [{"b": "c"}]}), json!({"a": [1]}), json!({"a": [1]})),
+            (json!(["a", "b"]), json!(["c", "d"]), json!(["c", "d"])),
+            (json!({"a": "b"}), json!(["c"]), json!(["c"])),
+            (json!({"a": "foo"}), json!(null), json!(null)),
+            (json!({"a": "foo"}), json!("bar"), json!("bar")),
+            (json!({"e": null}), json!({"a": 1}), json!({"e": null, "a": 1})),
+            (json!([1, 2]), json!({"a": "b", "c": null}), json!({"a": "b"})),
+            (json!({}), json!({"a": {"bb": {"ccc": null}}}), json!({"a": {"bb": {}}})),
+        ];
+        for (target, patch, expected) in cases {
+            assert_eq!(merge_patch(target.clone(), &patch), expected, "{target} patched with {patch}");
+        }
+    }
 
     #[test]
     fn actions_emit_through_the_sink_they_are_given_without_a_tauri_app() {

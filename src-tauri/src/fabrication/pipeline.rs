@@ -19,8 +19,8 @@ use serde_json::{json, Value};
 
 use super::bambu::{self, BambuError, BambuStudio, Check, ResolvedPresets, SliceReport};
 use super::cad_worker::{CadRuntime, CadRuntimeSlot};
-use super::checks::{self, CheckOutcome, ChecksFailed, PassedChecks};
-use super::kind::{self, BuildControl, KernelContext, KernelError, KindDriver, KindId, ObjectNaming, ParsedSpec, SpecError};
+use super::checks::{self, CheckId, CheckOutcome, CheckPhase, ChecksFailed, PassedChecks};
+use super::kind::{self, BuildControl, KernelContext, KernelError, KindDriver, KindId, ObjectNaming, ParsedSpec, SpecError, View};
 use super::model::Palette;
 use super::package::{self, PackageError};
 use super::printer::{PrinterProfile, P2S_04};
@@ -139,6 +139,7 @@ pub enum BuildStep {
 /// Where a failed build stopped. A caller repairing a script reads it beside
 /// the error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum Stage {
     /// The generation guest, running the script.
@@ -151,15 +152,43 @@ pub enum Stage {
     Handoff,
 }
 
-impl std::fmt::Display for Stage {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
+impl Stage {
+    const ALL: [Stage; 5] = [Stage::Generate, Stage::Inspect, Stage::Geometry, Stage::Slice, Stage::Handoff];
+
+    fn as_str(self) -> &'static str {
+        match self {
             Stage::Generate => "generate",
             Stage::Inspect => "inspect",
             Stage::Geometry => "geometry",
             Stage::Slice => "slice",
             Stage::Handoff => "handoff",
-        })
+        }
+    }
+
+    /// Where a failed build stopped: the phase of its first failed blocking
+    /// check, or else the stage its recorded reason starts with (a
+    /// [`BuildError::Stage`] records `<stage>: <error>`). `None` for a build
+    /// that did not fail, or that failed outside any stage: cancelled,
+    /// interrupted, or an error in the app itself.
+    pub fn of_failure(build: &BuildState) -> Option<Stage> {
+        let BuildState::Failed { reason, artifacts } = build else { return None };
+        if let Some(artifacts) = artifacts {
+            let failed = artifacts.checks().iter().find(|check| !check.passed && !check.advisory)?;
+            return match CheckId::try_from(failed.id.clone()).ok()?.phase() {
+                CheckPhase::Geometry => Some(Stage::Geometry),
+                CheckPhase::Slice => Some(Stage::Slice),
+                CheckPhase::Handoff => Some(Stage::Handoff),
+                CheckPhase::Print => None,
+            };
+        }
+        let (prefix, _) = reason.split_once(": ")?;
+        Stage::ALL.into_iter().find(|stage| stage.as_str() == prefix)
+    }
+}
+
+impl std::fmt::Display for Stage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 
@@ -267,6 +296,12 @@ pub fn with_db<T>(state: &AppState, f: impl FnOnce(&mut Connection) -> Result<T,
 /// build becomes a revision on that build, both without doing any work. An
 /// unknown kind, a validation error, or a missing slicer fails before any
 /// revision is recorded; anything later is recorded on the build as a failure.
+///
+/// A failure the spec's author can repair returns its failed revision rather
+/// than an error: a failed check, or a [`BuildError::Stage`] (the script, its
+/// inspection, or a blocking geometry check). [`Stage::of_failure`] reads
+/// where it stopped. A cancelled build, or an error in the app itself, is an
+/// error.
 pub fn build(
     state: &AppState,
     workspace: &Workspace,
@@ -320,7 +355,19 @@ pub fn build(
         final_dir: &final_dir,
         object_name: &object_name,
     };
-    let (files, verdict) = run_pipeline(driver, &parsed, &ctx, &staged, control).map_err(|err| unfinished.fail(err))?;
+    let (files, verdict) = match run_pipeline(driver, &parsed, &ctx, &staged, control) {
+        Ok(done) => done,
+        Err(err @ BuildError::Stage { .. }) => {
+            let err = unfinished.fail(err);
+            let failed = with_db(state, |conn| revisions::get(conn, &revision.id))?;
+            // A failure that could not be recorded stays an error.
+            return match failed.build {
+                BuildState::Failed { .. } => Ok(BuildOutcome { revision: failed, reused: false }),
+                _ => Err(err),
+            };
+        }
+        Err(err) => return Err(unfinished.fail(err)),
+    };
     unfinished.settle(files, verdict)?;
     let finished = with_db(state, |conn| revisions::get(conn, &revision.id))?;
     if matches!(finished.build, BuildState::Verified { .. }) {
@@ -479,7 +526,10 @@ fn run_pipeline(
     let package = partial.join(format!("{}.3mf", parsed.kind()));
     let info = package::write_package(&checked, object_name, printer, &package)?;
     set_read_only(&package)?;
-    fs::write(partial.join("preview.png"), prepared.preview)?;
+    fs::write(partial.join("preview.png"), prepared.views.preview())?;
+    for (view, png) in prepared.views.views() {
+        fs::write(partial.join(view.file_name()), png)?;
+    }
     control.report(BuildStep::PackageWritten);
     cancelled()?;
 
@@ -529,6 +579,21 @@ fn run_pipeline(
         },
         effective_settings: serde_json::to_value(&report.effective)?,
     }, verdict))
+}
+
+/// The views a revision's build kept, in [`View::ALL`] order. A build that
+/// failed before it had views, and one from before view sets, have none.
+pub fn read_views(revision: &Revision) -> std::io::Result<Vec<(View, Vec<u8>)>> {
+    let Some(artifacts) = revision.artifacts() else { return Ok(Vec::new()) };
+    let dir = &artifacts.files().revision_dir;
+    View::ALL
+        .into_iter()
+        .filter_map(|view| match fs::read(dir.join(view.file_name())) {
+            Ok(png) => Some(Ok((view, png))),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+            Err(err) => Some(Err(err)),
+        })
+        .collect()
 }
 
 fn set_read_only(path: &Path) -> std::io::Result<()> {
@@ -938,6 +1003,65 @@ mod tests {
         assert_eq!(third.revision.build_id, first.revision.build_id);
         assert!(matches!(third.revision.build, BuildState::Verified { .. }));
         assert_eq!(revisions_of(&state).len(), 3);
+    }
+
+    /// The shared actions over `state` and `workspace`, with no window to notify.
+    fn actions(state: AppState, workspace: Workspace) -> crate::actions::Actions {
+        crate::actions::Actions::new(std::sync::Arc::new(|_, _| {}), std::sync::Arc::new(state), workspace)
+    }
+
+    /// A merge patch that makes an invalid spec is refused exactly like the
+    /// patched spec built fresh, before any revision or slicer.
+    #[test]
+    fn revise_refuses_a_patch_that_makes_an_invalid_spec_like_a_fresh_spec() {
+        use crate::actions::{merge_patch, RequestActions, RequestActor};
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = app_state(dir.path());
+        let parent = claim(&state, "parent");
+        let actions = actions(state, Workspace::new(&dir.path().join("data"), &dir.path().join("cache")));
+        let quiet = BuildControl::new(&|_| {}, &|| false);
+        for patch in [json!({ "width_mm": "wide" }), json!({ "inks": null }), json!({ "colour": "navy" })] {
+            let revised = actions.revise(parent.id.as_str(), &patch, RequestActor::Agent, &quiet).expect_err("refused");
+            let fresh = RequestActions::build(&actions, "sign", merge_patch(fixture(), &patch), None, RequestActor::Agent, &quiet)
+                .expect_err("refused fresh");
+            assert!(matches!(revised, crate::actions::ActionError::Build(BuildError::Spec(_))), "{patch}: {revised}");
+            assert_eq!(revised.to_string(), fresh.to_string(), "{patch}");
+        }
+        assert_eq!(actions.list(10).expect("list").len(), 1, "no revision was recorded");
+    }
+
+    /// `revise` through the shared actions with the real slicer: a merge
+    /// patch is revision n+1, a patch back to the first spec is revision 3 on
+    /// the first build, and nothing runs for it.
+    #[test]
+    #[ignore = "needs a validated Bambu Studio (BAMBU_STUDIO_CLI or a standard install)"]
+    fn revise_makes_the_next_revision_and_a_patch_back_reuses_the_first_build() {
+        use crate::actions::{RequestActions, RequestActor};
+        let dir = tempfile::tempdir().expect("tempdir");
+        let actions = actions(app_state(dir.path()), Workspace::new(&dir.path().join("data"), &dir.path().join("cache")));
+        let quiet = BuildControl::new(&|_| {}, &|| false);
+        let first = RequestActions::build(&actions, "sign", fixture(), None, RequestActor::Agent, &quiet).expect("first");
+        assert!(matches!(first.revision.build, BuildState::Verified { .. }), "{:?}", first.revision.build);
+
+        let taller = actions.revise(first.revision.id.as_str(), &json!({ "height_mm": 215 }), RequestActor::Agent, &quiet).expect("revise");
+        assert_eq!((taller.revision.number, taller.reused), (2, false));
+        assert_eq!(taller.revision.lineage_id, first.revision.lineage_id);
+        assert_eq!(taller.revision.spec["height_mm"], json!(215));
+        assert_eq!(taller.revision.spec["width_mm"], first.revision.spec["width_mm"], "fields the patch did not name keep their values");
+        assert!(matches!(taller.revision.build, BuildState::Verified { .. }) && matches!(taller.revision.approval, Approval::Pending));
+
+        let steps = RefCell::new(Vec::new());
+        let back = actions
+            .revise(
+                taller.revision.id.as_str(),
+                &json!({ "height_mm": first.revision.spec["height_mm"] }),
+                RequestActor::Agent,
+                &BuildControl::new(&|s| steps.borrow_mut().push(s), &|| false),
+            )
+            .expect("revise back");
+        assert_eq!((back.revision.number, back.reused), (3, true));
+        assert_eq!(back.revision.build_id, first.revision.build_id, "the first build is reused");
+        assert_eq!(*steps.borrow(), [BuildStep::SpecValidated], "nothing past validation ran");
     }
 
     /// Slices `package` with the validated Bambu Studio and the P2S presets, as `build` does.

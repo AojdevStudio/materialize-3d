@@ -123,8 +123,20 @@ pub enum Measure {
 
 impl MeasuredRequirement {
     pub fn check_id(&self) -> CheckId {
-        CheckId::new(CheckPhase::Geometry, &format!("requirement.{}", self.index))
+        CheckId::new(CheckPhase::Geometry, &format!("{REQUIREMENT}.{}", self.index))
     }
+}
+
+/// The name every requirement check shares before its index.
+const REQUIREMENT: &str = "requirement";
+
+/// True for a requirement's check id (`geometry.requirement.<index>`): what a
+/// summary lists as the person's measurements.
+pub fn is_requirement_check(id: &CheckId) -> bool {
+    id.phase() == CheckPhase::Geometry
+        && id.as_str().strip_prefix("geometry.").and_then(|name| name.strip_prefix(REQUIREMENT)).is_some_and(|rest| {
+            rest.strip_prefix('.').is_some_and(|index| !index.is_empty() && index.bytes().all(|b| b.is_ascii_digit()))
+        })
 }
 
 /// A part spec that passed validation: the source within its size, params

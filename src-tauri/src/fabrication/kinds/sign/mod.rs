@@ -34,7 +34,7 @@ pub use preview::render_preview;
 pub use spec::{Align, Element, FontWeight, Ink, SignSpec, SpecError, ValidSignSpec, SIGN_SCHEMA_VERSION};
 
 use crate::fabrication::checks::{CheckOutcome, CheckPlan, InvalidPlan};
-use crate::fabrication::kind::{self, BuildControl, Built, KernelContext, KernelError, KindId, ObjectKind};
+use crate::fabrication::kind::{self, BuildControl, Built, KernelContext, KernelError, KindId, ObjectKind, View, ViewSet};
 use crate::fabrication::model::PrintableModel;
 use crate::fabrication::printer::PrinterProfile;
 
@@ -94,6 +94,14 @@ impl ObjectKind for Sign {
     /// are unchanged and their verified builds are reused.
     const TAG: &'static str = "sign-pipeline-1";
     const SUMMARY: &'static str = "a face-down multicolor sign: a base color with one or two flush inlay colors";
+    /// How to lay out a sign spec, for `describe_kind`.
+    const GUIDE: &'static str = "\
+Laying out a sign spec:
+- schema_version is 1. All sizes are millimeters on the finished face: origin at the top-left corner, x to the right, y down. 150 wide by 210 tall is a typical door sign; no edge may exceed 256.
+- base is the body color. inks holds one or two more colors, never more: at most two inks plus the base. Every element names its ink; an element in the base ink is a knockout.
+- text: y_mm is the baseline, not the top of the letters. cap_height_mm is the height of the capitals. align says whether x_mm is the left edge, the center, or the right edge. One line per text element.
+- rect: x_mm and y_mm are its top-left corner. A thin rect (2 to 3 mm tall) makes a rule.
+- Keep everything at least 10 mm inside the edges and leave clear space between lines. Later elements paint over earlier ones.";
 
     fn validate(spec: SignSpec, printer: &PrinterProfile) -> std::result::Result<SignDesign, kind::SpecError> {
         let spec = ValidSignSpec::parse(spec, printer).map_err(|e| kind::SpecError(e.to_string()))?;
@@ -121,8 +129,9 @@ impl ObjectKind for Sign {
         Ok(check_geometry(&valid.layout, model).iter().map(GeometryCheck::outcome).collect())
     }
 
-    fn preview(valid: &SignDesign, _model: &PrintableModel) -> std::result::Result<Vec<u8>, KernelError> {
-        render_preview(&valid.layout, PREVIEW_PX_PER_MM).map_err(kernel)
+    /// One view: the finished face, as a person reads it.
+    fn preview(valid: &SignDesign, _model: &PrintableModel) -> std::result::Result<ViewSet, KernelError> {
+        ViewSet::new(vec![(View::Face, render_preview(&valid.layout, PREVIEW_PX_PER_MM).map_err(kernel)?)])
     }
 }
 
