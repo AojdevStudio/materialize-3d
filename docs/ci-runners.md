@@ -31,7 +31,7 @@ The key is the sha256 of `git ls-files -s -z` over the listed paths (`scripts/ci
 - The run's repository and head repository are both this repository.
 - The run names both its actor and its triggering actor, and neither of them is `dependabot[bot]`.
 
-A failed API call, an answer that is not the JSON expected, or no run that passes every check is a miss, and the run does the full work. It never passes on a record it could not read.
+A failed API call, an answer that is not the JSON expected, or no run that passes every check is a miss, and the run does the full work. It never passes on a record it could not read. On a hit, the log and the step summary of both jobs show `CAD runtime reused: run <id> passed both jobs with full work under the key <key>`, with a link to that run. On a miss, the images job's log shows `cad-runtime key: miss,` and the reason.
 
 **Who can write a record that a pull request reads.** Only a passed run of this workflow from a same-repository head, because every other run fails the checks above:
 
