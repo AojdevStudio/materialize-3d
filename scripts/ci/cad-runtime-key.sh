@@ -11,9 +11,9 @@
 # The record is the artifact cad-runtime-pass-<key>, which cad-runtime.yml uploads only after both CAD jobs did their
 # full work and passed. Only the run's own jobs can upload into a run, so `lookup` trusts an artifact only through its
 # run: a completed, successful run of .github/workflows/cad-runtime.yml whose head is in this repository, whose actor
-# and triggering actor are both named, and neither of them Dependabot. It reads every page of the artifact list (at
-# most 50) and checks every candidate run. Any failure to read or check that is a miss, never a hit. `lookup` reads GH_TOKEN, which
-# needs actions: read (docs/ci-runners.md).
+# and triggering actor are both named, and neither of them Dependabot. It reads every page of the artifact list (a
+# total_count from 1 to 5000, so at most 50 pages) and checks every candidate run. Any failure to read or check that
+# is a miss, never a hit. `lookup` reads GH_TOKEN, which needs actions: read (docs/ci-runners.md).
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 root="$(git -C "$here" rev-parse --show-toplevel)"
@@ -42,24 +42,26 @@ case "${1:-}" in
       curl -fsS --retry 3 --max-time 30 -H @- -H "Accept: application/vnd.github+json" \
         "https://api.github.com/repos/$repo/$1" <<< "Authorization: Bearer $GH_TOKEN"
     }
-    # Every page is read before any run is checked, so a failure on any page is a miss, never a partial answer. The
-    # first page's total_count fixes how many pages there are, at most max_pages. A page that fails, is not an artifact
-    # list, reports another total, or holds no artifact unseen on earlier pages is a miss. A short page is the last.
-    max_pages=50 page=1 pages=1 total="" ids=()
+    # Every page is read before any run is checked, so a failure on any page is a miss, never a partial answer. jq
+    # accepts a page only when total_count is an integer from 1 to 5000 (50 pages of 100), so bash does arithmetic
+    # only on a checked value. The first page's total_count fixes how many pages there are. A page that fails, is not
+    # such a list, reports another total, or holds no artifact unseen on earlier pages is a miss. A short page is the
+    # last.
+    page=1 pages=1 total="" ids=()
     declare -A seen=()
     while (( page <= pages )); do
       artifacts="$(api "actions/artifacts?name=$name&per_page=100&page=$page")" \
         || miss "page $page of the artifact list for $name did not load"
-      page_text="$(jq -r --arg name "$name" '
-        if (.total_count | type) == "number" and (.artifacts | type) == "array" then
+      page_text="$(jq -r --arg name "$name" --argjson max_total 5000 '
+        if (.total_count | if type == "number" then . == floor and . >= 1 and . <= $max_total else false end)
+          and (.artifacts | type) == "array" then
           (.total_count | tostring), (.artifacts | length | tostring),
           (.artifacts[] | "\(.id) \(if .name == $name then .workflow_run.id else "-" end)")
         else error("not an artifact list") end' <<< "$artifacts")" \
-        || miss "page $page of the artifact list for $name is not the JSON expected"
+        || miss "page $page of the artifact list for $name is not a list with a total_count from 1 to 5000"
       mapfile -t lines <<< "$page_text"
       if (( page == 1 )); then
         total="${lines[0]}" pages=$(( (lines[0] + 99) / 100 ))
-        (( pages <= max_pages )) || miss "the artifact list for $name has more than $max_pages pages"
       fi
       [[ "${lines[0]}" == "$total" ]] || miss "the artifact list for $name changed while it was read"
       new=0

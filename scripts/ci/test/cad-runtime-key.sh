@@ -197,6 +197,18 @@ echo '{"artifacts":[{"id":1,"name":"'"$name"'","workflow_run":{"id":11}}]}' > "$
 no_hit "an artifact list without total_count was a hit"
 echo '{"total_count":"1","artifacts":[{"id":1,"name":"'"$name"'","workflow_run":{"id":11}}]}' > "$stub/artifacts-1.json"
 no_hit "an artifact list with a string total_count was a hit"
+# total_count must be an integer from 1 to 5000 before bash does any arithmetic with it: the lookup must refuse the
+# value itself, not fail later on it.
+for bad_total in 18446744073709551600 -1 1.5 0 '"1"' null; do
+  echo '{"total_count":'"$bad_total"',"artifacts":[{"id":1,"name":"'"$name"'","workflow_run":{"id":11}}]}' \
+    > "$stub/artifacts-1.json"
+  if reason="$(PATH="$work/bin:$PATH" STUB="$stub" EXPECTED_NAME="$name" GH_TOKEN=test-token \
+    "$repo/scripts/ci/cad-runtime-key.sh" lookup o/r 2>&1 > /dev/null)"; then
+    fail "an artifact list with total_count $bad_total was a hit"
+  fi
+  [[ "$reason" == *"is not a list with a total_count from 1 to 5000"* ]] \
+    || fail "total_count $bad_total was not refused by the range check: $reason"
+done
 rm -f "$stub/artifacts-1.json"; no_hit "a failed artifact list request was a hit"
 artifacts "$name:11"; rm -f "$stub/run-11.json"; no_hit "a run that did not load was a hit"
 reset_stub
