@@ -24,7 +24,7 @@ use crate::actions::{ActionError, RequestActions, RequestActor};
 use crate::fabrication::checks::CheckId;
 use crate::fabrication::kind::{inlined_schema, BuildControl, KindDriver, View};
 use crate::fabrication::kinds::part::is_requirement_check;
-use crate::fabrication::pipeline::{self, BuildOutcome, BuildStep, Stage};
+use crate::fabrication::pipeline::{self, BuildOutcome, BuildStep, KeptViews, Stage};
 use crate::fabrication::revisions::{Actor, Approval, Artifacts, BuildState, PrintValidation, RecordedCheck, Revision};
 
 /// Where a model meets the tools. The surface fixes the caller's
@@ -265,6 +265,9 @@ pub struct DesignSummary {
     /// The person's measurements as the build measured them, for example
     /// `width 60.02 mm (60 ± 0.2)`.
     pub requirements: Vec<String>,
+    /// The model's extent along x, y, and z in millimeters, when its build
+    /// recorded one.
+    pub size_mm: Option<[f64; 3]>,
     pub package_sha256: Option<String>,
     pub approval: ApprovalStatus,
     pub print_validation: PrintStatus,
@@ -301,6 +304,7 @@ impl From<&Revision> for DesignSummary {
             failed_checks: blocking().filter(|c| !c.passed).map(described).collect(),
             warnings: checks.iter().filter(|c| c.advisory && !c.passed).map(described).collect(),
             requirements: checks.iter().filter(requirement).map(|c| c.detail.clone()).collect(),
+            size_mm: artifacts.and_then(|a| a.files().size_mm),
             package_sha256: artifacts.map(|a| a.files().package_sha256.to_string()),
             approval: match revision.approval {
                 Approval::Pending => ApprovalStatus::Pending,
@@ -332,6 +336,9 @@ pub struct BuildResult {
     pub shown: bool,
     /// The views sent with this result, in order.
     pub views: Vec<View>,
+    /// Each view the kind renders that this result could not carry, and why,
+    /// for example `front: not found`.
+    pub views_missing: Vec<String>,
 }
 
 /// What `show` returns.
@@ -399,23 +406,23 @@ async fn build_result(
     let surface = call.surface;
     let progress = call.progress.clone();
     let cancel = call.cancel.clone();
-    let (outcome, views) = call
+    let (views, outcome) = call
         .run(move |actions| {
             let cancelled = || cancel.is_cancelled();
             let outcome = work(actions, surface.actor(), &BuildControl::new(&*progress, &cancelled))?;
             if surface == Surface::InAppAgent {
                 actions.show(outcome.revision.id.as_str())?;
             }
-            let views = pipeline::read_views(&outcome.revision)
-                .map_err(|e| ActionError::State(format!("could not read the build's views: {e}")))?;
-            Ok((outcome, views))
+            Ok((pipeline::read_views(&outcome.revision), outcome))
         })
         .await?;
+    let KeptViews { views, missing } = views;
     let result = BuildResult {
         revision: DesignSummary::from(&outcome.revision),
         reused: outcome.reused,
         shown: surface == Surface::InAppAgent,
         views: views.iter().map(|(view, _)| *view).collect(),
+        views_missing: missing,
     };
     Ok(ToolContent { value: encode(result)?, views })
 }
@@ -469,8 +476,9 @@ impl Tool {
             Tool::Revise => {
                 "Change a design without restating it: builds the next revision of revision_id's design from its spec \
                  with changes applied as a merge patch, for example {\"params\": {\"span\": 65}}, and checks it like \
-                 build. Returns the same summary and images as build. A patch that returns to an earlier spec reuses \
-                 that build, and a patched spec is validated like a fresh one. The new revision waits for a person to \
+                 build. Returns the same summary and images as build. Every revise is a new revision: a patch that \
+                 returns to an earlier spec reuses that build but never its approval, a patch that changes nothing is \
+                 refused, and a patched spec is validated like a fresh one. The new revision waits for a person to \
                  approve it in the Materialize 3D app; this tool cannot approve it."
             }
             Tool::Get => "Get one design revision, including any failed verification checks and warnings.",

@@ -90,6 +90,7 @@ fn agent_built_revision(gui: &Gui, dir: &Path) -> Revision {
             gcode_sha256: Sha256Hex::of_bytes(b"gcode"),
             slicer: SlicerIdentity { name: "Bambu Studio".into(), version: "02.08.02.61".into(), profile_version: "02.08.00.05".into() },
             effective_settings: json!({}),
+            size_mm: None,
         };
         let proof = checks::test_support::passed(&[checks::slice_check_id(bambu::CheckId::SliceSucceeded)]);
         revisions::finish_verified(conn, &revision.build_id, files, &proof)?;

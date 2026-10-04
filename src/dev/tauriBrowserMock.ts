@@ -4,7 +4,7 @@ import { mockIPC, mockWindows } from '@tauri-apps/api/mocks'
 import type { PrinterSnapshot } from '../stores/printer'
 import type { WorkspaceSnapshot } from '../stores/workspace'
 import type { PrinterConfig } from '../stores/printerConfigs'
-import type { Revision } from '../types/designs'
+import type { SignRevision } from '../types/designs'
 import type { BuildResult } from '../types/generated'
 import type { AgentEvent, AgentStatus, BuildStep, HistoryEntry, Provider } from '../types/agent'
 
@@ -98,7 +98,7 @@ function sampleModel(url: string) {
 
 // One verified sign revision so the Signs view renders in a plain browser.
 const MOCK_SIGN_PACKAGE_SHA = 'abc123f09e2d7b41c8a5e6f2d3b4c5a6e7f8091a2b3c4d5e6f708192a3b4c4e7'
-let mockSign: Revision = {
+let mockSign: SignRevision = {
   id: '6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b',
   lineage_id: '0a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d',
   number: 1,
@@ -191,7 +191,7 @@ async function mockSignPreview(): Promise<ArrayBuffer> {
   return (await canvas.convertToBlob({ type: 'image/png' })).arrayBuffer()
 }
 
-async function updateMockSign(next: Partial<Revision>): Promise<Revision> {
+async function updateMockSign(next: Partial<SignRevision>): Promise<SignRevision> {
   mockSign = { ...mockSign, ...next, updated_at: new Date().toISOString() }
   await emit('designs:changed', mockSign.id)
   return structuredClone(mockSign)
@@ -756,6 +756,7 @@ async function runMockTurn(turnId: string, text: string, channel: Channel<AgentE
     failed_checks: [],
     warnings: [],
     requirements: [],
+    size_mm: [150, 210, 2.6],
     package_sha256: 'abc123f09d1e7b55c0a4e2f6781d3b9ac0ffee12de45f67a89b0c1d2e3f4c4e7',
     approval: 'pending',
     print_validation: 'not_tested',
@@ -764,6 +765,7 @@ async function runMockTurn(turnId: string, text: string, channel: Channel<AgentE
     reused: false,
     shown: true,
     views: ['face'],
+    views_missing: [],
   }
   send({ type: 'toolResult', callId, ok: true, output: sign })
   record('completed', sign)

@@ -130,10 +130,25 @@ pub trait RequestActions: Send + Sync + 'static {
     /// verified CAD runtime. See [`Actions::kinds`].
     fn kinds(&self) -> Vec<&'static dyn KindDriver>;
 
+    /// Blocking, like [`RequestActions::build`], but always records a new
+    /// revision of `lineage_id`'s design with approval pending, even when the
+    /// spec repeats an earlier revision's; it then reuses that build, never
+    /// that approval. See [`pipeline::build_next`].
+    fn build_next(
+        &self,
+        kind: &str,
+        spec: Value,
+        lineage_id: &str,
+        requester: RequestActor,
+        control: &BuildControl<'_>,
+    ) -> Result<BuildOutcome, ActionError>;
+
     /// Builds revision n+1 of `revision_id`'s design from its stored spec with
     /// `changes` applied as an RFC 7396 merge patch ([`merge_patch`]). The
     /// patched spec is validated like any spec, so a patch can make nothing
-    /// a fresh spec could not, and the new revision needs its own approval.
+    /// a fresh spec could not. The new revision waits for its own approval,
+    /// even when its spec returns to an approved one. A patch that leaves the
+    /// spec as it is, the empty patch included, is refused.
     fn revise(
         &self,
         revision_id: &str,
@@ -142,8 +157,14 @@ pub trait RequestActions: Send + Sync + 'static {
         control: &BuildControl<'_>,
     ) -> Result<BuildOutcome, ActionError> {
         let parent = self.get(revision_id)?;
-        let spec = merge_patch(parent.spec, changes);
-        self.build(&parent.kind, spec, Some(parent.lineage_id.as_str()), requester, control)
+        let spec = merge_patch(parent.spec.clone(), changes);
+        if spec == parent.spec {
+            return Err(ActionError::State(format!(
+                "the changes leave revision {}'s spec as it is; name at least one field to change",
+                parent.number
+            )));
+        }
+        self.build_next(&parent.kind, spec, parent.lineage_id.as_str(), requester, control)
     }
 }
 
@@ -197,6 +218,21 @@ impl Actions {
         let lineage_id = lineage_id.map(LineageId::parse).transpose()?;
         let request = BuildRequest { kind: kind.to_owned(), spec, lineage_id, actor };
         let outcome = pipeline::build(&self.state, &self.workspace, request, control)?;
+        self.notify(&outcome.revision.id);
+        Ok(outcome)
+    }
+
+    /// See [`RequestActions::build_next`].
+    pub fn build_next(
+        &self,
+        kind: &str,
+        spec: Value,
+        lineage_id: &str,
+        actor: Actor,
+        control: &BuildControl<'_>,
+    ) -> Result<BuildOutcome, ActionError> {
+        let request = BuildRequest { kind: kind.to_owned(), spec, lineage_id: Some(LineageId::parse(lineage_id)?), actor };
+        let outcome = pipeline::build_next(&self.state, &self.workspace, request, control)?;
         self.notify(&outcome.revision.id);
         Ok(outcome)
     }
@@ -298,6 +334,17 @@ impl RequestActions for Actions {
         control: &BuildControl<'_>,
     ) -> Result<BuildOutcome, ActionError> {
         Actions::build(self, kind, spec, lineage_id, requester.into(), control)
+    }
+
+    fn build_next(
+        &self,
+        kind: &str,
+        spec: Value,
+        lineage_id: &str,
+        requester: RequestActor,
+        control: &BuildControl<'_>,
+    ) -> Result<BuildOutcome, ActionError> {
+        Actions::build_next(self, kind, spec, lineage_id, requester.into(), control)
     }
 
     fn list(&self, limit: u32) -> Result<Vec<Revision>, ActionError> {

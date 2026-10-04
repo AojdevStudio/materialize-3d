@@ -65,6 +65,7 @@ impl ObjectKind for Part {
     const GUIDE: &'static str = include_str!("part_guide.md");
     /// The script contract, which the system prompt carries.
     const PROMPT_GUIDE: &'static str = include_str!("part_contract.md");
+    const VIEWS: &'static [View] = &[View::Isometric, View::Front, View::Top];
     const NAMING: ObjectNaming = ObjectNaming::BuildKey;
 
     fn available(ctx: &KernelContext) -> bool {
@@ -135,8 +136,9 @@ impl ObjectKind for Part {
 
     /// Isometric, front, and top views of the welded mesh.
     fn preview(_valid: &ValidPart, model: &PrintableModel) -> Result<ViewSet, KernelError> {
-        let views = [View::Isometric, View::Front, View::Top]
-            .into_iter()
+        let views = Self::VIEWS
+            .iter()
+            .copied()
             .map(|view| preview::render(model, view).map(|png| (view, png)))
             .collect::<Result<Vec<_>, _>>()
             .map_err(KernelError::Failed)?;

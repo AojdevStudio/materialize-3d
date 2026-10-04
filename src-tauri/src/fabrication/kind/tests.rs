@@ -40,6 +40,7 @@ impl ObjectKind for Probe {
     const TAG: &'static str = "probe-1";
     const SUMMARY: &'static str = "a kind for tests";
     const GUIDE: &'static str = "how to probe";
+    const VIEWS: &'static [View] = &[View::Isometric, View::Top];
 
     fn validate(spec: ProbeSpec, _printer: &PrinterProfile) -> Result<ValidProbe, SpecError> {
         Ok(ValidProbe { geometry_passes: spec.geometry_passes, print_passes: spec.print_passes })

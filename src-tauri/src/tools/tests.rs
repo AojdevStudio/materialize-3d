@@ -59,6 +59,17 @@ impl RequestActions for ListingActions {
         Err(ActionError::State("not in this test".into()))
     }
 
+    fn build_next(
+        &self,
+        _kind: &str,
+        _spec: Value,
+        _lineage_id: &str,
+        _requester: RequestActor,
+        _control: &BuildControl<'_>,
+    ) -> Result<BuildOutcome, ActionError> {
+        Err(ActionError::State("not in this test".into()))
+    }
+
     fn list(&self, limit: u32) -> Result<Vec<Revision>, ActionError> {
         self.limits.lock().expect("limits").push(limit);
         Ok(Vec::new())

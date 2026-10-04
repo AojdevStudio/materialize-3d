@@ -94,6 +94,7 @@ impl ObjectKind for Sign {
     /// are unchanged and their verified builds are reused.
     const TAG: &'static str = "sign-pipeline-1";
     const SUMMARY: &'static str = "a face-down multicolor sign: a base color with one or two flush inlay colors";
+    const VIEWS: &'static [View] = &[View::Face];
     /// How to lay out a sign spec, for `describe_kind`.
     const GUIDE: &'static str = "\
 Laying out a sign spec:

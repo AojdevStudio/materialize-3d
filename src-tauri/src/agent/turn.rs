@@ -39,6 +39,9 @@ pub enum ModelChoice {
     /// A scripted model for tests.
     #[cfg(test)]
     Scripted(rig::test_utils::MockCompletionModel),
+    /// A scripted model whose next reply reads the request, for tests.
+    #[cfg(test)]
+    Responding(super::tests::Responder),
 }
 
 /// How a turn ended. Each turn reports exactly one, as its last event.
@@ -94,6 +97,8 @@ fn build_agent(model: ModelChoice, scope: &Arc<TurnScope>, kinds: &[&'static dyn
         }
         #[cfg(test)]
         ModelChoice::Scripted(model) => rig::client::AgentModelExt::into_agent_builder(model),
+        #[cfg(test)]
+        ModelChoice::Responding(model) => rig::client::AgentModelExt::into_agent_builder(model),
     };
     Ok(builder
         .preamble(&system_prompt(kinds))

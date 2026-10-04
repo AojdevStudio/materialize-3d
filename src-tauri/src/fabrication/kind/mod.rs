@@ -75,6 +75,9 @@ pub trait ObjectKind: Send + Sync + 'static {
     /// for a kind a model describes before it builds; `part` puts its script
     /// contract here.
     const PROMPT_GUIDE: &'static str = "";
+    /// The views [`ObjectKind::preview`] renders, in order. A build keeps
+    /// exactly these, so a view that is not on disk later is reported missing.
+    const VIEWS: &'static [View];
     /// What the package names the build's object.
     const NAMING: ObjectNaming = ObjectNaming::Title;
 
@@ -315,6 +318,8 @@ pub trait KindDriver: Send + Sync {
     fn guide(&self) -> &'static str;
     /// See [`ObjectKind::PROMPT_GUIDE`].
     fn prompt_guide(&self) -> &'static str;
+    /// See [`ObjectKind::VIEWS`].
+    fn views(&self) -> &'static [View];
     /// See [`ObjectKind::available`].
     fn available(&self, ctx: &KernelContext) -> bool;
     fn naming(&self) -> ObjectNaming;
@@ -352,6 +357,10 @@ impl<K: ObjectKind> KindDriver for Kind<K> {
 
     fn prompt_guide(&self) -> &'static str {
         K::PROMPT_GUIDE
+    }
+
+    fn views(&self) -> &'static [View] {
+        K::VIEWS
     }
 
     fn available(&self, ctx: &KernelContext) -> bool {
@@ -404,6 +413,9 @@ impl<K: ObjectKind> KindDriver for Kind<K> {
             return Err(BuildError::Cancelled);
         }
         let views = K::preview(valid, &model)?;
+        if !views.views().iter().map(|(view, _)| *view).eq(K::VIEWS.iter().copied()) {
+            return Err(BuildError::Failed(format!("{} rendered views other than its declared {:?}", K::ID, K::VIEWS)));
+        }
         let checked = plan.certify(model, extra, evidence).map_err(|e| match e {
             failed @ ChecksFailed::Failed(_) => BuildError::Stage { stage: Stage::Geometry, error: failed.to_string() },
             mismatch => BuildError::Failed(mismatch.to_string()),

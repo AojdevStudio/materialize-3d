@@ -135,6 +135,17 @@ impl RequestActions for FakeActions {
         Err(ActionError::Build(BuildError::Cancelled))
     }
 
+    fn build_next(
+        &self,
+        _kind: &str,
+        _spec: Value,
+        _lineage_id: &str,
+        _requester: RequestActor,
+        _control: &BuildControl<'_>,
+    ) -> Result<BuildOutcome, ActionError> {
+        Err(ActionError::State("FakeActions does not revise".into()))
+    }
+
     fn list(&self, _limit: u32) -> Result<Vec<Revision>, ActionError> {
         Ok(Vec::new())
     }
@@ -181,6 +192,18 @@ impl RequestActions for PipelineActions {
         let lineage_id = lineage_id.map(LineageId::parse).transpose()?;
         let request = BuildRequest { kind: kind.into(), spec, lineage_id, actor: requester.into() };
         Ok(pipeline::build(&self.state, &self.workspace, request, control)?)
+    }
+
+    fn build_next(
+        &self,
+        kind: &str,
+        spec: Value,
+        lineage_id: &str,
+        requester: RequestActor,
+        control: &BuildControl<'_>,
+    ) -> Result<BuildOutcome, ActionError> {
+        let request = BuildRequest { kind: kind.into(), spec, lineage_id: Some(LineageId::parse(lineage_id)?), actor: requester.into() };
+        Ok(pipeline::build_next(&self.state, &self.workspace, request, control)?)
     }
 
     fn list(&self, limit: u32) -> Result<Vec<Revision>, ActionError> {
@@ -513,6 +536,7 @@ impl ScriptedBuilds {
             gcode_sha256: Sha256Hex::of_bytes(b"gcode"),
             slicer: SlicerIdentity { name: "Bambu Studio".into(), version: "02.08.02.61".into(), profile_version: "scripted".into() },
             effective_settings: Value::Null,
+            size_mm: Some([60.0, 25.0, 26.8]),
         };
         let requirement = CheckId::try_from("geometry.requirement.0".to_owned()).expect("id");
         let overhang = CheckId::try_from("print.overhang.clip".to_owned()).expect("id");
@@ -521,14 +545,16 @@ impl ScriptedBuilds {
     }
 }
 
-impl RequestActions for ScriptedBuilds {
-    fn build(
+impl ScriptedBuilds {
+    /// The pipeline's order: find the kind, validate, claim with `claim`, run.
+    fn build_with(
         &self,
         kind: &str,
         spec: Value,
         lineage_id: Option<&str>,
         requester: RequestActor,
         control: &BuildControl<'_>,
+        claim: fn(&mut rusqlite::Connection, &NewRevision) -> revisions::Result<Claim>,
     ) -> Result<BuildOutcome, ActionError> {
         let driver = find(kind).ok_or_else(|| BuildError::UnknownKind(kind.into()))?;
         let parsed = driver.parse(spec.clone(), &P2S_04).map_err(BuildError::Spec)?;
@@ -543,7 +569,7 @@ impl RequestActions for ScriptedBuilds {
             check_plan: test_support::PLAN,
             requested_by: requester.into(),
         };
-        let revision = match pipeline::with_db(&self.state, |conn| revisions::claim(conn, &request))? {
+        let revision = match pipeline::with_db(&self.state, |conn| claim(conn, &request))? {
             Claim::Started(revision) => revision,
             Claim::Reused(revision) => return Ok(BuildOutcome { revision, reused: true }),
             Claim::Busy(build) => return Err(ActionError::State(format!("build {build} is running"))),
@@ -554,6 +580,30 @@ impl RequestActions for ScriptedBuilds {
             control.report(BuildStep::Verified);
         }
         Ok(BuildOutcome { revision, reused: false })
+    }
+}
+
+impl RequestActions for ScriptedBuilds {
+    fn build(
+        &self,
+        kind: &str,
+        spec: Value,
+        lineage_id: Option<&str>,
+        requester: RequestActor,
+        control: &BuildControl<'_>,
+    ) -> Result<BuildOutcome, ActionError> {
+        self.build_with(kind, spec, lineage_id, requester, control, revisions::claim)
+    }
+
+    fn build_next(
+        &self,
+        kind: &str,
+        spec: Value,
+        lineage_id: &str,
+        requester: RequestActor,
+        control: &BuildControl<'_>,
+    ) -> Result<BuildOutcome, ActionError> {
+        self.build_with(kind, spec, Some(lineage_id), requester, control, revisions::claim_next)
     }
 
     fn list(&self, limit: u32) -> Result<Vec<Revision>, ActionError> {
@@ -603,6 +653,55 @@ pub(crate) fn clip(source: &str) -> Value {
 
 fn tool_turn_as(id: &str, name: &str, args: Value) -> Vec<MockStreamEvent> {
     vec![MockStreamEvent::tool_call(id, name, args), MockStreamEvent::final_response_with_default_usage()]
+}
+
+/// One scripted reply, made from the request it answers.
+type Reply = Box<dyn Fn(&rig::completion::CompletionRequest) -> Vec<MockStreamEvent> + Send + Sync>;
+
+/// A scripted model like [`MockCompletionModel`], except that each reply is
+/// made from the request it answers, so a model can pass on an id it read in
+/// an earlier tool result, as a real one does.
+#[derive(Clone)]
+pub struct Responder {
+    replies: Arc<Mutex<std::collections::VecDeque<Reply>>>,
+    requests: Arc<Mutex<Vec<rig::completion::CompletionRequest>>>,
+}
+
+impl Responder {
+    fn new(replies: Vec<Reply>) -> Self {
+        Self { replies: Arc::new(Mutex::new(replies.into())), requests: Arc::default() }
+    }
+
+    fn requests(&self) -> Vec<rig::completion::CompletionRequest> {
+        self.requests.lock().expect("requests").clone()
+    }
+}
+
+impl rig::completion::CompletionModel for Responder {
+    async fn completion(
+        &self,
+        _request: rig::completion::CompletionRequest,
+    ) -> Result<rig::completion::CompletionResponse, rig::completion::CompletionError> {
+        Err(rig::completion::CompletionError::ProviderError("the responder only streams".into()))
+    }
+
+    async fn stream(
+        &self,
+        request: rig::completion::CompletionRequest,
+    ) -> Result<rig::streaming::StreamingCompletionResponse, rig::completion::CompletionError> {
+        self.requests.lock().expect("requests").push(request.clone());
+        let reply = self.replies.lock().expect("replies").pop_front();
+        let Some(reply) = reply else {
+            return Err(rig::completion::CompletionError::ProviderError("the responder has no reply left".into()));
+        };
+        let events = reply(&request);
+        MockCompletionModel::from_stream_turns([events]).stream(request).await
+    }
+}
+
+/// A reply that is the same whatever the request.
+fn fixed(events: Vec<MockStreamEvent>) -> Reply {
+    Box::new(move |_| events.clone())
 }
 
 /// The `ok` results of `tool`'s calls in one turn, in order.
@@ -663,14 +762,19 @@ async fn a_scripted_model_describes_builds_repairs_and_revises_a_part() {
     let h = harness();
     let actions = Arc::new(ScriptedBuilds::new(h.state.clone(), h.dir.path()));
     let failing = clip(&CLIP_SCRIPT.replace("radius=p[\"fillet\"]", "radius=99"));
-    let model = scripted(vec![
-        tool_turn_as("tc-describe", "describe_kind", json!({ "kind": "part" })),
-        tool_turn_as("tc-build", "build", json!({ "kind": "part", "spec": failing })),
-        tool_turn_as("tc-repair", "build", json!({ "kind": "part", "spec": clip(CLIP_SCRIPT) })),
-        text_turn("Revision 1 verified: 1/1 checks, one overhang warning. It waits for your approval in the app."),
+    // The repair reads the failed build's lineage_id from its tool result, as the prompt asks.
+    let repair: Reply = Box::new(|request| {
+        let (failed, _) = tool_results_in(request).last().cloned().expect("the failed build's result");
+        tool_turn_as("tc-repair", "build", json!({ "kind": "part", "spec": clip(CLIP_SCRIPT), "lineage_id": failed["lineage_id"] }))
+    });
+    let model = Responder::new(vec![
+        fixed(tool_turn_as("tc-describe", "describe_kind", json!({ "kind": "part" }))),
+        fixed(tool_turn_as("tc-build", "build", json!({ "kind": "part", "spec": failing }))),
+        repair,
+        fixed(text_turn("Revision 2 verified: 1/1 checks, one overhang warning. It waits for your approval in the app.")),
     ]);
     let turn = Turn::new(&h, "t1", actions.clone(), None);
-    let events = turn.run("a clip for six 4 mm cables on an 18 mm desk, 60 mm wide", Ok(ModelChoice::Scripted(model.clone()))).await;
+    let events = turn.run("a clip for six 4 mm cables on an 18 mm desk, 60 mm wide", Ok(ModelChoice::Responding(model.clone()))).await;
     print_sequence(&events);
     assert_framed(&events);
     assert!(matches!(events.last(), Some(AgentEvent::TurnFinished)), "{:?}", events.last());
@@ -687,7 +791,13 @@ async fn a_scripted_model_describes_builds_repairs_and_revises_a_part() {
     assert_eq!((failed["number"].clone(), failed["views"].clone()), (json!(1), json!([])), "no views of a failed script");
     assert_eq!(repaired["build"], "verified", "{repaired}");
     assert_eq!(repaired["stage"], Value::Null);
-    assert_eq!(repaired["number"], json!(1), "a build without a lineage_id starts a design");
+    assert_eq!(
+        (repaired["number"].clone(), repaired["lineage_id"].clone()),
+        (json!(2), failed["lineage_id"].clone()),
+        "the repair is the failed design's next revision"
+    );
+    assert_eq!(repaired["size_mm"], json!([60.0, 25.0, 26.8]));
+    assert_eq!(repaired["views_missing"], json!([]));
     assert_eq!(repaired["views"], json!(["isometric", "front", "top"]));
     assert_eq!(repaired["warnings"], json!(["print.overhang.clip: ok"]));
     assert_eq!(repaired["requirements"], json!(["ok"]));
@@ -724,7 +834,7 @@ async fn a_scripted_model_describes_builds_repairs_and_revises_a_part() {
     let repair = repaired["revision_id"].as_str().expect("id").to_owned();
     let model = scripted(vec![
         tool_turn_as("tc-revise", "revise", json!({ "revision_id": repair, "changes": { "params": { "span": 65 } } })),
-        text_turn("Revision 2 is 65 mm wide."),
+        text_turn("Revision 3 is 65 mm wide."),
     ]);
     let turn = Turn::new(&h, "t2", actions.clone(), None);
     let events = turn.run("make it 65 mm wide", Ok(ModelChoice::Scripted(model.clone()))).await;
@@ -735,9 +845,9 @@ async fn a_scripted_model_describes_builds_repairs_and_revises_a_part() {
     for absent in ["tool_call", "tool_result", "\"image\"", "tc-build"] {
         assert!(!history.contains(absent), "history replays {absent}: {history}");
     }
-    assert!(history.contains("a clip for six 4 mm cables") && history.contains("Revision 1 verified"), "{history}");
+    assert!(history.contains("a clip for six 4 mm cables") && history.contains("Revision 2 verified"), "{history}");
     let stored = crate::fabrication::kind::canonical_json(&clip(CLIP_SCRIPT));
-    let focus = format!("[Focus: the last revision is {repair} (kind part, revision 1), spec {stored}]");
+    let focus = format!("[Focus: the last revision is {repair} (kind part, revision 2), spec {stored}]");
     let Some(Message::User { content }) = said.last() else { panic!("the prompt is last: {said:?}") };
     let texts: Vec<&str> = content
         .iter()
@@ -750,9 +860,9 @@ async fn a_scripted_model_describes_builds_repairs_and_revises_a_part() {
     let stored_prompt = store::with_conn(&h.state, |conn| store::model_history(conn, &h.conversation_id)).expect("history");
     assert!(!serde_json::to_string(&stored_prompt).expect("json").contains("[Focus:"), "the focus record is never stored");
     let revised = &results_of(&events, "revise")[0];
-    assert_eq!((revised["number"].clone(), revised["build"].clone(), revised["reused"].clone()), (json!(2), json!("verified"), json!(false)));
+    assert_eq!((revised["number"].clone(), revised["build"].clone(), revised["reused"].clone()), (json!(3), json!("verified"), json!(false)));
     assert_eq!(revised["lineage_id"], repaired["lineage_id"], "revise adds to the repaired design");
-    assert_eq!(actions.ran.lock().expect("ran").last().expect("ran")["params"]["span"], json!(65), "revision 2 built the patched spec");
+    assert_eq!(actions.ran.lock().expect("ran").last().expect("ran")["params"]["span"], json!(65), "revision 3 built the patched spec");
     let (_, images) = tool_results_in(&model.requests()[1]).last().cloned().expect("revise result");
     assert_eq!(images, 3, "revise carries the view set too");
 }
@@ -802,6 +912,49 @@ async fn revise_applies_a_merge_patch_as_revision_n_plus_1() {
     let fresh = Tool::Build.invoke(&call, json!({ "kind": "part", "spec": patched })).await.expect_err("refused fresh");
     assert_eq!(refused.to_string(), fresh.to_string(), "a patch is validated like a fresh spec");
     assert_eq!(actions.list(10).expect("list").len(), 4, "a refused spec records no revision");
+}
+
+/// Revise never carries an approval forward. An empty patch on the approved
+/// revision is refused, and a patch that brings an older revision back to the
+/// approved spec is a new revision on the approved build, waiting for its own
+/// approval.
+#[tokio::test]
+async fn revise_always_makes_a_new_pending_revision_and_never_reuses_an_approval() {
+    use std::collections::BTreeSet;
+    let h = harness();
+    let actions = Arc::new(ScriptedBuilds::new(h.state.clone(), h.dir.path()));
+    let call = crate::tools::ToolCall {
+        surface: Surface::ExternalMcp,
+        actions: actions.clone(),
+        progress: Arc::new(|_| {}),
+        cancel: CancellationToken::new(),
+        blocking: TaskTracker::new(),
+    };
+    let first = Tool::Build.invoke(&call, json!({ "kind": "part", "spec": clip(CLIP_SCRIPT) })).await.expect("build").value;
+    let revise = |id: &Value, changes: Value| {
+        let args = json!({ "revision_id": id, "changes": changes });
+        let call = &call;
+        async move { Tool::Revise.invoke(call, args).await }
+    };
+    let wider = revise(&first["revision_id"], json!({ "params": { "span": 65 } })).await.expect("revise").value;
+
+    let approved_id = RevisionId::parse(wider["revision_id"].as_str().expect("id")).expect("id");
+    let hash = Sha256Hex::try_from(wider["package_sha256"].as_str().expect("hash").to_owned()).expect("hash");
+    let warnings = BTreeSet::from([CheckId::try_from("print.overhang.clip".to_owned()).expect("id")]);
+    pipeline::with_db(&h.state, |conn| revisions::approve(conn, &approved_id, &hash, &warnings, revisions::Actor::Human)).expect("a person approves");
+
+    for empty in [json!({}), json!({ "params": { "span": 65 } })] {
+        let refused = revise(&wider["revision_id"], empty.clone()).await.expect_err("a patch that changes nothing");
+        assert!(refused.to_string().contains("the changes leave revision 2's spec as it is"), "{empty}: {refused}");
+    }
+
+    let back = revise(&first["revision_id"], json!({ "params": { "span": 65 } })).await.expect("revise to the approved spec").value;
+    assert_eq!((back["number"].clone(), back["approval"].clone()), (json!(3), json!("pending")), "{back}");
+    assert_ne!(back["revision_id"], wider["revision_id"]);
+    assert_eq!((back["reused"].clone(), back["package_sha256"].clone()), (json!(true), wider["package_sha256"].clone()), "the approved build, not its approval");
+    let approved = actions.get(approved_id.as_str()).expect("revision 2");
+    assert!(matches!(approved.approval, revisions::Approval::Approved { .. }), "revision 2 keeps its own approval");
+    assert_eq!(actions.list(10).expect("list").len(), 3, "the refused patches recorded nothing");
 }
 
 /// When the model asks a question instead of building, the turn ends after
@@ -954,7 +1107,7 @@ async fn rig_sends_the_view_images_inside_the_tool_result_to_anthropic_and_opena
     let revision = results_of(&events, "build")[0]["revision_id"].as_str().expect("id").to_owned();
     let revision = actions.get(&revision).expect("revision");
     let views: Vec<String> =
-        crate::fabrication::pipeline::read_views(&revision).expect("views").iter().map(|(_, png)| crate::tools::base64(png)).collect();
+        crate::fabrication::pipeline::read_views(&revision).views.iter().map(|(_, png)| crate::tools::base64(png)).collect();
     assert_eq!(views.len(), 3);
 
     let preamble = request.chat_history.iter().find_map(|m| match m {

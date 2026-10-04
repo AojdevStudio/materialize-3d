@@ -343,6 +343,7 @@ fn approval_refuses_an_acknowledgement_that_differs_from_the_warnings() {
         gcode_sha256: Sha256Hex::of_bytes(b"gcode"),
         slicer: SlicerIdentity { name: "Bambu Studio".into(), version: "02.08.02.61".into(), profile_version: "02.08.00.05".into() },
         effective_settings: Value::Null,
+        size_mm: None,
     };
     revisions::finish_verified(&conn, &revision.build_id, files, &passed).expect("verified");
 

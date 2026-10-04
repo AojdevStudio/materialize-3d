@@ -21,7 +21,7 @@ use super::bambu::{self, BambuError, BambuStudio, Check, ResolvedPresets, SliceR
 use super::cad_worker::{CadRuntime, CadRuntimeSlot};
 use super::checks::{self, CheckId, CheckOutcome, CheckPhase, ChecksFailed, PassedChecks};
 use super::kind::{self, BuildControl, KernelContext, KernelError, KindDriver, KindId, ObjectNaming, ParsedSpec, SpecError, View};
-use super::model::Palette;
+use super::model::{Palette, PrintableModel};
 use super::package::{self, PackageError};
 use super::printer::{PrinterProfile, P2S_04};
 use super::revisions::{
@@ -181,6 +181,12 @@ impl Stage {
                 CheckPhase::Print => None,
             };
         }
+        // Before staged failures, a failed geometry check was recorded as
+        // `build failed: checks failed: <first failed check>: ...`.
+        if let Some(failed) = reason.strip_prefix("build failed: checks failed: ") {
+            let id = failed.split([':', ',']).next()?.trim();
+            return (CheckId::try_from(id.to_owned()).ok()?.phase() == CheckPhase::Geometry).then_some(Stage::Geometry);
+        }
         let (prefix, _) = reason.split_once(": ")?;
         Stage::ALL.into_iter().find(|stage| stage.as_str() == prefix)
     }
@@ -308,6 +314,28 @@ pub fn build(
     request: BuildRequest,
     control: &BuildControl<'_>,
 ) -> Result<BuildOutcome, BuildError> {
+    build_as(state, workspace, request, control, revisions::claim)
+}
+
+/// [`build`] for `revise`: the request's design always gets a new revision,
+/// approval pending, even when its spec repeats an earlier one, whose build
+/// it then reuses ([`revisions::claim_next`]). The request must name its design.
+pub fn build_next(
+    state: &AppState,
+    workspace: &Workspace,
+    request: BuildRequest,
+    control: &BuildControl<'_>,
+) -> Result<BuildOutcome, BuildError> {
+    build_as(state, workspace, request, control, revisions::claim_next)
+}
+
+fn build_as(
+    state: &AppState,
+    workspace: &Workspace,
+    request: BuildRequest,
+    control: &BuildControl<'_>,
+    claim: fn(&mut Connection, &NewRevision) -> Result<Claim, RevisionError>,
+) -> Result<BuildOutcome, BuildError> {
     let driver = kind::find(&request.kind).ok_or_else(|| BuildError::UnknownKind(request.kind.clone()))?;
     let ctx = workspace.kernel_context();
     if !driver.available(&ctx) {
@@ -336,7 +364,7 @@ pub fn build(
     // An identical build already running is awaited, never reported as done:
     // once it settles, a verified result is reused and a failed one is retried.
     let revision = loop {
-        match with_db(state, |conn| revisions::claim(conn, &request))? {
+        match with_db(state, |conn| claim(conn, &request))? {
             Claim::Started(revision) => break revision,
             Claim::Reused(revision) => return Ok(BuildOutcome { revision, reused: true }),
             Claim::Busy(build) => wait_until_settled(state, &build, control)?,
@@ -578,22 +606,101 @@ fn run_pipeline(
             profile_version: presets.profile_version.clone(),
         },
         effective_settings: serde_json::to_value(&report.effective)?,
+        size_mm: Some(size_mm(checked.model())),
     }, verdict))
 }
 
-/// The views a revision's build kept, in [`View::ALL`] order. A build that
-/// failed before it had views, and one from before view sets, have none.
-pub fn read_views(revision: &Revision) -> std::io::Result<Vec<(View, Vec<u8>)>> {
-    let Some(artifacts) = revision.artifacts() else { return Ok(Vec::new()) };
-    let dir = &artifacts.files().revision_dir;
-    View::ALL
-        .into_iter()
-        .filter_map(|view| match fs::read(dir.join(view.file_name())) {
-            Ok(png) => Some(Ok((view, png))),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
-            Err(err) => Some(Err(err)),
-        })
-        .collect()
+/// Most bytes one view may have. A view is a 640 px PNG of tens of kilobytes,
+/// so this only stops a file that is not one.
+pub const MAX_VIEW_BYTES: u64 = 2 * 1024 * 1024;
+/// Most bytes of views one result carries, together.
+pub const MAX_VIEWS_BYTES: u64 = 4 * 1024 * 1024;
+
+/// The views of one build that could be read, and why each other view the
+/// kind declares could not.
+#[derive(Debug, Default, PartialEq)]
+pub struct KeptViews {
+    pub views: Vec<(View, Vec<u8>)>,
+    /// One line per view left out, for example `front: not found`.
+    pub missing: Vec<String>,
+}
+
+/// The views of `revision`'s build, in the order its kind declares them
+/// ([`KindDriver::views`]). A build without artifacts has none to keep.
+pub fn read_views(revision: &Revision) -> KeptViews {
+    match (revision.artifacts(), kind::find(&revision.kind)) {
+        (Some(artifacts), Some(kind)) => read_view_files(&artifacts.files().revision_dir, kind.views()),
+        _ => KeptViews::default(),
+    }
+}
+
+/// Reads each of `expected` from `dir`: a regular file, never through a
+/// symlink, at most [`MAX_VIEW_BYTES`], and at most [`MAX_VIEWS_BYTES`] in
+/// all. Every view left out is named in `missing` with the reason.
+fn read_view_files(dir: &Path, expected: &[View]) -> KeptViews {
+    let mut kept = KeptViews::default();
+    let mut budget = MAX_VIEWS_BYTES;
+    for &view in expected {
+        match read_view_file(dir, view, budget) {
+            Ok(png) => {
+                budget -= png.len() as u64;
+                kept.views.push((view, png));
+            }
+            Err(why) => kept.missing.push(format!("{}: {why}", view.as_str())),
+        }
+    }
+    kept
+}
+
+fn read_view_file(dir: &Path, view: View, budget: u64) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let directory = fs::symlink_metadata(dir).map_err(|e| format!("its build directory cannot be read: {e}"))?;
+    if !directory.file_type().is_dir() {
+        return Err("its build directory is not a directory".into());
+    }
+    let path = dir.join(view.file_name());
+    let checked = match fs::symlink_metadata(&path) {
+        Ok(meta) => meta,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Err("not found".into()),
+        Err(err) => return Err(err.to_string()),
+    };
+    if !checked.file_type().is_file() {
+        return Err("not a regular file".into());
+    }
+    let over = |bytes: u64| {
+        if bytes > MAX_VIEW_BYTES {
+            Some(format!("{bytes} bytes, over the {MAX_VIEW_BYTES}-byte cap for one view"))
+        } else if bytes > budget {
+            Some(format!("{bytes} bytes, over the {MAX_VIEWS_BYTES}-byte cap for one result's views"))
+        } else {
+            None
+        }
+    };
+    if let Some(why) = over(checked.len()) {
+        return Err(why);
+    }
+    let file = fs::File::open(&path).map_err(|e| e.to_string())?;
+    // The path may have changed since it was checked: read only the file that was.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let opened = file.metadata().map_err(|e| e.to_string())?;
+        if !opened.file_type().is_file() || (opened.dev(), opened.ino()) != (checked.dev(), checked.ino()) {
+            return Err("changed while it was read".into());
+        }
+    }
+    let mut png = Vec::new();
+    file.take(MAX_VIEW_BYTES + 1).read_to_end(&mut png).map_err(|e| e.to_string())?;
+    match over(png.len() as u64) {
+        Some(why) => Err(why),
+        None => Ok(png),
+    }
+}
+
+/// The extent of `model` along x, y, and z, in millimeters.
+fn size_mm(model: &PrintableModel) -> [f64; 3] {
+    let [lo, hi] = model.bounds();
+    std::array::from_fn(|k| (hi[k] - lo[k]) as f64 / 1000.0)
 }
 
 fn set_read_only(path: &Path) -> std::io::Result<()> {
@@ -708,6 +815,7 @@ mod tests {
             gcode_sha256: Sha256Hex::of_bytes(b"gcode"),
             slicer: SlicerIdentity { name: "Bambu Studio".into(), version: "02.08.02.61".into(), profile_version: "02.08.00.05".into() },
             effective_settings: Value::Null,
+            size_mm: None,
         }
     }
 
@@ -1003,6 +1111,84 @@ mod tests {
         assert_eq!(third.revision.build_id, first.revision.build_id);
         assert!(matches!(third.revision.build, BuildState::Verified { .. }));
         assert_eq!(revisions_of(&state).len(), 3);
+    }
+
+    /// Before staged failures, a failed geometry check was recorded as
+    /// `build failed: checks failed: geometry.<check>: ...`. It still reads as
+    /// stage geometry; a staged reason reads as its stage; other reasons have none.
+    #[test]
+    fn a_failure_reads_as_its_stage_legacy_geometry_reasons_included() {
+        let failed = |reason: &str| BuildState::Failed { reason: reason.into(), artifacts: None };
+        let cases = [
+            ("build failed: checks failed: geometry.requirement.0: width 10.00 mm (20 ± 0.1)", Some(Stage::Geometry)),
+            ("build failed: checks failed: geometry.closed_manifold.clip: 468 open edges, geometry.bounds.clip: ok", Some(Stage::Geometry)),
+            ("geometry: checks failed: geometry.requirement.0: width 10.00 mm (20 ± 0.1)", Some(Stage::Geometry)),
+            ("generate: line 10: ValueError: Failed creating a fillet", Some(Stage::Generate)),
+            ("inspect: shape 0 has no solid", Some(Stage::Inspect)),
+            ("build failed: the CAD runtime is unavailable", None),
+            ("build cancelled", None),
+            ("interrupted: the app stopped before this build finished", None),
+        ];
+        for (reason, stage) in cases {
+            assert_eq!(Stage::of_failure(&failed(reason)), stage, "{reason}");
+        }
+    }
+
+    /// `dir` with each named view written with `bytes` bytes.
+    fn view_dir(views: &[(View, usize)]) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        for (view, bytes) in views {
+            fs::write(dir.path().join(view.file_name()), vec![7u8; *bytes]).expect("view");
+        }
+        dir
+    }
+
+    const PART_VIEWS: [View; 3] = [View::Isometric, View::Front, View::Top];
+
+    #[test]
+    fn views_are_read_in_the_kinds_order_and_a_missing_one_is_named() {
+        let dir = view_dir(&[(View::Top, 30), (View::Isometric, 10)]);
+        let kept = read_view_files(dir.path(), &PART_VIEWS);
+        assert_eq!(kept.views, [(View::Isometric, vec![7; 10]), (View::Top, vec![7; 30])]);
+        assert_eq!(kept.missing, ["front: not found"]);
+    }
+
+    /// A view that is a symlink is never followed, even to a file inside the
+    /// build directory; the result says so instead.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_view_is_not_read() {
+        let outside = tempfile::tempdir().expect("tempdir");
+        fs::write(outside.path().join("secret.png"), b"outside the build").expect("secret");
+        let dir = view_dir(&[(View::Isometric, 10)]);
+        std::os::unix::fs::symlink(outside.path().join("secret.png"), dir.path().join(View::Front.file_name())).expect("symlink");
+        std::os::unix::fs::symlink(dir.path().join(View::Isometric.file_name()), dir.path().join(View::Top.file_name())).expect("symlink");
+        let kept = read_view_files(dir.path(), &PART_VIEWS);
+        assert_eq!(kept.views, [(View::Isometric, vec![7; 10])]);
+        assert_eq!(kept.missing, ["front: not a regular file", "top: not a regular file"]);
+
+        let linked = tempfile::tempdir().expect("tempdir");
+        std::os::unix::fs::symlink(dir.path(), linked.path().join("build")).expect("symlink");
+        let kept = read_view_files(&linked.path().join("build"), &[View::Isometric]);
+        assert_eq!(kept.missing, ["isometric: its build directory is not a directory"]);
+    }
+
+    /// One view may not pass [`MAX_VIEW_BYTES`], and one result's views may
+    /// not pass [`MAX_VIEWS_BYTES`] together.
+    #[test]
+    fn views_over_the_byte_caps_are_left_out_and_named() {
+        let big = MAX_VIEW_BYTES as usize;
+        let dir = view_dir(&[(View::Isometric, big + 1), (View::Front, big), (View::Top, big)]);
+        let kept = read_view_files(dir.path(), &PART_VIEWS);
+        assert_eq!(kept.views.iter().map(|(view, png)| (*view, png.len())).collect::<Vec<_>>(), [(View::Front, big), (View::Top, big)]);
+        assert_eq!(kept.missing, [format!("isometric: {} bytes, over the {MAX_VIEW_BYTES}-byte cap for one view", big + 1)]);
+
+        let most = (MAX_VIEWS_BYTES / 3 + 1) as usize;
+        let dir = view_dir(&[(View::Isometric, most), (View::Front, most), (View::Top, most)]);
+        let kept = read_view_files(dir.path(), &PART_VIEWS);
+        assert_eq!(kept.views.len(), 2);
+        assert_eq!(kept.missing, [format!("top: {most} bytes, over the {MAX_VIEWS_BYTES}-byte cap for one result's views")]);
+        assert!(kept.views.iter().map(|(_, png)| png.len() as u64).sum::<u64>() <= MAX_VIEWS_BYTES);
     }
 
     /// The shared actions over `state` and `workspace`, with no window to notify.
