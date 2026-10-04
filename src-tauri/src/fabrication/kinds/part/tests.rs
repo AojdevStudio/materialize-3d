@@ -351,3 +351,60 @@ fn approval_refuses_an_acknowledgement_that_differs_from_the_warnings() {
     assert!(matches!(approved.approval, Approval::Approved { .. }));
 }
 
+
+/// A wall `t` thick, 20 mm long and 10 mm tall, turned `degrees` about z,
+/// standing on the bed and centered on the z axis.
+fn rotated_wall(t_um: f64, degrees: f64) -> Mesh {
+    let (sin, cos) = degrees.to_radians().sin_cos();
+    let (v, t) = cuboid([-10_000, 0, 0], [10_000, 1, 10_000]);
+    let v = v
+        .into_iter()
+        .map(|[x, y, z]| {
+            let y = if y == 0 { -t_um / 2.0 } else { t_um / 2.0 };
+            let x = x as f64;
+            [(x * cos - y * sin).round() as Um, (x * sin + y * cos).round() as Um, z]
+        })
+        .collect();
+    Mesh::new(v, t).expect("mesh")
+}
+
+/// A wall thinner than the requirement fails at every angle, and one thicker
+/// passes, with the probe at the wall's middle or off to one side. The
+/// measurement never reports more than the wall's real thickness.
+#[test]
+fn a_rotated_wall_is_never_measured_thicker_than_it_is() {
+    let requirement = |at: [f64; 3]| {
+        let mut spec = clip_spec();
+        spec["requirements"] = json!([{ "measure": "min_wall", "name": "wall", "at": at, "mm": 1.0 }]);
+        valid(spec)
+    };
+    for degrees in [0.0, 10.0, 22.5, 30.0, 45.0, 60.0, 67.5, 89.0] {
+        let thin = model(vec![("wall", rotated_wall(950.0, degrees))]);
+        let measured = outcome(&Part::measure(&requirement([0.0, 0.0, 5.0]), &thin), "geometry.requirement.0");
+        assert!(!measured.passed, "{degrees} degrees: {measured:?}");
+        let reported: f64 = measured.detail.split_whitespace().nth(1).and_then(|v| v.parse().ok()).expect("a number");
+        assert!(reported <= 0.95 + 0.005, "{degrees} degrees: {}", measured.detail);
+
+        let thick = model(vec![("wall", rotated_wall(1_050.0, degrees))]);
+        let (sin, cos) = degrees.to_radians().sin_cos();
+        for off in [0.0, 0.3] {
+            let at = [-off * sin, off * cos, 5.0];
+            let measured = outcome(&Part::measure(&requirement(at), &thick), "geometry.requirement.0");
+            assert!(measured.passed, "{degrees} degrees, {off} mm off the middle: {measured:?}");
+        }
+    }
+}
+
+/// A part the printer cannot hold fails its bounds, and nothing is sliced:
+/// its print checks say so instead of holding thousands of layers.
+#[test]
+fn a_part_too_big_for_the_printer_is_not_sliced() {
+    let huge = model(vec![("clip", mesh(&[cuboid([-1_000_000, -1_000_000, 0], [1_000_000, 1_000_000, 2_000_000])]))]);
+    let started = std::time::Instant::now();
+    let outcomes = Part::measure(&valid(clip_spec()), &huge);
+    assert!(!outcome(&outcomes, "geometry.bounds.clip").passed);
+    for id in ["print.overhang.clip", "print.min_wall.clip", "print.first_layer.clip"] {
+        assert_eq!(outcome(&outcomes, id).detail, "not measured: the part does not fit the printer", "{id}");
+    }
+    assert!(started.elapsed() < std::time::Duration::from_secs(5), "{:?}", started.elapsed());
+}

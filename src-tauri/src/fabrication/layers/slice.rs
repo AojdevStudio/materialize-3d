@@ -2,13 +2,16 @@
 //! printable model layer by layer for the advisory `print.*` checks.
 //!
 //! Every body is cut at the middle of each 0.2 mm layer and rasterized on one
-//! shared grid of 0.1 mm pixels (coarser for a very large model, so the work
-//! stays bounded). A plane never meets a vertex ambiguously: a vertex at the
-//! sample height counts as below it. The cross-section is filled even-odd, so a
-//! closed mesh gives its true section; an open one gives what it can, and the
-//! geometry checks already fail it.
+//! shared grid of 0.1 mm pixels (coarser for a very large footprint). A plane
+//! never meets a vertex ambiguously: a vertex at the sample height counts as
+//! below it. The cross-section is filled even-odd, so a closed mesh gives its
+//! true section; an open one gives what it can, and the geometry checks
+//! already fail it.
 //!
-//! From the layers:
+//! The layers stream: [`measure`] holds each body's current and previous
+//! layer and nothing older, so its memory is bounded by the grid and the body
+//! count alone ([`working_set_bytes`], at most [`MAX_WORKING_SET_BYTES`]),
+//! however tall the model is. From the layers:
 //! - **overhang**: the part of a layer more than one layer height (45 degrees)
 //!   plus one pixel away from everything printed in the layer below it;
 //! - **minimum wall**: the part of a layer that a disk of [`MIN_WALL_MM`]
@@ -23,31 +26,16 @@ pub const LAYER_UM: Um = 200;
 /// Finest pixel edge.
 const PIXEL_UM: Um = 100;
 /// Pixels per layer at most; a larger footprint gets coarser pixels.
-const MAX_PIXELS: usize = 1_500_000;
+pub const MAX_PIXELS: usize = 1_000_000;
+/// Bodies a model may have (the CAD worker's manifest limit).
+const MAX_BODIES: usize = 16;
+/// The most memory [`measure`] holds at once: [`working_set_bytes`] for the
+/// largest grid and the most bodies, about 46 MB.
+pub const MAX_WORKING_SET_BYTES: usize = MAX_PIXELS * (2 * MAX_BODIES + 6) + MAX_PIXELS * 8;
 /// An overhang steeper than 45 degrees from vertical is unsupported.
 const OVERHANG_ALLOWANCE_UM: f64 = LAYER_UM as f64;
 /// Narrower than this, a wall is thinner than one 0.4 mm nozzle line.
 pub const MIN_WALL_MM: f64 = 0.4;
-
-/// One body's cross-section at every layer, on the model's shared grid.
-pub struct BodyLayers<'a> {
-    pub body: &'a Body,
-    /// Index of the body's first layer with material, if any.
-    pub first: Option<usize>,
-    layers: Vec<Bitmap>,
-}
-
-impl BodyLayers<'_> {
-    pub fn layer(&self, index: usize) -> Option<&Bitmap> {
-        self.layers.get(index)
-    }
-}
-
-/// Every body of a model, sliced on one grid.
-pub struct ModelLayers<'a> {
-    pub grid: Grid,
-    pub bodies: Vec<BodyLayers<'a>>,
-}
 
 /// The pixel grid shared by every layer of a model.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -61,6 +49,28 @@ pub struct Grid {
 }
 
 impl Grid {
+    /// The grid around `model`'s footprint, with pixels coarse enough that a
+    /// layer holds at most [`MAX_PIXELS`].
+    pub fn of(model: &PrintableModel) -> Self {
+        let [lo, hi] = model.bounds();
+        let span = [(hi[0] - lo[0]).max(1), (hi[1] - lo[1]).max(1)];
+        let mut pixel_um = PIXEL_UM;
+        while ((span[0] / pixel_um + 3) * (span[1] / pixel_um + 3)) as usize > MAX_PIXELS {
+            pixel_um += PIXEL_UM;
+        }
+        Self {
+            origin: [lo[0] - pixel_um, lo[1] - pixel_um],
+            pixel_um,
+            width: (span[0] / pixel_um + 3) as usize,
+            height: (span[1] / pixel_um + 3) as usize,
+            layers: (hi[2].max(0) / LAYER_UM + 1) as usize,
+        }
+    }
+
+    pub fn pixels(&self) -> usize {
+        self.width * self.height
+    }
+
     pub fn pixel_area_mm2(&self) -> f64 {
         let mm = self.pixel_um as f64 / 1000.0;
         mm * mm
@@ -72,6 +82,15 @@ impl Grid {
     }
 }
 
+/// Bytes [`measure`] holds at most for `bodies` bodies on `grid`: each body's
+/// current and previous layer, the union of the layer below, its dilation,
+/// the erosion, opening, and differences of one layer (one byte a pixel
+/// each), and one
+/// distance transform (eight bytes a pixel).
+pub fn working_set_bytes(grid: &Grid, bodies: usize) -> usize {
+    grid.pixels() * (2 * bodies + 6) + grid.pixels() * 8
+}
+
 /// A set of pixels.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Bitmap {
@@ -81,7 +100,7 @@ pub struct Bitmap {
 
 impl Bitmap {
     fn empty(grid: &Grid) -> Self {
-        Self { width: grid.width, bits: vec![false; grid.width * grid.height] }
+        Self { width: grid.width, bits: vec![false; grid.pixels()] }
     }
 
     pub fn count(&self) -> usize {
@@ -92,8 +111,8 @@ impl Bitmap {
         Bitmap { width: self.width, bits: self.bits.iter().zip(&other.bits).map(|(a, b)| *a && !*b).collect() }
     }
 
-    fn or(&self, other: &Bitmap) -> Bitmap {
-        Bitmap { width: self.width, bits: self.bits.iter().zip(&other.bits).map(|(a, b)| *a || *b).collect() }
+    fn or_in(&mut self, other: &Bitmap) {
+        self.bits.iter_mut().zip(&other.bits).for_each(|(a, b)| *a |= *b);
     }
 
     /// Pixels whose center lies within `radius_px` pixel edges of a set pixel.
@@ -111,60 +130,99 @@ impl Bitmap {
     }
 }
 
-/// Slices every body of `model` on one grid around the model's footprint.
-pub fn slice(model: &PrintableModel) -> ModelLayers<'_> {
-    let [lo, hi] = model.bounds();
-    let span = [(hi[0] - lo[0]).max(1), (hi[1] - lo[1]).max(1)];
-    let mut pixel_um = PIXEL_UM;
-    while ((span[0] / pixel_um + 3) * (span[1] / pixel_um + 3)) as usize > MAX_PIXELS {
-        pixel_um += PIXEL_UM;
-    }
-    let grid = Grid {
-        origin: [lo[0] - pixel_um, lo[1] - pixel_um],
-        pixel_um,
-        width: (span[0] / pixel_um + 3) as usize,
-        height: (span[1] / pixel_um + 3) as usize,
-        layers: (hi[2].max(0) / LAYER_UM + 1) as usize,
-    };
-    let bodies = model
-        .bodies()
-        .iter()
-        .map(|body| {
-            let layers: Vec<Bitmap> = (0..grid.layers).map(|i| section(body, &grid, i)).collect();
-            let first = layers.iter().position(|layer| layer.count() > 0);
-            BodyLayers { body, first, layers }
-        })
-        .collect();
-    ModelLayers { grid, bodies }
+/// What the layers say about one body.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BodyPrint {
+    pub overhang: Overhang,
+    pub thin: ThinWall,
+    pub contact: Contact,
 }
 
-/// The body's cross-section at the middle of layer `index`, filled even-odd.
-fn section(body: &Body, grid: &Grid, index: usize) -> Bitmap {
-    let z = (index as Um * LAYER_UM + LAYER_UM / 2) as f64;
-    let vertices = body.mesh.vertices();
-    let mut segments: Vec<[[f64; 2]; 2]> = Vec::new();
-    for t in body.mesh.triangles() {
-        let p = t.map(|i| vertices[i as usize].map(|c| c as f64));
-        let above = p.map(|v| v[2] > z);
-        let crossing: Vec<[f64; 2]> = [(0, 1), (1, 2), (2, 0)]
-            .into_iter()
-            .filter(|&(a, b)| above[a] != above[b])
-            .map(|(a, b)| {
-                let t = (z - p[a][2]) / (p[b][2] - p[a][2]);
-                [p[a][0] + t * (p[b][0] - p[a][0]), p[a][1] + t * (p[b][1] - p[a][1])]
-            })
-            .collect();
-        if let [a, b] = crossing[..] {
-            segments.push([a, b]);
-        }
+/// The largest unsupported area of one body's layers, and where.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Overhang {
+    pub area_mm2: f64,
+    pub z_mm: f64,
+    /// Unsupported area summed over every layer above the first.
+    pub total_mm2: f64,
+}
+
+/// The largest area of one layer of a body narrower than [`MIN_WALL_MM`], and where.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ThinWall {
+    pub area_mm2: f64,
+    pub z_mm: f64,
+}
+
+/// How much of a body touches the bed, and its largest layer, mm².
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Contact {
+    pub bed_mm2: f64,
+    pub largest_mm2: f64,
+    /// The bottom of the body's first layer, mm; 0 when it rests on the bed.
+    pub starts_mm: Option<f64>,
+}
+
+/// One body's triangles in order of their lowest corner, and the ones the
+/// current sample height crosses.
+struct Sweep<'a> {
+    body: &'a Body,
+    /// Triangle indices by lowest z.
+    order: Vec<usize>,
+    next: usize,
+    active: Vec<usize>,
+}
+
+impl<'a> Sweep<'a> {
+    fn new(body: &'a Body) -> Self {
+        let z = |t: &[u32; 3]| t.map(|i| body.mesh.vertices()[i as usize][2]);
+        let mut order: Vec<usize> = (0..body.mesh.triangles().len()).collect();
+        order.sort_by_key(|&i| z(&body.mesh.triangles()[i]).into_iter().min());
+        Self { body, order, next: 0, active: Vec::new() }
     }
+
+    /// The body's cross-section at the middle of layer `index`; layers must
+    /// come in increasing order.
+    fn section(&mut self, grid: &Grid, index: usize) -> Bitmap {
+        let z = index as Um * LAYER_UM + LAYER_UM / 2;
+        let vertices = self.body.mesh.vertices();
+        let triangles = self.body.mesh.triangles();
+        let corner_z = |i: usize| triangles[i].map(|v| vertices[v as usize][2]);
+        while self.next < self.order.len() && corner_z(self.order[self.next]).into_iter().min().is_some_and(|lo| lo <= z) {
+            self.active.push(self.order[self.next]);
+            self.next += 1;
+        }
+        self.active.retain(|&i| corner_z(i).into_iter().max().is_some_and(|hi| hi > z));
+        let z = z as f64;
+        let mut segments: Vec<[[f64; 2]; 2]> = Vec::new();
+        for &i in &self.active {
+            let p = triangles[i].map(|v| vertices[v as usize].map(|c| c as f64));
+            let above = p.map(|v| v[2] > z);
+            let crossing: Vec<[f64; 2]> = [(0, 1), (1, 2), (2, 0)]
+                .into_iter()
+                .filter(|&(a, b)| above[a] != above[b])
+                .map(|(a, b)| {
+                    let t = (z - p[a][2]) / (p[b][2] - p[a][2]);
+                    [p[a][0] + t * (p[b][0] - p[a][0]), p[a][1] + t * (p[b][1] - p[a][1])]
+                })
+                .collect();
+            if let [a, b] = crossing[..] {
+                segments.push([a, b]);
+            }
+        }
+        fill(grid, &segments)
+    }
+}
+
+/// The pixels whose centers lie inside `segments`, even-odd.
+fn fill(grid: &Grid, segments: &[[[f64; 2]; 2]]) -> Bitmap {
     let mut bitmap = Bitmap::empty(grid);
     let size = grid.pixel_um as f64;
     let mut xs = Vec::new();
     for row in 0..grid.height {
         let y = grid.origin[1] as f64 + (row as f64 + 0.5) * size;
         xs.clear();
-        for [a, b] in &segments {
+        for [a, b] in segments {
             if (a[1] <= y) != (b[1] <= y) {
                 xs.push(a[0] + (y - a[1]) * (b[0] - a[0]) / (b[1] - a[1]));
             }
@@ -178,6 +236,63 @@ fn section(body: &Body, grid: &Grid, index: usize) -> Bitmap {
         }
     }
     bitmap
+}
+
+/// Slices every body of `model` on one grid, layer by layer, and measures
+/// each body's overhang, thin walls, and bed contact, in body order.
+pub fn measure(model: &PrintableModel) -> Vec<BodyPrint> {
+    let grid = Grid::of(model);
+    let area = |bitmap: &Bitmap| bitmap.count() as f64 * grid.pixel_area_mm2();
+    let allowance_px = OVERHANG_ALLOWANCE_UM / grid.pixel_um as f64 + 1.0;
+    let wall_px = MIN_WALL_MM * 1000.0 / 2.0 / grid.pixel_um as f64;
+    let mut sweeps: Vec<Sweep<'_>> = model.bodies().iter().map(Sweep::new).collect();
+    let mut found: Vec<BodyPrint> = sweeps
+        .iter()
+        .map(|_| BodyPrint {
+            overhang: Overhang { area_mm2: 0.0, z_mm: 0.0, total_mm2: 0.0 },
+            thin: ThinWall { area_mm2: 0.0, z_mm: 0.0 },
+            contact: Contact { bed_mm2: 0.0, largest_mm2: 0.0, starts_mm: None },
+        })
+        .collect();
+    let mut previous: Vec<Bitmap> = Vec::new();
+    for index in 0..grid.layers {
+        let current: Vec<Bitmap> = sweeps.iter_mut().map(|sweep| sweep.section(&grid, index)).collect();
+        // Everything any body printed in the layer below supports this one.
+        let mut below = Bitmap::empty(&grid);
+        previous.iter().for_each(|layer| below.or_in(layer));
+        let mut supported: Option<Bitmap> = None;
+        for (body, layer) in current.iter().enumerate() {
+            let print = &mut found[body];
+            let layer_area = area(layer);
+            if layer_area == 0.0 {
+                continue;
+            }
+            if index == 0 {
+                print.contact.bed_mm2 = layer_area;
+            }
+            print.contact.largest_mm2 = print.contact.largest_mm2.max(layer_area);
+            print.contact.starts_mm.get_or_insert(grid.layer_bottom_mm(index));
+            // A layer inside the one below it needs no distance transform.
+            if index > 0 && layer.and_not(&below).count() > 0 {
+                let supported = supported.get_or_insert_with(|| below.dilate(allowance_px));
+                let unsupported = area(&layer.and_not(supported));
+                print.overhang.total_mm2 += unsupported;
+                if unsupported > print.overhang.area_mm2 {
+                    print.overhang.area_mm2 = unsupported;
+                    print.overhang.z_mm = grid.layer_bottom_mm(index);
+                }
+            }
+            // A layer the same as this body's previous one has the same thin area.
+            if previous.get(body) != Some(layer) {
+                let thin = area(&layer.and_not(&layer.erode(wall_px).dilate(wall_px)));
+                if thin > print.thin.area_mm2 {
+                    print.thin = ThinWall { area_mm2: thin, z_mm: grid.layer_bottom_mm(index) };
+                }
+            }
+        }
+        previous = current;
+    }
+    found
 }
 
 /// Squared distance, in pixel edges, from every pixel center to the nearest
@@ -241,91 +356,6 @@ fn transform_1d(f: &[f64]) -> Vec<f64> {
     d
 }
 
-/// The largest unsupported area of one body's layers, and where.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Overhang {
-    pub area_mm2: f64,
-    pub z_mm: f64,
-    /// Unsupported area summed over every layer above the first.
-    pub total_mm2: f64,
-}
-
-/// Unsupported area of `body` per layer: material more than the 45-degree
-/// allowance away from anything any body printed in the layer below. The
-/// bed supports the first layer.
-pub fn overhang(layers: &ModelLayers<'_>, body: usize) -> Overhang {
-    let grid = &layers.grid;
-    let allowance_px = OVERHANG_ALLOWANCE_UM / grid.pixel_um as f64 + 1.0;
-    let mut worst = Overhang { area_mm2: 0.0, z_mm: 0.0, total_mm2: 0.0 };
-    for index in 1..grid.layers {
-        let Some(current) = layers.bodies[body].layer(index) else { continue };
-        if current.count() == 0 {
-            continue;
-        }
-        let below = layers
-            .bodies
-            .iter()
-            .filter_map(|b| b.layer(index - 1))
-            .fold(Bitmap::empty(grid), |union, layer| union.or(layer));
-        // A layer inside the one below it needs no distance transform.
-        if current.and_not(&below).count() == 0 {
-            continue;
-        }
-        let unsupported = current.and_not(&below.dilate(allowance_px)).count() as f64 * grid.pixel_area_mm2();
-        worst.total_mm2 += unsupported;
-        if unsupported > worst.area_mm2 {
-            worst.area_mm2 = unsupported;
-            worst.z_mm = grid.layer_bottom_mm(index);
-        }
-    }
-    worst
-}
-
-/// The largest area of one layer of `body` narrower than [`MIN_WALL_MM`], and where.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ThinWall {
-    pub area_mm2: f64,
-    pub z_mm: f64,
-}
-
-pub fn thin_walls(layers: &ModelLayers<'_>, body: usize) -> ThinWall {
-    let grid = &layers.grid;
-    let radius_px = MIN_WALL_MM * 1000.0 / 2.0 / grid.pixel_um as f64;
-    let mut worst = ThinWall { area_mm2: 0.0, z_mm: 0.0 };
-    for index in 0..grid.layers {
-        let Some(current) = layers.bodies[body].layer(index) else { continue };
-        // A layer the same as the one below it has the same thin area.
-        if current.count() == 0 || (index > 0 && layers.bodies[body].layer(index - 1) == Some(current)) {
-            continue;
-        }
-        let opened = current.erode(radius_px).dilate(radius_px);
-        let thin = current.and_not(&opened).count() as f64 * grid.pixel_area_mm2();
-        if thin > worst.area_mm2 {
-            worst = ThinWall { area_mm2: thin, z_mm: grid.layer_bottom_mm(index) };
-        }
-    }
-    worst
-}
-
-/// How much of `body` touches the bed, and its largest layer, mm².
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Contact {
-    pub bed_mm2: f64,
-    pub largest_mm2: f64,
-    /// The bottom of the body's first layer, mm; 0 when it rests on the bed.
-    pub starts_mm: Option<f64>,
-}
-
-pub fn contact(layers: &ModelLayers<'_>, body: usize) -> Contact {
-    let grid = &layers.grid;
-    let body = &layers.bodies[body];
-    let area = |layer: &Bitmap| layer.count() as f64 * grid.pixel_area_mm2();
-    Contact {
-        bed_mm2: body.layer(0).map_or(0.0, area),
-        largest_mm2: body.layers.iter().map(area).fold(0.0, f64::max),
-        starts_mm: body.first.map(|first| grid.layer_bottom_mm(first)),
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -359,18 +389,15 @@ mod tests {
     }
 
     #[test]
-    fn a_box_slices_to_its_footprint_on_every_layer() {
+    fn a_box_measures_its_footprint_and_nothing_else() {
         let model = model(cuboid([0, 0, 0], [10_000, 5_000, 2_000]));
-        let layers = slice(&model);
-        assert_eq!(layers.grid.layers, 11);
-        let area = |i| layers.bodies[0].layer(i).expect("layer").count() as f64 * layers.grid.pixel_area_mm2();
-        for i in 0..10 {
-            assert!((area(i) - 50.0).abs() < 0.01, "layer {i}: {} mm²", area(i));
-        }
-        assert_eq!(area(10), 0.0, "the top face is below the last sample");
-        assert_eq!(overhang(&layers, 0).area_mm2, 0.0);
-        assert_eq!(thin_walls(&layers, 0).area_mm2, 0.0);
-        assert_eq!(contact(&layers, 0), Contact { bed_mm2: area(0), largest_mm2: area(0), starts_mm: Some(0.0) });
+        assert_eq!(Grid::of(&model).layers, 11);
+        let found = measure(&model)[0];
+        assert!((found.contact.bed_mm2 - 50.0).abs() < 0.01, "{found:?}");
+        assert_eq!(found.contact.largest_mm2, found.contact.bed_mm2);
+        assert_eq!(found.contact.starts_mm, Some(0.0));
+        assert_eq!(found.overhang.area_mm2, 0.0);
+        assert_eq!(found.thin.area_mm2, 0.0);
     }
 
     /// A 40 x 40 mm slab on a 4 x 4 mm post: the slab's underside is a
@@ -378,8 +405,7 @@ mod tests {
     #[test]
     fn a_slab_on_a_post_overhangs_where_the_slab_begins() {
         let model = model(join(&[cuboid([18_000, 18_000, 0], [22_000, 22_000, 10_000]), cuboid([0, 0, 10_000], [40_000, 40_000, 13_000])]));
-        let layers = slice(&model);
-        let found = overhang(&layers, 0);
+        let found = measure(&model)[0].overhang;
         assert!((found.z_mm - 10.0).abs() < 1e-9, "{found:?}");
         assert!(found.area_mm2 > 1_570.0 && found.area_mm2 < 1_584.0, "{found:?}");
     }
@@ -393,29 +419,41 @@ mod tests {
             model(join(&boxes))
         };
         let (model_45, model_60) = (stairs(200), stairs(400));
-        let layers_45 = slice(&model_45);
-        assert_eq!(overhang(&layers_45, 0).area_mm2, 0.0);
-        let layers_60 = slice(&model_60);
-        assert!(overhang(&layers_60, 0).area_mm2 > 0.5, "{:?}", overhang(&layers_60, 0));
+        assert_eq!(measure(&model_45)[0].overhang.area_mm2, 0.0);
+        let steep = measure(&model_60)[0].overhang;
+        assert!(steep.area_mm2 > 0.5, "{steep:?}");
     }
 
     #[test]
     fn a_wall_thinner_than_one_line_is_thin() {
         let thin = model(join(&[cuboid([0, 0, 0], [10_000, 10_000, 1_000]), cuboid([0, 0, 1_000], [10_000, 200, 5_000])]));
-        let found = thin_walls(&slice(&thin), 0);
+        let found = measure(&thin)[0].thin;
         assert!(found.area_mm2 > 1.5, "a 0.2 mm wall: {found:?}");
         let thick = model(join(&[cuboid([0, 0, 0], [10_000, 10_000, 1_000]), cuboid([0, 0, 1_000], [10_000, 1_200, 5_000])]));
-        assert_eq!(thin_walls(&slice(&thick), 0).area_mm2, 0.0, "a 1.2 mm wall");
+        assert_eq!(measure(&thick)[0].thin.area_mm2, 0.0, "a 1.2 mm wall");
     }
 
     #[test]
     fn a_body_that_starts_above_the_bed_has_no_contact() {
         let model = model(cuboid([0, 0, 1_000], [5_000, 5_000, 3_000]));
-        let layers = slice(&model);
-        let found = contact(&layers, 0);
+        let measured = measure(&model)[0];
+        let found = measured.contact;
         assert_eq!(found.bed_mm2, 0.0);
         assert_eq!(found.starts_mm, Some(1.0));
-        assert!(overhang(&layers, 0).area_mm2 > 20.0, "the whole first layer floats");
+        assert!(measured.overhang.area_mm2 > 20.0, "the whole first layer floats");
+    }
+
+    /// Memory depends on the grid and the body count only: a 2,000 mm footprint
+    /// gets coarser pixels, and a 2,000 mm tall model keeps two layers, not
+    /// ten thousand.
+    #[test]
+    fn the_working_set_is_bounded_for_any_model_the_decoder_admits() {
+        let huge = model(cuboid([-1_000_000, -1_000_000, 0], [1_000_000, 1_000_000, 2_000_000]));
+        let grid = Grid::of(&huge);
+        assert!(grid.pixels() <= MAX_PIXELS, "{grid:?}");
+        assert_eq!(grid.layers, 10_001);
+        assert!(working_set_bytes(&grid, MAX_BODIES) <= MAX_WORKING_SET_BYTES);
+        const { assert!(MAX_WORKING_SET_BYTES < 50 << 20) };
     }
 
     #[test]

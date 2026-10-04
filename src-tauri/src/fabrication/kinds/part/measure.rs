@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use super::spec::{Axis, Measure, MeasuredRequirement, ValidPart};
 use super::{MESH_CHECKS, PRINT_CHECKS};
 use crate::fabrication::checks::{CheckId, CheckOutcome, CheckPhase};
-use crate::fabrication::layers::slice::{self, ModelLayers, MIN_WALL_MM};
+use crate::fabrication::layers::slice::{self, BodyPrint, MIN_WALL_MM};
 use crate::fabrication::model::{Body, PrintableModel};
 use crate::fabrication::printer::Um;
 
@@ -26,10 +26,20 @@ const MIN_CONTACT_SHARE: f64 = 0.1;
 /// each body's mesh checks, every requirement, each body's print checks.
 pub fn measure(valid: &ValidPart, model: &PrintableModel) -> Vec<CheckOutcome> {
     let mut outcomes: Vec<CheckOutcome> = model.bodies().iter().flat_map(|body| mesh_checks(body, model, valid.bed())).collect();
+    let fits = outcomes.iter().filter(|o| o.id.as_str().starts_with("geometry.bounds.")).all(|o| o.passed);
     outcomes.extend(valid.requirements().iter().map(|r| requirement(r, model)));
-    let layers = slice::slice(model);
-    for (index, body) in model.bodies().iter().enumerate() {
-        outcomes.extend(print_checks(&layers, index, body));
+    if fits {
+        for (body, print) in model.bodies().iter().zip(slice::measure(model)) {
+            outcomes.extend(print_checks(&print, body));
+        }
+    } else {
+        // The build already fails its bounds, so nothing is sliced: a model the
+        // printer cannot hold could be as tall as the decoder admits.
+        for body in model.bodies() {
+            outcomes.extend(PRINT_CHECKS.map(|name| {
+                outcome(CheckPhase::Print, name, body, false, "not measured: the part does not fit the printer".into())
+            }));
+        }
     }
     outcomes
 }
@@ -118,11 +128,11 @@ fn mm(um: Um) -> f64 {
     um as f64 / 1000.0
 }
 
-fn print_checks(layers: &ModelLayers<'_>, index: usize, body: &Body) -> [CheckOutcome; 3] {
+fn print_checks(found: &BodyPrint, body: &Body) -> [CheckOutcome; 3] {
     let [overhang_name, wall_name, contact_name] = PRINT_CHECKS;
     let print = |name: &str, passed: bool, detail: String| outcome(CheckPhase::Print, name, body, passed, detail);
 
-    let overhang = slice::overhang(layers, index);
+    let overhang = found.overhang;
     let overhang = if overhang.area_mm2 <= OVERHANG_MM2 {
         print(overhang_name, true, format!("every layer rests on the one below it (largest unsupported area {:.1} mm²)", overhang.area_mm2))
     } else {
@@ -136,7 +146,7 @@ fn print_checks(layers: &ModelLayers<'_>, index: usize, body: &Body) -> [CheckOu
         )
     };
 
-    let thin = slice::thin_walls(layers, index);
+    let thin = found.thin;
     let thin = if thin.area_mm2 <= THIN_MM2 {
         print(wall_name, true, format!("no wall narrower than {MIN_WALL_MM} mm (largest thin area {:.1} mm²)", thin.area_mm2))
     } else {
@@ -147,7 +157,7 @@ fn print_checks(layers: &ModelLayers<'_>, index: usize, body: &Body) -> [CheckOu
         )
     };
 
-    let contact = slice::contact(layers, index);
+    let contact = found.contact;
     let contact = match contact.starts_mm {
         Some(start) if start > 0.0 => print(contact_name, true, format!("starts at z {start:.1} mm, on another body; the overhang check covers its support")),
         None => print(contact_name, false, "no layer of this body has material".to_owned()),
@@ -262,6 +272,20 @@ impl Triangles {
         self.hits(origin, dir).into_iter().reduce(f64::min)
     }
 
+    /// The distance from `p` to the nearest surface point, that point, and the
+    /// normal of the triangle it lies on (not unit length).
+    fn closest(&self, p: [f64; 3]) -> Option<(f64, [f64; 3], [f64; 3])> {
+        self.0
+            .iter()
+            .map(|t| {
+                let q = closest_on_triangle(p, t);
+                let (u, w) = (sub3(t[1], t[0]), sub3(t[2], t[0]));
+                let normal = [u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0]];
+                (dot3(sub3(q, p), sub3(q, p)).sqrt(), q, normal)
+            })
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+    }
+
     /// Inside a closed solid: a ray from the point crosses its surface an odd
     /// number of times. Three rays vote, so one grazing ray cannot decide it.
     fn inside(&self, at: [f64; 3]) -> bool {
@@ -372,24 +396,94 @@ fn solve3(m: [[f64; 3]; 3], rhs: [f64; 3]) -> Option<[f64; 3]> {
     Some(out)
 }
 
-/// The thinnest chord through `at` over 13 lines (the axes, the face
-/// diagonals, and the body diagonals of a cube), each from exit to exit.
+/// The material's thickness at `at`: the diameter of the largest ball of
+/// material that contains `at`, as far as this search finds one.
+///
+/// Every candidate is a ball the search proves lies inside the material (its
+/// center is inside, and its radius is the center's distance to the nearest
+/// surface) and contains `at`, so the answer never exceeds the real
+/// thickness: a wall `t` thick holds no ball wider than `t`, at any angle.
+/// The candidates are the ball centered at `at`, and the ball centered at the
+/// midpoint of each chord through `at` along the direction to the nearest
+/// surface, that surface's normal, and the 13 lines of a cube. For a flat wall
+/// the first chord is the wall's normal, so the answer is the wall's exact
+/// thickness wherever in the wall `at` lies.
 fn wall_thickness(triangles: &Triangles, at: [f64; 3]) -> Option<f64> {
-    let mut lines = Vec::new();
+    let (radius, nearest, normal) = triangles.closest(at)?;
+    let mut best = 2.0 * radius;
+    let toward = unit_vector(sub3(nearest, at));
+    let mut directions: Vec<[f64; 3]> = toward.into_iter().chain(unit_vector(normal)).collect();
     for x in -1i32..=1 {
         for y in -1i32..=1 {
             for z in -1i32..=1 {
                 // One direction of each line: the first nonzero component positive.
-                let first = [x, y, z].into_iter().find(|c| *c != 0);
-                if first == Some(1) {
-                    let len = f64::from(x * x + y * y + z * z).sqrt();
-                    lines.push([f64::from(x) / len, f64::from(y) / len, f64::from(z) / len]);
+                if [x, y, z].into_iter().find(|c| *c != 0) == Some(1) {
+                    directions.extend(unit_vector([f64::from(x), f64::from(y), f64::from(z)]));
                 }
             }
         }
     }
-    lines
-        .into_iter()
-        .filter_map(|d| Some(triangles.nearest(at, d)? + triangles.nearest(at, d.map(|c| -c))?))
-        .reduce(f64::min)
+    for d in directions {
+        let (Some(ahead), Some(behind)) = (triangles.nearest(at, d), triangles.nearest(at, d.map(|c| -c))) else {
+            continue;
+        };
+        // Between the two exits the chord is material, so its midpoint is inside.
+        let shift = (ahead - behind) / 2.0;
+        let center = [at[0] + d[0] * shift, at[1] + d[1] * shift, at[2] + d[2] * shift];
+        let Some((radius, _, _)) = triangles.closest(center) else { continue };
+        if shift.abs() <= radius {
+            best = best.max(2.0 * radius);
+        }
+    }
+    Some(best)
+}
+
+fn sub3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+
+fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+fn unit_vector(v: [f64; 3]) -> Option<[f64; 3]> {
+    let len = dot3(v, v).sqrt();
+    (len > 1e-12).then(|| v.map(|c| c / len))
+}
+
+/// The point of triangle `t` closest to `p` (Ericson, Real-Time Collision
+/// Detection, 5.1.5).
+fn closest_on_triangle(p: [f64; 3], [a, b, c]: &[[f64; 3]; 3]) -> [f64; 3] {
+    let at = |s: f64, u: [f64; 3], w: f64, v: [f64; 3]| [a[0] + s * u[0] + w * v[0], a[1] + s * u[1] + w * v[1], a[2] + s * u[2] + w * v[2]];
+    let (ab, ac, ap) = (sub3(*b, *a), sub3(*c, *a), sub3(p, *a));
+    let (d1, d2) = (dot3(ab, ap), dot3(ac, ap));
+    if d1 <= 0.0 && d2 <= 0.0 {
+        return *a;
+    }
+    let bp = sub3(p, *b);
+    let (d3, d4) = (dot3(ab, bp), dot3(ac, bp));
+    if d3 >= 0.0 && d4 <= d3 {
+        return *b;
+    }
+    let vc = d1 * d4 - d3 * d2;
+    if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 {
+        return at(d1 / (d1 - d3), ab, 0.0, ac);
+    }
+    let cp = sub3(p, *c);
+    let (d5, d6) = (dot3(ab, cp), dot3(ac, cp));
+    if d6 >= 0.0 && d5 <= d6 {
+        return *c;
+    }
+    let vb = d5 * d2 - d1 * d6;
+    if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 {
+        return at(0.0, ab, d2 / (d2 - d6), ac);
+    }
+    let va = d3 * d6 - d5 * d4;
+    if va <= 0.0 && (d4 - d3) >= 0.0 && (d5 - d6) >= 0.0 {
+        let w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
+        let bc = sub3(*c, *b);
+        return [b[0] + w * bc[0], b[1] + w * bc[1], b[2] + w * bc[2]];
+    }
+    let denom = 1.0 / (va + vb + vc);
+    at(vb * denom, ab, vc * denom, ac)
 }
