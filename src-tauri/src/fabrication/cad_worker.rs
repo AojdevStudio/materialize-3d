@@ -24,6 +24,9 @@
 //! There is no third backend. Without one, [`CadRuntime`] cannot be built, so
 //! the `part` kind is unavailable; nothing ever runs a script on the host.
 
+// Without a backend no runtime can be built, so its half of this module goes unused there.
+#![cfg_attr(not(any(target_os = "macos", all(target_os = "linux", feature = "linux-cad-test"))), allow(dead_code))]
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::io::{self, Read};
@@ -67,6 +70,7 @@ impl WorkerLimits {
 
     /// The guest's own timeout for the job, a little under the host deadline,
     /// so an honest guest reports a slow script before the host stops it.
+    #[cfg_attr(not(all(target_os = "linux", feature = "linux-cad-test")), allow(dead_code))]
     fn guest_timeout_s(&self) -> u64 {
         self.deadline.as_secs().saturating_sub(5).max(1)
     }
@@ -178,6 +182,7 @@ impl VerifiedRuntimeImage {
         Ok(Self { dir: dir.to_path_buf(), arch: pins.arch, digests })
     }
 
+    #[cfg_attr(not(all(target_os = "linux", feature = "linux-cad-test")), allow(dead_code))]
     fn file(&self, name: &str) -> PathBuf {
         self.dir.join(name)
     }
@@ -876,14 +881,31 @@ pub fn decode_mesh(bytes: &[u8], limits: &MeshLimits) -> Result<Vec<RawBody>, Me
 const HELPER_NAME: &str = "materialize-cad-host";
 
 /// The helper's signing identifier, as `scripts/release/build-macos.sh` signs it.
-#[cfg(target_os = "macos")]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 const HELPER_IDENTIFIER: &str = "com.aojdevstudio.materialize3d.cad-host";
 
-/// The bundled helper, after its code signature checked out. A release build
-/// of the app (`scripts/release/build-macos.sh` sets `M3D_CAD_HELPER_TEAM`)
-/// requires the helper's identifier and a Developer ID signature from that
-/// team. Any other build requires a valid signature, which the ad hoc one the
-/// CI Mac job applies is.
+/// The code requirement a helper must meet, for `codesign -R`, or `None` for
+/// any valid signature. `team` is the signing team compiled into this build
+/// (`M3D_CAD_HELPER_TEAM`, which `scripts/release/build-macos.sh` sets); with
+/// one, the helper must carry its identifier and that team's Developer ID
+/// signature. Without one, only a debug build (tests, `tauri dev`, the CI
+/// self-test) accepts any valid signature, ad hoc included. A release build
+/// without a team fails closed: it trusts no helper, so `part` is unavailable.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn helper_requirement(team: Option<&str>, debug_build: bool) -> Result<Option<String>, RuntimeUnavailable> {
+    match team {
+        Some(team) => Ok(Some(format!(
+            "=identifier \"{HELPER_IDENTIFIER}\" and anchor apple generic and certificate leaf[subject.OU] = \"{team}\""
+        ))),
+        None if debug_build => Ok(None),
+        None => Err(RuntimeUnavailable::Unverified(
+            "this release build names no signing team for its CAD helper (M3D_CAD_HELPER_TEAM), so it trusts none".into(),
+        )),
+    }
+}
+
+/// The bundled helper, after its code signature checked out against
+/// [`helper_requirement`].
 #[cfg(target_os = "macos")]
 #[derive(Debug)]
 pub struct VerifiedHostHelper {
@@ -896,12 +918,11 @@ impl VerifiedHostHelper {
         if !path.is_file() {
             return Err(RuntimeUnavailable::Missing(format!("{} is missing", path.display())));
         }
+        let requirement = helper_requirement(option_env!("M3D_CAD_HELPER_TEAM"), cfg!(debug_assertions))?;
         let mut codesign = std::process::Command::new("/usr/bin/codesign");
         codesign.args(["--verify", "--strict"]);
-        if let Some(team) = option_env!("M3D_CAD_HELPER_TEAM") {
-            codesign.arg("-R").arg(format!(
-                "=identifier \"{HELPER_IDENTIFIER}\" and anchor apple generic and certificate leaf[subject.OU] = \"{team}\""
-            ));
+        if let Some(requirement) = requirement {
+            codesign.arg("-R").arg(requirement);
         }
         let output = codesign
             .arg(path)
@@ -1164,7 +1185,7 @@ mod linux {
                 Some(_) | None => {}
             }
         };
-        let mut channel = Channel { fd: stream, deadline, control, timed_out: false, cancelled: false };
+        let mut channel = Channel::new(stream, deadline, control).map_err(|e| WorkerError::Internal(format!("vsock: {e}")))?;
         let sent = request.iter().try_for_each(|(tag, payload)| write_frame(&mut channel, tag, payload));
         let response = sent.map_err(ProtocolError::Io).and_then(|()| read_response(&mut channel, role, &FrameLimits::PART));
         drop(vm);
@@ -1258,7 +1279,9 @@ mod linux {
     }
 
     /// The host end of the guest channel: every read and write waits at most
-    /// until the deadline and gives up on cancel.
+    /// until the deadline and gives up on cancel. The socket is non-blocking,
+    /// so a guest that stops reading or writing can stall a call only until
+    /// the next poll, never past the deadline.
     struct Channel<'a> {
         fd: OwnedFd,
         deadline: Instant,
@@ -1267,7 +1290,34 @@ mod linux {
         cancelled: bool,
     }
 
-    impl Channel<'_> {
+    impl<'a> Channel<'a> {
+        fn new(fd: OwnedFd, deadline: Instant, control: &'a BuildControl<'a>) -> io::Result<Self> {
+            // SAFETY: fcntl on a descriptor this function owns.
+            unsafe {
+                let flags = libc::fcntl(fd.as_raw_fd(), libc::F_GETFL);
+                if flags < 0 || libc::fcntl(fd.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+            }
+            Ok(Self { fd, deadline, control, timed_out: false, cancelled: false })
+        }
+
+        /// Runs `op` once the socket is ready for `events`, again whenever it
+        /// would block, until it succeeds, fails, or the wait gives up.
+        fn ready(&mut self, events: i16, mut op: impl FnMut(RawFd) -> isize) -> io::Result<usize> {
+            loop {
+                self.wait(events)?;
+                let n = op(self.fd.as_raw_fd());
+                if n >= 0 {
+                    return Ok(n as usize);
+                }
+                let err = io::Error::last_os_error();
+                if !matches!(err.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted) {
+                    return Err(err);
+                }
+            }
+        }
+
         fn wait(&mut self, events: i16) -> io::Result<()> {
             loop {
                 if self.control.is_cancelled() {
@@ -1287,19 +1337,15 @@ mod linux {
 
     impl Read for Channel<'_> {
         fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-            self.wait(libc::POLLIN)?;
             // SAFETY: `buf` is valid for `buf.len()` bytes and the fd is open.
-            let n = unsafe { libc::read(self.fd.as_raw_fd(), buf.as_mut_ptr().cast(), buf.len()) };
-            if n < 0 { Err(io::Error::last_os_error()) } else { Ok(n as usize) }
+            self.ready(libc::POLLIN, |fd| unsafe { libc::read(fd, buf.as_mut_ptr().cast(), buf.len()) })
         }
     }
 
     impl Write for Channel<'_> {
         fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-            self.wait(libc::POLLOUT)?;
             // SAFETY: `buf` is valid for `buf.len()` bytes and the fd is open.
-            let n = unsafe { libc::write(self.fd.as_raw_fd(), buf.as_ptr().cast(), buf.len()) };
-            if n < 0 { Err(io::Error::last_os_error()) } else { Ok(n as usize) }
+            self.ready(libc::POLLOUT, |fd| unsafe { libc::write(fd, buf.as_ptr().cast(), buf.len()) })
         }
 
         fn flush(&mut self) -> io::Result<()> {
@@ -1361,6 +1407,56 @@ mod linux {
                 }
                 Ok(Some((OwnedFd::from_raw_fd(fd), addr.svm_cid)))
             }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use std::time::Duration;
+
+        /// Both ends of a local stream socket; only the first goes into a channel.
+        fn socket_pair() -> (OwnedFd, OwnedFd) {
+            let mut fds = [0; 2];
+            // SAFETY: `fds` is a valid two-element array for socketpair(2).
+            let rc = unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0, fds.as_mut_ptr()) };
+            assert_eq!(rc, 0, "{}", io::Error::last_os_error());
+            // SAFETY: socketpair returned two fresh descriptors this test owns.
+            unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) }
+        }
+
+        /// A guest that never reads fills the socket buffer; the host's write
+        /// still gives up at the deadline instead of blocking past it.
+        #[test]
+        fn a_peer_that_never_reads_cannot_hold_a_write_past_the_deadline() {
+            let (host, _guest) = socket_pair();
+            let control = BuildControl::new(&|_| {}, &|| false);
+            let deadline = Instant::now() + Duration::from_millis(100);
+            let mut channel = Channel::new(host, deadline, &control).expect("channel");
+            let started = Instant::now();
+            let result = write_frame(&mut channel, b"INPT", &vec![0u8; 64 << 20]);
+            assert!(result.is_err(), "64 MiB cannot fit an unread socket");
+            assert!(channel.timed_out, "the deadline ended the write");
+            assert!(started.elapsed() < Duration::from_millis(100 + 2 * POLL_MS as u64 + 100), "{:?}", started.elapsed());
+        }
+
+        #[test]
+        fn cancelling_ends_a_write_to_a_peer_that_never_reads() {
+            let (host, _guest) = socket_pair();
+            let cancel = std::sync::atomic::AtomicBool::new(false);
+            let cancelled = || cancel.load(std::sync::atomic::Ordering::SeqCst);
+            let control = BuildControl::new(&|_| {}, &cancelled);
+            let mut channel = Channel::new(host, Instant::now() + Duration::from_secs(60), &control).expect("channel");
+            std::thread::scope(|scope| {
+                scope.spawn(|| {
+                    std::thread::sleep(Duration::from_millis(100));
+                    cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+                });
+                let started = Instant::now();
+                assert!(write_frame(&mut channel, b"INPT", &vec![0u8; 64 << 20]).is_err());
+                assert!(channel.cancelled && !channel.timed_out);
+                assert!(started.elapsed() < Duration::from_secs(2), "{:?}", started.elapsed());
+            });
         }
     }
 }

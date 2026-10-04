@@ -235,3 +235,17 @@ fn an_app_without_a_bundled_runtime_has_none() {
     assert!(CadRuntimeSlot::bundled().get().is_none());
     assert!(CadRuntimeSlot::fixed(None).get().is_none());
 }
+
+/// A release build trusts only a helper its compiled-in team signed; without
+/// a team it trusts none. Only a debug build accepts any valid signature.
+#[test]
+fn a_release_build_without_a_signing_team_trusts_no_helper() {
+    let refused = helper_requirement(None, false).unwrap_err();
+    assert!(matches!(&refused, RuntimeUnavailable::Unverified(why) if why.contains("trusts none")), "{refused}");
+    assert_eq!(helper_requirement(None, true).expect("debug"), None, "a debug build takes any valid signature");
+    for debug_build in [false, true] {
+        let requirement = helper_requirement(Some("TEAM123456"), debug_build).expect("team").expect("a requirement");
+        assert!(requirement.contains("certificate leaf[subject.OU] = \"TEAM123456\""), "{requirement}");
+        assert!(requirement.contains("identifier \"com.aojdevstudio.materialize3d.cad-host\""), "{requirement}");
+    }
+}
