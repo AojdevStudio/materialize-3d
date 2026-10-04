@@ -15,9 +15,13 @@
 //! serializes every write, from the size check through the rename, so
 //! concurrent imports cannot pass the caps together.
 //!
-//! The store assumes one writer process. The lock lives in this process and
-//! serializes the writes of every store in it; it does not guard against a
-//! second app process writing the same store. The app runs one instance.
+//! One writer process per store is the caller's obligation; the store does
+//! not enforce it. The lock is process-wide only: it serializes the writes of
+//! every store in this process, and not those of a second app process. Two
+//! running app instances could each pass the caps, or one could fail the
+//! other's in-flight write. A stored input cannot be corrupted either way,
+//! because its name is its hash and the rename is atomic. A cross-process
+//! `flock` lock is built and kept local at 0813f98 as a follow-up.
 //!
 //! The bytes are data. Nothing here or in the kind that reads them runs them.
 

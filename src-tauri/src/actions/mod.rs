@@ -127,8 +127,8 @@ pub trait RequestActions: Send + Sync + 'static {
     fn list(&self, limit: u32) -> Result<Vec<Revision>, ActionError>;
     /// Re-hashes an approved package first, so a changed file reads as void.
     fn get(&self, id: &str) -> Result<Revision, ActionError>;
-    /// Every export a person made of revision `id`, oldest first, with the
-    /// path they chose and the hash of what was written.
+    /// Every export a person made of revision `id`, in the order the person
+    /// made them, with the path they chose and the hash of what was written.
     fn exports(&self, id: &str) -> Result<Vec<ExportRecord>, ActionError>;
     /// A receiver whose value changes each time a person approves a revision,
     /// so a caller waiting for a decision wakes on the approval itself. A

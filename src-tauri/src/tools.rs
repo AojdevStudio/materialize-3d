@@ -406,7 +406,7 @@ pub struct BuildResult {
 pub struct GetResult {
     #[serde(flatten)]
     pub revision: DesignSummary,
-    /// Oldest first: the format, the path written, and the SHA-256 of the file written there.
+    /// In the order the person made them: the format, the path written, and the SHA-256 of the file written there.
     pub exports: Vec<ExportRecord>,
 }
 

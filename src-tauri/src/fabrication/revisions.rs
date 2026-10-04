@@ -1032,9 +1032,11 @@ pub fn get(conn: &Connection, id: &RevisionId) -> Result<Revision> {
 /// Every export a person made of revision `id`, in the order they were made.
 /// That is insertion order (`rowid`), not `exported_at`, which a clock set
 /// back would put out of order.
-/// `revision_exports` is a rowid table, and VACUUM keeps rowids; a future
-/// migration that copies the table must copy its rows in rowid order, or keep
-/// their rowids, so the export order survives.
+/// `revision_exports` has `id TEXT PRIMARY KEY`, so it has no INTEGER
+/// PRIMARY KEY, and a plain VACUUM may change its rowids. The app runs only
+/// `VACUUM INTO`, which leaves the source unchanged. Any plain VACUUM, or any
+/// migration that copies the table, must keep its rowid order, or the table
+/// needs an INTEGER PRIMARY KEY, so the export order survives.
 pub fn exports(conn: &Connection, id: &RevisionId) -> Result<Vec<ExportRecord>> {
     let mut stmt =
         conn.prepare("SELECT format, path, sha256, exported_at FROM revision_exports WHERE revision_id = ?1 ORDER BY rowid")?;
