@@ -488,13 +488,11 @@ impl ScriptedBuilds {
         self.ran.lock().expect("ran").push(spec.clone());
         let source = spec["source"].as_str().unwrap_or_default();
         if let Some((line, _)) = source.lines().enumerate().find(|(_, text)| text.contains("radius=99")) {
-            let reason = format!(
-                "{}",
-                BuildError::Stage {
-                    stage: crate::fabrication::pipeline::Stage::Generate,
-                    error: format!("line {}: ValueError: Failed creating a fillet with radius 99", line + 1),
-                }
-            );
+            let reason = BuildError::Stage {
+                stage: crate::fabrication::pipeline::Stage::Generate,
+                error: format!("line {}: ValueError: Failed creating a fillet with radius 99", line + 1),
+            }
+            .to_string();
             return Ok(pipeline::with_db(&self.state, |conn| revisions::fail_build(conn, &revision.build_id, &reason))?);
         }
         let dir = self.dir.join(revision.build_id.as_str());

@@ -16,25 +16,33 @@ fn normalize(v: [f64; 3]) -> [f64; 3] {
 
 /// Where a view's camera sits: `toward` points from the model to the camera,
 /// and `right` and `up` are the screen axes, all unit length and orthogonal.
-fn camera(view: View) -> Result<([f64; 3], [f64; 3], [f64; 3]), String> {
-    match view {
-        View::Isometric => {
-            let toward = normalize([1.0, -1.0, 0.8]);
-            let up = normalize([-toward[0] * toward[2], -toward[1] * toward[2], 1.0 - toward[2] * toward[2]]);
-            Ok((toward, normalize([1.0, 1.0, 0.0]), up))
+struct Camera {
+    toward: [f64; 3],
+    right: [f64; 3],
+    up: [f64; 3],
+}
+
+impl Camera {
+    fn of(view: View) -> Result<Self, String> {
+        match view {
+            View::Isometric => {
+                let toward = normalize([1.0, -1.0, 0.8]);
+                let up = normalize([-toward[0] * toward[2], -toward[1] * toward[2], 1.0 - toward[2] * toward[2]]);
+                Ok(Self { toward, right: normalize([1.0, 1.0, 0.0]), up })
+            }
+            // From the front edge of the bed (low y), x to the right and z up.
+            View::Front => Ok(Self { toward: [0.0, -1.0, 0.0], right: [1.0, 0.0, 0.0], up: [0.0, 0.0, 1.0] }),
+            // From above, x to the right and y (toward the back of the bed) up.
+            View::Top => Ok(Self { toward: [0.0, 0.0, 1.0], right: [1.0, 0.0, 0.0], up: [0.0, 1.0, 0.0] }),
+            View::Face => Err("preview: a part has no face view".into()),
         }
-        // From the front edge of the bed (low y), x to the right and z up.
-        View::Front => Ok(([0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0])),
-        // From above, x to the right and y (toward the back of the bed) up.
-        View::Top => Ok(([0.0, 0.0, 1.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0])),
-        View::Face => Err("preview: a part has no face view".into()),
     }
 }
 
 /// PNG of `model` from `view`. The background is transparent.
 pub fn render(model: &PrintableModel, view: View) -> Result<Vec<u8>, String> {
     let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-    let (view, right, up) = camera(view)?;
+    let Camera { toward: view, right, up } = Camera::of(view)?;
     let light = normalize([0.4, -0.7, 1.0]);
 
     let mut faces = Vec::new();
