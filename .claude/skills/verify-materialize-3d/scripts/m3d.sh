@@ -5,7 +5,7 @@
 #   m3d.sh up              build, start Xvfb + Vite + tauri-driver, print the run dir
 #   m3d.sh doctor          read-only health check of the active run
 #   m3d.sh close-inspector close the docked WebKit inspector (needs a wd.ts session)
-#   m3d.sh file-dialog <abs-path>  answer the native "Open File" (existing file) or "Save File" (new file) dialog
+#   m3d.sh file-dialog <abs-path>  answer the open native "Open File" or "Save File" dialog with <abs-path>
 #   m3d.sh record start    start an ffmpeg x11grab of the run's display
 #   m3d.sh record stop     stop it; the MP4 lands in <run>/evidence/
 #   m3d.sh down            stop everything this run started, delete scratch state, keep evidence
@@ -151,13 +151,22 @@ close_inspector() {
 # GTK keeps a mapped "Open File" window after closing, so this cannot observe the
 # outcome; the caller proves it through the webview (e.g. design-toolbar appears).
 file_dialog() {
-  local path=${1:-} title
+  local path=${1:-} title=""
   [[ "$path" == /* ]] || die "file-dialog needs an absolute path"
-  # An existing file answers "Open File"; a new file in an existing directory answers "Save File".
-  if [[ -e "$path" ]]; then title="Open File"
-  elif [[ -d "$(dirname "$path")" ]]; then title="Save File"
-  else die "file-dialog needs an existing file, or a new file in an existing directory"; fi
-  wait_for "xdo search --onlyvisible --name '^$title\$'" 10 || die "no $title dialog on the display"
+  # Answer whichever native dialog is open: GTK titles it "Open File" or "Save File".
+  for _ in $(seq 1 20); do
+    if xdo search --onlyvisible --name '^Open File$' >/dev/null 2>&1; then title="Open File"; break; fi
+    if xdo search --onlyvisible --name '^Save File$' >/dev/null 2>&1; then title="Save File"; break; fi
+    sleep 0.5
+  done
+  [[ -n $title ]] || die "no Open File or Save File dialog on the display"
+  if [[ $title == "Open File" ]]; then
+    [[ -e "$path" ]] || die "the Open File dialog needs an existing file: $path"
+  else
+    # An existing target makes GTK ask to replace it in a second dialog this helper does not answer.
+    [[ ! -e "$path" ]] || die "the Save File dialog needs a new file name: $path exists"
+    [[ -d "$(dirname "$path")" ]] || die "the Save File dialog needs an existing directory: $(dirname "$path")"
+  fi
   sleep 1
   if [[ $title == "Open File" ]]; then
     xdo key ctrl+l

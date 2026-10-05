@@ -72,7 +72,7 @@ Quote an `aria-label` value that contains a space: `button[aria-label="Print Que
 
 Some controls stay at opacity 0 until their row is hovered, for example the printer row's Delete button. WebDriver treats them as not displayed, so run `wd.ts hover <row>` first, then `click`.
 
-Native GTK dialogs are outside the webview, so WebDriver cannot see them. Answer them the way a user does with `m3d.sh file-dialog <abs-path>`. An existing file answers the "Open File" dialog. A new file in an existing directory answers the "Save File" dialog, for example an export target.
+Native GTK dialogs are outside the webview, so WebDriver cannot see them. Answer them the way a user does with `m3d.sh file-dialog <abs-path>`. The helper finds which dialog is open, "Open File" or "Save File", and types the path into it. "Open File" needs an existing file. "Save File" needs a new file name in an existing directory, because an existing target makes GTK ask to replace it in a second dialog the helper does not answer.
 
 ```bash
 $S/wd.ts click "[data-testid=open-file-button]"
