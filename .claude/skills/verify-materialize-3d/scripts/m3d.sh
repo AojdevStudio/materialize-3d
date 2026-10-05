@@ -5,7 +5,7 @@
 #   m3d.sh up              build, start Xvfb + Vite + tauri-driver, print the run dir
 #   m3d.sh doctor          read-only health check of the active run
 #   m3d.sh close-inspector close the docked WebKit inspector (needs a wd.ts session)
-#   m3d.sh file-dialog <abs-path>  answer the native "Open File" dialog
+#   m3d.sh file-dialog <abs-path>  answer the native "Open File" (existing file) or "Save File" (new file) dialog
 #   m3d.sh record start    start an ffmpeg x11grab of the run's display
 #   m3d.sh record stop     stop it; the MP4 lands in <run>/evidence/
 #   m3d.sh down            stop everything this run started, delete scratch state, keep evidence
@@ -62,7 +62,7 @@ ensure_deps() {
 
 up() {
   [[ -e "$CURRENT" ]] && die "run already active at $(readlink -f "$CURRENT"); run 'm3d.sh down' first"
-  for tool in Xvfb tauri-driver WebKitWebDriver xdotool ffmpeg bun cargo jq ss curl setsid; do
+  for tool in Xvfb tauri-driver WebKitWebDriver xdotool ffmpeg bun cargo jq ss curl setsid keyctl; do
     command -v "$tool" >/dev/null || die "missing $tool; this host cannot run verification (use the Linux host)"
   done
   for port in $VITE_PORT $DRIVER_PORT $NATIVE_PORT; do
@@ -91,8 +91,11 @@ up() {
   wait_for "curl -sf http://localhost:$VITE_PORT/" 60 || die "Vite not answering on :$VITE_PORT; see $RUN/logs/vite.log"
 
   # XDG_* isolates the app's SQLite DB, library files, and WebKit storage per run.
+  # Its own session keyring: the app stores API keys and the MCP token in the
+  # kernel keyring, and the launching shell's keyring is revoked when an SSH
+  # login ends, which would turn every credential read into "No matching entry".
   DISPLAY=$display XDG_DATA_HOME=$RUN/xdg/data XDG_CONFIG_HOME=$RUN/xdg/config XDG_CACHE_HOME=$RUN/xdg/cache \
-    spawn driver tauri-driver --port "$DRIVER_PORT" --native-port "$NATIVE_PORT"
+    spawn driver keyctl session - tauri-driver --port "$DRIVER_PORT" --native-port "$NATIVE_PORT"
   wait_for "curl -sf http://127.0.0.1:$DRIVER_PORT/status" 20 || die "tauri-driver not answering; see $RUN/logs/driver.log"
 
   jq -n --arg run "$RUN" --arg display "$display" --arg binary "$BINARY" --arg rev "$(git -C "$ROOT" rev-parse --short HEAD)" \
@@ -148,12 +151,18 @@ close_inspector() {
 # GTK keeps a mapped "Open File" window after closing, so this cannot observe the
 # outcome; the caller proves it through the webview (e.g. design-toolbar appears).
 file_dialog() {
-  local path=${1:-}
-  [[ "$path" == /* && -e "$path" ]] || die "file-dialog needs an existing absolute path"
-  wait_for "xdo search --onlyvisible --name '^Open File$'" 10 || die "no Open File dialog on the display"
+  local path=${1:-} title
+  [[ "$path" == /* ]] || die "file-dialog needs an absolute path"
+  # An existing file answers "Open File"; a new file in an existing directory answers "Save File".
+  if [[ -e "$path" ]]; then title="Open File"
+  elif [[ -d "$(dirname "$path")" ]]; then title="Save File"
+  else die "file-dialog needs an existing file, or a new file in an existing directory"; fi
+  wait_for "xdo search --onlyvisible --name '^$title\$'" 10 || die "no $title dialog on the display"
   sleep 1
-  xdo key ctrl+l
-  sleep 0.3
+  if [[ $title == "Open File" ]]; then
+    xdo key ctrl+l
+    sleep 0.3
+  fi
   xdo key ctrl+a
   xdo type "#"
   xdo key Home
@@ -161,7 +170,7 @@ file_dialog() {
   xdo key End BackSpace
   sleep 0.3
   xdo key Return
-  echo "m3d: submitted $path to the Open File dialog"
+  echo "m3d: submitted $path to the $title dialog"
 }
 
 record() {
