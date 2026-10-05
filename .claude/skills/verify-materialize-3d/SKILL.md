@@ -51,7 +51,7 @@ This is a read-only check. It verifies that the checkout HEAD matches the built 
 $S/wd.ts click "button[aria-label=Settings]"
 $S/wd.ts wait "[role=dialog][aria-label=Settings]"
 $S/wd.ts click 'xpath=//div[@role="dialog"]//label[contains(., "Quality")]//option[@value="0.16"]'   # choose a <select> option
-$S/wd.ts hover ".printer-selector-item"     # reveal a hover-only control before clicking it
+$S/wd.ts hover 'xpath=//li[.//button[@aria-label="Delete T1"]]'   # reveal a hover-only control in its own row
 $S/wd.ts type "[data-testid=input-host]" "10.0.0.5" --clear
 $S/wd.ts text "[data-testid=render-status]"
 $S/wd.ts gone "[data-testid=onboarding-wizard]"

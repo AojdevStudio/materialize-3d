@@ -206,7 +206,7 @@ async function main(): Promise<void> {
       return
     }
     default:
-      console.error('usage: wd.ts session|wait|gone|click|type|keys|text|attr|count|shot|eval|note|end (see header)')
+      console.error('usage: wd.ts session|wait|gone|click|hover|type|keys|text|attr|count|shot|eval|note|end (see header)')
       process.exit(2)
   }
 }

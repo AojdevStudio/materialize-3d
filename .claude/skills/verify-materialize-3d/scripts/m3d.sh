@@ -144,12 +144,12 @@ close_inspector() {
   die "inspector still docked (viewport height $(viewport_height))"
 }
 
-# Answers the native GTK "Open File" dialog by typing an absolute path into its
-# location entry, the way a user does. GTK autocompletes only while the cursor is
-# at the end of the text, and a common-prefix completion mangles fast typing, so
-# the path is typed in front of a placeholder that is deleted afterwards.
-# GTK keeps a mapped "Open File" window after closing, so this cannot observe the
-# outcome; the caller proves it through the webview (e.g. design-toolbar appears).
+# Answers the open native GTK "Open File" or "Save File" dialog by typing an
+# absolute path into it, the way a user does. GTK autocompletes only while the
+# cursor is at the end of the text, and a common-prefix completion mangles fast
+# typing, so the path is typed in front of a placeholder that is deleted afterwards.
+# It never re-reads the dialog, so it cannot observe the outcome. The caller proves
+# it through the webview, for example design-toolbar appears.
 file_dialog() {
   local path=${1:-} title=""
   [[ "$path" == /* ]] || die "file-dialog needs an absolute path"
