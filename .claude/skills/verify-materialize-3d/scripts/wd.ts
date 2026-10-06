@@ -11,6 +11,7 @@
 //   bun wd.ts wait <sel> [ms]          wait until <sel> is displayed (default 15000)
 //   bun wd.ts gone <sel> [ms]          wait until <sel> is absent or hidden
 //   bun wd.ts click <sel>
+//   bun wd.ts hover <sel>              move the pointer over <sel> (reveals hover-only controls)
 //   bun wd.ts type <sel> <text> [--clear]
 //   bun wd.ts keys <text>              send keys to the focused element ( = Enter)
 //   bun wd.ts text <sel>               print visible text
@@ -138,6 +139,14 @@ async function main(): Promise<void> {
       log(`click ${args[0]}`)
       return
     }
+    case 'hover': {
+      const id = await waitFor(args[0], 15000, true)
+      await call('POST', `/session/${sid()}/actions`, {
+        actions: [{ type: 'pointer', id: 'mouse', parameters: { pointerType: 'mouse' }, actions: [{ type: 'pointerMove', duration: 0, origin: { [ELEMENT_KEY]: id }, x: 0, y: 0 }] }],
+      })
+      log(`hover ${args[0]}`)
+      return
+    }
     case 'type': {
       const [sel, text] = args
       const id = await waitFor(sel)
@@ -197,7 +206,7 @@ async function main(): Promise<void> {
       return
     }
     default:
-      console.error('usage: wd.ts session|wait|gone|click|type|keys|text|attr|count|shot|eval|note|end (see header)')
+      console.error('usage: wd.ts session|wait|gone|click|hover|type|keys|text|attr|count|shot|eval|note|end (see header)')
       process.exit(2)
   }
 }

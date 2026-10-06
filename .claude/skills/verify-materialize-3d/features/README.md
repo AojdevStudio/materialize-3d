@@ -25,22 +25,27 @@ This directory is the maintained source for verifying Materialize 3D's user-faci
 - Report an unreachable path with the attempted command and the unmet precondition: no `openscad`, no provider credential, no printer on the network.
 - Do not report a skipped entry point as verified through a different path.
 
-## Host facts (the Linux host, 2026-09-25)
+## Host facts (dev-substrate, 2026-10-05)
 
+- The Linux host is dev-substrate (`ssh ossie@dev-substrate`, Ubuntu 24.04.5).
 - `openscad` is not installed. Design renders end in `Error`, see [design](./design-openscad.md).
-- Bambu Studio 02.08.02.61 is at `<path to the Bambu Studio 02.08.02.61 AppRun>`. Sign builds need `BAMBU_STUDIO_CLI` pointed at it before `up`, see [signs](./signs.md).
+- Bambu Studio 02.08.02.61 is at `/home/ossie/actions-runner-materialize-3d/_work/_tool/bambu-studio/02.08.02.61/squashfs-root/AppRun`, the self-hosted runner's tool cache installed by `scripts/ci/install-bambu-linux.sh`. Export `BAMBU_STUDIO_CLI` to it before `up`, or choose it in Settings > Bambu Studio, see [signs](./signs.md).
+- The CAD runtime cache is `~/.cache/m3d-tool-cache/cad-runtime/amd64-<hash>/` with `vmlinux`, `rootfs.img`, and `job.img`, see [parts](./parts.md).
+- `/dev/kvm`, `/dev/vhost-vsock`, `qemu-system-x86_64`, and `keyctl` are present.
 - The test P2S printer sits on a separate VLAN. Treat printer connection as unreachable unless you have confirmed the route.
 
 ## Feature entry contract
 
-Each feature file has an H1 and one paragraph of user-visible behavior, followed by exactly four H2s in this order: `Sub-features`, `How to get to it (user POV)`, `Driving it with wd.ts`, and `Gotchas`. Lines marked **(observed 2026-09-25)** were driven live on `86ea7c8`, and lines marked **(observed 2026-09-26)** in [signs](./signs.md) on `e258688`. Everything else comes from reading the code and should be confirmed on first use.
+Each feature file has an H1 and one paragraph of user-visible behavior, followed by exactly four H2s in this order: `Sub-features`, `How to get to it (user POV)`, `Driving it with wd.ts`, and `Gotchas`. Lines marked **(observed 2026-10-05)** were driven live on `f01f418`. Lines marked **(observed 2026-09-25)** were driven on `86ea7c8`, which is not an ancestor of `main`, and lines marked **(observed 2026-09-26)** in [signs](./signs.md) on `e258688`. Everything else comes from reading the code and should be confirmed on first use.
 
 ## Features
 
 - [Onboarding](./onboarding.md) covers the four-step first-run wizard, its skip paths, and the persisted completion flag.
 - [Navigation](./navigation.md) covers the sidebar, the workspace tabs, and the Library and History views.
-- [Settings](./settings.md) covers print defaults, the agent provider and model, notifications, auto-connect, and the slicer indicator.
+- [Settings](./settings.md) covers the Bambu Studio location, print defaults, the agent provider, model, and API key, notifications, auto-connect, and the External agents (MCP) switch.
 - [Design (OpenSCAD)](./design-openscad.md) covers opening a `.scad` file, rendering, and parameters.
 - [Signs](./signs.md) covers building a sign from a spec file, reviewing a revision, hash-bound approval, export, and recording a print result.
 - [Printers](./printers.md) covers adding, switching, and deleting printer configs, and connection states.
 - [Chat](./chat.md) covers the always-on AI assistant panel.
+- [Parts](./parts.md) covers agent-built functional parts, which have no GUI yet and are proven through the backend tests.
+- [MCP](./mcp.md) covers the local MCP server for external agents, including `import_part`.

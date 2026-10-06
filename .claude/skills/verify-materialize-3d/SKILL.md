@@ -9,9 +9,9 @@ This skill drives the actual desktop app: the debug Rust binary with the real ba
 
 ## Where it runs
 
-Run on a Linux host with Ubuntu 24.04. It has Xvfb, `WebKitWebDriver`, `tauri-driver` (`~/.cargo/bin`), xdotool, and ffmpeg. `m3d.sh up` refuses to start on a host that is missing any of them. An Arch/Hyprland desktop lacks Xvfb, WebKitWebDriver, and tauri-driver, and it has no passwordless sudo.
+Run on the Linux host, dev-substrate (`ssh ossie@dev-substrate`, Ubuntu 24.04.5). It has Xvfb, `WebKitWebDriver`, `tauri-driver` (`~/.cargo/bin`), xdotool, ffmpeg, and `keyctl`. `m3d.sh up` refuses to start on a host that is missing any of them. An Arch/Hyprland desktop lacks Xvfb, WebKitWebDriver, and tauri-driver, and it has no passwordless sudo.
 
-To verify work that lives on another machine, get the same tree onto the Linux host. Either push the branch and `git worktree add ~/m3d-<topic> <branch>`, or `rsync -a --exclude node_modules --exclude src-tauri/target <tree>/ <linux-host>:m3d-<topic>/`. Run every command below from that checkout's root.
+To verify work that lives on another machine, get the same tree onto the Linux host. Either push the branch and `git worktree add ~/m3d-<topic> <branch>`, or `rsync -a --exclude node_modules --exclude src-tauri/target <tree>/ ossie@dev-substrate:m3d-<topic>/`. Run every command below from that checkout's root.
 
 Only one run per host. Vite's port 1420 is fixed by `vite.config.ts` (`strictPort`) and by `devUrl` in `tauri.conf.json`. `up` refuses when 1420, 4444, or 4445 is already bound. Never drive an instance you did not start.
 
@@ -28,6 +28,8 @@ $S/m3d.sh close-inspector    # debug builds dock devtools over the bottom 300px
 `up` is ready when it prints `m3d: ready run=... display=:9N rev=<sha>`. A first cargo build takes a few minutes; later builds are incremental. Each run gets `~/m3d-verify/<timestamp>/`, and `~/m3d-verify/current` points at the active run.
 
 `up` isolates app state with `XDG_DATA_HOME`/`XDG_CONFIG_HOME`/`XDG_CACHE_HOME` under the run dir. A fresh run therefore starts at onboarding with an empty DB at `<run>/xdg/data/com.aojdevstudio.materialize3d/materialize.db`. `wd.ts end` followed by `wd.ts session` relaunches the app on the same data, which is how you prove persistence.
+
+`up` launches tauri-driver, and so the app, under `keyctl session -`. The app keeps API keys and the MCP token in the Linux kernel keyring, and an SSH command's session keyring is revoked when the command ends. Without its own session keyring, every credential read fails with "No matching entry found in secure storage", the Agent section of Settings shows only that error, and enabling MCP fails.
 
 Set `M3D_DISPLAY=:99` before `up` to reuse the long-lived devdesk Xvfb. `up` then starts no display of its own and `down` leaves `:99` running.
 
@@ -49,6 +51,7 @@ This is a read-only check. It verifies that the checkout HEAD matches the built 
 $S/wd.ts click "button[aria-label=Settings]"
 $S/wd.ts wait "[role=dialog][aria-label=Settings]"
 $S/wd.ts click 'xpath=//div[@role="dialog"]//label[contains(., "Quality")]//option[@value="0.16"]'   # choose a <select> option
+$S/wd.ts hover 'xpath=//li[.//button[@aria-label="Delete T1"]]'   # reveal a hover-only control in its own row
 $S/wd.ts type "[data-testid=input-host]" "10.0.0.5" --clear
 $S/wd.ts text "[data-testid=render-status]"
 $S/wd.ts gone "[data-testid=onboarding-wizard]"
@@ -65,7 +68,11 @@ Stable handles, in order of preference:
 
 The feature files list the exact handles.
 
-Native GTK dialogs are outside the webview, so WebDriver cannot see them. Answer the "Open File" dialog the way a user does:
+Quote an `aria-label` value that contains a space: `button[aria-label="Print Queue"]`. Unquoted, the selector fails with "invalid selector".
+
+Some controls stay at opacity 0 until their row is hovered, for example the printer row's Delete button. WebDriver treats them as not displayed, so run `wd.ts hover <row>` first, then `click`.
+
+Native GTK dialogs are outside the webview, so WebDriver cannot see them. Answer them the way a user does with `m3d.sh file-dialog <abs-path>`. The helper finds which dialog is open, "Open File" or "Save File", and types the path into it. "Open File" needs an existing file. "Save File" needs a new file name in an existing directory, because an existing target makes GTK ask to replace it in a second dialog the helper does not answer.
 
 ```bash
 $S/wd.ts click "[data-testid=open-file-button]"
@@ -96,7 +103,7 @@ A proof must meet these standards:
 - Capture the action and the resulting state with a screenshot before and after, plus `actions.log`. The final screen alone is not enough.
 - Verify the side effect as well as the pixels: the `settings` row, the file written, and the state after an app relaunch.
 - Report an unreachable path together with the unmet precondition. For example, a Design render needs `openscad`, and chat needs a provider credential. Never swap in a different path and call the feature verified.
-- For a PR, attach media per AGENTS.md. Pull the files first with `scp <linux-host>:m3d-verify/<run>/evidence/<file> .`, then attach them with `gh pr create|edit|comment --attach <file>`, or ship them with `pr-media <files>` if GitHub refuses them. Confirm each attachment renders on the PR page, and run `pr-media check` if the PR links any `pr-media` file.
+- For a PR, attach media per AGENTS.md. Pull the files first with `scp ossie@dev-substrate:m3d-verify/<run>/evidence/<file> .`, then attach them with `gh pr create|edit|comment --attach <file>`, or ship them with `pr-media <files>` if GitHub refuses them. Confirm each attachment renders on the PR page, and run `pr-media check` if the PR links any `pr-media` file.
 
 ## Cleanup
 
@@ -107,6 +114,27 @@ $S/m3d.sh down
 `down` ends the WebDriver session, which closes the app. It stops ffmpeg, tauri-driver, Vite, and the Xvfb it started by killing each recorded process group. It never kills by process name. It deletes `xdg/` (app DB, WebKit storage), `pids/`, and `session`, then removes the `current` link. It keeps `evidence/`, `fixtures/`, `logs/`, and `env.json`. Run `down` after a failed `up` too, because `up` leaves partial state for inspection.
 
 `up` runs `bun install --no-save` and pins `@tauri-apps/plugin-dialog` to the `Cargo.lock` version, also with `--no-save`. That leaves `package.json` and `bun.lock` untouched. `bun.lock` on `main` is missing `@tauri-apps/plugin-dialog`, `@monaco-editor/react`, and `monaco-editor`, so a plain `bun install` rewrites it; check `git status` before committing anything.
+
+## On macOS
+
+This section is described from source. `scripts/mac.ts` was not driven in the 2026-10-05 pass.
+
+WebDriver cannot drive WKWebView, so `scripts/mac.ts` drives the app through the `e2e` harness in `src-tauri/src/e2e.rs`. That harness exists only in builds made with `--features e2e`. Run it on the Mac itself, the Mac mini (`ssh macmini-ts`).
+
+```bash
+$S/mac.ts build                  # bun tauri build --debug --bundles app --features e2e
+$S/mac.ts up                     # fresh data dir and its own token through M3D_E2E_*
+$S/mac.ts wait <sel> [ms]
+$S/mac.ts click <sel>
+$S/mac.ts type <sel> <text>
+$S/mac.ts text <sel>
+$S/mac.ts count <sel>
+$S/mac.ts shot <name>            # WebKit snapshot
+$S/mac.ts eval <js>              # inspection only
+$S/mac.ts restart                # relaunch on the same data
+$S/mac.ts dialog <open-path> [save-path]
+$S/mac.ts down
+```
 
 ## Feature map
 

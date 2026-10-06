@@ -5,7 +5,7 @@
 #   m3d.sh up              build, start Xvfb + Vite + tauri-driver, print the run dir
 #   m3d.sh doctor          read-only health check of the active run
 #   m3d.sh close-inspector close the docked WebKit inspector (needs a wd.ts session)
-#   m3d.sh file-dialog <abs-path>  answer the native "Open File" dialog
+#   m3d.sh file-dialog <abs-path>  answer the open native "Open File" or "Save File" dialog with <abs-path>
 #   m3d.sh record start    start an ffmpeg x11grab of the run's display
 #   m3d.sh record stop     stop it; the MP4 lands in <run>/evidence/
 #   m3d.sh down            stop everything this run started, delete scratch state, keep evidence
@@ -62,7 +62,7 @@ ensure_deps() {
 
 up() {
   [[ -e "$CURRENT" ]] && die "run already active at $(readlink -f "$CURRENT"); run 'm3d.sh down' first"
-  for tool in Xvfb tauri-driver WebKitWebDriver xdotool ffmpeg bun cargo jq ss curl setsid; do
+  for tool in Xvfb tauri-driver WebKitWebDriver xdotool ffmpeg bun cargo jq ss curl setsid keyctl; do
     command -v "$tool" >/dev/null || die "missing $tool; this host cannot run verification (use the Linux host)"
   done
   for port in $VITE_PORT $DRIVER_PORT $NATIVE_PORT; do
@@ -91,8 +91,11 @@ up() {
   wait_for "curl -sf http://localhost:$VITE_PORT/" 60 || die "Vite not answering on :$VITE_PORT; see $RUN/logs/vite.log"
 
   # XDG_* isolates the app's SQLite DB, library files, and WebKit storage per run.
+  # Its own session keyring: the app stores API keys and the MCP token in the
+  # kernel keyring, and the launching shell's keyring is revoked when an SSH
+  # login ends, which would turn every credential read into "No matching entry".
   DISPLAY=$display XDG_DATA_HOME=$RUN/xdg/data XDG_CONFIG_HOME=$RUN/xdg/config XDG_CACHE_HOME=$RUN/xdg/cache \
-    spawn driver tauri-driver --port "$DRIVER_PORT" --native-port "$NATIVE_PORT"
+    spawn driver keyctl session - tauri-driver --port "$DRIVER_PORT" --native-port "$NATIVE_PORT"
   wait_for "curl -sf http://127.0.0.1:$DRIVER_PORT/status" 20 || die "tauri-driver not answering; see $RUN/logs/driver.log"
 
   jq -n --arg run "$RUN" --arg display "$display" --arg binary "$BINARY" --arg rev "$(git -C "$ROOT" rev-parse --short HEAD)" \
@@ -141,19 +144,34 @@ close_inspector() {
   die "inspector still docked (viewport height $(viewport_height))"
 }
 
-# Answers the native GTK "Open File" dialog by typing an absolute path into its
-# location entry, the way a user does. GTK autocompletes only while the cursor is
-# at the end of the text, and a common-prefix completion mangles fast typing, so
-# the path is typed in front of a placeholder that is deleted afterwards.
-# GTK keeps a mapped "Open File" window after closing, so this cannot observe the
-# outcome; the caller proves it through the webview (e.g. design-toolbar appears).
+# Answers the open native GTK "Open File" or "Save File" dialog by typing an
+# absolute path into it, the way a user does. GTK autocompletes only while the
+# cursor is at the end of the text, and a common-prefix completion mangles fast
+# typing, so the path is typed in front of a placeholder that is deleted afterwards.
+# It never re-reads the dialog, so it cannot observe the outcome. The caller proves
+# it through the webview, for example design-toolbar appears.
 file_dialog() {
-  local path=${1:-}
-  [[ "$path" == /* && -e "$path" ]] || die "file-dialog needs an existing absolute path"
-  wait_for "xdo search --onlyvisible --name '^Open File$'" 10 || die "no Open File dialog on the display"
+  local path=${1:-} title=""
+  [[ "$path" == /* ]] || die "file-dialog needs an absolute path"
+  # Answer whichever native dialog is open: GTK titles it "Open File" or "Save File".
+  for _ in $(seq 1 20); do
+    if xdo search --onlyvisible --name '^Open File$' >/dev/null 2>&1; then title="Open File"; break; fi
+    if xdo search --onlyvisible --name '^Save File$' >/dev/null 2>&1; then title="Save File"; break; fi
+    sleep 0.5
+  done
+  [[ -n $title ]] || die "no Open File or Save File dialog on the display"
+  if [[ $title == "Open File" ]]; then
+    [[ -e "$path" ]] || die "the Open File dialog needs an existing file: $path"
+  else
+    # An existing target makes GTK ask to replace it in a second dialog this helper does not answer.
+    [[ ! -e "$path" ]] || die "the Save File dialog needs a new file name: $path exists"
+    [[ -d "$(dirname "$path")" ]] || die "the Save File dialog needs an existing directory: $(dirname "$path")"
+  fi
   sleep 1
-  xdo key ctrl+l
-  sleep 0.3
+  if [[ $title == "Open File" ]]; then
+    xdo key ctrl+l
+    sleep 0.3
+  fi
   xdo key ctrl+a
   xdo type "#"
   xdo key Home
@@ -161,7 +179,7 @@ file_dialog() {
   xdo key End BackSpace
   sleep 0.3
   xdo key Return
-  echo "m3d: submitted $path to the Open File dialog"
+  echo "m3d: submitted $path to the $title dialog"
 }
 
 record() {
