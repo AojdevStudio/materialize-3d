@@ -1,0 +1,7 @@
+# Version overrides for `uv pip compile --override overrides.txt`. Each one sets aside an
+# upstream pin, so each names why and when to drop it.
+#
+# threejs-materials 1.2.4 (via build123d 0.13.0) declares pillow<12.3.0. 12.3.0 fixes
+# Pillow's open high-severity advisories (heap out-of-bounds writes, decompression bomb
+# DoS). Drop this line once a threejs-materials release allows pillow 12.3.
+pillow==12.3.0
