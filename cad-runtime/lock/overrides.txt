@@ -3,5 +3,8 @@
 #
 # threejs-materials 1.2.4 (via build123d 0.13.0) declares pillow<12.3.0. 12.3.0 fixes
 # Pillow's open high-severity advisories (heap out-of-bounds writes, decompression bomb
-# DoS). Drop this line once a threejs-materials release allows pillow 12.3.
+# DoS). The pin is exact, so move it with any later Pillow bump: a lock-only bump is
+# undone by the next in-place regeneration. Drop this line once a threejs-materials
+# release allows pillow 12.3. Pillow 13 plans to remove deprecated APIs such as
+# fromarray(mode=), so check threejs-materials' Pillow calls before taking 13 this way.
 pillow==12.3.0

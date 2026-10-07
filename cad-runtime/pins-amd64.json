@@ -6,21 +6,21 @@
       "bytes": 17148104
     },
     "rootfs.img": {
-      "sha256": "d5421aa73b5df49031f7a3630ec2f1071fe65c9403cc2706eaee0b63a3df1409",
-      "bytes": 606326784
+      "sha256": "becd83ea773ef6f070858c4c4ddddac9c7d3386a79a0f487417b2613ca5ef129",
+      "bytes": 606396416
     },
     "job.img": {
       "sha256": "71045302f36c872d522346e3211a59ea4753d7708d28f438973cdfb43b3ed697",
       "bytes": 268435456
     }
   },
-  "rootfs_installed_bytes": 1298944803,
+  "rootfs_installed_bytes": 1299097905,
   "inputs": {
     "python_base": "python:3.13-slim-trixie@sha256:bb2988715db2cf7ace7b53f38f3cffbef7c7046a656bee66245eb0ed386e2e81",
     "debian_snapshot": "20260918T000000Z",
     "kernel_version": "6.18.54",
     "kernel_sha256": "9df30b02dd8102bbd0be52556288ef6889ddbe7f1ddb96fbf847d0becf3eacac",
     "kernel_signer": "647F28654894E3BD457199BE38DBBDC86092693E",
-    "lock_sha256": "46f1b56a3f335ab9e697ca4892090489fe3e96e7365edfdeb5ca2eb4865fd0db"
+    "lock_sha256": "71c4168f49cb20346e7b2492fa7a054e043c95ceb51de7a698fce3d92898e5e3"
   }
 }
