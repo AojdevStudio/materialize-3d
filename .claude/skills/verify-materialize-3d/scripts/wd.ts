@@ -20,8 +20,8 @@
 //   bun wd.ts shot <name>              save evidence/<NN>-<name>.png of the webview, then run
 //                                      the contrast sweep and report new failures on stderr (exit 0)
 //   bun wd.ts contrast [sel]           text contrast of each displayed control, measured against its
-//                                      rendered pixels; exit 1 if any outside contrast-baseline.txt
-//                                      is below 3.0
+//                                      rendered pixels; exit 1 on a failure below 3.0 that is new, or
+//                                      lower than its ratio in contrast-baseline.txt
 //                                      (default: text-bearing controls; checkboxes and radios carry no text)
 //   bun wd.ts eval <js>                run a script (`return ...`), print JSON; inspection only
 //   bun wd.ts note <message>           append a free-form line to actions.log
@@ -273,7 +273,8 @@ interface ControlStyle extends Box {
   placeholder: boolean
   /** Every color text is painted in: the control's own text (fields, or a direct text node),
    *  then each shown descendant that owns text. aria-hidden icons are decorative and skipped. */
-  /** box: the nearest element from the ink up to the control that paints its own background, else null. */
+  /** box: for a descendant, the nearest element from it up to the control that paints its own
+   *  background, else null; for the control's own ink, the control's box. */
   inks: Array<{ color: string; source: string; box: Box | null }>
   /** The padding box minus padding, in CSS px: where the placeholder text is drawn. */
   content: Box
