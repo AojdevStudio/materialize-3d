@@ -57,7 +57,7 @@ $S/wd.ts text "[data-testid=render-status]"
 $S/wd.ts gone "[data-testid=onboarding-wizard]"
 $S/wd.ts eval "return innerHeight"          # inspection only, never to cause the behavior under test
 $S/wd.ts shot settings-open                 # evidence/NN-settings-open.png, then a contrast sweep
-$S/wd.ts contrast                           # every displayed select, text input, textarea, button; exit 1 below 3.0
+$S/wd.ts contrast                           # every displayed select, text input, textarea, button on screen; exit 1 below 3.0
 $S/wd.ts end
 ```
 

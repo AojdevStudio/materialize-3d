@@ -31,7 +31,7 @@ import { join } from 'node:path'
 import { inflateSync } from 'node:zlib'
 
 const ELEMENT_KEY = 'element-6066-11e4-a52e-4f735466cecf'
-const CONTROLS = 'select, input:not([type=checkbox]):not([type=radio]), textarea, button'
+const CONTROLS = 'select, input:not([type=checkbox], [type=radio], [type=range], [type=color], [type=file]), textarea, button'
 const MIN_CONTRAST = 3.0
 
 interface RunEnv {
@@ -263,7 +263,11 @@ async function contrastSweep(sel: string): Promise<{ results: ContrastResult[]; 
     // Always crop the viewport screenshot. WebKitWebDriver's element screenshot
     // returns black pixels for every control under Xvfb, which hid the white
     // selects this check exists to catch (observed 2026-10-07).
-    page ??= decodePng(Buffer.from(await call<string>('GET', `/session/${sid()}/screenshot`), 'base64'))
+    if (!page) {
+      page = decodePng(Buffer.from(await call<string>('GET', `/session/${sid()}/screenshot`), 'base64'))
+      const expected = await call<number>('POST', `/session/${sid()}/execute/sync`, { script: 'return Math.round(innerWidth * devicePixelRatio)', args: [] })
+      if (page.width !== expected) throw new Error(`screenshot is ${page.width}px wide, expected ${expected} device px; crops would miss`)
+    }
     const x = Math.max(0, Math.round(style.x * style.dpr))
     const y = Math.max(0, Math.round(style.y * style.dpr))
     const box = {
@@ -272,7 +276,11 @@ async function contrastSweep(sel: string): Promise<{ results: ContrastResult[]; 
       width: Math.min(page.width, Math.round((style.x + style.width) * style.dpr)) - x,
       height: Math.min(page.height, Math.round((style.y + style.height) * style.dpr)) - y,
     }
-    if (box.width <= 0 || box.height <= 0) throw new Error(`${style.label} is outside the viewport; scroll it into view`)
+    // Displayed but scrolled away: count it, so one off-screen row cannot end the sweep.
+    if (box.width <= 0 || box.height <= 0) {
+      skipped++
+      continue
+    }
     const background = dominantRgb(page, box)
     const color = parseCssColor(style.color)
     const text = blend(color.rgb, background, color.alpha * style.opacity)
@@ -393,7 +401,7 @@ async function main(): Promise<void> {
         log(`contrast ${line}`)
         console.log(line)
       }
-      const summary = `contrast ${sel}: ${results.length} checked, ${failing} below ${MIN_CONTRAST.toFixed(1)}, ${skipped} skipped (zero size)`
+      const summary = `contrast ${sel}: ${results.length} checked, ${failing} below ${MIN_CONTRAST.toFixed(1)}, ${skipped} skipped (zero size or off screen)`
       log(summary)
       console.log(summary)
       if (failing > 0) process.exitCode = 1
