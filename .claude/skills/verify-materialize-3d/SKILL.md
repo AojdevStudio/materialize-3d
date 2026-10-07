@@ -61,7 +61,7 @@ $S/wd.ts contrast                           # every displayed select, text input
 $S/wd.ts end
 ```
 
-`contrast [sel]` compares each control's CSS text color with the background WebKit actually painted, cropped from the page screenshot, so it catches text that is unreadable on screen while the CSS looks right, such as a native select drawn white under white text. `shot` runs the same sweep and prints `contrast: N controls below 3.0` on stderr, but still exits 0.
+`contrast [sel]` compares each control's CSS text color with the background WebKit actually painted, cropped from the page screenshot, so it catches text that is unreadable on screen while the CSS looks right, such as a native select drawn white under white text. An empty field is measured by its placeholder, read from the screenshot pixels inside its content box. `shot` runs the same sweep and prints `contrast: N controls below 3.0` on stderr, but still exits 0.
 
 Stable handles, in order of preference:
 

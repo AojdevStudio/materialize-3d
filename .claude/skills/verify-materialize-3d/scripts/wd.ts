@@ -223,21 +223,37 @@ function contrastRatio(a: Rgb, b: Rgb): number {
   return (hi + 0.05) / (lo + 0.05)
 }
 
-// The inset pixel that contrasts most with the background: the placeholder's ink,
-// since an empty field draws nothing else.
-function inkRgb(img: Image, box: Box, background: Rgb): Rgb {
-  const inset = box.width > 4 && box.height > 4 ? 2 : 0
-  let ink = background
+// The placeholder's ink: the content-box pixel that contrasts most with the
+// background. The content box keeps the rounded border and focus ring out, and
+// pixels in the field's own text color are passed over, because a focused field
+// draws its caret in that color. A placeholder styled in the text color itself
+// leaves no other ink, so that color is returned.
+function inkRgb(img: Image, box: Box, background: Rgb, textColor: Rgb): Rgb {
+  const same = (a: Rgb, b: Rgb) => a[0] === b[0] && a[1] === b[1] && a[2] === b[2]
+  let ink: Rgb | undefined
   let best = 1
-  for (let y = box.y + inset; y < box.y + box.height - inset; y++) {
-    for (let x = box.x + inset; x < box.x + box.width - inset; x++) {
+  for (let y = box.y; y < box.y + box.height; y++) {
+    for (let x = box.x; x < box.x + box.width; x++) {
       const i = (y * img.width + x) * img.channels
       const rgb: Rgb = [img.pixels[i], img.pixels[i + 1], img.pixels[i + 2]]
+      if (same(rgb, textColor)) continue
       const ratio = contrastRatio(rgb, background)
       if (ratio > best) [ink, best] = [rgb, ratio]
     }
   }
-  return ink
+  return ink ?? textColor
+}
+
+// A CSS-px box in device pixels, clamped to the screenshot.
+function deviceBox(css: Box, dpr: number, page: Image): Box {
+  const x = Math.max(0, Math.round(css.x * dpr))
+  const y = Math.max(0, Math.round(css.y * dpr))
+  return {
+    x,
+    y,
+    width: Math.min(page.width, Math.round((css.x + css.width) * dpr)) - x,
+    height: Math.min(page.height, Math.round((css.y + css.height) * dpr)) - y,
+  }
 }
 
 function hex(rgb: Rgb): string {
@@ -247,6 +263,8 @@ function hex(rgb: Rgb): string {
 interface ControlStyle extends Box {
   label: string
   placeholder: boolean
+  /** The padding box minus padding, in CSS px: where the placeholder text is drawn. */
+  content: Box
   color: string
   opacity: number
   dpr: number
@@ -261,6 +279,9 @@ const text = (el.tagName === 'SELECT' ? el.selectedOptions[0]?.text ?? '' : el.i
 const handle = el.getAttribute('data-testid') || el.getAttribute('aria-label') || el.getAttribute('name') || text.slice(0, 30);
 return { label: el.tagName.toLowerCase() + (handle ? ' ' + JSON.stringify(handle) : '') + (ph ? ' (placeholder)' : ''),
   placeholder: ph, color: cs.color, opacity: Number(cs.opacity),
+  content: { x: r.x + el.clientLeft + parseFloat(cs.paddingLeft), y: r.y + el.clientTop + parseFloat(cs.paddingTop),
+    width: el.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight),
+    height: el.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom) },
   x: r.x, y: r.y, width: r.width, height: r.height, dpr: devicePixelRatio };`
 
 interface ContrastResult {
@@ -272,6 +293,8 @@ interface ContrastResult {
 // element opacity, against the background WebKit actually painted. Comparing the
 // CSS color (not the darkest or brightest pixel) is what catches a native control
 // that drops its CSS background: its own dark arrow would pass a pixel-only check.
+// An empty field with a placeholder is the exception: its ink is read from pixels
+// (inkRgb), because WebKit does not report the placeholder's computed color.
 async function contrastSweep(sel: string): Promise<{ results: ContrastResult[]; skipped: number }> {
   const results: ContrastResult[] = []
   let skipped = 0
@@ -297,14 +320,7 @@ async function contrastSweep(sel: string): Promise<{ results: ContrastResult[]; 
       const expected = await call<number>('POST', `/session/${sid()}/execute/sync`, { script: 'return Math.round(innerWidth * devicePixelRatio)', args: [] })
       if (page.width !== expected) throw new Error(`screenshot is ${page.width}px wide, expected ${expected} device px; crops would miss`)
     }
-    const x = Math.max(0, Math.round(style.x * style.dpr))
-    const y = Math.max(0, Math.round(style.y * style.dpr))
-    const box = {
-      x,
-      y,
-      width: Math.min(page.width, Math.round((style.x + style.width) * style.dpr)) - x,
-      height: Math.min(page.height, Math.round((style.y + style.height) * style.dpr)) - y,
-    }
+    const box = deviceBox(style, style.dpr, page)
     // Displayed but scrolled away: count it, so one off-screen row cannot end the sweep.
     if (box.width <= 0 || box.height <= 0) {
       skipped++
@@ -312,7 +328,8 @@ async function contrastSweep(sel: string): Promise<{ results: ContrastResult[]; 
     }
     const background = dominantRgb(page, box)
     const color = parseCssColor(style.color)
-    const text = style.placeholder ? inkRgb(page, box, background) : blend(color.rgb, background, color.alpha * style.opacity)
+    const cssText = blend(color.rgb, background, color.alpha * style.opacity)
+    const text = style.placeholder ? inkRgb(page, deviceBox(style.content, style.dpr, page), background, cssText) : cssText
     const ratio = contrastRatio(text, background)
     const low = ratio < MIN_CONTRAST ? `  below ${MIN_CONTRAST.toFixed(1)}` : ''
     results.push({ ratio, line: `${style.label}  bg ${hex(background)}  text ${hex(text)}  ratio ${ratio.toFixed(2)}${low}` })
