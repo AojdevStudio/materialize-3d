@@ -1,4 +1,7 @@
 :root {
+  /* Native controls (selects, their option lists, scrollbars) follow this.
+     A future light theme must switch it to `light` together with the tokens. */
+  color-scheme: dark;
   --bg-deep: #0a0a0c;
   --bg-surface: #111114;
   --bg-elevated: #18181c;

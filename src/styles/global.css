@@ -553,13 +553,23 @@ button {
 .settings-field select {
   flex: 1;
   max-width: 180px;
-  padding: 4px 6px;
+  padding: 4px 22px 4px 6px;
   font-size: 12px;
   border: 1px solid var(--border);
   border-radius: 4px;
-  background: var(--bg-surface);
+  /* appearance: none stops WebKit drawing a light native box; the SVG chevron
+     (stroke = --text-secondary) keeps it reading as a dropdown. */
+  appearance: none;
+  background: var(--bg-surface)
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%238a8891' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")
+    no-repeat right 7px center;
   color: var(--text-primary);
   cursor: pointer;
+}
+
+.settings-field select option {
+  background: var(--bg-surface);
+  color: var(--text-primary);
 }
 
 .settings-field select:disabled {
