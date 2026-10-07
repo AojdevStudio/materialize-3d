@@ -245,8 +245,9 @@ function inkRgb(img: Image, box: Box, background: Rgb): Rgb {
 
 // A focused empty field draws a blinking caret whose blended edge could outscore a
 // dim placeholder, so the caret is hidden for the one sweep screenshot. Style only:
-// focus, value, and events are untouched.
-const CARET_OFF = `const s = document.createElement('style'); s.id = 'wd-contrast-caret';
+// focus, value, and events are untouched. A copy left by a killed run is replaced.
+const CARET_OFF = `document.getElementById('wd-contrast-caret')?.remove();
+const s = document.createElement('style'); s.id = 'wd-contrast-caret';
 s.textContent = '* { caret-color: transparent !important; }'; document.head.append(s);
 return new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(() => done(true))));`
 const CARET_ON = `document.getElementById('wd-contrast-caret')?.remove(); return true;`
