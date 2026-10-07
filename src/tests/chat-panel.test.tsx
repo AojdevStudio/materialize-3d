@@ -63,7 +63,7 @@ beforeEach(() => {
       calls.push({ cmd, args })
       switch (cmd) {
         case 'agent_status':
-          return { provider: 'anthropic', model: 'claude-sonnet-5', hasApiKey: true }
+          return { provider: 'anthropic', model: 'claude-opus-5-5', models: ['claude-opus-5-5', 'claude-fable-5-1'], hasApiKey: true }
         case 'agent_history':
           return { conversationId: 'conv-1', entries: history }
         case 'agent_cancel':

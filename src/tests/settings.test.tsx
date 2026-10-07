@@ -35,12 +35,19 @@ vi.mock('@tauri-apps/api/core', () => ({
 }))
 
 let agentKeys = new Set<string>()
-let agentModel = { provider: 'anthropic', model: 'claude-sonnet-5' }
+const AGENT_MODELS: Record<string, string[]> = {
+  anthropic: ['claude-opus-5-5', 'claude-fable-5-1'],
+  openai: ['gpt-6-astra', 'gpt-6.1-sol'],
+}
+let agentModel = { provider: 'anthropic', model: 'claude-opus-5-5' }
+/** Stands in for the Rust agent: an empty model means the provider's first. */
 function fakeAgent(cmd: string, args?: Record<string, string>) {
   if (cmd === 'agent_set_api_key') agentKeys.add(args!.provider!)
   if (cmd === 'agent_clear_api_key') agentKeys.delete(args!.provider!)
-  if (cmd === 'agent_set_model') agentModel = { provider: args!.provider!, model: args!.model! }
-  return Promise.resolve({ ...agentModel, hasApiKey: agentKeys.has(agentModel.provider) })
+  if (cmd === 'agent_set_model') {
+    agentModel = { provider: args!.provider!, model: args!.model! || AGENT_MODELS[args!.provider!]![0]! }
+  }
+  return Promise.resolve({ ...agentModel, models: AGENT_MODELS[agentModel.provider], hasApiKey: agentKeys.has(agentModel.provider) })
 }
 
 function emitEvent<T>(name: string, payload: T) {
@@ -159,7 +166,7 @@ describe('useSettingsStore', () => {
 describe('SettingsPanel component', () => {
   beforeEach(async () => {
     agentKeys = new Set()
-    agentModel = { provider: 'anthropic', model: 'claude-sonnet-5' }
+    agentModel = { provider: 'anthropic', model: 'claude-opus-5-5' }
     agentInvokeMock.mockReset()
     agentInvokeMock.mockImplementation(fakeAgent)
     const { useAgentStore } = await import('../stores/agent')
@@ -293,14 +300,35 @@ describe('SettingsPanel component', () => {
     const { SettingsPanel } = await import('../components/SettingsPanel')
     render(React.createElement(SettingsPanel, { isOpen: true, onClose: vi.fn() }))
 
-    fireEvent.change(await screen.findByTestId('agent-model'), { target: { value: 'claude-sonnet-5' } })
+    fireEvent.change(await screen.findByTestId('agent-model'), { target: { value: 'claude-fable-5-1' } })
     await waitFor(() =>
-      expect(agentInvokeMock).toHaveBeenCalledWith('agent_set_model', { provider: 'anthropic', model: 'claude-sonnet-5' }),
+      expect(agentInvokeMock).toHaveBeenCalledWith('agent_set_model', { provider: 'anthropic', model: 'claude-fable-5-1' }),
     )
 
     fireEvent.change(screen.getByTestId('agent-provider'), { target: { value: 'openai' } })
     await waitFor(() => expect((screen.getByTestId('agent-provider') as HTMLSelectElement).value).toBe('openai'))
-    expect(agentInvokeMock).toHaveBeenLastCalledWith('agent_set_model', { provider: 'openai', model: 'gpt-5.5' })
+    expect(agentInvokeMock).toHaveBeenLastCalledWith('agent_set_model', { provider: 'openai', model: '' })
+    expect((screen.getByTestId('agent-model') as HTMLSelectElement).value).toBe('gpt-6-astra')
+  })
+
+  it('the model select lists exactly the models the agent status offers', async () => {
+    invokeMock.mockResolvedValue(MOCK_PROFILES)
+    const { SettingsPanel } = await import('../components/SettingsPanel')
+    render(React.createElement(SettingsPanel, { isOpen: true, onClose: vi.fn() }))
+
+    const select = (await screen.findByTestId('agent-model')) as HTMLSelectElement
+    expect([...select.options].map((o) => [o.value, o.text])).toEqual([
+      ['claude-opus-5-5', 'Opus 5.5'],
+      ['claude-fable-5-1', 'Fable 5.1'],
+    ])
+
+    fireEvent.change(screen.getByTestId('agent-provider'), { target: { value: 'openai' } })
+    await waitFor(() =>
+      expect([...select.options].map((o) => [o.value, o.text])).toEqual([
+        ['gpt-6-astra', 'GPT-6 Astra'],
+        ['gpt-6.1-sol', 'GPT-6.1 Sol'],
+      ]),
+    )
   })
 
   it('renders checkbox labels for all notification types', async () => {

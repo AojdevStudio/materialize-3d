@@ -2,16 +2,6 @@ import { create } from 'zustand'
 import { invoke } from '@tauri-apps/api/core'
 import type { AgentStatus, Provider } from '../types/agent'
 
-/**
- * Models offered per provider in Settings and onboarding. The Rust agent owns
- * the active choice (agent_status / agent_set_model); this list only feeds the
- * selects, and the first entry is the default when switching providers.
- */
-export const PROVIDER_MODELS = {
-  anthropic: ['claude-sonnet-5', 'claude-opus-5-5', 'claude-fable-5-1', 'claude-haiku-4-5-20251001'],
-  openai: ['gpt-5.5'],
-} as const satisfies Record<Provider, readonly string[]>
-
 export const PROVIDER_LABELS: Record<Provider, string> = {
   anthropic: 'Anthropic',
   openai: 'OpenAI',
@@ -29,7 +19,9 @@ interface AgentStore {
 }
 
 /**
- * Mirror of the Rust agent's settings. Every command returns the fresh
+ * Mirror of the Rust agent's settings. The Rust agent owns the offered models
+ * (status.models, default first) and the active choice; setModel with an empty
+ * model picks the provider's default. Every command returns the fresh
  * AgentStatus, so each call replaces the stored copy; errors propagate to the
  * caller, which shows them next to the control that failed.
  */
@@ -48,12 +40,19 @@ export const useAgentStore = create<AgentStore>()((set) => {
   }
 })
 
-/** "claude-opus-5" -> "Opus 5"; unknown ids are shown as-is. */
+const capitalize = (word: string) => `${word.charAt(0).toUpperCase()}${word.slice(1)}`
+
+/** "claude-opus-5-5" -> "Opus 5.5", "gpt-6.1-sol" -> "GPT-6.1 Sol"; unknown ids are shown as-is. */
 export function modelLabel(model: string): string {
   const claude = /^claude-([a-z]+)-(\d+)(?:-(\d+))?$/.exec(model)
   if (claude) {
     const [, family, major, minor] = claude
-    return `${family!.charAt(0).toUpperCase()}${family!.slice(1)} ${major}${minor ? `.${minor}` : ''}`
+    return `${capitalize(family!)} ${major}${minor ? `.${minor}` : ''}`
+  }
+  const gpt = /^gpt-(\d+(?:\.\d+)?)-([a-z]+)$/.exec(model)
+  if (gpt) {
+    const [, version, name] = gpt
+    return `GPT-${version} ${capitalize(name!)}`
   }
   return model
 }

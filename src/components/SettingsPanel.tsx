@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { useSettingsStore } from '../stores/settings'
-import { PROVIDERS, PROVIDER_LABELS, PROVIDER_MODELS, modelLabel, useAgentStore } from '../stores/agent'
+import { PROVIDERS, PROVIDER_LABELS, modelLabel, useAgentStore } from '../stores/agent'
 import type { Provider } from '../types/agent'
 import { BambuStudioSection } from './BambuStudioSection'
 import { McpSection } from './McpSection'
@@ -229,8 +229,7 @@ function AgentSection({ active }: { active: boolean }) {
     )
   }
 
-  const { provider, model, hasApiKey } = status
-  const models: readonly string[] = PROVIDER_MODELS[provider]
+  const { provider, model, models, hasApiKey } = status
   const { setModel, setApiKey: storeKey, clearApiKey } = useAgentStore.getState()
 
   return (
@@ -245,7 +244,7 @@ function AgentSection({ active }: { active: boolean }) {
           data-testid="agent-provider"
           onChange={(e) => {
             const next = e.target.value as Provider
-            void run(() => setModel(next, PROVIDER_MODELS[next][0]))
+            void run(() => setModel(next, ''))
           }}
         >
           {PROVIDERS.map((p) => (
@@ -265,7 +264,6 @@ function AgentSection({ active }: { active: boolean }) {
           {models.map((m) => (
             <option key={m} value={m}>{modelLabel(m)}</option>
           ))}
-          {!models.includes(model) && <option value={model}>{model}</option>}
         </select>
       </label>
 

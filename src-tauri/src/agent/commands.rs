@@ -23,11 +23,31 @@ use crate::state::AppState;
 
 const MODEL_SETTING: &str = "agent.model";
 
+/// The models offered for a provider; the first is the default. The list holds
+/// only current frontier models, because the agent relies on their 3D, CAD, and
+/// computer use ability. Add a newer model at the top and drop the one it replaces.
+pub fn models(provider: Provider) -> &'static [&'static str] {
+    match provider {
+        Provider::Anthropic => &["claude-opus-5-5", "claude-fable-5-1"],
+        Provider::Openai => &["gpt-6-astra", "gpt-6.1-sol"],
+    }
+}
+
 /// The model used for a provider until the person picks another.
 pub fn default_model(provider: Provider) -> &'static str {
-    match provider {
-        Provider::Anthropic => "claude-sonnet-5",
-        Provider::Openai => "gpt-5.5",
+    models(provider)[0]
+}
+
+/// Resolves a requested model: empty means the default, and a model the
+/// provider does not offer is refused.
+pub(super) fn offered_model(provider: Provider, model: &str) -> Result<&'static str, String> {
+    match model.trim() {
+        "" => Ok(default_model(provider)),
+        model => models(provider)
+            .iter()
+            .copied()
+            .find(|offered| *offered == model)
+            .ok_or_else(|| format!("{model} is not an offered {} model", provider_id(provider))),
     }
 }
 
@@ -42,15 +62,18 @@ fn key_name(provider: Provider) -> String {
     format!("api_key:{}", provider_id(provider))
 }
 
-/// Reads `agent.model`; a missing or unreadable value means the default.
-fn model_setting(conn: &Connection) -> store::Result<(Provider, String)> {
+/// Reads `agent.model`; a missing or unreadable value means the default. A
+/// stored model the provider no longer offers reads as that provider's default,
+/// so a retired model never stays selected. The setting is not rewritten.
+pub(super) fn model_setting(conn: &Connection) -> store::Result<(Provider, String)> {
     let stored = database::get_setting(conn, MODEL_SETTING).map_err(store::StoreError::Settings)?;
     let parsed = stored.as_deref().and_then(|value| {
         let (provider, model) = value.split_once(':')?;
         let provider = [Provider::Anthropic, Provider::Openai].into_iter().find(|p| provider_id(*p) == provider)?;
-        (!model.trim().is_empty()).then(|| (provider, model.trim().to_owned()))
+        Some((provider, offered_model(provider, model).unwrap_or(default_model(provider))))
     });
-    Ok(parsed.unwrap_or((Provider::Anthropic, default_model(Provider::Anthropic).to_owned())))
+    let (provider, model) = parsed.unwrap_or((Provider::Anthropic, default_model(Provider::Anthropic)));
+    Ok((provider, model.to_owned()))
 }
 
 /// Picks the turn's model, refusing before any network call when no key is stored.
@@ -67,7 +90,7 @@ pub fn choose_model(provider: Provider, model: String, api_key: Option<String>) 
 async fn status(state: &AppState) -> Result<AgentStatus, String> {
     let (provider, model) = store::with_conn(state, |conn| model_setting(conn)).map_err(|e| e.to_string())?;
     let has_api_key = credentials::has_credential(&key_name(provider)).await?;
-    Ok(AgentStatus { provider, model, has_api_key })
+    Ok(AgentStatus { provider, model, models: models(provider), has_api_key })
 }
 
 /// Cancel handles for running turns, keyed by the UI's turn id.
@@ -140,17 +163,15 @@ pub async fn agent_clear_api_key(state: State<'_, Arc<AppState>>, provider: Prov
     status(&state).await
 }
 
-/// An empty `model` selects the provider's default.
+/// An empty `model` selects the provider's default; a model the provider does
+/// not offer is refused and nothing is stored.
 #[tauri::command]
 pub async fn agent_set_model(
     state: State<'_, Arc<AppState>>,
     provider: Provider,
     model: String,
 ) -> Result<AgentStatus, String> {
-    let model = match model.trim() {
-        "" => default_model(provider),
-        model => model,
-    };
+    let model = offered_model(provider, &model)?;
     let value = format!("{}:{model}", provider_id(provider));
     store::with_conn(&state, |conn| {
         database::upsert_setting(conn, MODEL_SETTING, &value)

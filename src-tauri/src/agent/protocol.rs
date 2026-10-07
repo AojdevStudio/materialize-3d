@@ -44,6 +44,8 @@ pub enum Provider {
 pub struct AgentStatus {
     pub provider: Provider,
     pub model: String,
+    /// The models offered for `provider`, default first.
+    pub models: &'static [&'static str],
     pub has_api_key: bool,
 }
 
