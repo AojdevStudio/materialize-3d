@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
-use super::commands::{choose_model, default_model};
+use super::commands::{choose_model, default_model, model_setting, models, offered_model};
 use crate::fabrication::checks::{test_support, CheckId};
 use crate::fabrication::kind::{find, KindDriver, View, KINDS};
 use crate::fabrication::printer::P2S_04;
@@ -409,6 +409,26 @@ async fn a_missing_api_key_fails_before_anything_is_sent_or_stored() {
     assert!(history(&h).is_empty());
 }
 
+#[test]
+fn a_retired_model_reads_as_the_default_and_an_unknown_model_is_refused() {
+    let h = harness();
+    let read = |stored: &str| {
+        store::with_conn(&h.state, |conn| {
+            crate::database::upsert_setting(conn, "agent.model", stored).map_err(store::StoreError::Settings)?;
+            model_setting(conn)
+        })
+        .expect("model setting")
+    };
+    assert_eq!(read("anthropic:claude-sonnet-5"), (Provider::Anthropic, "claude-opus-5-5".to_owned()));
+    assert_eq!(read("openai:gpt-6.1-sol"), (Provider::Openai, "gpt-6.1-sol".to_owned()));
+
+    assert_eq!(offered_model(Provider::Openai, ""), Ok("gpt-6-astra"));
+    assert_eq!(offered_model(Provider::Anthropic, "claude-fable-5-1"), Ok("claude-fable-5-1"));
+    let refused = offered_model(Provider::Openai, "gpt-5.5").expect_err("gpt-5.5 is retired");
+    assert!(refused.contains("gpt-5.5"), "{refused}");
+    assert!(offered_model(Provider::Openai, "claude-opus-5-5").is_err(), "a model of the other provider is refused");
+}
+
 #[tokio::test]
 async fn cancel_mid_build_waits_for_the_build_and_marks_the_call_cancelled() {
     let h = harness();
@@ -497,38 +517,40 @@ fn print_sequence(events: &[AgentEvent]) {
     flush(&mut text);
 }
 
+/// Runs once for every offered OpenAI model, so each one is proven to build.
 #[tokio::test]
 #[ignore = "live: needs OPENAI_API_KEY and a validated Bambu Studio"]
 async fn live_openai_turn_builds_a_verified_sign() {
     let api_key = std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY");
-    let h = harness();
-    let actions: Arc<dyn RequestActions> = Arc::new(PipelineActions::new(&h));
-    let turn = Turn::new(&h, "live-1", actions, None);
-    let model = default_model(Provider::Openai);
-    println!("model: openai:{model}");
-    let events = turn
-        .run(
-            "Make a 150 x 210 mm door sign that says BACK SHORTLY in navy on white with a teal rule under it",
-            choose_model(Provider::Openai, model.into(), Some(api_key)),
-        )
-        .await;
-    print_sequence(&events);
+    for model in models(Provider::Openai) {
+        println!("model: openai:{model}");
+        let h = harness();
+        let actions: Arc<dyn RequestActions> = Arc::new(PipelineActions::new(&h));
+        let turn = Turn::new(&h, "live-1", actions, None);
+        let events = turn
+            .run(
+                "Make a 150 x 210 mm door sign that says BACK SHORTLY in navy on white with a teal rule under it",
+                choose_model(Provider::Openai, (*model).into(), Some(api_key.clone())),
+            )
+            .await;
+        print_sequence(&events);
 
-    assert_framed(&events);
-    assert!(matches!(events.last(), Some(AgentEvent::TurnFinished)), "{:?}", events.last());
-    tool_call_id(&events, "build");
-    let steps: Vec<BuildStep> = events
-        .iter()
-        .filter_map(|e| match e {
-            AgentEvent::ToolProgress { step, .. } => Some(*step),
-            _ => None,
-        })
-        .collect();
-    assert!(steps.contains(&BuildStep::Sliced), "build progress reported: {steps:?}");
-    assert!(
-        events.iter().any(|e| matches!(e, AgentEvent::ToolResult { ok: true, output, .. } if output["build"] == "verified")),
-        "a build result carries a verified revision"
-    );
+        assert_framed(&events);
+        assert!(matches!(events.last(), Some(AgentEvent::TurnFinished)), "{model}: {:?}", events.last());
+        tool_call_id(&events, "build");
+        let steps: Vec<BuildStep> = events
+            .iter()
+            .filter_map(|e| match e {
+                AgentEvent::ToolProgress { step, .. } => Some(*step),
+                _ => None,
+            })
+            .collect();
+        assert!(steps.contains(&BuildStep::Sliced), "{model}: build progress reported: {steps:?}");
+        assert!(
+            events.iter().any(|e| matches!(e, AgentEvent::ToolResult { ok: true, output, .. } if output["build"] == "verified")),
+            "{model}: a build result carries a verified revision"
+        );
+    }
 }
 
 // ─── Parts: describe, build, repair, revise ────────────────────────────────
@@ -1198,7 +1220,7 @@ async fn rig_sends_the_view_images_inside_the_tool_result_to_anthropic_and_opena
 
     let anthropic_body = record_one_request(async |url| {
         let client = anthropic::Client::builder().api_key("test-key").base_url(url).build().expect("client");
-        drain(replay(client.completion_model("claude-sonnet-5")).stream().await).await;
+        drain(replay(client.completion_model(default_model(Provider::Anthropic))).stream().await).await;
     })
     .await;
     println!("anthropic request body: {}", serde_json::to_string_pretty(&shortened(&anthropic_body)).expect("json"));
@@ -1221,7 +1243,7 @@ async fn rig_sends_the_view_images_inside_the_tool_result_to_anthropic_and_opena
 
     let openai_body = record_one_request(async |url| {
         let client = openai::Client::builder().api_key("test-key").base_url(format!("{url}/v1")).build().expect("client");
-        let model = client.completion_model("gpt-5.5");
+        let model = client.completion_model(default_model(Provider::Openai));
         let mut builder = model.completion_request(last.clone()).messages(history.clone());
         if let Some(preamble) = preamble.clone().or(request.preamble.clone()) {
             builder = builder.preamble(preamble);
