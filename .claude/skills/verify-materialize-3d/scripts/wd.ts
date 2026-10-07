@@ -18,9 +18,10 @@
 //   bun wd.ts attr <sel> <name>        print a DOM property of the first match (visible or not)
 //   bun wd.ts count <sel>              print the number of matches
 //   bun wd.ts shot <name>              save evidence/<NN>-<name>.png of the webview, then run
-//                                      the contrast sweep and report failures on stderr (exit 0)
+//                                      the contrast sweep and report new failures on stderr (exit 0)
 //   bun wd.ts contrast [sel]           text contrast of each displayed control, measured against its
-//                                      rendered pixels; exit 1 if any is below 3.0
+//                                      rendered pixels; exit 1 if any outside contrast-baseline.txt
+//                                      is below 3.0
 //                                      (default: text-bearing controls; checkboxes and radios carry no text)
 //   bun wd.ts eval <js>                run a script (`return ...`), print JSON; inspection only
 //   bun wd.ts note <message>           append a free-form line to actions.log
@@ -263,6 +264,8 @@ function hex(rgb: Rgb): string {
 interface ControlStyle extends Box {
   label: string
   placeholder: boolean
+  /** Every color text is painted in: the control's own text, then each descendant that owns text. */
+  inks: Array<{ color: string; source: string }>
   /** The padding box minus padding, in CSS px: where the placeholder text is drawn. */
   content: Box
   color: string
@@ -277,16 +280,45 @@ const STYLE_SCRIPT = `const el = arguments[0], cs = getComputedStyle(el), r = el
 const ph = 'placeholder' in el && el.placeholder !== '' && el.value === '';
 const text = (el.tagName === 'SELECT' ? el.selectedOptions[0]?.text ?? '' : el.innerText || el.value || '').trim().replace(/\\s+/g, ' ');
 const handle = el.getAttribute('data-testid') || el.getAttribute('aria-label') || el.getAttribute('name') || text.slice(0, 30);
+const owns = (n) => [...n.childNodes].some((c) => c.nodeType === 3 && c.textContent.trim() !== '');
+const inks = el.tagName === 'SELECT' || el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || owns(el) ? [{ color: cs.color, source: '' }] : [];
+for (const d of el.querySelectorAll('*')) if (owns(d) && d.getClientRects().length > 0)
+  inks.push({ color: getComputedStyle(d).color, source: d.tagName.toLowerCase() + (d.classList[0] ? '.' + d.classList[0] : '') });
 return { label: el.tagName.toLowerCase() + (handle ? ' ' + JSON.stringify(handle) : '') + (ph ? ' (placeholder)' : ''),
-  placeholder: ph, color: cs.color, opacity: Number(cs.opacity),
+  placeholder: ph, color: cs.color, inks, opacity: Number(cs.opacity),
   content: { x: r.x + el.clientLeft + parseFloat(cs.paddingLeft), y: r.y + el.clientTop + parseFloat(cs.paddingTop),
     width: el.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight),
     height: el.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom) },
   x: r.x, y: r.y, width: r.width, height: r.height, dpr: devicePixelRatio };`
 
 interface ContrastResult {
+  label: string
   line: string
   ratio: number
+  /** Below the minimum but listed in contrast-baseline.txt, a known failure. */
+  known: boolean
+}
+
+interface Sweep {
+  results: ContrastResult[]
+  hidden: number
+  skipped: number
+}
+
+// Known failures, one control label per line, so a sweep can reach zero and a
+// new failure stands out. Remove a line when its control is fixed.
+const BASELINE = new Set(
+  readFileSync(join(import.meta.dir, 'contrast-baseline.txt'), 'utf8')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line !== '' && !line.startsWith('#')),
+)
+
+const isNew = (r: ContrastResult) => r.ratio < MIN_CONTRAST && !r.known
+
+function summarize(sel: string, { results, hidden, skipped }: Sweep): string {
+  const known = results.filter((r) => r.known).length
+  return `contrast ${sel}: ${results.length} checked, ${results.filter(isNew).length} below ${MIN_CONTRAST.toFixed(1)}, ${known} known (contrast-baseline.txt), ${hidden} hidden, ${skipped} skipped (zero size or off screen)`
 }
 
 // Measures each displayed match: the CSS text color, blended by its alpha and the
@@ -295,8 +327,9 @@ interface ContrastResult {
 // that drops its CSS background: its own dark arrow would pass a pixel-only check.
 // An empty field with a placeholder is the exception: its ink is read from pixels
 // (inkRgb), because WebKit does not report the placeholder's computed color.
-async function contrastSweep(sel: string): Promise<{ results: ContrastResult[]; skipped: number }> {
+async function contrastSweep(sel: string): Promise<Sweep> {
   const results: ContrastResult[] = []
+  let hidden = 0
   let skipped = 0
   let page: Image | undefined
   for (const id of await findAll(sel)) {
@@ -306,7 +339,10 @@ async function contrastSweep(sel: string): Promise<{ results: ContrastResult[]; 
       if (err instanceof Error && /stale element reference|no such element/.test(err.message)) return false
       throw err
     })
-    if (!visible) continue
+    if (!visible) {
+      hidden++
+      continue
+    }
     const style = await call<ControlStyle>('POST', `/session/${sid()}/execute/sync`, { script: STYLE_SCRIPT, args: [{ [ELEMENT_KEY]: id }] })
     if (style.width === 0 || style.height === 0) {
       skipped++
@@ -327,14 +363,29 @@ async function contrastSweep(sel: string): Promise<{ results: ContrastResult[]; 
       continue
     }
     const background = dominantRgb(page, box)
-    const color = parseCssColor(style.color)
-    const cssText = blend(color.rgb, background, color.alpha * style.opacity)
-    const text = style.placeholder ? inkRgb(page, deviceBox(style.content, style.dpr, page), background, cssText) : cssText
-    const ratio = contrastRatio(text, background)
-    const low = ratio < MIN_CONTRAST ? `  below ${MIN_CONTRAST.toFixed(1)}` : ''
-    results.push({ ratio, line: `${style.label}  bg ${hex(background)}  text ${hex(text)}  ratio ${ratio.toFixed(2)}${low}` })
+    const painted = (css: string) => {
+      const color = parseCssColor(css)
+      return blend(color.rgb, background, color.alpha * style.opacity)
+    }
+    // The worst-contrast ink wins: a button's tertiary child span is what a reader sees.
+    const inks = style.placeholder
+      ? [{ text: inkRgb(page, deviceBox(style.content, style.dpr, page), background, painted(style.color)), source: '' }]
+      : style.inks.map((ink) => ({ text: painted(ink.color), source: ink.source }))
+    if (inks.length === 0) inks.push({ text: painted(style.color), source: '' })
+    const worst = inks
+      .map((ink) => ({ ...ink, ratio: contrastRatio(ink.text, background) }))
+      .reduce((a, b) => (b.ratio < a.ratio ? b : a))
+    const known = worst.ratio < MIN_CONTRAST && BASELINE.has(style.label)
+    const low = worst.ratio < MIN_CONTRAST ? `  below ${MIN_CONTRAST.toFixed(1)}${known ? ' (baseline)' : ''}` : ''
+    const from = worst.source ? ` in ${worst.source}` : ''
+    results.push({
+      label: style.label,
+      ratio: worst.ratio,
+      known,
+      line: `${style.label}  bg ${hex(background)}  text ${hex(worst.text)}${from}  ratio ${worst.ratio.toFixed(2)}${low}`,
+    })
   }
-  return { results, skipped }
+  return { results, hidden, skipped }
 }
 
 async function main(): Promise<void> {
@@ -423,10 +474,10 @@ async function main(): Promise<void> {
       console.log(file)
       // Evidence capture stays exit 0; contrast failures are reported, not thrown.
       try {
-        const failing = (await contrastSweep(CONTROLS)).results.filter((r) => r.ratio < MIN_CONTRAST)
-        log(`shot contrast: ${failing.length} controls below ${MIN_CONTRAST.toFixed(1)}`)
+        const failing = (await contrastSweep(CONTROLS)).results.filter(isNew)
+        log(`shot contrast: ${failing.length} controls below ${MIN_CONTRAST.toFixed(1)} outside the baseline`)
         if (failing.length > 0) {
-          console.error(`contrast: ${failing.length} controls below ${MIN_CONTRAST.toFixed(1)}`)
+          console.error(`contrast: ${failing.length} controls below ${MIN_CONTRAST.toFixed(1)} outside the baseline`)
           for (const { line } of failing) {
             log(`shot contrast ${line}`)
             console.error(`  ${line}`)
@@ -441,16 +492,15 @@ async function main(): Promise<void> {
     }
     case 'contrast': {
       const sel = args[0] ?? CONTROLS
-      const { results, skipped } = await contrastSweep(sel)
-      const failing = results.filter((r) => r.ratio < MIN_CONTRAST).length
-      for (const { line } of results) {
+      const sweep = await contrastSweep(sel)
+      for (const { line } of sweep.results) {
         log(`contrast ${line}`)
         console.log(line)
       }
-      const summary = `contrast ${sel}: ${results.length} checked, ${failing} below ${MIN_CONTRAST.toFixed(1)}, ${skipped} skipped (zero size or off screen)`
+      const summary = summarize(sel, sweep)
       log(summary)
       console.log(summary)
-      if (failing > 0) process.exitCode = 1
+      if (sweep.results.some(isNew)) process.exitCode = 1
       return
     }
     case 'eval': {

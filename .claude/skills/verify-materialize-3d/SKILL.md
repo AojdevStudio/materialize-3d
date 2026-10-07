@@ -57,11 +57,11 @@ $S/wd.ts text "[data-testid=render-status]"
 $S/wd.ts gone "[data-testid=onboarding-wizard]"
 $S/wd.ts eval "return innerHeight"          # inspection only, never to cause the behavior under test
 $S/wd.ts shot settings-open                 # evidence/NN-settings-open.png, then a contrast sweep
-$S/wd.ts contrast                           # every displayed select, text input, textarea, button on screen; exit 1 below 3.0
+$S/wd.ts contrast                           # every displayed select, text input, textarea, button on screen; exit 1 on a new failure below 3.0
 $S/wd.ts end
 ```
 
-`contrast [sel]` compares each control's CSS text color with the background WebKit actually painted, cropped from the page screenshot, so it catches text that is unreadable on screen while the CSS looks right, such as a native select drawn white under white text. An empty field is measured by its placeholder, read from the screenshot pixels inside its content box. `shot` runs the same sweep and prints `contrast: N controls below 3.0` on stderr, but still exits 0.
+`contrast [sel]` compares the colors a control's text is painted in with the background WebKit actually painted, cropped from the page screenshot. It catches text that is unreadable on screen while the CSS looks right, such as a native select drawn white under white text. It measures the control's own color and the color of every descendant that holds text, and the worst one counts, so a tertiary span inside a button is caught. An empty field is measured by its placeholder, read from the screenshot pixels inside its content box. Known failures are listed in `scripts/contrast-baseline.txt`. They print `(baseline)` and do not fail the sweep, so any other failure is new. Remove a line when its control is fixed. `shot` runs the same sweep and prints `contrast: N controls below 3.0 outside the baseline` on stderr, but still exits 0. The summary also counts hidden controls, so a clean result with many hidden ones does not read as full coverage.
 
 Stable handles, in order of preference:
 

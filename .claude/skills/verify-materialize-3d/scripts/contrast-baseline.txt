@@ -1,0 +1,31 @@
+# Known contrast failures, one wd.ts control label per line (the label wd.ts prints).
+# A listed control below 3.0 reports as "(baseline)" and does not fail the sweep, so a
+# new failure stands out. Remove a line when its control is fixed, and never add one
+# to get a sweep green.
+#
+# Measured 2026-10-07 on the Linux harness. All draw --text-tertiary (#5a5862) on a
+# dark surface, at ratios from 2.26 to 2.83. The fix is a design token change, which
+# needs a mock first.
+
+# Main view: sidebar and tab bar labels, the printer badge arrow, the send button.
+button "printer connection status"
+button "MakerWorld"
+button "Design"
+button "Signs"
+button "Print Monitor"
+button "Print Queue"
+button "History"
+button "Model Library"
+button "OpenSCAD"
+button "Print History"
+button "chat-send"
+input "Library search" (placeholder)
+
+# Printer selector (printers.md adds a printer named T1).
+button "Close printer selector"
+button "Switch to T1"
+
+# Settings popover.
+button "Close settings"
+button "agent-api-key-save"
+button "agent-api-key-clear"
