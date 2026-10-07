@@ -22,6 +22,8 @@ export type Provider = 'anthropic' | 'openai'
 export interface AgentStatus {
   provider: Provider
   model: string
+  /** The models offered for `provider`, default first. */
+  models: string[]
   hasApiKey: boolean
 }
 

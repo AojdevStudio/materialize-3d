@@ -29,10 +29,14 @@ import { useAgentStore } from '../stores/agent'
 
 /** Default invoke mock: agent without a key, basic printer status */
 function setupDefaultMocks() {
-  let agent = { provider: 'anthropic', model: 'claude-sonnet-5', hasApiKey: false }
+  const models: Record<string, string[]> = { anthropic: ['claude-opus-5-5', 'claude-fable-5-1'], openai: ['gpt-6-astra', 'gpt-6.1-sol'] }
+  let agent = { provider: 'anthropic', model: 'claude-opus-5-5', models: models.anthropic, hasApiKey: false }
   invokeMock.mockImplementation(async (cmd: string, payload?: any) => {
     if (cmd === 'agent_status') return agent
-    if (cmd === 'agent_set_model') return (agent = { ...agent, provider: payload.provider, model: payload.model, hasApiKey: false })
+    if (cmd === 'agent_set_model') {
+      const offered = models[payload.provider]!
+      return (agent = { provider: payload.provider, model: payload.model || offered[0]!, models: offered, hasApiKey: false })
+    }
     if (cmd === 'agent_set_api_key') return (agent = { ...agent, hasApiKey: true })
     if (cmd === 'agent_history') return { conversationId: 'c1', entries: [] }
     if (cmd === 'get_settings') return {} // No onboarding.completed
@@ -130,7 +134,7 @@ describe('OnboardingWizard', () => {
     fireEvent.click(screen.getByTestId('btn-llm-continue'))
 
     await waitFor(() => expect(screen.getByTestId('step-bambu')).toBeDefined())
-    expect(invokeMock).toHaveBeenCalledWith('agent_set_model', { provider: 'openai', model: 'gpt-5.5' })
+    expect(invokeMock).toHaveBeenCalledWith('agent_set_model', { provider: 'openai', model: '' })
     expect(invokeMock).toHaveBeenCalledWith('agent_set_api_key', { provider: 'openai', apiKey: 'sk-test' })
   })
 

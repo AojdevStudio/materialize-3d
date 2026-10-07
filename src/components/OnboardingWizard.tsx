@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { create } from 'zustand'
-import { PROVIDERS, PROVIDER_LABELS, PROVIDER_MODELS, useAgentStore } from '../stores/agent'
+import { PROVIDERS, PROVIDER_LABELS, useAgentStore } from '../stores/agent'
 import type { Provider } from '../types/agent'
 import '../styles/onboarding.css'
 
@@ -93,7 +93,7 @@ export default function OnboardingWizard({ onComplete }: OnboardingWizardProps) 
     try {
       const agent = useAgentStore.getState()
       if (agent.status?.provider !== llm.provider) {
-        await agent.setModel(llm.provider, PROVIDER_MODELS[llm.provider][0])
+        await agent.setModel(llm.provider, '')
       }
       await agent.setApiKey(llm.provider, apiKey)
       setLlm((prev) => ({ ...prev, apiKey: '', saving: false }))

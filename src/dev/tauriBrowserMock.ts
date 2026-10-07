@@ -740,8 +740,14 @@ const NOT_AGENT = Symbol('not an agent command')
 const STEP_MS = 1500
 const BUILD_STEPS: BuildStep[] = ['spec_validated', 'geometry_built', 'package_written', 'sliced', 'verified']
 
+// Mirrors `models` in src-tauri/src/agent/commands.rs: the default comes first.
+const MOCK_MODELS: Record<Provider, string[]> = {
+  anthropic: ['claude-opus-5-5', 'claude-fable-5-1'],
+  openai: ['gpt-6-astra', 'gpt-6.1-sol'],
+}
+
 const mockAgent = {
-  status: { provider: 'anthropic', model: 'claude-sonnet-5', hasApiKey: true } as AgentStatus,
+  status: { provider: 'anthropic', model: 'claude-opus-5-5', models: MOCK_MODELS.anthropic, hasApiKey: true } as AgentStatus,
   keys: new Set<Provider>(['anthropic']),
   conversationId: 'mock-conversation-1',
   conversationCount: 1,
@@ -765,9 +771,14 @@ function handleAgentCommand(cmd: string, payload: unknown): unknown {
     case 'agent_clear_api_key':
       mockAgent.keys.delete(args.provider as Provider)
       return agentStatus()
-    case 'agent_set_model':
-      mockAgent.status = { ...mockAgent.status, provider: args.provider as Provider, model: args.model as string }
+    case 'agent_set_model': {
+      const provider = args.provider as Provider
+      const models = MOCK_MODELS[provider]
+      const model = (args.model as string) || models[0]!
+      if (!models.includes(model)) throw new Error(`${model} is not an offered ${provider} model`)
+      mockAgent.status = { ...mockAgent.status, provider, model, models }
       return agentStatus()
+    }
     case 'agent_history':
       return { conversationId: mockAgent.conversationId, entries: structuredClone(mockAgent.history) }
     case 'agent_new_conversation':
