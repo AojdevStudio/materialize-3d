@@ -22,7 +22,7 @@ Preconditions:
 - Onboarding completed per the baseline in README.md.
 - For a real response, the provider in Settings has a key stored and the host has network. dev-substrate has no provider credential, so chat with a key is unreachable there.
 
-- **Panel present (observed 2026-10-05).** Run `$S/wd.ts text "[data-testid=chat-panel]"`. It reads "AI Assistant / New conversation / No messages yet. Ask for a part, a sign, or a printer action. / Design a door sign / Check printer status / List my recent signs / OpenAI · gpt-5.5 / Send" after the provider was set to OpenAI in Settings.
+- **Panel present (observed 2026-10-05, footer 2026-10-07).** Run `$S/wd.ts text "[data-testid=chat-panel]"`. It reads "AI Assistant / New conversation / No messages yet. Ask for a part, a sign, or a printer action. / Design a door sign / Check printer status / List my recent signs / OpenAI · GPT-6 Astra / Send" after the provider was set to OpenAI in Settings.
 - **No key (observed 2026-10-05).** Run `$S/wd.ts click "text=Check printer status"` and `$S/wd.ts wait "[data-testid=chat-error]"`. It reads "No openai API key is saved. Add one in the agent settings. Open Settings to add a key, then retry."
 - **Open Settings from the error (observed 2026-10-05).** Click the `Open Settings` control inside `chat-error`. `[role=dialog][aria-label=Settings]` opens.
 - **History side effect (observed 2026-10-05).** After the failed turns, `DB` holds 1 row in `agent_conversations` and 0 rows in `agent_messages`.
