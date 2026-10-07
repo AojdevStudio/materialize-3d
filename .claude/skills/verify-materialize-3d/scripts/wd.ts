@@ -223,21 +223,44 @@ function contrastRatio(a: Rgb, b: Rgb): number {
   return (hi + 0.05) / (lo + 0.05)
 }
 
+// The inset pixel that contrasts most with the background: the placeholder's ink,
+// since an empty field draws nothing else.
+function inkRgb(img: Image, box: Box, background: Rgb): Rgb {
+  const inset = box.width > 4 && box.height > 4 ? 2 : 0
+  let ink = background
+  let best = 1
+  for (let y = box.y + inset; y < box.y + box.height - inset; y++) {
+    for (let x = box.x + inset; x < box.x + box.width - inset; x++) {
+      const i = (y * img.width + x) * img.channels
+      const rgb: Rgb = [img.pixels[i], img.pixels[i + 1], img.pixels[i + 2]]
+      const ratio = contrastRatio(rgb, background)
+      if (ratio > best) [ink, best] = [rgb, ratio]
+    }
+  }
+  return ink
+}
+
 function hex(rgb: Rgb): string {
   return '#' + rgb.map((v) => v.toString(16).padStart(2, '0')).join('')
 }
 
 interface ControlStyle extends Box {
   label: string
+  placeholder: boolean
   color: string
   opacity: number
   dpr: number
 }
 
+// An empty field with a placeholder shows the placeholder; the sweep measures it
+// from pixels, because WebKit's getComputedStyle(el, '::placeholder') returns the
+// field's own color (observed 2026-10-07).
 const STYLE_SCRIPT = `const el = arguments[0], cs = getComputedStyle(el), r = el.getBoundingClientRect();
+const ph = 'placeholder' in el && el.placeholder !== '' && el.value === '';
 const text = (el.tagName === 'SELECT' ? el.selectedOptions[0]?.text ?? '' : el.innerText || el.value || '').trim().replace(/\\s+/g, ' ');
 const handle = el.getAttribute('data-testid') || el.getAttribute('aria-label') || el.getAttribute('name') || text.slice(0, 30);
-return { label: el.tagName.toLowerCase() + (handle ? ' ' + JSON.stringify(handle) : ''), color: cs.color, opacity: Number(cs.opacity),
+return { label: el.tagName.toLowerCase() + (handle ? ' ' + JSON.stringify(handle) : '') + (ph ? ' (placeholder)' : ''),
+  placeholder: ph, color: cs.color, opacity: Number(cs.opacity),
   x: r.x, y: r.y, width: r.width, height: r.height, dpr: devicePixelRatio };`
 
 interface ContrastResult {
@@ -254,7 +277,13 @@ async function contrastSweep(sel: string): Promise<{ results: ContrastResult[]; 
   let skipped = 0
   let page: Image | undefined
   for (const id of await findAll(sel)) {
-    if (!(await displayed(id))) continue
+    // Unlike displayed(), driver errors propagate: only a control that is hidden or
+    // gone from the DOM may be passed over, never one the driver failed to answer for.
+    const visible = await call<boolean>('GET', `/session/${sid()}/element/${id}/displayed`).catch((err: unknown) => {
+      if (err instanceof Error && /stale element reference|no such element/.test(err.message)) return false
+      throw err
+    })
+    if (!visible) continue
     const style = await call<ControlStyle>('POST', `/session/${sid()}/execute/sync`, { script: STYLE_SCRIPT, args: [{ [ELEMENT_KEY]: id }] })
     if (style.width === 0 || style.height === 0) {
       skipped++
@@ -283,7 +312,7 @@ async function contrastSweep(sel: string): Promise<{ results: ContrastResult[]; 
     }
     const background = dominantRgb(page, box)
     const color = parseCssColor(style.color)
-    const text = blend(color.rgb, background, color.alpha * style.opacity)
+    const text = style.placeholder ? inkRgb(page, box, background) : blend(color.rgb, background, color.alpha * style.opacity)
     const ratio = contrastRatio(text, background)
     const low = ratio < MIN_CONTRAST ? `  below ${MIN_CONTRAST.toFixed(1)}` : ''
     results.push({ ratio, line: `${style.label}  bg ${hex(background)}  text ${hex(text)}  ratio ${ratio.toFixed(2)}${low}` })
