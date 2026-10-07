@@ -225,25 +225,31 @@ function contrastRatio(a: Rgb, b: Rgb): number {
 }
 
 // The placeholder's ink: the content-box pixel that contrasts most with the
-// background. The content box keeps the rounded border and focus ring out, and
-// pixels in the field's own text color are passed over, because a focused field
-// draws its caret in that color. A placeholder styled in the text color itself
-// leaves no other ink, so that color is returned.
-function inkRgb(img: Image, box: Box, background: Rgb, textColor: Rgb): Rgb {
-  const same = (a: Rgb, b: Rgb) => a[0] === b[0] && a[1] === b[1] && a[2] === b[2]
-  let ink: Rgb | undefined
+// background. The content box keeps the rounded border and focus ring out, and the
+// sweep hides the caret while it screenshots (CARET_OFF). The most common color is
+// no good here: small text antialiases into more mid-tone pixels than core ink. No
+// ink at all reads as the background, so an invisible placeholder fails.
+function inkRgb(img: Image, box: Box, background: Rgb): Rgb {
+  let ink = background
   let best = 1
   for (let y = box.y; y < box.y + box.height; y++) {
     for (let x = box.x; x < box.x + box.width; x++) {
       const i = (y * img.width + x) * img.channels
       const rgb: Rgb = [img.pixels[i], img.pixels[i + 1], img.pixels[i + 2]]
-      if (same(rgb, textColor)) continue
       const ratio = contrastRatio(rgb, background)
       if (ratio > best) [ink, best] = [rgb, ratio]
     }
   }
-  return ink ?? textColor
+  return ink
 }
+
+// A focused empty field draws a blinking caret whose blended edge could outscore a
+// dim placeholder, so the caret is hidden for the one sweep screenshot. Style only:
+// focus, value, and events are untouched.
+const CARET_OFF = `const s = document.createElement('style'); s.id = 'wd-contrast-caret';
+s.textContent = '* { caret-color: transparent !important; }'; document.head.append(s);
+return new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(() => done(true))));`
+const CARET_ON = `document.getElementById('wd-contrast-caret')?.remove(); return true;`
 
 // A CSS-px box in device pixels, clamped to the screenshot.
 function deviceBox(css: Box, dpr: number, page: Image): Box {
@@ -264,7 +270,8 @@ function hex(rgb: Rgb): string {
 interface ControlStyle extends Box {
   label: string
   placeholder: boolean
-  /** Every color text is painted in: the control's own text, then each descendant that owns text. */
+  /** Every color text is painted in: the control's own text (fields, or a direct text node),
+   *  then each shown descendant that owns text. aria-hidden icons are decorative and skipped. */
   inks: Array<{ color: string; source: string }>
   /** The padding box minus padding, in CSS px: where the placeholder text is drawn. */
   content: Box
@@ -282,7 +289,8 @@ const text = (el.tagName === 'SELECT' ? el.selectedOptions[0]?.text ?? '' : el.i
 const handle = el.getAttribute('data-testid') || el.getAttribute('aria-label') || el.getAttribute('name') || text.slice(0, 30);
 const owns = (n) => [...n.childNodes].some((c) => c.nodeType === 3 && c.textContent.trim() !== '');
 const inks = el.tagName === 'SELECT' || el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || owns(el) ? [{ color: cs.color, source: '' }] : [];
-for (const d of el.querySelectorAll('*')) if (owns(d) && d.getClientRects().length > 0)
+const shown = (d) => { const ds = getComputedStyle(d); return d.getClientRects().length > 0 && ds.visibility !== 'hidden' && ds.opacity !== '0' && !d.closest('[aria-hidden=true]'); };
+for (const d of el.querySelectorAll('*')) if (owns(d) && shown(d))
   inks.push({ color: getComputedStyle(d).color, source: d.tagName.toLowerCase() + (d.classList[0] ? '.' + d.classList[0] : '') });
 return { label: el.tagName.toLowerCase() + (handle ? ' ' + JSON.stringify(handle) : '') + (ph ? ' (placeholder)' : ''),
   placeholder: ph, color: cs.color, inks, opacity: Number(cs.opacity),
@@ -352,7 +360,12 @@ async function contrastSweep(sel: string): Promise<Sweep> {
     // returns black pixels for every control under Xvfb, which hid the white
     // selects this check exists to catch (observed 2026-10-07).
     if (!page) {
-      page = decodePng(Buffer.from(await call<string>('GET', `/session/${sid()}/screenshot`), 'base64'))
+      await call('POST', `/session/${sid()}/execute/async`, { script: `const done = arguments[arguments.length - 1]; (async () => { ${CARET_OFF} })().then(done)`, args: [] })
+      try {
+        page = decodePng(Buffer.from(await call<string>('GET', `/session/${sid()}/screenshot`), 'base64'))
+      } finally {
+        await call('POST', `/session/${sid()}/execute/sync`, { script: CARET_ON, args: [] })
+      }
       const expected = await call<number>('POST', `/session/${sid()}/execute/sync`, { script: 'return Math.round(innerWidth * devicePixelRatio)', args: [] })
       if (page.width !== expected) throw new Error(`screenshot is ${page.width}px wide, expected ${expected} device px; crops would miss`)
     }
@@ -369,7 +382,7 @@ async function contrastSweep(sel: string): Promise<Sweep> {
     }
     // The worst-contrast ink wins: a button's tertiary child span is what a reader sees.
     const inks = style.placeholder
-      ? [{ text: inkRgb(page, deviceBox(style.content, style.dpr, page), background, painted(style.color)), source: '' }]
+      ? [{ text: inkRgb(page, deviceBox(style.content, style.dpr, page), background), source: '' }]
       : style.inks.map((ink) => ({ text: painted(ink.color), source: ink.source }))
     if (inks.length === 0) inks.push({ text: painted(style.color), source: '' })
     const worst = inks

@@ -1,14 +1,16 @@
 # Known contrast failures, one wd.ts control label per line (the label wd.ts prints).
 # A listed control below 3.0 reports as "(baseline)" and does not fail the sweep, so a
-# new failure stands out. Remove a line when its control is fixed, and never add one
-# to get a sweep green.
+# new failure stands out. Remove a line when its control is fixed, after a sweep of
+# every view (an active tab is bright only on its own view). Never add a line to get
+# a sweep green.
 #
-# Measured 2026-10-07 on the Linux harness. All draw --text-tertiary (#5a5862) on a
-# dark surface, at ratios from 2.26 to 2.83. The fix is a design token change, which
-# needs a mock first.
+# Measured 2026-10-07 on the Linux harness by a sweep after every sidebar view and
+# every tab, the printer selector, and Settings. All draw --text-tertiary (#5a5862)
+# on a dark surface, at ratios from 2.26 to 2.83. The fix is a design token change,
+# which needs a mock first.
 
-# Main view: sidebar and tab bar labels, the printer badge arrow, the send button.
-button "printer connection status"
+# Sidebar and tab bar labels (inactive), and the send button.
+button "Library"
 button "MakerWorld"
 button "Design"
 button "Signs"
@@ -16,10 +18,19 @@ button "Print Monitor"
 button "Print Queue"
 button "History"
 button "Model Library"
+button "3D Preview"
 button "OpenSCAD"
 button "Print History"
 button "chat-send"
+
+# Context panel search placeholders, one per view.
 input "Library search" (placeholder)
+input "MakerWorld search" (placeholder)
+input "Design search" (placeholder)
+input "Signs search" (placeholder)
+input "Print Monitor search" (placeholder)
+input "Print Queue search" (placeholder)
+input "Print History search" (placeholder)
 
 # Printer selector (printers.md adds a printer named T1).
 button "Close printer selector"
