@@ -36,12 +36,13 @@ Preconditions:
 - **External agents (observed 2026-10-05).** Click `[data-testid=mcp-enabled]`. `[data-testid=mcp-url]` appears and reads `http://127.0.0.1:45373/mcp`. `DB` gains `mcp.enabled = true`, and after a relaunch `mcp-url` is still visible. See [mcp](./mcp.md) for the server itself.
 - **Removed handles (observed 2026-10-05).** `$S/wd.ts count "[data-testid=agent-model-hint]"` and `$S/wd.ts count "[data-testid=settings-slicer]"` both print `0`.
 - **Checkboxes.** Run `$S/wd.ts click 'xpath=//div[@role="dialog"]//label[contains(., "Filament low")]//input'`. The `notifications.filament_low` row flips.
+- **Contrast (observed 2026-10-07).** Open Settings and run `$S/wd.ts contrast "[role=dialog][aria-label=Settings] :is(select, input:not([type=checkbox]))"`. The four selects read 15.13 on `#111114` and the command exits 0. Before the fix they read 1.13 on the native `#f4f4f4` box and it exited 1.
 - **Close (observed 2026-09-25).** Run `$S/wd.ts click "button[aria-label='Close settings']"` and `$S/wd.ts gone "[role=dialog][aria-label=Settings]"`.
 
 ## Gotchas
 
 - Selects stay disabled until the profile list loads. Wait until the Quality select is enabled (`$S/wd.ts wait "[role=dialog] select:not([disabled])"`) before clicking options.
-- The select text renders light-on-light and is barely readable in screenshots. Prove values with `attr ... value` and the DB, not pixels.
+- Prove select values with `attr ... value` and the DB, not pixels.
 - The stored default filament `PLA Basic` is not one of the options, so a fresh run displays `Bambu PETG Basic`, the first option, without writing it.
 - Without its own session keyring, the Agent section shows only "keyring entry error for key=api_key:anthropic: No matching entry found in secure storage", and enabling MCP fails with the same error for `mcp:token`. `m3d.sh up` prevents this by running the app under `keyctl session -`, see SKILL.md.
 - The External agents hint still reads "External agents can build and read signs". That text is stale, because MCP also imports parts.
