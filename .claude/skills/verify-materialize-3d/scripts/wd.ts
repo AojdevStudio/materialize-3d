@@ -273,7 +273,8 @@ interface ControlStyle extends Box {
   placeholder: boolean
   /** Every color text is painted in: the control's own text (fields, or a direct text node),
    *  then each shown descendant that owns text. aria-hidden icons are decorative and skipped. */
-  inks: Array<{ color: string; source: string }>
+  /** box: the nearest element from the ink up to the control that paints its own background, else null. */
+  inks: Array<{ color: string; source: string; box: Box | null }>
   /** The padding box minus padding, in CSS px: where the placeholder text is drawn. */
   content: Box
   color: string
@@ -289,10 +290,13 @@ const ph = 'placeholder' in el && el.placeholder !== '' && el.value === '';
 const text = (el.tagName === 'SELECT' ? el.selectedOptions[0]?.text ?? '' : el.innerText || el.value || '').trim().replace(/\\s+/g, ' ');
 const handle = el.getAttribute('data-testid') || el.getAttribute('aria-label') || el.getAttribute('name') || text.slice(0, 30);
 const owns = (n) => [...n.childNodes].some((c) => c.nodeType === 3 && c.textContent.trim() !== '');
-const inks = el.tagName === 'SELECT' || el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || owns(el) ? [{ color: cs.color, source: '' }] : [];
+const box = (n) => { const b = n.getBoundingClientRect(); return { x: b.x, y: b.y, width: b.width, height: b.height }; };
+const paints = (n) => { const m = getComputedStyle(n).backgroundColor.match(/[\\d.]+/g); return m !== null && m.length >= 3 && (m[3] === undefined || Number(m[3]) > 0); };
+const surface = (d) => { for (let n = d; n && n !== el; n = n.parentElement) if (paints(n)) return box(n); return null; };
+const inks = el.tagName === 'SELECT' || el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || owns(el) ? [{ color: cs.color, source: '', box: box(el) }] : [];
 const shown = (d) => { const ds = getComputedStyle(d); return d.getClientRects().length > 0 && ds.visibility !== 'hidden' && ds.opacity !== '0' && !d.closest('[aria-hidden=true]'); };
 for (const d of el.querySelectorAll('*')) if (owns(d) && shown(d))
-  inks.push({ color: getComputedStyle(d).color, source: d.tagName.toLowerCase() + (d.classList[0] ? '.' + d.classList[0] : '') });
+  inks.push({ color: getComputedStyle(d).color, source: d.tagName.toLowerCase() + (d.classList[0] ? '.' + d.classList[0] : ''), box: surface(d) });
 return { label: el.tagName.toLowerCase() + (handle ? ' ' + JSON.stringify(handle) : '') + (ph ? ' (placeholder)' : ''),
   placeholder: ph, color: cs.color, inks, opacity: Number(cs.opacity),
   content: { x: r.x + el.clientLeft + parseFloat(cs.paddingLeft), y: r.y + el.clientTop + parseFloat(cs.paddingTop),
@@ -314,14 +318,24 @@ interface Sweep {
   skipped: number
 }
 
-// Known failures, one control label per line, so a sweep can reach zero and a
-// new failure stands out. Remove a line when its control is fixed.
-const BASELINE = new Set(
-  readFileSync(join(import.meta.dir, 'contrast-baseline.txt'), 'utf8')
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line !== '' && !line.startsWith('#')),
-)
+// Known failures: each line is the measured ratio, then the control label. A listed
+// control counts as known only while it measures at or above its recorded ratio,
+// so a known failure that gets worse fails again. Remove a line when it is fixed.
+const BASELINE = new Map<string, number>()
+for (const raw of readFileSync(join(import.meta.dir, 'contrast-baseline.txt'), 'utf8').split('\n')) {
+  const line = raw.trim()
+  if (line === '' || line.startsWith('#')) continue
+  const match = /^(\d+\.\d+)\s+(.+)$/.exec(line)
+  if (!match) throw new Error(`contrast-baseline.txt: expected "<ratio> <label>", got ${JSON.stringify(line)}`)
+  const ratio = Number(match[1])
+  BASELINE.set(match[2], Math.min(ratio, BASELINE.get(match[2]) ?? ratio))
+}
+
+// Ratios print with two decimals, so a reading within 0.01 of its record is the same failure.
+const knownFailure = (label: string, ratio: number) => {
+  const recorded = BASELINE.get(label)
+  return recorded !== undefined && ratio >= recorded - 0.01
+}
 
 const isNew = (r: ContrastResult) => r.ratio < MIN_CONTRAST && !r.known
 
@@ -376,27 +390,38 @@ async function contrastSweep(sel: string): Promise<Sweep> {
       skipped++
       continue
     }
-    const background = dominantRgb(page, box)
-    const painted = (css: string) => {
+    const controlBackground = dominantRgb(page, box)
+    // A descendant that paints its own background (a tinted badge) is measured on that
+    // surface. Every other ink sits on the control's background: a text span's own box
+    // is too tight around its glyphs to show the background as its most common color.
+    const backgroundOf = (css: Box | null) => {
+      const own = css && deviceBox(css, style.dpr, page!)
+      return own && own.width > 0 && own.height > 0 ? dominantRgb(page!, own) : controlBackground
+    }
+    const measure = (css: string, background: Rgb, source: string) => {
       const color = parseCssColor(css)
-      return blend(color.rgb, background, color.alpha * style.opacity)
+      const text = blend(color.rgb, background, color.alpha * style.opacity)
+      return { text, background, source, ratio: contrastRatio(text, background) }
     }
     // The worst-contrast ink wins: a button's tertiary child span is what a reader sees.
     const inks = style.placeholder
-      ? [{ text: inkRgb(page, deviceBox(style.content, style.dpr, page), background), source: '' }]
-      : style.inks.map((ink) => ({ text: painted(ink.color), source: ink.source }))
-    if (inks.length === 0) inks.push({ text: painted(style.color), source: '' })
-    const worst = inks
-      .map((ink) => ({ ...ink, ratio: contrastRatio(ink.text, background) }))
-      .reduce((a, b) => (b.ratio < a.ratio ? b : a))
-    const known = worst.ratio < MIN_CONTRAST && BASELINE.has(style.label)
-    const low = worst.ratio < MIN_CONTRAST ? `  below ${MIN_CONTRAST.toFixed(1)}${known ? ' (baseline)' : ''}` : ''
+      ? [(() => {
+          const text = inkRgb(page, deviceBox(style.content, style.dpr, page), controlBackground)
+          return { text, background: controlBackground, source: '', ratio: contrastRatio(text, controlBackground) }
+        })()]
+      : style.inks.map((ink) => measure(ink.color, backgroundOf(ink.box), ink.source))
+    if (inks.length === 0) inks.push(measure(style.color, controlBackground, ''))
+    const worst = inks.reduce((a, b) => (b.ratio < a.ratio ? b : a))
+    const known = worst.ratio < MIN_CONTRAST && knownFailure(style.label, worst.ratio)
+    const recorded = BASELINE.get(style.label)
+    const tag = known ? ' (baseline)' : recorded !== undefined ? ` (worse than baseline ${recorded.toFixed(2)})` : ''
+    const low = worst.ratio < MIN_CONTRAST ? `  below ${MIN_CONTRAST.toFixed(1)}${tag}` : ''
     const from = worst.source ? ` in ${worst.source}` : ''
     results.push({
       label: style.label,
       ratio: worst.ratio,
       known,
-      line: `${style.label}  bg ${hex(background)}  text ${hex(worst.text)}${from}  ratio ${worst.ratio.toFixed(2)}${low}`,
+      line: `${style.label}  bg ${hex(worst.background)}  text ${hex(worst.text)}${from}  ratio ${worst.ratio.toFixed(2)}${low}`,
     })
   }
   return { results, hidden, skipped }
