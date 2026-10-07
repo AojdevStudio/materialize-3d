@@ -21,7 +21,7 @@
 //                                      the contrast sweep and report failures on stderr (exit 0)
 //   bun wd.ts contrast [sel]           text contrast of each displayed control, measured against its
 //                                      rendered pixels; exit 1 if any is below 3.0
-//                                      (default sel: select, input, textarea, button)
+//                                      (default: text-bearing controls; checkboxes and radios carry no text)
 //   bun wd.ts eval <js>                run a script (`return ...`), print JSON; inspection only
 //   bun wd.ts note <message>           append a free-form line to actions.log
 //   bun wd.ts end                      close the session (the app exits)
@@ -31,7 +31,7 @@ import { join } from 'node:path'
 import { inflateSync } from 'node:zlib'
 
 const ELEMENT_KEY = 'element-6066-11e4-a52e-4f735466cecf'
-const CONTROLS = 'select, input, textarea, button'
+const CONTROLS = 'select, input:not([type=checkbox]):not([type=radio]), textarea, button'
 const MIN_CONTRAST = 3.0
 
 interface RunEnv {
@@ -260,29 +260,20 @@ async function contrastSweep(sel: string): Promise<{ results: ContrastResult[]; 
       skipped++
       continue
     }
-    let background: Rgb
-    try {
-      const png = await call<string>('GET', `/session/${sid()}/element/${id}/screenshot`)
-      background = dominantRgb(decodePng(Buffer.from(png, 'base64')))
-    } catch (err) {
-      // Fallback for drivers without element screenshots: crop the viewport screenshot.
-      if (!page) {
-        const reason = err instanceof Error ? err.message : String(err)
-        console.error(`contrast: element screenshot failed (${reason}); cropping the page screenshot instead`)
-        log(`contrast fallback to page screenshot :: ${reason}`)
-        page = decodePng(Buffer.from(await call<string>('GET', `/session/${sid()}/screenshot`), 'base64'))
-      }
-      const x = Math.max(0, Math.round(style.x * style.dpr))
-      const y = Math.max(0, Math.round(style.y * style.dpr))
-      const box = {
-        x,
-        y,
-        width: Math.min(page.width, Math.round((style.x + style.width) * style.dpr)) - x,
-        height: Math.min(page.height, Math.round((style.y + style.height) * style.dpr)) - y,
-      }
-      if (box.width <= 0 || box.height <= 0) throw new Error(`${style.label} is outside the viewport; scroll it into view`)
-      background = dominantRgb(page, box)
+    // Always crop the viewport screenshot. WebKitWebDriver's element screenshot
+    // returns black pixels for every control under Xvfb, which hid the white
+    // selects this check exists to catch (observed 2026-10-07).
+    page ??= decodePng(Buffer.from(await call<string>('GET', `/session/${sid()}/screenshot`), 'base64'))
+    const x = Math.max(0, Math.round(style.x * style.dpr))
+    const y = Math.max(0, Math.round(style.y * style.dpr))
+    const box = {
+      x,
+      y,
+      width: Math.min(page.width, Math.round((style.x + style.width) * style.dpr)) - x,
+      height: Math.min(page.height, Math.round((style.y + style.height) * style.dpr)) - y,
     }
+    if (box.width <= 0 || box.height <= 0) throw new Error(`${style.label} is outside the viewport; scroll it into view`)
+    const background = dominantRgb(page, box)
     const color = parseCssColor(style.color)
     const text = blend(color.rgb, background, color.alpha * style.opacity)
     const ratio = contrastRatio(text, background)

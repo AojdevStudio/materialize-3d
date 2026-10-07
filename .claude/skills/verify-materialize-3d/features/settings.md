@@ -35,7 +35,7 @@ Preconditions:
 - **External agents (observed 2026-10-05).** Click `[data-testid=mcp-enabled]`. `[data-testid=mcp-url]` appears and reads `http://127.0.0.1:45373/mcp`. `DB` gains `mcp.enabled = true`, and after a relaunch `mcp-url` is still visible. See [mcp](./mcp.md) for the server itself.
 - **Removed handles (observed 2026-10-05).** `$S/wd.ts count "[data-testid=agent-model-hint]"` and `$S/wd.ts count "[data-testid=settings-slicer]"` both print `0`.
 - **Checkboxes.** Run `$S/wd.ts click 'xpath=//div[@role="dialog"]//label[contains(., "Filament low")]//input'`. The `notifications.filament_low` row flips.
-- **Contrast.** Open Settings, run `$S/wd.ts contrast "[role=dialog][aria-label=Settings] select, [role=dialog][aria-label=Settings] input"`; every line is 3.0 or above.
+- **Contrast (observed 2026-10-07).** Open Settings and run `$S/wd.ts contrast "[role=dialog][aria-label=Settings] :is(select, input:not([type=checkbox]))"`. The four selects read 15.13 on `#111114` and the command exits 0. Before the fix they read 1.13 on the native `#f4f4f4` box and it exited 1.
 - **Close (observed 2026-09-25).** Run `$S/wd.ts click "button[aria-label='Close settings']"` and `$S/wd.ts gone "[role=dialog][aria-label=Settings]"`.
 
 ## Gotchas
