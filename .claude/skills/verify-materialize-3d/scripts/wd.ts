@@ -332,10 +332,13 @@ for (const raw of readFileSync(join(import.meta.dir, 'contrast-baseline.txt'), '
   BASELINE.set(match[2], Math.min(ratio, BASELINE.get(match[2]) ?? ratio))
 }
 
-// Ratios print with two decimals, so a reading within 0.01 of its record is the same failure.
+// A reading within 0.05 of its record is the same failure: ratios print with two
+// decimals, and a placeholder's ink is a raw pixel that antialiasing can nudge. A real
+// regression (2.53 down to 1.5) is far outside it.
+const BASELINE_TOLERANCE = 0.05
 const knownFailure = (label: string, ratio: number) => {
   const recorded = BASELINE.get(label)
-  return recorded !== undefined && ratio >= recorded - 0.01
+  return recorded !== undefined && ratio >= recorded - BASELINE_TOLERANCE
 }
 
 const isNew = (r: ContrastResult) => r.ratio < MIN_CONTRAST && !r.known

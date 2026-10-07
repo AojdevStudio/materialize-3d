@@ -1,7 +1,7 @@
 # Known contrast failures: the lowest measured ratio, two spaces, then the control
 # label as wd.ts prints it. A listed control reports "(baseline)" and does not fail
-# the sweep while it measures at or above its recorded ratio, so a new failure, or a
-# known one that gets worse, stands out. Remove a line when its control is fixed,
+# the sweep while it measures within 0.05 of its recorded ratio or above it, so a new
+# failure, or a known one that gets worse, stands out. Remove a line when its control is fixed,
 # after a sweep of every view (an active tab is bright only on its own view). Never
 # add a line to get a sweep green.
 #
