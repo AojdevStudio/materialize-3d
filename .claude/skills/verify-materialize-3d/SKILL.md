@@ -56,9 +56,12 @@ $S/wd.ts type "[data-testid=input-host]" "10.0.0.5" --clear
 $S/wd.ts text "[data-testid=render-status]"
 $S/wd.ts gone "[data-testid=onboarding-wizard]"
 $S/wd.ts eval "return innerHeight"          # inspection only, never to cause the behavior under test
-$S/wd.ts shot settings-open                 # evidence/NN-settings-open.png
+$S/wd.ts shot settings-open                 # evidence/NN-settings-open.png, then a contrast sweep
+$S/wd.ts contrast                           # every displayed select, input, textarea, button; exit 1 below 3.0
 $S/wd.ts end
 ```
+
+`contrast [sel]` compares each control's CSS text color with the background WebKit actually painted in its element screenshot, so it catches text that is unreadable on screen while the CSS looks right, such as a native select drawn white under white text. `shot` runs the same sweep and prints `contrast: N controls below 3.0` on stderr, but still exits 0.
 
 Stable handles, in order of preference:
 
