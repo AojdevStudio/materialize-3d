@@ -320,8 +320,8 @@ interface Sweep {
 }
 
 // Known failures: each line is the measured ratio, then the control label. A listed
-// control counts as known only while it measures at or above its recorded ratio,
-// so a known failure that gets worse fails again. Remove a line when it is fixed.
+// control counts as known only while it measures within BASELINE_TOLERANCE of its
+// recorded ratio or above it, so a known failure that gets worse fails again. Remove a line when it is fixed.
 const BASELINE = new Map<string, number>()
 for (const raw of readFileSync(join(import.meta.dir, 'contrast-baseline.txt'), 'utf8').split('\n')) {
   const line = raw.trim()
