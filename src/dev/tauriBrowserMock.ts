@@ -4,7 +4,7 @@ import { mockIPC, mockWindows } from '@tauri-apps/api/mocks'
 import type { PrinterSnapshot } from '../stores/printer'
 import type { WorkspaceSnapshot } from '../stores/workspace'
 import type { PrinterConfig } from '../stores/printerConfigs'
-import type { PartRevision, Revision, SignRevision } from '../types/designs'
+import type { PartRevision, PrintValidation, Revision, SignRevision } from '../types/designs'
 import type { BuildResult } from '../types/generated'
 import type { AgentEvent, AgentStatus, BuildStep, HistoryEntry, Provider } from '../types/agent'
 
@@ -173,7 +173,7 @@ let mockSign: SignRevision = {
 }
 
 // One verified part revision, the cable clip's repair, so the Designs view
-// shows a part (its view arrives with pr8-gui). Dev-only, like everything here.
+// shows a part. Dev-only, like everything here.
 const MOCK_PART_CLIP_SOURCE = 'from build123d import *\nfrom materialize import Body\n\ndef build(p): ...'
 const mockPart: PartRevision = {
   id: '9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d',
@@ -280,6 +280,36 @@ async function mockSignPreview(): Promise<ArrayBuffer> {
   context.fillStyle = '#FFFFFF'
   context.fillText('THANK YOU', 300, 690)
   return (await canvas.convertToBlob({ type: 'image/png' })).arrayBuffer()
+}
+
+/** Draws a stand-in isometric view of a part, like a part's `design_preview`. */
+async function mockPartPreview(): Promise<ArrayBuffer> {
+  const canvas = new OffscreenCanvas(800, 600)
+  const context = canvas.getContext('2d')
+  if (!context) throw new Error('mock preview: no 2d context')
+  context.fillStyle = '#F2F2F2'
+  context.fillRect(0, 0, 800, 600)
+  const face = (fill: string, points: Array<[number, number]>) => {
+    context.fillStyle = fill
+    context.beginPath()
+    points.forEach(([x, y], index) => (index === 0 ? context.moveTo(x, y) : context.lineTo(x, y)))
+    context.closePath()
+    context.fill()
+  }
+  face('#9A9EA4', [[250, 200], [450, 120], [600, 200], [400, 280]])
+  face('#6E7278', [[250, 200], [400, 280], [400, 420], [250, 340]])
+  face('#82868C', [[400, 280], [600, 200], [600, 340], [400, 420]])
+  return (await canvas.convertToBlob({ type: 'image/png' })).arrayBuffer()
+}
+
+/** Applies `next` to the part the scripted turn made, as the backend would. */
+async function updateMockPart(id: string, next: Partial<PartRevision>): Promise<PartRevision> {
+  const part = mockPartsMade.find((made) => made.id === id)
+  if (!part) throw `no revision ${id}`
+  const updated = { ...part, ...next, updated_at: new Date().toISOString() }
+  mockPartsMade = mockPartsMade.map((made) => (made.id === id ? updated : made))
+  await emit('designs:changed', id)
+  return structuredClone(updated)
 }
 
 async function updateMockSign(next: Partial<SignRevision>): Promise<SignRevision> {
@@ -682,11 +712,21 @@ export function installTauriBrowserMock() {
     }
 
     if (cmd === 'design_preview') {
-      return mockSignPreview()
+      const { id } = payload as { id: string }
+      return mockPartsMade.some((part) => part.id === id) ? mockPartPreview() : mockSignPreview()
     }
 
     if (cmd === 'design_approve') {
       const args = payload as { id: string; packageSha256: string; acknowledgedWarnings: string[] }
+      const part = mockPartsMade.find((made) => made.id === args.id)
+      if (part) {
+        if (part.build.status !== 'verified') throw 'only a verified build can be approved'
+        const { package_sha256 } = part.build.artifacts
+        if (args.packageSha256 !== package_sha256) throw `package hash mismatch: expected ${args.packageSha256}, found ${package_sha256}`
+        return updateMockPart(part.id, {
+          approval: { status: 'approved', package_sha256, acknowledged_warnings: args.acknowledgedWarnings, at: new Date().toISOString() },
+        })
+      }
       if (args.packageSha256 !== MOCK_SIGN_PACKAGE_SHA) {
         throw `package hash mismatch: expected ${args.packageSha256}, found ${MOCK_SIGN_PACKAGE_SHA}`
       }
@@ -705,11 +745,10 @@ export function installTauriBrowserMock() {
     }
 
     if (cmd === 'design_record_print') {
-      const args = payload as { passed: boolean; note: string }
+      const args = payload as { id: string; passed: boolean; note: string }
       const at = new Date().toISOString()
-      return updateMockSign({
-        print_validation: args.passed ? { status: 'passed', at, note: args.note } : { status: 'failed', at, note: args.note },
-      })
+      const print_validation: PrintValidation = args.passed ? { status: 'passed', at, note: args.note } : { status: 'failed', at, note: args.note }
+      return mockPartsMade.some((part) => part.id === args.id) ? updateMockPart(args.id, { print_validation }) : updateMockSign({ print_validation })
     }
 
     if (cmd === 'read_text_file') {
