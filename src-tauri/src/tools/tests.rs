@@ -282,13 +282,16 @@ async fn without_the_runtime_the_tools_refuse_part() {
 /// 0 and failed. Any other version still fails, in the schema and in validation.
 #[test]
 fn the_build_schema_states_the_schema_version_each_kind_accepts() {
+    for kind in KINDS {
+        let version = &kind.spec_schema()["properties"]["schema_version"];
+        assert!(version["const"].is_u64(), "{}'s schema states no schema_version: {version}", kind.id());
+    }
     let kinds: Vec<&'static dyn KindDriver> = KINDS.to_vec();
     let validator = jsonschema::validator_for(&Tool::Build.parameters(&kinds)).expect("schema");
     let sign: Value = serde_json::from_str(FIXTURE).expect("fixture json");
     for (id, spec) in [("sign", sign), ("part", crate::fabrication::kinds::part::tests::clip_spec())] {
         let kind = kind::find(id).expect("registered");
         let stated = kind.spec_schema()["properties"]["schema_version"]["const"].clone();
-        assert!(stated.is_u64(), "{id}'s schema states no schema_version: {}", kind.spec_schema()["properties"]["schema_version"]);
         let mut wrong = spec.clone();
         wrong["schema_version"] = json!(0);
         assert!(!validator.is_valid(&json!({ "kind": id, "spec": wrong })), "the schema accepts {id} schema_version 0");
