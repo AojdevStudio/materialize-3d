@@ -410,6 +410,49 @@ describe('Part detail', () => {
     expect(screen.queryByTestId('part-render')).toBeNull()
   })
 
+  it('never shows the previous revision\'s image beside the next revision while its view loads', async () => {
+    const r1 = part({ id: '44444444-4444-4444-8444-444444444444', number: 1 })
+    const r2 = part({ id: '55555555-5555-4555-8555-555555555555', number: 2 })
+    let blobs = 0
+    URL.createObjectURL = vi.fn(() => `blob:view-${++blobs}`)
+    invokeMock.mockImplementation(async (command: string, args?: { id?: string }) => {
+      switch (command) {
+        case 'design_list':
+          return [r1]
+        case 'design_lineage':
+          return [r2, r1]
+        case 'design_get':
+          return args?.id === r2.id ? r2 : r1
+        case 'design_preview':
+          // r2's view never arrives, so whatever shows beside r2 came from r1.
+          return args?.id === r1.id ? new ArrayBuffer(8) : new Promise(() => {})
+        default:
+          throw new Error(`unexpected command ${command}`)
+      }
+    })
+    render(<DesignsView />)
+    fireEvent.click(await screen.findByTestId('sign-revision-row'))
+    const detail = await screen.findByTestId('part-detail')
+    await waitFor(() => expect(screen.getByTestId('part-render').getAttribute('src')).toBe('blob:view-1'))
+
+    // Every committed DOM state, as a person would see it, until r2 shows.
+    const seen: Array<{ title: string | null | undefined; src: string | null | undefined }> = []
+    const observer = new MutationObserver(() =>
+      seen.push({
+        title: detail.querySelector('h2')?.textContent,
+        src: detail.querySelector('[data-testid=part-render]')?.getAttribute('src'),
+      }),
+    )
+    observer.observe(detail, { subtree: true, childList: true, characterData: true, attributes: true })
+    fireEvent.click(screen.getByRole('button', { name: /^r2/ }))
+    await waitFor(() => expect(detail.querySelector('h2')?.textContent).toBe('r2 of Desk-edge cable clip'))
+    observer.disconnect()
+
+    expect(seen.some(({ title }) => title === 'r2 of Desk-edge cable clip')).toBe(true)
+    expect(seen.filter(({ title }) => title === 'r2 of Desk-edge cable clip').map(({ src }) => src ?? null)).not.toContain('blob:view-1')
+    expect(screen.queryByTestId('part-render')).toBeNull()
+  })
+
   it('exports the approved package through the Save dialog', async () => {
     vi.mocked(save).mockResolvedValue('/Users/me/Desktop/Desk-edge cable clip-r3.3mf')
     const approved = part({ approval: APPROVED })
