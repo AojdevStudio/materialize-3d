@@ -276,6 +276,34 @@ async fn without_the_runtime_the_tools_refuse_part() {
     }
 }
 
+/// The build schema states the one `schema_version` each kind accepts, so a
+/// model that reads only the schema sends it. The part contract in the system
+/// prompt never names it, so in the 2026-10-06 drive the first part build sent
+/// 0 and failed. Any other version still fails, in the schema and in validation.
+#[test]
+fn the_build_schema_states_the_schema_version_each_kind_accepts() {
+    for kind in KINDS {
+        let version = &kind.spec_schema()["properties"]["schema_version"];
+        assert!(version["const"].is_u64(), "{}'s schema states no schema_version: {version}", kind.id());
+    }
+    let kinds: Vec<&'static dyn KindDriver> = KINDS.to_vec();
+    let validator = jsonschema::validator_for(&Tool::Build.parameters(&kinds)).expect("schema");
+    let sign: Value = serde_json::from_str(FIXTURE).expect("fixture json");
+    for (id, spec) in [("sign", sign), ("part", crate::fabrication::kinds::part::tests::clip_spec())] {
+        let kind = kind::find(id).expect("registered");
+        let stated = kind.spec_schema()["properties"]["schema_version"]["const"].clone();
+        let mut wrong = spec.clone();
+        wrong["schema_version"] = json!(0);
+        assert!(!validator.is_valid(&json!({ "kind": id, "spec": wrong })), "the schema accepts {id} schema_version 0");
+        let refused = kind.parse(wrong, &P2S_04).err().map(|e| e.to_string());
+        assert!(refused.as_deref().is_some_and(|e| e.contains("schema_version 0 is not supported")), "{id}: {refused:?}");
+        let mut right = spec;
+        right["schema_version"] = stated;
+        assert!(validator.is_valid(&json!({ "kind": id, "spec": right })), "the schema refuses {id}'s stated version");
+        kind.parse(right, &P2S_04).unwrap_or_else(|e| panic!("{id}'s stated version is refused: {e}"));
+    }
+}
+
 /// With the runtime, `part` is offered exactly like a sign: in the schema,
 /// in `describe_kind`, and past the build tool's kind check.
 #[tokio::test]

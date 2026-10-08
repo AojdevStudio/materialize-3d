@@ -25,6 +25,7 @@ fn default_inlay_depth() -> f64 {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SignSpec {
+    #[schemars(extend("const" = SIGN_SCHEMA_VERSION))]
     pub schema_version: u32,
     /// Shown in revision lists and embedded as the 3MF object name.
     #[serde(default)]

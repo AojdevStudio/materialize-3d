@@ -31,6 +31,7 @@ const NO_COLOUR: &str = "#808080";
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PartSpec {
+    #[schemars(extend("const" = PART_SCHEMA_VERSION))]
     pub schema_version: u32,
     /// Shown in revision lists and kept in the 3MF's Title metadata.
     pub title: String,
