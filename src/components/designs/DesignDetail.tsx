@@ -33,34 +33,37 @@ type PreviewState =
   | { status: 'ready'; url: string }
   | { status: 'error'; message: string }
 
-/** Loads `design_preview` PNG bytes into an object URL, revoked when the revision changes or the view unmounts. */
-function usePreview(id: RevisionId, hasPreview: boolean): PreviewState {
-  const [preview, setPreview] = useState<PreviewState>({ status: 'none' })
+/**
+ * Loads `design_preview` PNG bytes into an object URL, revoked when the
+ * revision changes or the view unmounts. What it loaded is tagged with the
+ * revision it belongs to, so another revision reads `loading`, never a
+ * previous revision's image.
+ */
+export function usePreview(id: RevisionId, hasPreview: boolean): PreviewState {
+  const [loaded, setLoaded] = useState<{ id: RevisionId; preview: PreviewState } | null>(null)
 
   useEffect(() => {
-    if (!hasPreview) {
-      setPreview({ status: 'none' })
-      return
-    }
+    if (!hasPreview) return
     let disposed = false
     let url: string | null = null
-    setPreview({ status: 'loading' })
     invoke<ArrayBuffer>('design_preview', { id })
       .then((bytes) => {
         if (disposed) return
         url = URL.createObjectURL(new Blob([bytes], { type: 'image/png' }))
-        setPreview({ status: 'ready', url })
+        setLoaded({ id, preview: { status: 'ready', url } })
       })
       .catch((error: unknown) => {
-        if (!disposed) setPreview({ status: 'error', message: String(error) })
+        if (!disposed) setLoaded({ id, preview: { status: 'error', message: String(error) } })
       })
     return () => {
       disposed = true
       if (url) URL.revokeObjectURL(url)
+      setLoaded(null)
     }
   }, [id, hasPreview])
 
-  return preview
+  if (!hasPreview) return { status: 'none' }
+  return loaded?.id === id ? loaded.preview : { status: 'loading' }
 }
 
 function Word({ word }: { word: StateWord }) {
@@ -124,7 +127,7 @@ function Axes({ revision }: { revision: Revision }) {
   )
 }
 
-function ChecksTable({ artifacts }: { artifacts: Artifacts }) {
+export function ChecksTable({ artifacts }: { artifacts: Artifacts }) {
   const rows = checkRows(artifacts.checks)
   // Warnings are listed, not counted: they never fail a build.
   const blocking = artifacts.checks.filter((check) => !check.advisory)
@@ -242,20 +245,9 @@ function Hashes({ artifacts }: { artifacts: Artifacts }) {
   )
 }
 
-/**
- * Approve, export, and the physical print result. Approve sends exactly the
- * package hash printed on the button and the warnings the checks table shows;
- * export and print recording appear only once that approval exists.
- */
-function Actions({ revision }: { revision: Revision }) {
-  const approve = useDesignsStore((state) => state.approve)
-  const exportPackage = useDesignsStore((state) => state.exportPackage)
-  const recordPrint = useDesignsStore((state) => state.recordPrint)
-  const error = useDesignsStore((state) => state.error)
+/** `busy` while one store action runs; `run` wraps each action a button starts. */
+export function useBusy() {
   const [busy, setBusy] = useState(false)
-  const [written, setWritten] = useState<string | null>(null)
-  const [note, setNote] = useState('')
-
   const run = async (action: () => Promise<void>) => {
     setBusy(true)
     try {
@@ -264,11 +256,20 @@ function Actions({ revision }: { revision: Revision }) {
       setBusy(false)
     }
   }
+  return { busy, run }
+}
 
-  const { build, approval } = revision
-  const approvableHash = build.status === 'verified' ? build.artifacts.package_sha256 : null
-  const warnings = build.status === 'verified' ? buildWarnings(build.artifacts) : []
-  const blocked = approveBlockedReason(revision)
+/**
+ * Export through the Save dialog and the physical print result, for an
+ * approved revision of any kind. Key it by revision so the export path and
+ * print note never carry over.
+ */
+export function ApprovedActions({ revision }: { revision: Revision }) {
+  const exportPackage = useDesignsStore((state) => state.exportPackage)
+  const recordPrint = useDesignsStore((state) => state.recordPrint)
+  const { busy, run } = useBusy()
+  const [written, setWritten] = useState<string | null>(null)
+  const [note, setNote] = useState('')
 
   const onExport = () =>
     run(async () => {
@@ -279,6 +280,67 @@ function Actions({ revision }: { revision: Revision }) {
       if (!destination) return
       setWritten(await exportPackage(revision.id, destination))
     })
+
+  return (
+    <>
+      <div className={styles.actionRow}>
+        <button type="button" data-testid="btn-export" className={styles.btn} disabled={busy} onClick={() => void onExport()}>
+          Export 3MF
+        </button>
+        {written && (
+          <span className={styles.muted} data-testid="export-path">
+            Wrote <code className={styles.mono}>{written}</code>
+          </span>
+        )}
+      </div>
+      <div className={styles.actionRow} data-testid="record-print">
+        <span>Record print result</span>
+        <span className={styles.dim}>human physical test</span>
+        <input
+          className={styles.noteInput}
+          type="text"
+          value={note}
+          placeholder="Note (optional)"
+          aria-label="Print result note"
+          onChange={(event) => setNote(event.target.value)}
+        />
+        <button
+          type="button"
+          data-testid="btn-print-passed"
+          className={styles.btn}
+          disabled={busy}
+          onClick={() => void run(() => recordPrint(revision.id, true, note.trim()))}
+        >
+          Passed
+        </button>
+        <button
+          type="button"
+          data-testid="btn-print-failed"
+          className={styles.btn}
+          disabled={busy}
+          onClick={() => void run(() => recordPrint(revision.id, false, note.trim()))}
+        >
+          Failed
+        </button>
+      </div>
+    </>
+  )
+}
+
+/**
+ * Approve, then export and the physical print result. Approve sends exactly
+ * the package hash printed on the button and the warnings the checks table
+ * shows; export and print recording appear only once that approval exists.
+ */
+function Actions({ revision }: { revision: Revision }) {
+  const approve = useDesignsStore((state) => state.approve)
+  const error = useDesignsStore((state) => state.error)
+  const { busy, run } = useBusy()
+
+  const { build, approval } = revision
+  const approvableHash = build.status === 'verified' ? build.artifacts.package_sha256 : null
+  const warnings = build.status === 'verified' ? buildWarnings(build.artifacts) : []
+  const blocked = approveBlockedReason(revision)
 
   return (
     <div className={styles.actions}>
@@ -301,50 +363,7 @@ function Actions({ revision }: { revision: Revision }) {
         </div>
       )}
 
-      {approval.status === 'approved' && (
-        <>
-          <div className={styles.actionRow}>
-            <button type="button" data-testid="btn-export" className={styles.btn} disabled={busy} onClick={() => void onExport()}>
-              Export 3MF
-            </button>
-            {written && (
-              <span className={styles.muted} data-testid="export-path">
-                Wrote <code className={styles.mono}>{written}</code>
-              </span>
-            )}
-          </div>
-          <div className={styles.actionRow} data-testid="record-print">
-            <span>Record print result</span>
-            <span className={styles.dim}>human physical test</span>
-            <input
-              className={styles.noteInput}
-              type="text"
-              value={note}
-              placeholder="Note (optional)"
-              aria-label="Print result note"
-              onChange={(event) => setNote(event.target.value)}
-            />
-            <button
-              type="button"
-              data-testid="btn-print-passed"
-              className={styles.btn}
-              disabled={busy}
-              onClick={() => void run(() => recordPrint(revision.id, true, note.trim()))}
-            >
-              Passed
-            </button>
-            <button
-              type="button"
-              data-testid="btn-print-failed"
-              className={styles.btn}
-              disabled={busy}
-              onClick={() => void run(() => recordPrint(revision.id, false, note.trim()))}
-            >
-              Failed
-            </button>
-          </div>
-        </>
-      )}
+      {approval.status === 'approved' && <ApprovedActions revision={revision} />}
 
       {error && (
         <div className={styles.bad} data-testid="sign-action-error">
@@ -356,19 +375,17 @@ function Actions({ revision }: { revision: Revision }) {
 }
 
 interface DesignDetailProps {
-  revision: Revision
+  revision: SignRevision
   lineage: Revision[]
 }
 
 /**
- * Preview-first review of one revision, with its design's other revisions
- * above the preview. Only a sign has its view here; a part's view, and its
- * approval, arrive with unit pr8-gui, so a part shows its state and checks.
+ * Preview-first review of one sign revision, with its design's other
+ * revisions above the preview. A part has its own view (`PartDetail`).
  */
 export function DesignDetail({ revision, lineage }: DesignDetailProps) {
   const open = useDesignsStore((state) => state.open)
   const artifacts = revisionArtifacts(revision)
-  const sign = revision.kind === 'sign' ? revision : null
 
   return (
     <div className={styles.split} data-testid="sign-detail">
@@ -376,13 +393,7 @@ export function DesignDetail({ revision, lineage }: DesignDetailProps) {
         <div className={styles.lineage}>
           <RevisionRows revisions={lineage} variant="lineage" currentId={revision.id} onOpen={(id) => void open(id)} />
         </div>
-        {sign ? (
-          <DesignPreview revision={sign} />
-        ) : (
-          <div className={styles.preview} data-testid="part-pending">
-            <span className={styles.muted}>The part view arrives with pr8-gui.</span>
-          </div>
-        )}
+        <DesignPreview revision={revision} />
       </div>
 
       <div className={styles.right}>
@@ -391,10 +402,10 @@ export function DesignDetail({ revision, lineage }: DesignDetailProps) {
         </h1>
         <Axes revision={revision} />
         {artifacts && <ChecksTable artifacts={artifacts} />}
-        {sign && <Materials revision={sign} artifacts={artifacts} />}
+        <Materials revision={revision} artifacts={artifacts} />
         {artifacts && <Hashes artifacts={artifacts} />}
         {/* Keyed so the export path and print note never carry over to another revision. */}
-        {sign && <Actions key={revision.id} revision={sign} />}
+        <Actions key={revision.id} revision={revision} />
       </div>
     </div>
   )

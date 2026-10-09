@@ -3,6 +3,7 @@ import { useEffect, useMemo } from 'react'
 import { BUILD_STEPS, errorMessage, useDesignsStore } from '../../stores/designs'
 import type { Kind, LineageId, Revision } from '../../types/designs'
 import { DesignDetail } from './DesignDetail'
+import { PartDetail } from './PartDetail'
 import { RevisionRows } from './RevisionRows'
 import styles from './DesignsView.module.css'
 
@@ -109,7 +110,7 @@ export function DesignsView() {
           {shown ? (
             <>
               <button type="button" className={styles.crumbLink} onClick={close}>
-                Signs
+                {shown.kind === 'sign' ? 'Signs' : 'Designs'}
               </button>
               <span className={styles.dim}>/</span>
               <span className={styles.ellipsis}>{shown.title}</span>
@@ -123,8 +124,10 @@ export function DesignsView() {
       </header>
       <BuildLine />
 
-      {shown ? (
+      {shown?.kind === 'sign' ? (
         <DesignDetail revision={shown} lineage={lineage} />
+      ) : shown ? (
+        <PartDetail revision={shown} lineage={lineage} />
       ) : (
         <div className={styles.recent}>
           {error && <div className={`${styles.empty} ${styles.bad}`}>{error}</div>}
