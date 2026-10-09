@@ -33,34 +33,37 @@ type PreviewState =
   | { status: 'ready'; url: string }
   | { status: 'error'; message: string }
 
-/** Loads `design_preview` PNG bytes into an object URL, revoked when the revision changes or the view unmounts. */
+/**
+ * Loads `design_preview` PNG bytes into an object URL, revoked when the
+ * revision changes or the view unmounts. What it loaded is tagged with the
+ * revision it belongs to, so another revision reads `loading`, never a
+ * previous revision's image.
+ */
 export function usePreview(id: RevisionId, hasPreview: boolean): PreviewState {
-  const [preview, setPreview] = useState<PreviewState>({ status: 'none' })
+  const [loaded, setLoaded] = useState<{ id: RevisionId; preview: PreviewState } | null>(null)
 
   useEffect(() => {
-    if (!hasPreview) {
-      setPreview({ status: 'none' })
-      return
-    }
+    if (!hasPreview) return
     let disposed = false
     let url: string | null = null
-    setPreview({ status: 'loading' })
     invoke<ArrayBuffer>('design_preview', { id })
       .then((bytes) => {
         if (disposed) return
         url = URL.createObjectURL(new Blob([bytes], { type: 'image/png' }))
-        setPreview({ status: 'ready', url })
+        setLoaded({ id, preview: { status: 'ready', url } })
       })
       .catch((error: unknown) => {
-        if (!disposed) setPreview({ status: 'error', message: String(error) })
+        if (!disposed) setLoaded({ id, preview: { status: 'error', message: String(error) } })
       })
     return () => {
       disposed = true
       if (url) URL.revokeObjectURL(url)
+      setLoaded(null)
     }
   }, [id, hasPreview])
 
-  return preview
+  if (!hasPreview) return { status: 'none' }
+  return loaded?.id === id ? loaded.preview : { status: 'loading' }
 }
 
 function Word({ word }: { word: StateWord }) {

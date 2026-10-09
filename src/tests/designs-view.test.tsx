@@ -317,6 +317,46 @@ describe('Designs view', () => {
     expect(screen.queryByTestId('part-pending')).toBeNull()
   })
 
+  it('never shows the previous revision\'s face beside the next sign revision while its preview loads', async () => {
+    const r1 = revision({ id: '66666666-6666-4666-8666-666666666666', number: 1 })
+    const r2 = revision({ id: '77777777-7777-4777-8777-777777777777', number: 2 })
+    let blobs = 0
+    URL.createObjectURL = vi.fn(() => `blob:view-${++blobs}`)
+    invokeMock.mockImplementation(async (command: string, args?: { id?: string }) => {
+      switch (command) {
+        case 'design_list':
+          return [r1]
+        case 'design_lineage':
+          return [r2, r1]
+        case 'design_get':
+          return args?.id === r2.id ? r2 : r1
+        case 'design_preview':
+          // r2's face never arrives, so whatever shows beside r2 came from r1.
+          return args?.id === r1.id ? new ArrayBuffer(8) : new Promise(() => {})
+        default:
+          throw new Error(`unexpected command ${command}`)
+      }
+    })
+    render(<DesignsView />)
+    fireEvent.click(await screen.findByTestId('sign-revision-row'))
+    const detail = await screen.findByTestId('sign-detail')
+    await waitFor(() => expect(screen.getByTestId('sign-preview').getAttribute('src')).toBe('blob:view-1'))
+
+    const title = () => detail.querySelector('h1')?.textContent
+    const seen: Array<{ title: string | null | undefined; src: string | null | undefined }> = []
+    const observer = new MutationObserver(() =>
+      seen.push({ title: title(), src: detail.querySelector('[data-testid=sign-preview]')?.getAttribute('src') }),
+    )
+    observer.observe(detail, { subtree: true, childList: true, characterData: true, attributes: true })
+    fireEvent.click(screen.getAllByTestId('sign-revision-row').find((row) => row.textContent?.startsWith('r2'))!)
+    await waitFor(() => expect(title()).toBe('r2 of Back Shortly'))
+    observer.disconnect()
+
+    expect(seen.some((state) => state.title === 'r2 of Back Shortly')).toBe(true)
+    expect(seen.filter((state) => state.title === 'r2 of Back Shortly').map(({ src }) => src ?? null)).not.toContain('blob:view-1')
+    expect(screen.queryByTestId('sign-preview')).toBeNull()
+  })
+
   it('shows an invalid build as not verified with its reason, and offers no approval', async () => {
     const reason = 'package changed on disk (now 9f00…) after approval'
     await openRevision(

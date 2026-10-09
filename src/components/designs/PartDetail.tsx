@@ -231,8 +231,7 @@ export function PartDetail({ revision, lineage }: PartDetailProps) {
     <div className={styles.partView} data-testid="part-detail">
       <RevisionStrip lineage={lineage} currentId={revision.id} onOpen={(id) => void open(id)} />
       <div className={styles.partBody}>
-        {/* Keyed so a new revision never shows the previous one's view while its own loads. */}
-        <PartRender key={revision.id} revision={revision} />
+        <PartRender revision={revision} />
         <div className={styles.partLower}>
           <div className={styles.partColumn}>
             <h2 className={styles.title}>
