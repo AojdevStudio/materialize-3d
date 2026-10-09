@@ -46,7 +46,15 @@ function RevisionStrip({ lineage, currentId, onOpen }: { lineage: Revision[]; cu
 function PartRender({ revision }: { revision: PartRevision }) {
   const hasView = revisionArtifacts(revision) !== null
   const preview = usePreview(revision.id, hasView)
-  if (!hasView) return <div className={`${styles.renderEmpty} ${styles.muted}`}>No view: this build made no model.</div>
+  if (!hasView) {
+    return (
+      <div className={`${styles.renderEmpty} ${styles.muted}`} data-testid="part-render-empty">
+        {revision.build.status === 'building'
+          ? `r${revision.number} is still building. Its view appears when the build ends.`
+          : 'No view: this build made no model.'}
+      </div>
+    )
+  }
 
   return (
     <div className={styles.render}>

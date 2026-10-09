@@ -410,6 +410,14 @@ describe('Part detail', () => {
     expect(screen.queryByTestId('part-render')).toBeNull()
   })
 
+  it('says a building part is still building, not that it made no model', async () => {
+    await openPart(part({ build: { status: 'building' } }))
+
+    expect(text('part-render-empty')).toBe('r3 is still building. Its view appears when the build ends.')
+    expect(text('part-blocked')).toBe('r3 is still building.')
+    expect(screen.queryByTestId('btn-approve')).toBeNull()
+  })
+
   it('never shows the previous revision\'s image beside the next revision while its view loads', async () => {
     const r1 = part({ id: '44444444-4444-4444-8444-444444444444', number: 1 })
     const r2 = part({ id: '55555555-5555-4555-8555-555555555555', number: 2 })
