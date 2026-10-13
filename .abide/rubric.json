@@ -1,0 +1,175 @@
+{
+  "version": 1,
+  "compiledAt": "2026-10-12T00:00:00.000Z",
+  "compiledBy": "claude",
+  "sources": [
+    {
+      "path": "AGENTS.md",
+      "sha": "a930145a3a9549e822d3a1a3c556e55191b1897ffc20cb95b584257ae6fcea52",
+      "scope": "**/*"
+    },
+    {
+      "path": "CLAUDE.md",
+      "sha": "e1a725b4dc704e08049324d2398c724b57467ad5420c16ecf77d2517917982b2",
+      "scope": "**/*"
+    }
+  ],
+  "rules": [
+    {
+      "id": "pr-proof-media",
+      "text": "Every PR that changes user-visible behavior must include watchable proof in the PR body: a video for flows, a screenshot at minimum for static changes.",
+      "source": {
+        "path": "AGENTS.md",
+        "line": 7
+      },
+      "check": {
+        "type": "unenforceable",
+        "reason": "about the PR body, not the code"
+      },
+      "status": "active"
+    },
+    {
+      "id": "pr-proof-no-relative-links",
+      "text": "The reviewer must see the proof without checking anything out. Never embed relative repo paths or `raw.githubusercontent.com` links; neither plays inline.",
+      "source": {
+        "path": "AGENTS.md",
+        "line": 11
+      },
+      "check": {
+        "type": "unenforceable",
+        "reason": "about the PR body, not the code"
+      },
+      "status": "active"
+    },
+    {
+      "id": "pr-proof-attach-with-gh",
+      "text": "Attach media with gh. For files GitHub will not take, use `pr-media <files>`.",
+      "source": {
+        "path": "AGENTS.md",
+        "line": 12
+      },
+      "check": {
+        "type": "unenforceable",
+        "reason": "about the PR process, not the code"
+      },
+      "status": "active"
+    },
+    {
+      "id": "pr-proof-verify-attachments",
+      "text": "Verify before relying on it: open the PR page and confirm each attachment renders, or curl the attachment URL returns 200.",
+      "source": {
+        "path": "AGENTS.md",
+        "line": 19
+      },
+      "check": {
+        "type": "unenforceable",
+        "reason": "about the PR process, not the code"
+      },
+      "status": "active"
+    },
+    {
+      "id": "pr-proof-retry-with-edit",
+      "text": "Check each attachment and retry a failed one with `gh pr edit <N> --attach <file>` instead of re-running `gh pr create`.",
+      "source": {
+        "path": "AGENTS.md",
+        "line": 19
+      },
+      "check": {
+        "type": "unenforceable",
+        "reason": "about the PR process, not the code"
+      },
+      "status": "active"
+    },
+    {
+      "id": "pr-media-check-passes",
+      "text": "If the PR links any `pr-media` file, `pr-media check` must pass.",
+      "source": {
+        "path": "AGENTS.md",
+        "line": 19
+      },
+      "check": {
+        "type": "unenforceable",
+        "reason": "about the PR process, not the code"
+      },
+      "status": "active"
+    },
+    {
+      "id": "pr-video-size",
+      "text": "Keep videos short (≤3 min, timelapse dead time), small (<5 MB), and 1600×900 or less.",
+      "source": {
+        "path": "AGENTS.md",
+        "line": 20
+      },
+      "check": {
+        "type": "unenforceable",
+        "reason": "about PR media files, not the code"
+      },
+      "status": "active"
+    },
+    {
+      "id": "reset-onboarding-data-dir",
+      "text": "To re-run onboarding, delete `~/.local/share/com.aojdevstudio.materialize3d/` before launch.",
+      "source": {
+        "path": "AGENTS.md",
+        "line": 32
+      },
+      "check": {
+        "type": "unenforceable",
+        "reason": "about running the app, not the code"
+      },
+      "status": "active"
+    },
+    {
+      "id": "pkill-bracket-glob",
+      "text": "`pkill -f \"<pattern>\"` in a shell command that itself contains `<pattern>` kills your own shell. Use bracket-globs (`[t]auri`) and never put the pattern twice in one command line.",
+      "source": {
+        "path": "AGENTS.md",
+        "line": 36
+      },
+      "check": {
+        "type": "unenforceable",
+        "reason": "about the agent's own shell commands, not the code"
+      },
+      "status": "active"
+    },
+    {
+      "id": "close-webkit-inspector",
+      "text": "WebKitGTK inspector opens automatically in debug builds; close it via its ✕ button before capturing.",
+      "source": {
+        "path": "AGENTS.md",
+        "line": 37
+      },
+      "check": {
+        "type": "unenforceable",
+        "reason": "about capturing proof, not the code"
+      },
+      "status": "active"
+    },
+    {
+      "id": "screenshot-verify-clicks",
+      "text": "Screenshot-verify between clicks, or seed state directly in SQLite (`settings` table in `materialize.db`).",
+      "source": {
+        "path": "AGENTS.md",
+        "line": 38
+      },
+      "check": {
+        "type": "unenforceable",
+        "reason": "about driving the app, not the code"
+      },
+      "status": "active"
+    },
+    {
+      "id": "run-slicer-tests",
+      "text": "cd packages/bambu-slicer && bun test",
+      "source": {
+        "path": "CLAUDE.md",
+        "line": 24
+      },
+      "check": {
+        "type": "unenforceable",
+        "reason": "about running tests, not the code"
+      },
+      "status": "active"
+    }
+  ]
+}
