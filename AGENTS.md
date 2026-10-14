@@ -1,17 +1,22 @@
 # AGENTS.md — Materialize 3D
 
 Project conventions for all AI agents working in this repo. Keep shared guidance in this file.
+Keep root `CLAUDE.md` absent, including ignored copies. Ignored instruction files can still be copied into the tracked checker rubric.
 
 ## Project context
 
 Materialize 3D provides agent-driven 3D modeling and Bambu Lab printer control.
 
-- Sign packages are Bambu project 3MFs. `src-tauri/src/fabrication/bambu` slices them with Bambu Studio 02.08.02.61, resolves P2S presets, and verifies the G-code.
+- Sign packages are Bambu project 3MFs. `src-tauri/src/fabrication/bambu` slices them with only the validated Bambu Studio 02.08.02.61 build, resolves P2S presets, and verifies the G-code.
 - The older STL path in `packages/bambu-slicer` and `src-tauri/src/slicer.rs` uses OrcaSlicer. It patches Bambu Studio G-code templates for OrcaSlicer at slice time.
-- Development needs network access to the configured printer. Keep device identifiers, addresses, and credentials outside tracked files.
+- Development needs network access to the configured printer. Keep private device identifiers, addresses, and credentials outside tracked files.
 - P2S Developer Mode enables local MQTT control and disables Bambu Handy access.
 
 Run the headless slicer tests from `packages/bambu-slicer` with `bun test`.
+
+## App verification
+
+For app verification, screenshots, recordings, or UI proof, use [.agents/skills/verify-materialize-3d/SKILL.md](.agents/skills/verify-materialize-3d/SKILL.md). Follow its Linux launch and feature recipes.
 
 ## PR proof policy (required)
 

@@ -38,5 +38,5 @@ dist-release/
 cad-runtime/out/
 cad-host/out/
 
-# Keep local harness notes out of the public repository.
+# Prevent re-adding the removed root instruction file.
 /CLAUDE.md

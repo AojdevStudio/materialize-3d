@@ -1,6 +1,6 @@
 # Materialize 3D verification map
 
-This directory is the maintained source for verifying Materialize 3D's user-facing behavior. Read this index before driving the app, then follow the matching feature file as the recipe. Commands assume `S=.claude/skills/verify-materialize-3d/scripts`, run from the checkout root on the Linux host.
+This directory is the maintained source for verifying Materialize 3D's user-facing behavior. Read this index before driving the app, then follow the matching feature file as the recipe. Commands assume `S=.agents/skills/verify-materialize-3d/scripts`, run from the checkout root on the Linux host.
 
 ## Baseline preconditions
 

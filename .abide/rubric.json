@@ -1,12 +1,12 @@
 {
   "version": 1,
-  "compiledAt": "2026-10-14T01:53:44.138Z",
+  "compiledAt": "2026-10-14T02:02:20.213Z",
   "compiledBy": "codex",
   "sources": [
     {
       "path": "AGENTS.md",
       "scope": "**/*",
-      "sha": "936e235190ebb7d01921548a97984482ca98d27e87a7ce9eff2877116aa67bdf"
+      "sha": "00909a81af77dc28bf78e221b90d9965867b60cd27a3bdeab1fd58349aa60cdc"
     }
   ],
   "rules": [
@@ -15,7 +15,7 @@
       "text": "Every PR that changes user-visible behavior **must** include watchable proof in the PR body: a video for flows, a screenshot at minimum for static changes.",
       "source": {
         "path": "AGENTS.md",
-        "line": 18
+        "line": 23
       },
       "check": {
         "type": "unenforceable",
@@ -28,7 +28,7 @@
       "text": "**The reviewer must see the proof without checking anything out.** Never embed relative repo paths or `raw.githubusercontent.com` links; neither plays inline.",
       "source": {
         "path": "AGENTS.md",
-        "line": 22
+        "line": 27
       },
       "check": {
         "type": "unenforceable",
@@ -41,7 +41,7 @@
       "text": "**Attach media with gh.** `gh pr create|edit|comment --attach <file>` (gh 2.99 or newer) uploads the file to GitHub and renders it inline in the PR. For files GitHub will not take, use `pr-media <files>`, which ships them as links; nothing on pr-media's host renders inline.",
       "source": {
         "path": "AGENTS.md",
-        "line": 23
+        "line": 28
       },
       "check": {
         "type": "unenforceable",
@@ -54,7 +54,7 @@
       "text": "**Verify before relying on it:** open the PR page and confirm each attachment renders, or `curl -sL -o /dev/null -w \"%{http_code}\" <attachment-url>` returns `200`.",
       "source": {
         "path": "AGENTS.md",
-        "line": 30
+        "line": 35
       },
       "check": {
         "type": "unenforceable",
@@ -67,7 +67,7 @@
       "text": "gh exits non-zero when some attachments fail even though it created or updated the PR, so check each attachment and retry a failed one with `gh pr edit <N> --attach <file>` instead of re-running `gh pr create`.",
       "source": {
         "path": "AGENTS.md",
-        "line": 30
+        "line": 35
       },
       "check": {
         "type": "unenforceable",
@@ -80,7 +80,7 @@
       "text": "If the PR links any `pr-media` file, `pr-media check` must pass.",
       "source": {
         "path": "AGENTS.md",
-        "line": 30
+        "line": 35
       },
       "check": {
         "type": "unenforceable",
@@ -93,7 +93,7 @@
       "text": "Keep videos short (≤3 min, timelapse dead time), small (<5 MB), and 1600×900 or less.",
       "source": {
         "path": "AGENTS.md",
-        "line": 31
+        "line": 36
       },
       "check": {
         "type": "unenforceable",
@@ -106,7 +106,7 @@
       "text": "To re-run onboarding, delete `~/.local/share/com.aojdevstudio.materialize3d/` before launch.",
       "source": {
         "path": "AGENTS.md",
-        "line": 43
+        "line": 48
       },
       "check": {
         "type": "unenforceable",
@@ -119,7 +119,7 @@
       "text": "`pkill -f \"<pattern>\"` in a shell command that itself contains `<pattern>` kills your own shell. Use bracket-globs (`[t]auri`) and never put the pattern twice in one command line.",
       "source": {
         "path": "AGENTS.md",
-        "line": 47
+        "line": 52
       },
       "check": {
         "type": "unenforceable",
@@ -132,7 +132,7 @@
       "text": "WebKitGTK inspector opens automatically in debug builds; close it via its ✕ button before capturing (F12 does nothing).",
       "source": {
         "path": "AGENTS.md",
-        "line": 48
+        "line": 53
       },
       "check": {
         "type": "unenforceable",
@@ -145,7 +145,7 @@
       "text": "Screenshot-verify between clicks, or seed state directly in SQLite (`settings` table in `~/.local/share/com.aojdevstudio.materialize3d/materialize.db`).",
       "source": {
         "path": "AGENTS.md",
-        "line": 49
+        "line": 54
       },
       "check": {
         "type": "unenforceable",
@@ -158,7 +158,7 @@
       "text": "Run the headless slicer tests from `packages/bambu-slicer` with `bun test`.",
       "source": {
         "path": "AGENTS.md",
-        "line": 14
+        "line": 15
       },
       "check": {
         "type": "unenforceable",
@@ -181,14 +181,40 @@
     },
     {
       "id": "private-device-context",
-      "text": "Keep device identifiers, addresses, and credentials outside tracked files.",
+      "text": "Keep private device identifiers, addresses, and credentials outside tracked files.",
       "source": {
         "path": "AGENTS.md",
-        "line": 11
+        "line": 12
       },
       "check": {
         "type": "deferred",
-        "reason": "needs authoritative knowledge of private device values and credentials"
+        "reason": "needs to distinguish actual private device data from documented examples and test data"
+      },
+      "status": "active"
+    },
+    {
+      "id": "root-claude-absent",
+      "text": "Keep root `CLAUDE.md` absent, including ignored copies. Ignored instruction files can still be copied into the tracked checker rubric.",
+      "source": {
+        "path": "AGENTS.md",
+        "line": 4
+      },
+      "check": {
+        "type": "deferred",
+        "reason": "requires checking instruction files on disk, including ignored files"
+      },
+      "status": "active"
+    },
+    {
+      "id": "app-verification-skill",
+      "text": "For app verification, screenshots, recordings, or UI proof, use [.agents/skills/verify-materialize-3d/SKILL.md](.agents/skills/verify-materialize-3d/SKILL.md). Follow its Linux launch and feature recipes.",
+      "source": {
+        "path": "AGENTS.md",
+        "line": 19
+      },
+      "check": {
+        "type": "unenforceable",
+        "reason": "about the app verification procedure, not application code"
       },
       "status": "active"
     }

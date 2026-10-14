@@ -18,7 +18,7 @@ Only one run per host. Vite's port 1420 is fixed by `vite.config.ts` (`strictPor
 ## Launch
 
 ```bash
-S=.claude/skills/verify-materialize-3d/scripts
+S=.agents/skills/verify-materialize-3d/scripts
 $S/m3d.sh up                 # deps, cargo build, Xvfb, Vite, tauri-driver; prints run dir
 $S/wd.ts session             # launches the app window; prints the session id
 $S/wd.ts wait 'nav[aria-label=Primary], [data-testid=onboarding-wizard]' 30000
