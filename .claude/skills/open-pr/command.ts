@@ -362,14 +362,14 @@ function ghApi(seg: string[], ctx: Ctx): PrCommand | null {
  * append to a file whose earlier text is unknown, marks the file null.
  */
 function trackWrites(seg: string[], ctx: Ctx): void {
-  const targets: { path: string; append: boolean }[] = [];
+  const targets: { path: string; append: boolean; stdout: boolean }[] = [];
   const args: string[] = [];
   for (let i = 0; i < seg.length; i++) {
-    const r = seg[i].match(/^\d*(>>|>\|?)(.*)$/);
+    const r = seg[i].match(/^(\d*)(>>|>\|?)(.*)$/);
     if (!r) args.push(seg[i]);
-    else if (!r[2].startsWith("&")) {
-      const path = r[2] || seg[++i];
-      if (path) targets.push({ path, append: r[1] === ">>" });
+    else if (!r[3].startsWith("&")) {
+      const path = r[3] || seg[++i];
+      if (path) targets.push({ path, append: r[2] === ">>", stdout: r[1] === "" || r[1] === "1" });
     }
   }
   const cmd = args[0];
@@ -377,14 +377,14 @@ function trackWrites(seg: string[], ctx: Ctx): void {
   const flags = args.slice(1).filter((a) => a.startsWith("-"));
   if (cmd === "tee") {
     const append = flags.some((f) => f === "--append" || /^-[a-z]*a/.test(f));
-    targets.push(...operands.map((path) => ({ path, append })));
+    targets.push(...operands.map((path) => ({ path, append, stdout: true })));
   }
   const doc = segmentDoc(seg, ctx);
   const known = doc !== undefined && (cmd === "tee" || (cmd === "cat" && operands.length === 0));
-  for (const { path, append } of targets) {
+  for (const { path, append, stdout } of targets) {
     const key = fileKey(path);
     const before = append ? ctx.written.get(key) : "";
-    ctx.written.set(key, !known || typeof before !== "string" ? null : before === "" ? doc : `${before}\n${doc}`);
+    ctx.written.set(key, !known || !stdout || typeof before !== "string" ? null : before === "" ? doc : `${before}\n${doc}`);
   }
 }
 
