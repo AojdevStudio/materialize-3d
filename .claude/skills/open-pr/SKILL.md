@@ -51,12 +51,12 @@ A repo without the kit gets it in its own PR, opened with this skill. Use the fi
 
 - The fleet store: `bun ~/.agents/skills/open-pr/kit.ts install <repo>`
 - A repo that already has the kit: `bun .claude/skills/open-pr/kit.ts install <repo>`
-- Neither: download the two skill folders from GitHub with `gh`, then run `kit.ts` from them.
+- Neither: download the two skill folders with `gh` from a repo that carries the kit in `.claude/skills/`, then run `kit.ts` from them. Set `src` to that repo.
 
   ```bash
   repo=/path/to/repo
   (set -e; kit=$(mktemp -d); trap 'rm -rf "$kit"' EXIT
-   src=repos/AojdevStudio/agents-config/contents/agents-config/kits/pr
+   src=repos/OWNER/REPO/contents/.claude/skills
    for s in open-pr land-pr; do
      mkdir "$kit/$s"
      gh api "$src/$s?ref=main" --jq '.[] | select(.type == "file") | .name' >"$kit/$s.files"
@@ -65,7 +65,9 @@ A repo without the kit gets it in its own PR, opened with this skill. Use the fi
    bun "$kit/open-pr/kit.ts" install "$repo")
   ```
 
-Pass `--runs-on <label>` when the repo has no workflow yet. A second run prints "PR kit already current".
+The runner label comes from `--runs-on <label>`, else the label in the installed `pr-kit.yml`, else the one self-hosted label the repo's other workflows use most. The kit refuses before writing anything when it finds none, a tie, or only a hosted label. Pass `--runs-on` then. A hosted label such as `ubuntu-24.04` is your call to make, never the kit's. A second run keeps the label and prints "PR kit already current".
+
+The gate hook uses `onFailure: "block"`, so a gate that times out or cannot start refuses the command instead of letting it run.
 
 ## Template
 

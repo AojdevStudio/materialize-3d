@@ -6,16 +6,21 @@
  * and PUT on `repos/O/R/pulls/N/merge`, including inside `ssh host '...'`.
  * Every `gh api graphql` call whose query is not a plain literal that provably neither
  * merges nor writes a PR comes back as a `graphql` command for the gate to refuse.
- * Heredoc bodies count as inline text, and so does a file that `cat > f <<EOF`
- * writes earlier in the same command.
+ * A REST write whose PR number is not literal comes back `unresolved`, for the gate to refuse.
+ * Heredoc bodies count as inline text, and so does a file that `cat > f <<EOF` or
+ * `tee f <<EOF` writes earlier in the same command, with `>>` and `tee -a` appending.
+ * Any other write to a file earlier in the command makes it `changed`, for the gate to refuse.
  *
  * Limit: this is a static read of the command text. `eval "gh ..."` and `gh api "$P"`
- * build the call at run time, so the parser cannot see them.
+ * build the call at run time, so the parser cannot see them. Writes by programs other than
+ * shell redirects and `tee` (`sed -i`, `cp`, a script) are not seen either.
  */
 
 export type BodySource =
   | { kind: "inline"; text: string }
   | { kind: "file"; path: string }
+  /** The command writes this file before gh reads it, in a way the parser cannot follow. */
+  | { kind: "changed"; path: string }
   | { kind: "missing" };
 
 interface Base {
@@ -35,7 +40,9 @@ export type PrCommand =
   /** `pinned`: the command itself names the repo with `-R`, a PR URL, or a literal REST path. */
   | (Base & { kind: "merge"; target?: string; pinned: boolean })
   /** `query` is the GraphQL text, or with `json` the `--input` request whose `query` field holds it. */
-  | (Base & { kind: "graphql"; query: BodySource; json: boolean; operationName: boolean });
+  | (Base & { kind: "graphql"; query: BodySource; json: boolean; operationName: boolean })
+  /** A REST PR write whose target the command builds at run time, so no check can name the PR. */
+  | (Base & { kind: "unresolved"; target: string });
 
 /**
  * What a GraphQL document can do to a PR: merge it, write it (create or update), or
@@ -204,17 +211,21 @@ function positional(args: string[], valued: string[]): string | undefined {
 
 interface Ctx {
   docs: string[];
-  /** Files written by `cat > f <<EOF` earlier in the command. */
-  written: Map<string, string>;
+  /** Files written earlier in the command: their text, or null when the parser cannot follow the write. */
+  written: Map<string, string | null>;
   dir?: string;
   host?: string;
 }
+
+/** The key a path is tracked under, so `./b.md` and `b.md` are one file. */
+const fileKey = (path: string): string => path.replace(/^(?:\.\/)+/, "");
 
 function inlineOrFile(value: string, ctx: Ctx, stdinDoc?: string): BodySource {
   const doc = value.match(HEREDOC);
   if (doc) return { kind: "inline", text: ctx.docs[Number(doc[1])] ?? "" };
   if (value === "-") return stdinDoc !== undefined ? { kind: "inline", text: stdinDoc } : { kind: "missing" };
-  const written = ctx.written.get(value);
+  const written = ctx.written.get(fileKey(value));
+  if (written === null) return { kind: "changed", path: value };
   if (written !== undefined) return { kind: "inline", text: written };
   return { kind: "file", path: value };
 }
@@ -308,9 +319,11 @@ function ghApi(seg: string[], ctx: Ctx): PrCommand | null {
     if (query.kind === "inline" && !json && graphqlRisk(query.text, operationName) === null) return null;
     return { via: seg.join(" ").slice(0, 120), dir: ctx.dir, host: ctx.host, kind: "graphql", query, json, operationName };
   }
-  const m = path?.match(/^repos\/([^/]+\/[^/]+)\/pulls(?:\/(\d+)(\/merge)?)?$/i);
+  const m = path?.match(/^repos\/([^/]+\/[^/]+)\/pulls(?:\/([^/]+)(\/merge)?)?$/i);
   if (!m) return null;
   const [, repo, number, merge] = m;
+  // `pulls/$PR` builds the PR number at run time, so a write there cannot be pinned to a PR.
+  const unresolved = number !== undefined && !/^\d+$/.test(number);
   const fields = new Map<string, string>();
   for (const f of flagValues(args, ["-f", "-F", "--field", "--raw-field"])) {
     const eq = f.indexOf("=");
@@ -322,10 +335,14 @@ function ghApi(seg: string[], ctx: Ctx): PrCommand | null {
   const body = (): BodySource | undefined => {
     const raw = fields.get("body");
     if (raw !== undefined) return raw.startsWith("@") ? inlineOrFile(raw.slice(1), ctx, segmentDoc(seg, ctx)) : inlineText(raw, ctx);
-    if (input !== undefined) return { kind: "file", path: `json:${input}` };
+    if (input !== undefined) return ctx.written.has(fileKey(input)) ? { kind: "changed", path: input } : { kind: "file", path: `json:${input}` };
     return undefined;
   };
-  if (merge) return method === "PUT" ? { ...base, kind: "merge", target: number, pinned: !repo.includes("{") && !hasFlag(args, ["--hostname"]) } : null;
+  if (merge) {
+    if (method !== "PUT") return null;
+    if (unresolved) return { ...base, kind: "unresolved", target: number };
+    return { ...base, kind: "merge", target: number, pinned: !repo.includes("{") && !hasFlag(args, ["--hostname"]) };
+  }
   if (!number && method === "POST") {
     return { ...base, kind: "create", title: fields.get("title"), draft: fields.get("draft") === "true", body: body() ?? { kind: "missing" } };
   }
@@ -333,9 +350,42 @@ function ghApi(seg: string[], ctx: Ctx): PrCommand | null {
     const b = body();
     const title = fields.get("title");
     if (b === undefined && title === undefined) return null;
+    if (unresolved) return { ...base, kind: "unresolved", target: number };
     return { ...base, kind: "edit", title, body: b };
   }
   return null;
+}
+
+/**
+ * Records the files `seg` writes. A `cat` or `tee` that reads only its heredoc writes known
+ * text: `>` and plain `tee` replace it, `>>` and `tee -a` append to it. Any other write, or an
+ * append to a file whose earlier text is unknown, marks the file null.
+ */
+function trackWrites(seg: string[], ctx: Ctx): void {
+  const targets: { path: string; append: boolean }[] = [];
+  const args: string[] = [];
+  for (let i = 0; i < seg.length; i++) {
+    const r = seg[i].match(/^\d*(>>|>\|?)(.*)$/);
+    if (!r) args.push(seg[i]);
+    else if (!r[2].startsWith("&")) {
+      const path = r[2] || seg[++i];
+      if (path) targets.push({ path, append: r[1] === ">>" });
+    }
+  }
+  const cmd = args[0];
+  const operands = args.slice(1).filter((a) => !a.startsWith("-") && !HEREDOC.test(a));
+  const flags = args.slice(1).filter((a) => a.startsWith("-"));
+  if (cmd === "tee") {
+    const append = flags.some((f) => f === "--append" || /^-[a-z]*a/.test(f));
+    targets.push(...operands.map((path) => ({ path, append })));
+  }
+  const doc = segmentDoc(seg, ctx);
+  const known = doc !== undefined && (cmd === "tee" || (cmd === "cat" && operands.length === 0));
+  for (const { path, append } of targets) {
+    const key = fileKey(path);
+    const before = append ? ctx.written.get(key) : "";
+    ctx.written.set(key, !known || typeof before !== "string" ? null : before === "" ? doc : `${before}\n${doc}`);
+  }
 }
 
 const SSH_VALUED = ["-b", "-c", "-D", "-E", "-e", "-F", "-I", "-i", "-J", "-L", "-l", "-m", "-O", "-o", "-p", "-Q", "-R", "-S", "-W", "-w"];
@@ -363,13 +413,9 @@ function scan(command: string, ctx: Ctx): PrCommand[] {
       ctx.dir = ctx.dir && !seg[1].startsWith("/") && !seg[1].startsWith("~") ? `${ctx.dir}/${seg[1]}` : seg[1];
       continue;
     }
-    if (seg[0] === "cat" || seg[0] === "tee") {
-      const at = seg.findIndex((t) => /^>\|?$/.test(t));
-      const target = seg[0] === "tee" ? seg[1] : at >= 0 ? seg[at + 1] : seg.find((t) => /^>\|?./.test(t))?.replace(/^>\|?/, "");
-      const doc = segmentDoc(seg, ctx);
-      if (target && doc !== undefined) ctx.written.set(target, doc);
-      continue;
-    }
+    // The shell opens redirects before the command runs, so a segment's own writes come first.
+    trackWrites(seg, ctx);
+    if (seg[0] === "cat" || seg[0] === "tee") continue;
     if (seg[0] === "ssh") {
       let i = 1;
       while (i < seg.length && seg[i].startsWith("-")) i += SSH_VALUED.includes(seg[i]) ? 2 : 1;

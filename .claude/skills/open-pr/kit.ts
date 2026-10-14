@@ -6,7 +6,7 @@
  *   bun kit.ts install <repo> [--runs-on <label>]
  *
  * The sources sit next to this file: `open-pr` is its folder and `land-pr` is the sibling.
- * That holds in agents-config/kits/pr, the fleet store, and an installed repo's
+ * That holds in the kit's source folder, the fleet store, and an installed repo's
  * .claude/skills, so any copy can install the kit into another repo.
  *
  * Writes, inside <repo>:
@@ -68,7 +68,7 @@ function copySkill(name: (typeof SKILLS)[number]): void {
     rmSync(join(dest, file), { recursive: true });
     note(`removed ${relative(repo, join(dest, file))}`);
   }
-  writeIfChanged(join(dest, MARKER), "Installed by the PR kit (open-pr/kit.ts). Edit the kit in agents-config/kits/pr, not here.\n");
+  writeIfChanged(join(dest, MARKER), "Installed by the PR kit (open-pr/kit.ts). Edit the kit at its source, not here.\n");
 }
 
 function linkSkill(name: string): void {
@@ -86,40 +86,60 @@ function linkSkill(name: string): void {
 
 const isObj = (x: unknown): x is Record<string, unknown> => typeof x === "object" && x !== null && !Array.isArray(x);
 
+/**
+ * The gate hook's settings. 120 seconds covers a merge check's chain of `gh` calls (8 seconds
+ * each). `onFailure: "block"` makes a gate that times out, fails to start, or crashes deny
+ * the call, since Claude Code otherwise lets it run.
+ */
+const HOOK_SETTINGS = { timeout: 120, onFailure: "block" } as const;
+
+/** Wires the gate hook, and brings an entry from an earlier install up to HOOK_SETTINGS. */
 function wireHook(): void {
   const path = join(repo, ".claude", "settings.json");
   const settings: unknown = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : {};
   if (!isObj(settings)) throw new Error(`${relative(repo, path)} is not a JSON object`);
   const hooks = isObj(settings.hooks) ? settings.hooks : {};
   const pre: unknown[] = Array.isArray(hooks.PreToolUse) ? hooks.PreToolUse : [];
-  const wired = pre.some((m) => isObj(m) && Array.isArray(m.hooks) && m.hooks.some((h) => isObj(h) && h.command === HOOK));
-  if (wired) return;
-  pre.push({ matcher: "Bash", hooks: [{ type: "command", command: HOOK, timeout: 60 }] });
+  const ours = pre.flatMap((m) => (isObj(m) && Array.isArray(m.hooks) ? m.hooks.filter((h): h is Record<string, unknown> => isObj(h) && h.command === HOOK) : []));
+  const stale = ours.filter((h) => Object.entries(HOOK_SETTINGS).some(([k, v]) => h[k] !== v));
+  if (ours.length > 0 && stale.length === 0) return;
+  for (const h of stale) Object.assign(h, HOOK_SETTINGS);
+  if (ours.length === 0) pre.push({ matcher: "Bash", hooks: [{ type: "command", command: HOOK, ...HOOK_SETTINGS }] });
   hooks.PreToolUse = pre;
   settings.hooks = hooks;
   writeIfChanged(path, JSON.stringify(settings, null, 2) + "\n");
 }
 
-/** The runner label: the flag, else the label most of the repo's workflows already use. */
+const RUNS_ON = /^\s*runs-on:\s*(\S.*?)\s*$/gm;
+
+/**
+ * The runner label: the flag, else the label the installed pr-kit.yml already uses, else the
+ * one label most of the repo's other workflows use. Inference never picks a paid hosted
+ * label, and a tie for most used is refused, so the result never depends on file order.
+ */
 function runnerLabel(): string {
   if (values["runs-on"]) return values["runs-on"];
   const dir = join(repo, ".github", "workflows");
+  const installed = join(dir, "pr-kit.yml");
+  if (existsSync(installed)) {
+    const label = [...readFileSync(installed, "utf8").matchAll(RUNS_ON)][0]?.[1];
+    if (!label) throw new Error(`${relative(repo, installed)} has no single-line runs-on label. Pass --runs-on <label>.`);
+    return label;
+  }
   const counts = new Map<string, number>();
   for (const f of existsSync(dir) ? readdirSync(dir) : []) {
-    if (f === "pr-kit.yml") continue;
-    for (const m of readFileSync(join(dir, f), "utf8").matchAll(/^\s*runs-on:\s*(\S.*?)\s*$/gm)) {
-      counts.set(m[1], (counts.get(m[1]) ?? 0) + 1);
-    }
+    for (const m of readFileSync(join(dir, f), "utf8").matchAll(RUNS_ON)) counts.set(m[1], (counts.get(m[1]) ?? 0) + 1);
   }
-  const best = [...counts].sort((a, b) => b[1] - a[1])[0]?.[0];
-  if (!best || /^(ubuntu|macos|windows)-|\$\{\{/.test(best)) {
-    throw new Error(`no self-hosted runner label found (best guess: ${best ?? "none"}). Pass --runs-on <label>. Never default to paid hosted minutes.`);
+  const top = Math.max(0, ...counts.values());
+  const best = [...counts].filter(([, n]) => n === top).map(([label]) => label).sort();
+  if (best.length !== 1 || /^(ubuntu|macos|windows)-|\$\{\{/.test(best[0])) {
+    throw new Error(`no single self-hosted runner label found (most used: ${best.join(", ") || "none"}). Pass --runs-on <label>. Never default to paid hosted minutes.`);
   }
-  return best;
+  return best[0];
 }
 
-function writeWorkflow(): void {
-  const yml = readFileSync(join(SOURCE["open-pr"], "pr-kit.yml"), "utf8").replace("__RUNS_ON__", runnerLabel());
+function writeWorkflow(label: string): void {
+  const yml = readFileSync(join(SOURCE["open-pr"], "pr-kit.yml"), "utf8").replace("__RUNS_ON__", label);
   writeIfChanged(join(repo, ".github", "workflows", "pr-kit.yml"), yml);
 }
 
@@ -133,10 +153,12 @@ function writeBlock(path: string): void {
   writeIfChanged(path, next);
 }
 
+// Resolve the runner before any write, so a missing label cannot leave a partial install.
+const label = runnerLabel();
 for (const name of SKILLS) copySkill(name);
 for (const name of SKILLS) linkSkill(name);
 wireHook();
-writeWorkflow();
+writeWorkflow(label);
 writeBlock(join(repo, "AGENTS.md"));
 const claude = join(repo, "CLAUDE.md");
 if (existsSync(claude) && !readFileSync(claude, "utf8").includes("AGENTS.md")) writeBlock(claude);

@@ -7,18 +7,23 @@
  * the previous head and the head is a merge commit on top of it (a conflict fix), the
  * approval carries forward, provided the merged-in parent is on the base branch.
  *
- * agents-config is Ossie's curated settings repo, and no review bot gates it. The list
- * lives here in the kit, never in a file the target repo could edit. The exemption holds
- * only when the merge command names the repo itself, because a repo guessed from the cwd
- * or the environment can differ from the one gh merges.
+ * The kit's source repo is Ossie's curated settings repo, and no review bot gates it. The
+ * list lives here in the kit, never in a file the target repo could edit. It holds SHA-256
+ * digests of lowercase `owner/name`, so the kit can ship to public repos without naming a
+ * private one. The exemption holds only when the merge command names the repo itself,
+ * because a repo guessed from the cwd or the environment can differ from the one gh merges.
  */
 
 export const PASS_SIGNAL = "pullfrog-approval";
 
-const BOT_EXEMPT = new Set(["aojdevstudio/agents-config", "aojdevstudios/agents-config"]);
+const BOT_EXEMPT = new Set([
+  "6159f38c55dea314c96c15a2b5ddf2edd32a5b51019c9d0b4521e2ff077c0815",
+  "8425c2e91b73ef6b8e23370c43b9c5d4bb3db376684cbadcc131c269dff47bbe",
+]);
 
 /** True for a repo that no review bot gates. `repo` is `owner/name`, any case. */
-export const botExempt = (repo: string): boolean => BOT_EXEMPT.has(repo.toLowerCase());
+export const botExempt = (repo: string): boolean =>
+  BOT_EXEMPT.has(new Bun.CryptoHasher("sha256").update(repo.toLowerCase()).digest("hex"));
 
 export interface CheckRun {
   name: string;

@@ -11,12 +11,14 @@
  *
  * Two installs run this same file. A repo carries it at .claude/skills/open-pr/gate.ts,
  * wired in the repo's .claude/settings.json, so cloud sessions get it. The MacBook also
- * wires ~/.claude/agents-config/kits/pr/open-pr/gate.ts globally. The global copy never
+ * wires the kit's source copy globally. The global copy never
  * stands down: in a repo with its own copy both run, and both check the same contract,
  * so a repo cannot swap in a weaker gate.
  *
  * Exit 0 allows, exit 2 denies with the reason on stderr. A PR write that cannot be
- * checked is denied, never passed. PR_KIT_OFF=1 is Ossie's switch, never an agent's.
+ * checked is denied, never passed. Claude Code lets the tool call run when a hook times
+ * out, fails to start, or exits with another code, so kit.ts wires the hook with
+ * `onFailure: "block"`. PR_KIT_OFF=1 is Ossie's switch, never an agent's.
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -74,6 +76,7 @@ function expand(path: string, cwd: string): string {
 function readBody(source: BodySource, cmd: PrCommand, cwd: string): string {
   if (source.kind === "inline") return source.text;
   if (source.kind === "missing") throw new Refusal("the command sets no body. Write the body with the open-pr skill and pass it with --body-file.");
+  if (source.kind === "changed") throw new Refusal(`this command writes ${source.path} before gh reads it, in a way this gate cannot follow. Write the whole body with one \`cat > ${source.path} <<'EOF'\`, or in an earlier command.`);
   if (cmd.host) throw new Refusal(`the body file ${source.path} is on ${cmd.host}, so this gate cannot read it. Pass the body inline with a heredoc.`);
   if (source.path.startsWith("json:")) {
     const file = expand(source.path.slice(5), cwd);
@@ -148,7 +151,7 @@ const UNREADABLE = "this gate cannot read the GraphQL query, so it cannot prove 
 /** The GraphQL text of a `graphql` command, or null when this gate cannot read it. */
 function graphqlText(cmd: Extract<PrCommand, { kind: "graphql" }>, cwd: string): string | null {
   const { query } = cmd;
-  if (query.kind === "missing" || (query.kind === "file" && cmd.host)) return null;
+  if (query.kind === "missing" || query.kind === "changed" || (query.kind === "file" && cmd.host)) return null;
   const file = query.kind === "file" ? expand(query.path, cwd) : null;
   if (file !== null && !existsSync(file)) return null;
   const raw = file === null ? (query.kind === "inline" ? query.text : "") : readFileSync(file, "utf8");
@@ -190,15 +193,24 @@ function check(cmd: PrCommand, hookCwd: string): void {
   const cwd = cmd.host ? hookCwd : expand(cmd.dir ?? ".", hookCwd);
   if (cmd.kind === "merge") return checkMerge(cmd, cwd);
   if (cmd.kind === "graphql") return checkGraphql(cmd, cwd);
+  if (cmd.kind === "unresolved") throw new Refusal(`the PR number \`${cmd.target}\` is not a literal number, so this gate cannot tell which PR this writes. Put the number in the path, for example \`repos/${cmd.repo}/pulls/38\`.`);
   if (cmd.kind === "create") return contract({ title: cmd.title, draft: cmd.draft, body: readBody(cmd.body, cmd, cwd) });
   if (cmd.body) return contract({ title: cmd.title, body: readBody(cmd.body, cmd, cwd) });
   const title = cmd.title === undefined ? null : titleViolation(cmd.title);
   if (title) throw new Refusal(`the PR title breaks the contract:\n${formatViolations([title])}`);
 }
 
-const input = parseInput(await new Response(Bun.stdin.stream()).text());
-if (process.env.PR_KIT_OFF === "1" || input.tool !== "Bash") process.exit(0);
-const commands = findPrCommands(input.command);
+if (process.env.PR_KIT_OFF === "1") process.exit(0);
+let input: HookInput;
+let commands: PrCommand[];
+try {
+  input = parseInput(await new Response(Bun.stdin.stream()).text());
+  commands = input.tool === "Bash" ? findPrCommands(input.command) : [];
+} catch (err) {
+  // An exit other than 0 or 2 lets the tool call run, so a payload the gate cannot read is refused here.
+  process.stderr.write(`PR kit blocked this command: the gate could not read the hook input (${String(err)}).\n`);
+  process.exit(2);
+}
 if (commands.length === 0) process.exit(0);
 const cwd = input.cwd;
 

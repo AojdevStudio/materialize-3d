@@ -16,8 +16,8 @@ The PR gate refuses a merge unless the PR body passes the contract and the revie
 
 | Condition | Rule |
 |---|---|
-| Pass signal | The `pullfrog-approval` check-run concludes `success` on the exact head SHA. Missing, running, failed, or stale verdicts do not pass. agents-config is Ossie's curated settings repo and is never gated by a review bot. |
-| agents-config merges | Name the repo in the merge command: `-R AojdevStudio/agents-config` or the PR URL. The gate grants the exemption only then. |
+| Pass signal | The `pullfrog-approval` check-run concludes `success` on the exact head SHA. Missing, running, failed, or stale verdicts do not pass. The kit's source repo is Ossie's curated settings repo and is never gated by a review bot. |
+| Source repo merges | Name the repo in the merge command: `-R <owner>/<repo>` or the PR URL. The gate grants the exemption only then. |
 | Conflict fix | When the bot approved the previous head and the only new commit merges the base to resolve conflicts, prove the resolution and merge on that approval. The gate allows this case. |
 | CI | Required checks pass on the same head. |
 | Threads | Fix actionable findings. Resolve bot threads with evidence. Resolve or disposition every other thread. |
