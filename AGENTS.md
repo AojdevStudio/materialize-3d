@@ -1,7 +1,7 @@
 # AGENTS.md — Materialize 3D
 
 Project conventions for all AI agents working in this repo. Keep shared guidance in this file.
-Keep root `CLAUDE.md` absent, including ignored copies. Ignored instruction files can still be copied into the tracked checker rubric.
+Keep `CLAUDE.md`, `.claude/CLAUDE.md`, and `CLAUDE.local.md` absent from this repo, including ignored copies. Ignored root instruction files can still be copied into the tracked checker rubric.
 
 ## Project context
 
@@ -37,18 +37,8 @@ Every PR that changes user-visible behavior **must** include watchable proof in 
 
 ## Recording on the Linux host
 
-The app runs headless on the devdesk X server:
-
-```bash
-DISPLAY=:99 bun run tauri dev           # app on the virtual display
-ffmpeg -f x11grab -video_size 1920x1080 -framerate 24 -i :99 out.mp4   # record
-DISPLAY=:99 scrot shot.png              # still
-```
-
-Mouse input via libxdo (no xdotool CLI installed). To re-run onboarding, delete `~/.local/share/com.aojdevstudio.materialize3d/` before launch.
+Follow the shared verification skill for `m3d.sh record start`, `m3d.sh record stop`, `wd.ts shot`, and `m3d.sh close-inspector`. Its launch creates isolated app data for each run.
 
 ## Pitfalls learned (don't re-step on these)
 
 - `pkill -f "<pattern>"` in a shell command that itself contains `<pattern>` kills your own shell. Use bracket-globs (`[t]auri`) and never put the pattern twice in one command line.
-- WebKitGTK inspector opens automatically in debug builds; close it via its ✕ button before capturing (F12 does nothing).
-- Blind X11 clicks break when error banners shift layouts mid-flow. Screenshot-verify between clicks, or seed state directly in SQLite (`settings` table in `~/.local/share/com.aojdevstudio.materialize3d/materialize.db`).

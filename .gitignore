@@ -40,3 +40,5 @@ cad-host/out/
 
 # Prevent re-adding the removed root instruction file.
 /CLAUDE.md
+/.claude/CLAUDE.md
+/CLAUDE.local.md

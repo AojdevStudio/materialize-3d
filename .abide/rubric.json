@@ -1,12 +1,12 @@
 {
   "version": 1,
-  "compiledAt": "2026-10-14T02:02:20.213Z",
+  "compiledAt": "2026-10-14T02:14:42.514Z",
   "compiledBy": "codex",
   "sources": [
     {
       "path": "AGENTS.md",
       "scope": "**/*",
-      "sha": "00909a81af77dc28bf78e221b90d9965867b60cd27a3bdeab1fd58349aa60cdc"
+      "sha": "88c00d2b58ca59e64f55704e01d624ec589b4deac176bbd5815c75a9b9c214d9"
     }
   ],
   "rules": [
@@ -102,54 +102,15 @@
       "status": "active"
     },
     {
-      "id": "reset-onboarding-data-dir",
-      "text": "To re-run onboarding, delete `~/.local/share/com.aojdevstudio.materialize3d/` before launch.",
-      "source": {
-        "path": "AGENTS.md",
-        "line": 48
-      },
-      "check": {
-        "type": "unenforceable",
-        "reason": "about running the app, not the code"
-      },
-      "status": "active"
-    },
-    {
       "id": "pkill-bracket-glob",
       "text": "`pkill -f \"<pattern>\"` in a shell command that itself contains `<pattern>` kills your own shell. Use bracket-globs (`[t]auri`) and never put the pattern twice in one command line.",
       "source": {
         "path": "AGENTS.md",
-        "line": 52
+        "line": 44
       },
       "check": {
         "type": "unenforceable",
         "reason": "about the agent's own shell commands, not the code"
-      },
-      "status": "active"
-    },
-    {
-      "id": "close-webkit-inspector",
-      "text": "WebKitGTK inspector opens automatically in debug builds; close it via its ✕ button before capturing (F12 does nothing).",
-      "source": {
-        "path": "AGENTS.md",
-        "line": 53
-      },
-      "check": {
-        "type": "unenforceable",
-        "reason": "about capturing proof, not the code"
-      },
-      "status": "active"
-    },
-    {
-      "id": "screenshot-verify-clicks",
-      "text": "Screenshot-verify between clicks, or seed state directly in SQLite (`settings` table in `~/.local/share/com.aojdevstudio.materialize3d/materialize.db`).",
-      "source": {
-        "path": "AGENTS.md",
-        "line": 54
-      },
-      "check": {
-        "type": "unenforceable",
-        "reason": "about driving the app, not the code"
       },
       "status": "active"
     },
@@ -194,7 +155,7 @@
     },
     {
       "id": "root-claude-absent",
-      "text": "Keep root `CLAUDE.md` absent, including ignored copies. Ignored instruction files can still be copied into the tracked checker rubric.",
+      "text": "Keep `CLAUDE.md`, `.claude/CLAUDE.md`, and `CLAUDE.local.md` absent from this repo, including ignored copies. Ignored root instruction files can still be copied into the tracked checker rubric.",
       "source": {
         "path": "AGENTS.md",
         "line": 4
@@ -215,6 +176,19 @@
       "check": {
         "type": "unenforceable",
         "reason": "about the app verification procedure, not application code"
+      },
+      "status": "active"
+    },
+    {
+      "id": "linux-recording-skill",
+      "text": "Follow the shared verification skill for `m3d.sh record start`, `m3d.sh record stop`, `wd.ts shot`, and `m3d.sh close-inspector`. Its launch creates isolated app data for each run.",
+      "source": {
+        "path": "AGENTS.md",
+        "line": 40
+      },
+      "check": {
+        "type": "unenforceable",
+        "reason": "about running the app verification procedure"
       },
       "status": "active"
     }
