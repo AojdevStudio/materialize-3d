@@ -37,3 +37,8 @@ dist-release/
 # CAD worker spike (PR 5): image build outputs and local run outputs
 cad-runtime/out/
 cad-host/out/
+
+# Prevent re-adding the removed root instruction file.
+/CLAUDE.md
+/.claude/CLAUDE.md
+/CLAUDE.local.md
