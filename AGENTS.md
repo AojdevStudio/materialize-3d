@@ -36,3 +36,11 @@ Mouse input via libxdo (no xdotool CLI installed). To re-run onboarding, delete 
 - `pkill -f "<pattern>"` in a shell command that itself contains `<pattern>` kills your own shell. Use bracket-globs (`[t]auri`) and never put the pattern twice in one command line.
 - WebKitGTK inspector opens automatically in debug builds; close it via its ✕ button before capturing (F12 does nothing).
 - Blind X11 clicks break when error banners shift layouts mid-flow. Screenshot-verify between clicks, or seed state directly in SQLite (`settings` table in `~/.local/share/com.aojdevstudio.materialize3d/materialize.db`).
+
+<!-- pr-kit:start -->
+## Pull requests
+
+- Open every PR with the `open-pr` skill and land it with the `land-pr` skill. Both live in `.claude/skills/`.
+- The PR body has five fixed sections: Problem, Change, Proof, Review, Merge danger. Merge danger names the door and the blast radius.
+- The open-pr gate and the `pr-kit` CI check refuse a body that breaks the contract. Fix the body. Never route around either.
+<!-- pr-kit:end -->
