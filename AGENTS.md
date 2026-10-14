@@ -1,6 +1,22 @@
 # AGENTS.md — Materialize 3D
 
-Project conventions for AI agents working in this repo. Read alongside CLAUDE.md.
+Project conventions for all AI agents working in this repo. Keep shared guidance in this file.
+Keep `CLAUDE.md`, `.claude/CLAUDE.md`, and `CLAUDE.local.md` absent from this repo, including ignored copies. Ignored root instruction files can still be copied into the tracked checker rubric.
+
+## Project context
+
+Materialize 3D provides agent-driven 3D modeling and Bambu Lab printer control.
+
+- Sign packages are Bambu project 3MFs. `src-tauri/src/fabrication/bambu` slices them with only the validated Bambu Studio 02.08.02.61 build, resolves P2S presets, and verifies the G-code.
+- The older STL path in `packages/bambu-slicer` and `src-tauri/src/slicer.rs` uses OrcaSlicer. It patches Bambu Studio G-code templates for OrcaSlicer at slice time.
+- Development needs network access to the configured printer. Keep private device identifiers, addresses, and credentials outside tracked files.
+- P2S Developer Mode enables local MQTT control and disables Bambu Handy access.
+
+Run the headless slicer tests from `packages/bambu-slicer` with `bun test`.
+
+## App verification
+
+For app verification, screenshots, recordings, or UI proof, use [.agents/skills/verify-materialize-3d/SKILL.md](.agents/skills/verify-materialize-3d/SKILL.md). Follow its Linux launch and feature recipes.
 
 ## PR proof policy (required)
 
@@ -21,18 +37,8 @@ Every PR that changes user-visible behavior **must** include watchable proof in 
 
 ## Recording on the Linux host
 
-The app runs headless on the devdesk X server:
-
-```bash
-DISPLAY=:99 npm run tauri dev           # app on the virtual display
-ffmpeg -f x11grab -video_size 1920x1080 -framerate 24 -i :99 out.mp4   # record
-DISPLAY=:99 scrot shot.png              # still
-```
-
-Mouse input via libxdo (no xdotool CLI installed). To re-run onboarding, delete `~/.local/share/com.aojdevstudio.materialize3d/` before launch.
+Follow the shared verification skill for `m3d.sh record start`, `m3d.sh record stop`, `wd.ts shot`, and `m3d.sh close-inspector`. Its launch creates isolated app data for each run.
 
 ## Pitfalls learned (don't re-step on these)
 
 - `pkill -f "<pattern>"` in a shell command that itself contains `<pattern>` kills your own shell. Use bracket-globs (`[t]auri`) and never put the pattern twice in one command line.
-- WebKitGTK inspector opens automatically in debug builds; close it via its ✕ button before capturing (F12 does nothing).
-- Blind X11 clicks break when error banners shift layouts mid-flow. Screenshot-verify between clicks, or seed state directly in SQLite (`settings` table in `~/.local/share/com.aojdevstudio.materialize3d/materialize.db`).
