@@ -5,8 +5,8 @@
   "sources": [
     {
       "path": "AGENTS.md",
-      "scope": "**/*",
-      "sha": "88c00d2b58ca59e64f55704e01d624ec589b4deac176bbd5815c75a9b9c214d9"
+      "sha": "0910ee72bfec46d318c6aa71f607c4b10afcc584cb74501df9d77d929c4f7433",
+      "scope": "**/*"
     }
   ],
   "rules": [
