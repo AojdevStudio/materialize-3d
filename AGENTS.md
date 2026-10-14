@@ -1,6 +1,17 @@
 # AGENTS.md — Materialize 3D
 
-Project conventions for AI agents working in this repo. Read alongside CLAUDE.md.
+Project conventions for all AI agents working in this repo. Keep shared guidance in this file.
+
+## Project context
+
+Materialize 3D provides agent-driven 3D modeling and Bambu Lab printer control.
+
+- Sign packages are Bambu project 3MFs. `src-tauri/src/fabrication/bambu` slices them with Bambu Studio 02.08.02.61, resolves P2S presets, and verifies the G-code.
+- The older STL path in `packages/bambu-slicer` and `src-tauri/src/slicer.rs` uses OrcaSlicer. It patches Bambu Studio G-code templates for OrcaSlicer at slice time.
+- Development needs network access to the configured printer. Keep device identifiers, addresses, and credentials outside tracked files.
+- P2S Developer Mode enables local MQTT control and disables Bambu Handy access.
+
+Run the headless slicer tests from `packages/bambu-slicer` with `bun test`.
 
 ## PR proof policy (required)
 
@@ -24,7 +35,7 @@ Every PR that changes user-visible behavior **must** include watchable proof in 
 The app runs headless on the devdesk X server:
 
 ```bash
-DISPLAY=:99 npm run tauri dev           # app on the virtual display
+DISPLAY=:99 bun run tauri dev           # app on the virtual display
 ffmpeg -f x11grab -video_size 1920x1080 -framerate 24 -i :99 out.mp4   # record
 DISPLAY=:99 scrot shot.png              # still
 ```

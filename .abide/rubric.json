@@ -1,26 +1,21 @@
 {
   "version": 1,
-  "compiledAt": "2026-10-12T00:00:00.000Z",
-  "compiledBy": "claude",
+  "compiledAt": "2026-10-14T01:53:44.138Z",
+  "compiledBy": "codex",
   "sources": [
     {
       "path": "AGENTS.md",
-      "sha": "a930145a3a9549e822d3a1a3c556e55191b1897ffc20cb95b584257ae6fcea52",
-      "scope": "**/*"
-    },
-    {
-      "path": "CLAUDE.md",
-      "sha": "e1a725b4dc704e08049324d2398c724b57467ad5420c16ecf77d2517917982b2",
-      "scope": "**/*"
+      "scope": "**/*",
+      "sha": "936e235190ebb7d01921548a97984482ca98d27e87a7ce9eff2877116aa67bdf"
     }
   ],
   "rules": [
     {
       "id": "pr-proof-media",
-      "text": "Every PR that changes user-visible behavior must include watchable proof in the PR body: a video for flows, a screenshot at minimum for static changes.",
+      "text": "Every PR that changes user-visible behavior **must** include watchable proof in the PR body: a video for flows, a screenshot at minimum for static changes.",
       "source": {
         "path": "AGENTS.md",
-        "line": 7
+        "line": 18
       },
       "check": {
         "type": "unenforceable",
@@ -30,10 +25,10 @@
     },
     {
       "id": "pr-proof-no-relative-links",
-      "text": "The reviewer must see the proof without checking anything out. Never embed relative repo paths or `raw.githubusercontent.com` links; neither plays inline.",
+      "text": "**The reviewer must see the proof without checking anything out.** Never embed relative repo paths or `raw.githubusercontent.com` links; neither plays inline.",
       "source": {
         "path": "AGENTS.md",
-        "line": 11
+        "line": 22
       },
       "check": {
         "type": "unenforceable",
@@ -43,10 +38,10 @@
     },
     {
       "id": "pr-proof-attach-with-gh",
-      "text": "Attach media with gh. For files GitHub will not take, use `pr-media <files>`.",
+      "text": "**Attach media with gh.** `gh pr create|edit|comment --attach <file>` (gh 2.99 or newer) uploads the file to GitHub and renders it inline in the PR. For files GitHub will not take, use `pr-media <files>`, which ships them as links; nothing on pr-media's host renders inline.",
       "source": {
         "path": "AGENTS.md",
-        "line": 12
+        "line": 23
       },
       "check": {
         "type": "unenforceable",
@@ -56,10 +51,10 @@
     },
     {
       "id": "pr-proof-verify-attachments",
-      "text": "Verify before relying on it: open the PR page and confirm each attachment renders, or curl the attachment URL returns 200.",
+      "text": "**Verify before relying on it:** open the PR page and confirm each attachment renders, or `curl -sL -o /dev/null -w \"%{http_code}\" <attachment-url>` returns `200`.",
       "source": {
         "path": "AGENTS.md",
-        "line": 19
+        "line": 30
       },
       "check": {
         "type": "unenforceable",
@@ -69,10 +64,10 @@
     },
     {
       "id": "pr-proof-retry-with-edit",
-      "text": "Check each attachment and retry a failed one with `gh pr edit <N> --attach <file>` instead of re-running `gh pr create`.",
+      "text": "gh exits non-zero when some attachments fail even though it created or updated the PR, so check each attachment and retry a failed one with `gh pr edit <N> --attach <file>` instead of re-running `gh pr create`.",
       "source": {
         "path": "AGENTS.md",
-        "line": 19
+        "line": 30
       },
       "check": {
         "type": "unenforceable",
@@ -85,7 +80,7 @@
       "text": "If the PR links any `pr-media` file, `pr-media check` must pass.",
       "source": {
         "path": "AGENTS.md",
-        "line": 19
+        "line": 30
       },
       "check": {
         "type": "unenforceable",
@@ -98,7 +93,7 @@
       "text": "Keep videos short (≤3 min, timelapse dead time), small (<5 MB), and 1600×900 or less.",
       "source": {
         "path": "AGENTS.md",
-        "line": 20
+        "line": 31
       },
       "check": {
         "type": "unenforceable",
@@ -111,7 +106,7 @@
       "text": "To re-run onboarding, delete `~/.local/share/com.aojdevstudio.materialize3d/` before launch.",
       "source": {
         "path": "AGENTS.md",
-        "line": 32
+        "line": 43
       },
       "check": {
         "type": "unenforceable",
@@ -124,7 +119,7 @@
       "text": "`pkill -f \"<pattern>\"` in a shell command that itself contains `<pattern>` kills your own shell. Use bracket-globs (`[t]auri`) and never put the pattern twice in one command line.",
       "source": {
         "path": "AGENTS.md",
-        "line": 36
+        "line": 47
       },
       "check": {
         "type": "unenforceable",
@@ -134,10 +129,10 @@
     },
     {
       "id": "close-webkit-inspector",
-      "text": "WebKitGTK inspector opens automatically in debug builds; close it via its ✕ button before capturing.",
+      "text": "WebKitGTK inspector opens automatically in debug builds; close it via its ✕ button before capturing (F12 does nothing).",
       "source": {
         "path": "AGENTS.md",
-        "line": 37
+        "line": 48
       },
       "check": {
         "type": "unenforceable",
@@ -147,10 +142,10 @@
     },
     {
       "id": "screenshot-verify-clicks",
-      "text": "Screenshot-verify between clicks, or seed state directly in SQLite (`settings` table in `materialize.db`).",
+      "text": "Screenshot-verify between clicks, or seed state directly in SQLite (`settings` table in `~/.local/share/com.aojdevstudio.materialize3d/materialize.db`).",
       "source": {
         "path": "AGENTS.md",
-        "line": 38
+        "line": 49
       },
       "check": {
         "type": "unenforceable",
@@ -160,14 +155,40 @@
     },
     {
       "id": "run-slicer-tests",
-      "text": "cd packages/bambu-slicer && bun test",
+      "text": "Run the headless slicer tests from `packages/bambu-slicer` with `bun test`.",
       "source": {
-        "path": "CLAUDE.md",
-        "line": 24
+        "path": "AGENTS.md",
+        "line": 14
       },
       "check": {
         "type": "unenforceable",
         "reason": "about running tests, not the code"
+      },
+      "status": "active"
+    },
+    {
+      "id": "shared-agent-guidance",
+      "text": "Keep shared guidance in this file.",
+      "source": {
+        "path": "AGENTS.md",
+        "line": 3
+      },
+      "check": {
+        "type": "deferred",
+        "reason": "needs the repository instruction-file inventory"
+      },
+      "status": "active"
+    },
+    {
+      "id": "private-device-context",
+      "text": "Keep device identifiers, addresses, and credentials outside tracked files.",
+      "source": {
+        "path": "AGENTS.md",
+        "line": 11
+      },
+      "check": {
+        "type": "deferred",
+        "reason": "needs authoritative knowledge of private device values and credentials"
       },
       "status": "active"
     }
