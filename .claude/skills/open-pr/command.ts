@@ -367,9 +367,12 @@ function trackWrites(seg: string[], ctx: Ctx): void {
   for (let i = 0; i < seg.length; i++) {
     const r = seg[i].match(/^(\d*)(>>|>\|?)(.*)$/);
     if (!r) args.push(seg[i]);
-    else if (!r[3].startsWith("&")) {
-      const path = r[3] || seg[++i];
-      if (path) targets.push({ path, append: r[2] === ">>", stdout: r[1] === "" || r[1] === "1" });
+    else {
+      const bothStreams = r[3].startsWith("&");
+      const inline = bothStreams ? r[3].slice(1) : r[3];
+      const path = inline || seg[++i];
+      if (!path || (bothStreams && /^(?:\d+|-)$/.test(path))) continue;
+      targets.push({ path, append: r[2] === ">>", stdout: !bothStreams && (r[1] === "" || r[1] === "1") });
     }
   }
   const cmd = args[0];
