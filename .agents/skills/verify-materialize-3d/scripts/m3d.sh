@@ -71,6 +71,7 @@ up() {
 
   RUN=$RUNS/$(date +%Y%m%d-%H%M%S)
   mkdir -p "$RUN"/{evidence,logs,pids,xdg/data,xdg/config,xdg/cache}
+  RUN=$(cd "$RUN" && pwd)
   ln -sfn "$RUN" "$CURRENT"
 
   ensure_deps
