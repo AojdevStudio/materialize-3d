@@ -94,8 +94,10 @@ up() {
   # Its own session keyring: the app stores API keys and the MCP token in the
   # kernel keyring, and the launching shell's keyring is revoked when an SSH
   # login ends, which would turn every credential read into "No matching entry".
-  DISPLAY=$display XDG_DATA_HOME=$RUN/xdg/data XDG_CONFIG_HOME=$RUN/xdg/config XDG_CACHE_HOME=$RUN/xdg/cache \
-    spawn driver keyctl session - tauri-driver --port "$DRIVER_PORT" --native-port "$NATIVE_PORT"
+  # Bambu Studio's --help probe writes result.json in the inherited working
+  # directory. Keep it with this run, without touching pre-existing checkout files.
+  (cd "$RUN" && DISPLAY=$display XDG_DATA_HOME=$RUN/xdg/data XDG_CONFIG_HOME=$RUN/xdg/config XDG_CACHE_HOME=$RUN/xdg/cache \
+    spawn driver keyctl session - tauri-driver --port "$DRIVER_PORT" --native-port "$NATIVE_PORT")
   wait_for "curl -sf http://127.0.0.1:$DRIVER_PORT/status" 20 || die "tauri-driver not answering; see $RUN/logs/driver.log"
 
   jq -n --arg run "$RUN" --arg display "$display" --arg binary "$BINARY" --arg rev "$(git -C "$ROOT" rev-parse --short HEAD)" \

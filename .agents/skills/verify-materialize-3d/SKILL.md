@@ -29,6 +29,8 @@ $S/m3d.sh close-inspector    # debug builds dock devtools over the bottom 300px
 
 `up` isolates app state with `XDG_DATA_HOME`/`XDG_CONFIG_HOME`/`XDG_CACHE_HOME` under the run dir. A fresh run therefore starts at onboarding with an empty DB at `<run>/xdg/data/com.aojdevstudio.materialize3d/materialize.db`. `wd.ts end` followed by `wd.ts session` relaunches the app on the same data, which is how you prove persistence.
 
+The driver and app run with the run directory as their working directory. Settings probes Bambu Studio with `--help`, which writes `result.json` there. `down` keeps this file with the run and leaves all pre-existing checkout files untouched. Check `git status --short` before `up` and after `down` to prove that verification adds no checkout files.
+
 `up` launches tauri-driver, and so the app, under `keyctl session -`. The app keeps API keys and the MCP token in the Linux kernel keyring, and an SSH command's session keyring is revoked when the command ends. Without its own session keyring, every credential read fails with "No matching entry found in secure storage", the Agent section of Settings shows only that error, and enabling MCP fails.
 
 Set `M3D_DISPLAY=:99` before `up` to reuse the long-lived devdesk Xvfb. `up` then starts no display of its own and `down` leaves `:99` running.
