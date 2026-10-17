@@ -43,7 +43,7 @@ Preconditions:
 
 - Take screenshots only after `[data-testid=sign-preview]` exists. A shot right after `sign-detail` appears shows an empty preview column.
 - The Save dialog blocks the app until it closes. Answer it with `m3d.sh file-dialog` right after clicking `btn-export`.
-- The app run leaves no `result.json` in the checkout (observed 2026-10-05). The part backend tests do, see [parts](./parts.md).
+- The app run writes the Bambu Studio probe's `result.json` into the run directory, not the checkout. The part backend tests write one in the checkout, see [parts](./parts.md).
 - `slicer unavailable` now means only that preset resolution failed. A missing Bambu Studio gives the longer download message in the preconditions.
 - Build state lives in `builds` (`build_status` is `building`, `verified`, `failed`, or `invalid`, plus `failure_reason` and `check_plan`), joined to `revisions` by `revisions.build_id`.
 - `Build from spec file` with a design open adds a revision to that design. To build a new sign, relaunch so nothing is selected first.
