@@ -29,7 +29,7 @@ $S/m3d.sh close-inspector    # debug builds dock devtools over the bottom 300px
 
 `up` isolates app state with `XDG_DATA_HOME`/`XDG_CONFIG_HOME`/`XDG_CACHE_HOME` under the run dir. A fresh run therefore starts at onboarding with an empty DB at `<run>/xdg/data/com.aojdevstudio.materialize3d/materialize.db`. `wd.ts end` followed by `wd.ts session` relaunches the app on the same data, which is how you prove persistence.
 
-The driver and app run with the run directory as their working directory. Settings probes Bambu Studio with `--help`, which writes `result.json` there. `down` keeps this file with the run and leaves all pre-existing checkout files untouched. Compare `git status --short` before `up` and after `down` to check for Git-visible changes. Ignored build and dependency outputs, including `src-tauri/target` and `node_modules`, stay in the checkout.
+The driver and app run with the run directory as their working directory. The app probes Bambu Studio with `--help` whenever it detects the Studio version, for example in Settings, and the probe writes `result.json` there. `down` keeps this file with the run and leaves all pre-existing checkout files untouched. Compare `git status --short` before `up` and after `down` to check for Git-visible changes. Ignored build and dependency outputs, including `src-tauri/target` and `node_modules`, stay in the checkout.
 
 `up` launches tauri-driver, and so the app, under `keyctl session -`. The app keeps API keys and the MCP token in the Linux kernel keyring, and an SSH command's session keyring is revoked when the command ends. Without its own session keyring, every credential read fails with "No matching entry found in secure storage", the Agent section of Settings shows only that error, and enabling MCP fails.
 
@@ -116,7 +116,7 @@ A proof must meet these standards:
 $S/m3d.sh down
 ```
 
-`down` ends the WebDriver session, which closes the app. It stops ffmpeg, tauri-driver, Vite, and the Xvfb it started by killing each recorded process group. It never kills by process name. It deletes `xdg/` (app DB, WebKit storage), `pids/`, and `session`, then removes the `current` link. It keeps `evidence/`, `fixtures/`, `logs/`, and `env.json`. Run `down` after a failed `up` too, because `up` leaves partial state for inspection.
+`down` ends the WebDriver session, which closes the app. It stops ffmpeg, tauri-driver, Vite, and the Xvfb it started by killing each recorded process group. It never kills by process name. It deletes `xdg/` (app DB, WebKit storage), `pids/`, and `session`, then removes the `current` link. It keeps `evidence/`, `fixtures/`, `logs/`, `env.json`, and any `result.json` the probe wrote. Run `down` after a failed `up` too, because `up` leaves partial state for inspection.
 
 `up` runs `bun install --no-save` and pins `@tauri-apps/plugin-dialog` to the `Cargo.lock` version, also with `--no-save`. That leaves `package.json` and `bun.lock` untouched. `bun.lock` on `main` is missing `@tauri-apps/plugin-dialog`, `@monaco-editor/react`, and `monaco-editor`, so a plain `bun install` rewrites it; check `git status` before committing anything.
 
