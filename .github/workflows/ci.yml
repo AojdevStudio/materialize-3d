@@ -1,8 +1,8 @@
-# Required gates for every PR. Every job in this file runs on a GitHub-hosted
-# runner and installs its own toolchain.
+# Required gates for every PR. Every job in this file runs on a machine we own
+# and installs its own toolchain.
 #
-# The jobs that run on machines we own live in cad-runtime.yml (setup in
-# docs/ci-runners.md). Two guards keep a pull request from a fork off them:
+# These jobs and the ones in cad-runtime.yml run on the runners set up in
+# docs/ci-runners.md. Two guards keep a pull request from a fork off them:
 #   1. The fork approval policy, all_external_contributors: no workflow run
 #      from a fork starts until a maintainer approves it, and a maintainer
 #      approves only after reading every change under .github/. Agents never
@@ -31,7 +31,12 @@ permissions:
 jobs:
   linux:
     name: Linux build and checks
-    runs-on: ubuntu-24.04
+    if: >-
+      github.actor != 'dependabot[bot]' && (
+      github.event_name == 'push' ||
+      (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+      && github.event.pull_request.user.login != 'dependabot[bot]'))
+    runs-on: [self-hosted, Linux, X64, m3d-linux-kvm]
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -87,11 +92,16 @@ jobs:
 
   macos:
     name: macOS desktop build gate
-    runs-on: macos-15
+    if: >-
+      github.actor != 'dependabot[bot]' && (
+      github.event_name == 'push' ||
+      (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+      && github.event.pull_request.user.login != 'dependabot[bot]'))
+    runs-on: [self-hosted, macOS, ARM64, m3d-mac-vz]
     timeout-minutes: 60
     env:
-      # The hosted runner has 7 GB of memory, and Node's default heap limit
-      # there (about 2 GB) is too small for the production frontend build.
+      # Node's default heap limit can be too small for the production
+      # frontend build.
       NODE_OPTIONS: --max-old-space-size=4096
     steps:
       - uses: actions/checkout@v4
@@ -145,7 +155,12 @@ jobs:
 
   site:
     name: Landing site
-    runs-on: ubuntu-24.04
+    if: >-
+      github.actor != 'dependabot[bot]' && (
+      github.event_name == 'push' ||
+      (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+      && github.event.pull_request.user.login != 'dependabot[bot]'))
+    runs-on: [self-hosted, Linux, X64, m3d-linux-kvm]
     timeout-minutes: 20
     defaults:
       run:
