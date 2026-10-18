@@ -38,6 +38,8 @@ jobs:
       && github.event.pull_request.user.login != 'dependabot[bot]'))
     runs-on: [self-hosted, Linux, X64, m3d-linux-kvm]
     timeout-minutes: 60
+    env:
+      NODE_OPTIONS: --max-old-space-size=2048
     steps:
       - uses: actions/checkout@v4
       - name: Install Tauri system libraries
