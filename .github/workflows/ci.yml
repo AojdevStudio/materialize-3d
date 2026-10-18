@@ -112,7 +112,12 @@ jobs:
       - uses: actions/setup-node@v6.2.0
         with:
           node-version: "24"
+      # Every runner on the Mac runs as one user, and setup-bun installs into $HOME/.bun/bin. Another
+      # repository's job rewriting that bun mid-run makes macOS kill this job's next bun with SIGKILL, so
+      # this job installs its own bun under the runner's per-job temp directory.
       - uses: oven-sh/setup-bun@v2
+        env:
+          HOME: ${{ runner.temp }}/bun-home
         with:
           bun-version: "1.3.7"
       - uses: dtolnay/rust-toolchain@stable
