@@ -699,7 +699,10 @@ mod tests {
             );
             assert_eq!(files_in(cwd), before, "{exe} changed {}", cwd.display());
             assert!(
-                files_in(&scratch_root).is_empty(),
+                std::fs::read_dir(&scratch_root)
+                    .expect("read scratch root")
+                    .next()
+                    .is_none(),
                 "{exe} left scratch behind"
             );
             stdout
