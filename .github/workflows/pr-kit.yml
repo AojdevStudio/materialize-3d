@@ -14,7 +14,11 @@ permissions:
 jobs:
   body:
     name: PR body contract
-    runs-on: ubuntu-24.04
+    if: >-
+      github.actor != 'dependabot[bot]' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.user.login != 'dependabot[bot]'
+    runs-on: [self-hosted, Linux, X64, m3d-linux-kvm]
     steps:
       - uses: actions/checkout@v4
         with:

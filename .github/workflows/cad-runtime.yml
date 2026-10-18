@@ -42,8 +42,8 @@
 # after a full run in which both jobs passed, and cad-backend-pass-<key> after a
 # full run in which both part-kind jobs passed. The record job needs all four
 # jobs, so a run with any failed job records nothing. The lookup trusts a record
-# only through its run (docs/ci-runners.md says who can write one). The record job is the one
-# job here on a GitHub-hosted runner: it runs no build and holds no secret.
+# only through its run (docs/ci-runners.md says who can write one). The record job
+# runs no build and holds no secret.
 name: CAD runtime
 
 on:
@@ -367,6 +367,16 @@ jobs:
         with:
           name: cad-runtime-amd64
           path: cad-runtime/out/amd64
+      - uses: dtolnay/rust-toolchain@stable
+        if: env.WORK == 'full'
+      # The build already persists in CARGO_TARGET_DIR on the runner host, so the cache keeps only the
+      # registry and git sources. A cache save would otherwise delete cargo-installed tools from ~/.cargo/bin.
+      - uses: Swatinem/rust-cache@v2
+        if: env.WORK == 'full'
+        with:
+          workspaces: src-tauri
+          cache-targets: false
+          cache-bin: false
       - name: The runner can boot a microVM (KVM, vhost-vsock, QEMU)
         if: env.WORK == 'full'
         run: |
@@ -495,7 +505,7 @@ jobs:
       github.event_name == 'push' || github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
       && github.event.pull_request.user.login != 'dependabot[bot]'))
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, m3d-linux-kvm]
     timeout-minutes: 10
     env:
       FULL: ${{ needs.images.outputs.done == 'true' && needs.helper.outputs.done == 'true' }}
