@@ -704,7 +704,10 @@ mod tests {
             );
             stdout
                 .lines()
-                .find_map(|line| line.strip_prefix("probe-version="))
+                .find_map(|line| {
+                    line.split_once("probe-version=")
+                        .map(|(_, version)| version)
+                })
                 .expect("probe output")
                 .to_owned()
         };
