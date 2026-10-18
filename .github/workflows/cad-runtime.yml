@@ -370,12 +370,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         if: env.WORK == 'full'
       # The build already persists in CARGO_TARGET_DIR on the runner host, so the cache keeps only the
-      # registry and git sources.
+      # registry and git sources. A cache save would otherwise delete cargo-installed tools from ~/.cargo/bin.
       - uses: Swatinem/rust-cache@v2
         if: env.WORK == 'full'
         with:
           workspaces: src-tauri
           cache-targets: false
+          cache-bin: false
       - name: The runner can boot a microVM (KVM, vhost-vsock, QEMU)
         if: env.WORK == 'full'
         run: |

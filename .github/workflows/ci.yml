@@ -57,6 +57,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+          # A cache save on this persistent runner would otherwise delete cargo-installed tools from ~/.cargo/bin.
+          cache-bin: false
       - name: Install JavaScript dependencies (frozen lockfile)
         run: bun install --frozen-lockfile
       - name: Typecheck
@@ -117,6 +119,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+          # A cache save on this persistent runner would otherwise delete cargo-installed tools from ~/.cargo/bin.
+          cache-bin: false
       - name: Install JavaScript dependencies (frozen lockfile)
         run: bun install --frozen-lockfile
       - name: Typecheck
