@@ -235,8 +235,16 @@ impl BambuStudio {
     }
 }
 
+/// Runs `exe --help` in a private scratch directory, because Bambu Studio writes
+/// `result.json` into its working directory even for `--help`.
 fn detect_version(exe: &Path) -> Option<BambuVersion> {
-    let output = Command::new(exe).arg("--help").output().ok()?;
+    let exe = std::path::absolute(exe).ok()?;
+    let scratch = tempfile::tempdir().ok()?;
+    let output = Command::new(exe)
+        .arg("--help")
+        .current_dir(scratch.path())
+        .output()
+        .ok()?;
     let text = format!(
         "{}\n{}",
         String::from_utf8_lossy(&output.stdout),
