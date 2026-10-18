@@ -30,7 +30,9 @@ jobs:
           script: |
             const payload = JSON.parse(process.env.PULLFROG_PROMPT);
             const event = payload?.event;
-            if (payload?.['~pullfrog'] !== true || event?.is_pr !== true ||
+            if (process.env.GITHUB_ACTOR === 'dependabot[bot]' ||
+                payload?.triggerer === 'dependabot[bot]' ||
+                payload?.['~pullfrog'] !== true || event?.is_pr !== true ||
                 !Number.isSafeInteger(event?.issue_number) || event.issue_number <= 0 ||
                 !['admin', 'maintain', 'write'].includes(event.authorPermission)) {
               throw new Error('Pullfrog requires a collaborator PR event envelope.');
