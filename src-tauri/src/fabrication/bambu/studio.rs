@@ -620,4 +620,98 @@ mod tests {
         );
         assert_eq!(nothing.chosen_path, None);
     }
+
+    /// Child half of the probe test. It runs only when the parent sets `M3D_PROBE_EXE`,
+    /// in a process whose working directory the parent chose.
+    #[cfg(unix)]
+    #[test]
+    fn probe_child() {
+        if let Some(exe) = env::var_os("M3D_PROBE_EXE") {
+            let version = detect_version(Path::new(&exe));
+            println!(
+                "probe-version={}",
+                version.as_ref().map_or("none", BambuVersion::as_str)
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    fn files_in(dir: &Path) -> std::collections::BTreeMap<std::ffi::OsString, Vec<u8>> {
+        std::fs::read_dir(dir)
+            .expect("read dir")
+            .map(|entry| {
+                let entry = entry.expect("dir entry");
+                let bytes = std::fs::read(entry.path()).expect("read file");
+                (entry.file_name(), bytes)
+            })
+            .collect()
+    }
+
+    /// Real Bambu Studio writes `result.json` into its working directory even for `--help`.
+    #[cfg(unix)]
+    #[test]
+    fn version_probe_leaves_the_callers_directory_alone() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().expect("tempdir");
+        let bin = root.path().join("bin");
+        let scratch_root = root.path().join("tmp");
+        let kept = root.path().join("kept");
+        let fresh = root.path().join("fresh");
+        for dir in [&bin, &scratch_root, &kept, &fresh] {
+            std::fs::create_dir(dir).expect("dir");
+        }
+        std::fs::write(kept.join("result.json"), b"{\"mine\":true}\n").expect("result.json");
+        std::fs::write(kept.join("notes.txt"), b"keep me").expect("notes");
+        std::fs::write(fresh.join("notes.txt"), b"keep me too").expect("notes");
+        for (name, banner) in [
+            ("studio", "BambuStudio-02.08.02.61:"),
+            ("garbled", "Usage: slicer"),
+        ] {
+            let path = bin.join(name);
+            std::fs::write(
+                &path,
+                format!(
+                    "#!/bin/sh\necho '{banner}'\nprintf '{{\"return_code\":0}}' > result.json\n"
+                ),
+            )
+            .expect("script");
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        }
+
+        let test_name = format!(
+            "{}::probe_child",
+            module_path!().split_once("::").expect("crate").1
+        );
+        let probe = |cwd: &Path, exe: &str| {
+            let before = files_in(cwd);
+            let output = Command::new(env::current_exe().expect("test binary"))
+                .args(["--exact", &test_name, "--nocapture", "--test-threads=1"])
+                .current_dir(cwd)
+                .env("M3D_PROBE_EXE", exe)
+                .env("TMPDIR", &scratch_root)
+                .output()
+                .expect("child test");
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success(),
+                "{stdout}{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(files_in(cwd), before, "{exe} changed {}", cwd.display());
+            assert!(
+                files_in(&scratch_root).is_empty(),
+                "{exe} left scratch behind"
+            );
+            stdout
+                .lines()
+                .find_map(|line| line.strip_prefix("probe-version="))
+                .expect("probe output")
+                .to_owned()
+        };
+
+        assert_eq!(probe(&kept, "../bin/studio"), "02.08.02.61");
+        assert_eq!(probe(&fresh, "../bin/studio"), "02.08.02.61");
+        assert_eq!(probe(&fresh, "../bin/garbled"), "none");
+        assert_eq!(probe(&fresh, "../bin/missing"), "none");
+    }
 }
