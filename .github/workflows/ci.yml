@@ -59,6 +59,8 @@ jobs:
           workspaces: src-tauri
           # A cache save on this persistent runner would otherwise delete cargo-installed tools from ~/.cargo/bin.
           cache-bin: false
+          # Only main saves. A pull request restores main's entry and saves none, so it adds no copy to the cache.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install JavaScript dependencies (frozen lockfile)
         run: bun install --frozen-lockfile
       - name: Typecheck
@@ -126,6 +128,8 @@ jobs:
           workspaces: src-tauri
           # A cache save on this persistent runner would otherwise delete cargo-installed tools from ~/.cargo/bin.
           cache-bin: false
+          # Only main saves. A pull request restores main's entry and saves none, so it adds no copy to the cache.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install JavaScript dependencies (frozen lockfile)
         run: bun install --frozen-lockfile
       - name: Typecheck
