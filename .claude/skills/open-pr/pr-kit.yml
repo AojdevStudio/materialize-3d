@@ -14,6 +14,11 @@ permissions:
 jobs:
   body:
     name: PR body contract
+    # Fork and Dependabot PRs skip this check, so they never run on our runners.
+    if: >-
+      github.actor != 'dependabot[bot]' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.user.login != 'dependabot[bot]'
     runs-on: __RUNS_ON__
     steps:
       - uses: actions/checkout@v4
@@ -21,4 +26,6 @@ jobs:
           ref: ${{ github.event.pull_request.base.sha }}
           persist-credentials: false
       - uses: oven-sh/setup-bun@v2
+        env:
+          HOME: ${{ runner.temp }}/setup-bun
       - run: bun .claude/skills/open-pr/check.ts --event "$GITHUB_EVENT_PATH"
