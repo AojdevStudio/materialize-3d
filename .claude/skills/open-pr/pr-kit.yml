@@ -14,6 +14,11 @@ permissions:
 jobs:
   body:
     name: PR body contract
+    # Fork and Dependabot PRs skip this check, so they never run on our runners.
+    if: >-
+      github.actor != 'dependabot[bot]' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.user.login != 'dependabot[bot]'
     runs-on: __RUNS_ON__
     steps:
       - uses: actions/checkout@v4
