@@ -37,19 +37,27 @@ jobs:
             }
             const event = payload?.['~pullfrog'] === true ? payload.event : undefined;
             const isDependabot = (login) => login === 'dependabot[bot]';
-            let run = !isDependabot(process.env.GITHUB_ACTOR) && !isDependabot(payload?.triggerer);
-            if (run && event?.is_pr === true) {
+            const trustedRole = event?.authorPermission === undefined ||
+              ['admin', 'maintain', 'write'].includes(event.authorPermission);
+            let run = trustedRole &&
+              !isDependabot(process.env.GITHUB_ACTOR) && !isDependabot(payload?.triggerer);
+            if (run && (event?.is_pr === true || event?.issue_number !== undefined)) {
               if (!Number.isSafeInteger(event.issue_number) || event.issue_number <= 0) {
-                throw new Error('Pullfrog sent a pull request event without a valid number.');
+                throw new Error('Pullfrog sent an event without a valid issue or pull request number.');
               }
-              const { data: pr } = await github.rest.pulls.get({
-                ...context.repo,
-                pull_number: event.issue_number,
-              });
-              const trustedRole = event.authorPermission === undefined ||
-                ['admin', 'maintain', 'write'].includes(event.authorPermission);
-              run = pr.head?.repo?.full_name === `${context.repo.owner}/${context.repo.repo}` &&
-                !isDependabot(pr.user?.login) && trustedRole;
+              let pr;
+              try {
+                ({ data: pr } = await github.rest.pulls.get({
+                  ...context.repo,
+                  pull_number: event.issue_number,
+                }));
+              } catch (error) {
+                if (error.status !== 404 || event.is_pr === true) throw error;
+              }
+              if (pr) {
+                run = pr.head?.repo?.full_name === `${context.repo.owner}/${context.repo.repo}` &&
+                  !isDependabot(pr.user?.login);
+              }
             }
             core.setOutput('run', String(run));
             if (!run) core.notice('Pullfrog skipped: fork, Dependabot, or outside pull request.');
