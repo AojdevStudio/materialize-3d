@@ -35,10 +35,11 @@ jobs:
             } catch {
               payload = undefined;
             }
-            const event = payload?.['~pullfrog'] === true ? payload.event : undefined;
+            const envelope = payload?.['~pullfrog'] === true;
+            const event = envelope ? payload.event : undefined;
             const isDependabot = (login) => login === 'dependabot[bot]';
-            const trustedRole = event?.authorPermission === undefined ||
-              ['admin', 'maintain', 'write'].includes(event.authorPermission);
+            const trustedRole = !envelope ||
+              ['admin', 'maintain', 'write'].includes(event?.authorPermission);
             let run = trustedRole &&
               !isDependabot(process.env.GITHUB_ACTOR) && !isDependabot(payload?.triggerer);
             if (run && (event?.is_pr === true || event?.issue_number !== undefined)) {
