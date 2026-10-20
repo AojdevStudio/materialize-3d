@@ -3,9 +3,13 @@
  * Pure, so the gate and tests share it. The gate fetches the state over the REST API.
  *
  * Pullfrog is the active review bot. Its `pullfrog-approval` check-run concluding
- * `success` on the exact head is the pass signal. One exception: when the bot approved
+ * `success` on the exact head is the pass signal. The gate reads the latest run per check
+ * suite, and Pullfrog has one suite per commit, so its reruns collapse to one run. A second
+ * run of that name, or a run from another app, means another producer used the name, and
+ * no verdict on that commit is trusted. One exception: when the bot approved
  * the previous head and the head is a merge commit on top of it (a conflict fix), the
- * approval carries forward, provided the merged-in parent is on the base branch.
+ * approval carries forward, provided the merged-in parent is on the base branch and no
+ * finished verdict on the head itself says otherwise.
  *
  * The kit's source repo is Ossie's curated settings repo, and no review bot gates it. The
  * list lives here in the kit, never in a file the target repo could edit. It holds SHA-256
@@ -15,6 +19,8 @@
  */
 
 export const PASS_SIGNAL = "pullfrog-approval";
+/** Slug of the GitHub App that publishes PASS_SIGNAL. */
+export const PASS_APP = "pullfrog";
 
 const BOT_EXEMPT = new Set([
   "6159f38c55dea314c96c15a2b5ddf2edd32a5b51019c9d0b4521e2ff077c0815",
@@ -29,6 +35,8 @@ export interface CheckRun {
   name: string;
   status: string;
   conclusion: string | null;
+  /** Slug of the GitHub App that created the run. */
+  app: string;
 }
 
 export interface HeadState {
@@ -50,13 +58,22 @@ export type MergeVerdict =
   | { ok: true; via: "approval" | "conflict-fix" | "exempt" }
   | { ok: false; reason: string };
 
-const passed = (runs: CheckRun[] | undefined) =>
-  runs?.some((r) => r.name === PASS_SIGNAL && r.status === "completed" && r.conclusion === "success") ?? false;
+/**
+ * The bot's current verdict on one commit. `open` (missing or running) lets a conflict fix
+ * inherit its parent's approval. `refused` (finished non-success, or untrusted) never does.
+ */
+export type Verdict = { state: "pass" } | { state: "open" | "refused"; why: string };
 
-function describe(runs: CheckRun[]): string {
-  const run = runs.find((r) => r.name === PASS_SIGNAL);
-  if (!run) return `no ${PASS_SIGNAL} check-run exists`;
-  return run.status === "completed" ? `${PASS_SIGNAL} concluded ${run.conclusion}` : `${PASS_SIGNAL} is ${run.status}`;
+export function verdictOf(runs: CheckRun[]): Verdict {
+  const named = runs.filter((r) => r.name === PASS_SIGNAL);
+  if (named.length === 0) return { state: "open", why: `no ${PASS_SIGNAL} check-run exists` };
+  if (named.length > 1) {
+    return { state: "refused", why: `${named.length} latest ${PASS_SIGNAL} check-runs exist (apps: ${named.map((r) => r.app).join(", ")}), so the verdict is ambiguous` };
+  }
+  const [run] = named;
+  if (run.app !== PASS_APP) return { state: "refused", why: `${PASS_SIGNAL} comes from the ${run.app} app, not ${PASS_APP}` };
+  if (run.status !== "completed") return { state: "open", why: `${PASS_SIGNAL} is ${run.status}` };
+  return run.conclusion === "success" ? { state: "pass" } : { state: "refused", why: `${PASS_SIGNAL} concluded ${run.conclusion}` };
 }
 
 export function decideMerge(head: HeadState): MergeVerdict {
@@ -64,7 +81,9 @@ export function decideMerge(head: HeadState): MergeVerdict {
     if (head.pinned) return { ok: true, via: "exempt" };
     return { ok: false, reason: `${head.repo} skips the review bot only when the merge names it. Pass -R ${head.repo} or the PR URL.` };
   }
-  if (passed(head.runs)) return { ok: true, via: "approval" };
-  if (head.parents.length === 2 && head.mergesBase === true && passed(head.parentRuns)) return { ok: true, via: "conflict-fix" };
-  return { ok: false, reason: `${describe(head.runs)} on head ${head.sha.slice(0, 7)}. A missing, running, or failed verdict does not pass.` };
+  const verdict = verdictOf(head.runs);
+  if (verdict.state === "pass") return { ok: true, via: "approval" };
+  const conflictFix = verdict.state === "open" && head.parents.length === 2 && head.mergesBase === true;
+  if (conflictFix && head.parentRuns && verdictOf(head.parentRuns).state === "pass") return { ok: true, via: "conflict-fix" };
+  return { ok: false, reason: `${verdict.why} on head ${head.sha.slice(0, 7)}. A missing, running, failed, or untrusted verdict does not pass.` };
 }
