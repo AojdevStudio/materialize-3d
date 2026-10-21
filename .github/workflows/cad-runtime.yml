@@ -320,7 +320,7 @@ jobs:
             cad-host/out/restriction-tests.log
             cad-host/out/clip/result.json
           if-no-files-found: ignore
-          retention-days: 14
+          retention-days: 7
 
   part-linux:
     name: CAD part kind on the Linux backend
@@ -371,12 +371,14 @@ jobs:
         if: env.WORK == 'full'
       # The build already persists in CARGO_TARGET_DIR on the runner host, so the cache keeps only the
       # registry and git sources. A cache save would otherwise delete cargo-installed tools from ~/.cargo/bin.
+      # Only main saves. A pull request restores main's entry and saves none, so it adds no copy to the cache.
       - uses: Swatinem/rust-cache@v2
         if: env.WORK == 'full'
         with:
           workspaces: src-tauri
           cache-targets: false
           cache-bin: false
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: The runner can boot a microVM (KVM, vhost-vsock, QEMU)
         if: env.WORK == 'full'
         run: |
