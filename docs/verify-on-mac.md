@@ -39,7 +39,26 @@ For isolated-HOME GUI, keep the recorded test keychain setup active for each lau
 8. In onboarding or **Settings > Agent**, select **OpenAI**, select an offered model, and save the API key through the app. Record the model ID. Confirm that the chat footer shows OpenAI and that model. Keep the key out of screenshots, recordings, and logs.
 9. Leave the external MCP endpoint off for the chat test. Start a recording before the first chat request. Capture both the action and its resulting screen.
 
-The Mac native automation route is under audit. This recipe requires real input and macOS dialogs, whether a person drives them or a separately verified native tool does. No native automation command is prescribed here.
+## Native verification tools
+
+This recipe uses real input and macOS dialogs. A person can drive them directly. The signed `/Applications/CuaDriver.app` host also drove the installed release candidate on the mini. This establishes a native control route, not completed release acceptance.
+
+Discover the installed driver's current contracts before automating a run.
+
+```bash
+M3D_DRIVER=/Applications/CuaDriver.app/Contents/MacOS/cua-driver
+"$M3D_DRIVER" --help
+"$M3D_DRIVER" describe get_window_state
+"$M3D_DRIVER" describe click
+"$M3D_DRIVER" describe start_recording
+"$M3D_DRIVER" call check_permissions '{"prompt":false}'
+```
+
+Confirm that permission results identify the signed driver daemon. Accessibility and Screen Recording grants belong to that identity. A terminal or another automation tool can report different grants. Verify actual capture and input as well. Resolve any macOS direct-capture consent through its normal permission flow before recording.
+
+Take a fresh snapshot of the exact app window before using its element tokens. Select a control by its label and supported action. A Bambu Studio wizard control can have role `AXStaticText` and still support `AXPress`. Its floating wizard can be absent from the driver's normal window list. When keyboard input reports `same_pid_keyboard_ambiguity`, use the dialog's supported AX actions rather than retrying process-level keyboard input.
+
+Inspect the recordings before attaching them. Keep credentials and unrelated desktop content out of shared media. A consent overlay or another modal that hides the action does not prove an unobstructed flow. A permission status check, backend self-test, or debug endpoint cannot replace the installed GUI steps below.
 
 ## Build and export a sign through OpenAI
 

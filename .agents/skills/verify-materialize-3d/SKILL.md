@@ -143,7 +143,7 @@ $S/mac.ts dialog <open-path> [save-path]
 $S/mac.ts down
 ```
 
-The native Mac route for driving the installed release is under audit. Use the installed GUI checklist with real input and dialogs. Report missing permissions or tools as unmet prerequisites. A backend self-test, MCP call, or e2e debug run does not prove the installed GUI path.
+For installed-release automation, follow the [native verification tools](../../../docs/verify-on-mac.md#native-verification-tools) section. It records the signed CuaDriver route exercised on the mini and its window-targeting limits. Use the installed GUI checklist with real input and dialogs. Report missing permissions or tools as unmet prerequisites. A backend self-test, MCP call, or e2e debug run does not prove the installed GUI path.
 
 ## Feature map
 

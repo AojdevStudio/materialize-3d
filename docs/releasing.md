@@ -81,7 +81,7 @@ Run it only when replacing the app in `/Applications` is intended: it refuses a 
 
 ## Complete installed GUI acceptance
 
-Follow [Verify the installed Mac app](verify-on-mac.md) after the scripted checks. The Mac native automation route is under audit. Use real input and native dialogs. Record a missing tool or permission as an unmet prerequisite rather than substituting the debug e2e endpoint.
+Follow [Verify the installed Mac app](verify-on-mac.md) after the scripted checks. Its native verification section covers the signed CuaDriver route exercised on the mini. Use real input and native dialogs. Record a missing tool or permission as an unmet prerequisite rather than substituting the debug e2e endpoint.
 
 A fresh standard account logged into a desktop is the strongest GUI isolation option. An isolated HOME and test keychain under an existing console login are a separate option. Label the GUI evidence with the option used. Neither an isolated HOME nor a fresh account proves an independent-machine test. Both GUI options require fresh app data, only the system `PATH`, and no checkout runtime dependencies or CAD cache.
 
