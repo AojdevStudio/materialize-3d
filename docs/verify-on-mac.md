@@ -13,11 +13,20 @@ Record one of these labels with the actual installed GUI evidence.
 
 Both options require the actual installed app with only the system `PATH`, `/usr/bin:/bin:/usr/sbin:/sbin`. Record the app's effective `PATH` and data location. The installed-release wrapper adds developer directories to its shell `PATH`, so its log alone cannot prove this requirement. Neither isolation label proves an independent-machine run. Record the machine separately, including whether it built the DMG.
 
+Use the same launch method and test keychain after every quit or interruption. For fresh-account GUI, launch from Applications in the test user's Finder and verify the effective system-only `PATH`. For isolated-HOME GUI, do not launch through Finder. In the test desktop security session, set `M3D_GUI_HOME` to the recorded isolated home and launch the installed app with explicit environment values.
+
+```bash
+/usr/bin/open -n --env HOME="${M3D_GUI_HOME:?Set the recorded isolated home}" \
+  --env PATH=/usr/bin:/bin:/usr/sbin:/sbin "/Applications/Materialize 3D.app"
+```
+
+For isolated-HOME GUI, keep the recorded test keychain setup active for each launch. Record and verify the effective HOME, PATH, and app data location after each restart. If they change, stop the check and restore the test environment before proceeding. Preserve the real account's keychain settings during setup and restore them during teardown.
+
 ## Prepare the installed release
 
 1. Use an Apple Silicon Mac on macOS 26.0 or later with the desktop session required by your selected GUI isolation option.
 2. Record the exact DMG filename, SHA-256, source commit, macOS version, and chip. Compare the DMG hash with its release checksum.
-3. Follow the [install guide](install-macos.md). Copy the app from the DMG to Applications, eject the DMG, and open the installed copy in Finder.
+3. Follow the [install guide](install-macos.md). Copy the app from the DMG to Applications and eject the DMG. Use the launch method for your selected GUI isolation option above.
 4. Confirm the installed bundle version is `0.2.0`. For an installation in `/Applications`, read it with this command.
 
    ```bash
@@ -73,9 +82,9 @@ Use a new conversation so the sign's dimensions do not carry over. The dimension
 
 ## Check persistence and failure handling
 
-1. Quit with Cmd-Q and reopen the same installed copy from Applications. Confirm that the OpenAI provider, model, stored-key state, conversations, revisions, and approvals persist. Reopening must not start another build.
+1. Quit with Cmd-Q and reopen the same installed copy with your selected isolation option's launch method. Preserve the same test HOME, keychain, and system-only PATH. Confirm that the OpenAI provider, model, stored-key state, conversations, revisions, and approvals persist. Reopening must not start another build.
 2. Start another build through chat and click **Stop** while it runs. Record the cancelled tool result and failed revision. An unfinished revision must not become approvable.
-3. Start another build, quit while it runs, and reopen. Record the interrupted state. Confirm that no build restarts on its own.
+3. Start another build, quit while it runs, and reopen with that same launch method and test environment. Record the interrupted state. Confirm that no build restarts on its own.
 4. Reuse an identical spec through the build tool and confirm that it reuses the verified build. Repeating natural-language chat alone does not prove reuse, because the model can generate a different spec. Keep this as a separate backend or MCP check if the GUI cannot reproduce an identical spec.
 
 ## Read the full hashes
