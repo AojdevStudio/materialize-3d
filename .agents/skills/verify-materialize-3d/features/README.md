@@ -2,6 +2,8 @@
 
 This directory is the maintained source for verifying Materialize 3D's user-facing behavior. Read this index before driving the app, then follow the matching feature file as the recipe. Commands assume `S=.agents/skills/verify-materialize-3d/scripts`, run from the checkout root on the Linux host.
 
+For installed macOS release acceptance, use [Verify the installed Mac app](../../../../docs/verify-on-mac.md). The Linux WebDriver recipes and macOS e2e debug driver do not establish release-binary acceptance.
+
 ## Baseline preconditions
 
 - `$S/m3d.sh up` printed `m3d: ready`, and `$S/m3d.sh doctor` exits 0.
@@ -47,5 +49,5 @@ Each feature file has an H1 and one paragraph of user-visible behavior, followed
 - [Signs](./signs.md) covers building a sign from a spec file, reviewing a revision, hash-bound approval, export, and recording a print result.
 - [Printers](./printers.md) covers adding, switching, and deleting printer configs, and connection states.
 - [Chat](./chat.md) covers the always-on AI assistant panel.
-- [Parts](./parts.md) covers agent-built functional parts, which have no GUI yet and are proven through the backend tests.
+- [Parts](./parts.md) covers agent-built functional parts, the part detail, measured requirements, warnings, approval, and 3MF export. Installed-release acceptance is separate from backend tests.
 - [MCP](./mcp.md) covers the local MCP server for external agents, including `import_part`.

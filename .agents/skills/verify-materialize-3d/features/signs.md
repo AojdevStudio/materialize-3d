@@ -11,7 +11,7 @@ The Signs view is where a person reviews a generated sign revision and decides w
 - `signs-export` covers `Export 3MF` through the native Save dialog and `design_export` (format `print_package`), then shows the written path in `export-path`. Each export inserts a `revision_exports` row (`format`, `path`, `sha256`, `exported_at`).
 - `signs-print` covers `Record print result` (`btn-print-passed` or `btn-print-failed` plus an optional note), labelled as a human physical test. It writes `print_status`, `print_note`, and `print_recorded_at`.
 - `signs-open-event` covers the `designs:open` event (`{ revisionId }`), which switches to the view with that revision selected.
-- `signs-part` covers a part revision in this view. It shows `part-pending` and no approve or export, see [parts](./parts.md).
+- `signs-part` covers a part revision in this view. It opens `part-detail` with its render, measured requirements, warnings, approval, and 3MF export. See [parts](./parts.md).
 
 ## How to get to it (user POV)
 

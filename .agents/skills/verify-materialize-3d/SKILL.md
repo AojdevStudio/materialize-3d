@@ -7,6 +7,8 @@ description: Launch and drive the real Materialize 3D Tauri desktop app (React U
 
 This skill drives the actual desktop app: the debug Rust binary with the real backend, rendered by WebKitGTK on a private Xvfb display, controlled through `tauri-driver` → `WebKitWebDriver`. The browser IPC mock in `src/dev/tauriBrowserMock.ts` never installs here, because the real window has `__TAURI_INTERNALS__`.
 
+For installed macOS release acceptance, follow [Verify the installed Mac app](../../../docs/verify-on-mac.md). It requires OpenAI chat for a sign and a part, human approval, native Save dialogs, full hash comparison, and Bambu Studio P2S 0.4 mm import. Keep debug app evidence separate from release evidence.
+
 ## Where it runs
 
 Run on the Linux host, dev-substrate (`ssh ossie@dev-substrate`, Ubuntu 24.04.5). It has Xvfb, `WebKitWebDriver`, `tauri-driver` (`~/.cargo/bin`), xdotool, ffmpeg, and `keyctl`. `m3d.sh up` refuses to start on a host that is missing any of them. An Arch/Hyprland desktop lacks Xvfb, WebKitWebDriver, and tauri-driver, and it has no passwordless sudo.
@@ -35,7 +37,7 @@ The driver and app run with the run directory as their working directory. The ap
 
 Set `M3D_DISPLAY=:99` before `up` to reuse the long-lived devdesk Xvfb. `up` then starts no display of its own and `down` leaves `:99` running.
 
-Why not `bun tauri dev` or `bun tauri build`? `tauri dev` attaches the app to the terminal and cannot be handed to WebDriver. `bun run build` (`tsc && vite build`) currently fails typecheck on `main`. The skill runs the same pieces that `tauri dev` runs: Vite on :1420 plus the debug binary that `cargo build` produces, which loads `devUrl`.
+Why not `bun tauri dev` or `bun tauri build`? `tauri dev` attaches the app to the terminal and cannot be handed to WebDriver. The skill runs the development pieces directly: Vite on :1420 plus the debug binary that `cargo build` produces, which loads `devUrl`.
 
 ## Doctor
 
@@ -118,15 +120,15 @@ $S/m3d.sh down
 
 `down` ends the WebDriver session, which closes the app. It stops ffmpeg, tauri-driver, Vite, and the Xvfb it started by killing each recorded process group. It never kills by process name. It deletes `xdg/` (app DB, WebKit storage), `pids/`, and `session`, then removes the `current` link. It keeps `evidence/`, `fixtures/`, `logs/`, `env.json`, and any `result.json` the probe wrote. Run `down` after a failed `up` too, because `up` leaves partial state for inspection.
 
-`up` runs `bun install --no-save` and pins `@tauri-apps/plugin-dialog` to the `Cargo.lock` version, also with `--no-save`. That leaves `package.json` and `bun.lock` untouched. `bun.lock` on `main` is missing `@tauri-apps/plugin-dialog`, `@monaco-editor/react`, and `monaco-editor`, so a plain `bun install` rewrites it; check `git status` before committing anything.
+`up` runs `bun install --no-save` and pins `@tauri-apps/plugin-dialog` to the `Cargo.lock` version, also with `--no-save`. That leaves `package.json` and `bun.lock` untouched. Check `git status` before and after the run. Keep dependency and lockfile changes out of verification-only work.
 
 ## On macOS
 
-This section is described from source. `scripts/mac.ts` was not driven in the 2026-10-05 pass.
+This section describes a development driver from source. It is not installed-release acceptance, and it was not driven for the 0.2.0 documentation update.
 
-WebDriver cannot drive WKWebView, so `scripts/mac.ts` drives the app through the `e2e` harness in `src-tauri/src/e2e.rs`. That harness exists only in builds made with `--features e2e`. Run it on the Mac itself, the Mac mini (`ssh macmini-ts`).
+WebDriver cannot drive WKWebView, so `scripts/mac.ts` drives the app through the `e2e` harness in `src-tauri/src/e2e.rs`. That harness exists only in builds made with `--features e2e`. The release omits the endpoint and scripted dialog override. `mac.ts` targets the checkout's debug app bundle, not the copy installed from the release DMG. Its build command alone does not assemble the CAD helper and pinned runtime needed for parts. Run it on the Mac itself, the Mac mini (`ssh macmini-ts`).
 
-```bash
+```text
 $S/mac.ts build                  # bun tauri build --debug --bundles app --features e2e
 $S/mac.ts up                     # fresh data dir and its own token through M3D_E2E_*
 $S/mac.ts wait <sel> [ms]
@@ -140,6 +142,8 @@ $S/mac.ts restart                # relaunch on the same data
 $S/mac.ts dialog <open-path> [save-path]
 $S/mac.ts down
 ```
+
+The native Mac route for driving the installed release is under audit. Use the installed GUI checklist with real input and dialogs. Report missing permissions or tools as unmet prerequisites. A backend self-test, MCP call, or e2e debug run does not prove the installed GUI path.
 
 ## Feature map
 

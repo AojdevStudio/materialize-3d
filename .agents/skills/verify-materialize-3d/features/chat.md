@@ -28,6 +28,7 @@ Preconditions:
 - **History side effect (observed 2026-10-05).** After the failed turns, `DB` holds 1 row in `agent_conversations` and 0 rows in `agent_messages`.
 - **New conversation (observed 2026-10-05).** Click `[data-testid=chat-new-conversation]`. The panel shows the empty state again.
 - **Type and send.** Run `$S/wd.ts type "[data-testid=chat-input]" "<message>"` and `$S/wd.ts click "[data-testid=chat-send]"`.
+- **Installed 0.2.0 OpenAI acceptance.** Follow [Verify the installed Mac app](../../../../docs/verify-on-mac.md) for sign and part prompts, GUI review, approval, export hashes, and Bambu Studio P2S 0.4 mm import. This run remains pending. A debug or MCP build does not replace it.
 - **With a key.** An assistant reply streams in. A build shows `[data-testid=tool-build]`, whose `data-state` tracks progress, plus `tool-steps` and `tool-result`. The finished build opens in the Signs view. Verify the new `revisions` row in `DB`. This path was not driven live. Do not report it as verified.
 
 ## Gotchas

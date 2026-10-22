@@ -2,6 +2,8 @@
 
 Releases are built on an Apple Silicon Mac by `scripts/release/build-macos.sh`, outside GitHub Actions. Signing and notarization credentials never reach a pull request job.
 
+The 0.2.0 candidate adds general parts to the signs-only 0.1.0 release. The commands below describe the release procedure. They do not report a completed build or acceptance run.
+
 ## What you need
 
 - An Apple Silicon Mac on macOS 26 or later with Xcode command line tools, Bun, and Rust. The app requires macOS 26.0.
@@ -11,12 +13,12 @@ Releases are built on an Apple Silicon Mac by `scripts/release/build-macos.sh`, 
 
 ## Steps
 
-1. Set the same version in `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`, and land that change through a pull request.
+1. Set the same version in `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`. Update only the root `materialize-3d` package entry in `src-tauri/Cargo.lock`. Keep dependency versions and `cad-host` versions unchanged. Prepare `docs/releases/v0.2.0.md` with acceptance marked pending, then land the version change through a pull request.
 2. Tag the merged commit on `main` and push the tag:
 
    ```bash
    git switch main && git pull --ff-only
-   git tag v0.1.0 && git push origin v0.1.0
+   git tag v0.2.0 && git push origin v0.2.0
    ```
 
 3. In a clean checkout of the tag, export the credentials and the runtime's location, and run the script:
@@ -30,12 +32,12 @@ Releases are built on an Apple Silicon Mac by `scripts/release/build-macos.sh`, 
 
    The script refuses a dirty tree, an untagged commit, mismatched versions, or a CAD runtime that does not match the helper's pins. It builds the CAD helper from `cad-host/` and places it at `Contents/MacOS/materialize-cad-host`, with the runtime at `Contents/Resources/cad-runtime/{Image,rootfs.img,job.img}`. It signs the helper first, with the hardened runtime and the virtualization entitlement, then the app around it, and notarizes and staples both the app and the DMG; the app's staple covers the helper. Then it checks Gatekeeper acceptance, the architecture, the absence of the e2e harness and of build-machine paths in both executables, and runs `scripts/release/check-app-bundle.sh`: the exact file list of the app bundle, macOS 26.0 as the minimum, the helper's signature and its only entitlement, and the bundled runtime against the helper's pins. It writes `dist-release/Materialize-3D-<version>-macos-arm64.dmg` and a `.sha256` file.
 
-4. Run the clean-install test on the DMG (below), then install the DMG on a Mac and run through `docs/install-macos.md` before publishing.
-5. Write the release notes in `docs/releases/v<version>.md`, land them with the version change, and publish the release with the DMG and its checksum:
+4. Run the clean-install and installed-release scripts below. Then run the [installed GUI checklist](verify-on-mac.md) on that exact DMG, with OpenAI chat for both signs and parts. Keep the exported 3MFs, matching approval and export hashes, Bambu Studio P2S 0.4 mm slice proof, and the GUI recording. Backend and MCP checks do not replace this GUI run.
+5. Fill the candidate notes with exact measured results and links to the retained evidence before publication. Record the source commit and DMG checksum. Report each failure or unrun check. Keep physical-print acceptance separate. Keep the measured evidence with the candidate record. If code or packaging changes, build and test a new candidate. Keep shared release tags unchanged. After release approval, publish the release with the DMG and its checksum:
 
    ```bash
-   gh release create v0.1.0 --title "Materialize 3D 0.1.0" --notes-file docs/releases/v0.1.0.md \
-     dist-release/Materialize-3D-0.1.0-macos-arm64.dmg dist-release/Materialize-3D-0.1.0-macos-arm64.dmg.sha256
+   gh release create v0.2.0 --title "Materialize 3D 0.2.0" --notes-file docs/releases/v0.2.0.md \
+     dist-release/Materialize-3D-0.2.0-macos-arm64.dmg dist-release/Materialize-3D-0.2.0-macos-arm64.dmg.sha256
    ```
 
 ## Clean-install test
@@ -43,7 +45,7 @@ Releases are built on an Apple Silicon Mac by `scripts/release/build-macos.sh`, 
 `scripts/release/clean-install-test-macos.sh` installs the DMG the way a new person meets it, runs the CAD helper from the installed app, and has the app itself build the cable clip:
 
 ```bash
-scripts/release/clean-install-test-macos.sh dist-release/Materialize-3D-0.1.0-macos-arm64.dmg
+scripts/release/clean-install-test-macos.sh dist-release/Materialize-3D-0.2.0-macos-arm64.dmg
 ```
 
 It creates a fresh standard account (not an admin, no password, so nobody can log in as it) and works as that account with an empty home and only the system `PATH`. The DMG lands in `~/Downloads` with the quarantine attribute a browser sets, Gatekeeper assesses the DMG and then the app copied into `~/Applications` (a standard account cannot write `/Applications`), `check-app-bundle.sh` checks the installed copy, and the bundled helper, still quarantined, verifies its runtime, boots both guests, and builds the cable clip from `cad-host/spike/cable-clip-fillet-first.py` into a closed mesh. Then the installed app, still quarantined, builds the same clip through its own `part` kind and pipeline (`materialize-3d --cad-self-test`): it verifies its bundled helper and runtime, runs both guests, checks the mesh and both requirements, slices with Bambu Studio, and keeps the STEP inside the package. Each step fails the run. The account and its home are deleted on exit, and the evidence stays in `~/m3d-verify/clean-install-<timestamp>/`. It needs macOS 26 or later, `sudo` without a password prompt, and a validated Bambu Studio the test account can run: in `/Applications`, or named by `BAMBU_STUDIO_CLI` at a path the account can read (for example under `/Users/Shared`).
@@ -55,13 +57,21 @@ What "clean" covers: an account that has never run, approved, or installed Mater
 `scripts/release/verify-installed-macos.sh` installs the built DMG into `/Applications` on an Apple Silicon Mac and checks it the way a new user meets it: Gatekeeper and the staple, the signature, the schema 3 migration, MCP off without the setting, the app's own keychain item remaining unchanged with MCP listening after a relaunch, the MCP endpoint's 401 without a valid token, and a sign built over MCP with a seeded token that stays pending, because the endpoint refuses to approve and approval stays with a person in the app. Each of these fails the run when it does not hold. It records the bundle inventory for inspection; the build script enforces the exact bundle file list. It takes the DMG and a checkout that holds `docs/acceptance/` and the schema 3 fixture.
 
 ```bash
-scripts/release/verify-installed-macos.sh dist-release/Materialize-3D-0.1.0-macos-arm64.dmg .
+scripts/release/verify-installed-macos.sh dist-release/Materialize-3D-0.2.0-macos-arm64.dmg .
 ```
 
-It runs unattended, so it is safe over SSH. The body does not run in the calling shell: keychain unlock state belongs to a security session and the app runs in the logged-in user's desktop session, so the script bootstraps the body as a transient LaunchAgent in `gui/<uid>`, waits up to 15 minutes, streams the job log, and exits with the job's status. Someone must be logged in at the console; with no desktop session the script says so and stops instead of waiting.
+It is designed to run unattended over SSH. Confirm that its desktop-session and credential prerequisites hold before running it. The body does not run in the calling shell: keychain unlock state belongs to a security session and the app runs in the logged-in user's desktop session, so the script bootstraps the body as a transient LaunchAgent in `gui/<uid>`, waits up to 15 minutes, streams the job log, and exits with the job's status. Someone must be logged in at the console; with no desktop session the script says so and stops instead of waiting.
 
 Secrets stay out of `ps`. The throwaway keychain password is random per run, every `security` subcommand that takes a password is fed to `security -i` on stdin, and the MCP token reaches curl through a mode-600 header file. The run fails if securityd recorded a keychain prompt or if a new Terminal.app process appeared while it ran, and fails rather than waiting when the app, the MCP endpoint, or the job itself does not arrive in time.
 
 Run it only when replacing the app in `/Applications` is intended: it refuses a running app, removes any existing copy, installs the DMG's app, and leaves that installed release in place. Personal app data stays in the real home directory; verification uses a throwaway home. On exit the DMG is detached, the test app is quit, the throwaway keychains and token header are deleted, and the real default keychain and search list are put back if needed. A successful run also requires that neither real keychain setting changed before teardown. The run directory, its evidence, and the job log remain under `~/m3d-verify/release-verify-<timestamp>/`.
 
-Physical print validation is separate from this checklist. A release never records a print result.
+## Complete installed GUI acceptance
+
+Follow [Verify the installed Mac app](verify-on-mac.md) after the scripted checks. The Mac native automation route is under audit. Use real input and native dialogs. Record a missing tool or permission as an unmet prerequisite rather than substituting the debug e2e endpoint.
+
+A passing `--cad-self-test` proves a backend path through the installed binary. An MCP build proves the endpoint path. Neither proves OpenAI chat, the part detail, human approval, or the native Save dialog. `scripts/mac.ts` launches an e2e debug bundle, not the release installed from the DMG.
+
+The app must find its CAD helper and pinned runtime inside its installed bundle. Acceptance cannot depend on a source checkout, a developer Python environment, or a CAD cache. Preserve the bundle inventory and the runtime verification output with the GUI evidence.
+
+Physical print validation is separate from this checklist. A release never records a print result on a user's behalf.
