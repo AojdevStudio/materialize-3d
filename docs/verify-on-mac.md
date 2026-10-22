@@ -2,11 +2,20 @@
 
 Use this checklist for 0.2.0 release acceptance. A pass requires the installed release to build both a sign and a general part through OpenAI chat, then export approved P2S 0.4 mm 3MFs through the GUI. This document is a recipe, not a record of a passing run.
 
-For a physical sign test, use the [P2S acceptance sign](acceptance/p2s-test-sign.md). Record a print result only after a person inspects the actual print.
+For physical acceptance of the exact software-verified exports, use [Physically accept the P2S sign and desk clip](acceptance/p2s-sign-and-part.md). The files are not yet available while this source branch is under development. Physical acceptance remains pending until Ossie chooses to print and inspects the actual objects.
+
+## Choose GUI isolation
+
+Record one of these labels with the actual installed GUI evidence.
+
+- **Fresh-account GUI**. Use a fresh standard account logged into a desktop. This is the strongest GUI isolation option. The headless clean-install wrapper's account never logs in, so its results do not prove this GUI path.
+- **Isolated-HOME GUI under existing console login**. Use fresh app data and a throwaway test keychain in an isolated HOME under the existing desktop login. The installed-release wrapper demonstrates this HOME and keychain isolation for its scripted checks. It does not prove OpenAI chat or native dialogs. Use a new isolated HOME for GUI first-run acceptance, separate from the wrapper's migration fixture and MCP data.
+
+Both options require the actual installed app with only the system `PATH`, `/usr/bin:/bin:/usr/sbin:/sbin`. Record the app's effective `PATH` and data location. The installed-release wrapper adds developer directories to its shell `PATH`, so its log alone cannot prove this requirement. Neither isolation label proves an independent-machine run. Record the machine separately, including whether it built the DMG.
 
 ## Prepare the installed release
 
-1. Use an Apple Silicon Mac on macOS 26.0 or later with a logged-in desktop session.
+1. Use an Apple Silicon Mac on macOS 26.0 or later with the desktop session required by your selected GUI isolation option.
 2. Record the exact DMG filename, SHA-256, source commit, macOS version, and chip. Compare the DMG hash with its release checksum.
 3. Follow the [install guide](install-macos.md). Copy the app from the DMG to Applications, eject the DMG, and open the installed copy in Finder.
 4. Confirm the installed bundle version is `0.2.0`. For an installation in `/Applications`, read it with this command.
@@ -15,8 +24,8 @@ For a physical sign test, use the [P2S acceptance sign](acceptance/p2s-test-sign
    defaults read "/Applications/Materialize 3D.app/Contents/Info.plist" CFBundleShortVersionString
    ```
 
-5. Use a fresh standard user's desktop session for the first-run test. Preserve existing user data. Record the installed app's path and confirm that no development copy is running.
-6. Provide only the installed app, Bambu Studio 02.08.02.61, network access for OpenAI, and an API key. The app must supply its own CAD helper and pinned runtime. Keep source checkouts, developer tools, Python environments, and CAD caches out of the app's runtime inputs.
+5. Confirm that the selected isolation option starts with fresh app data and a test keychain. Preserve existing user data and credentials. Record the installed app's path and confirm that no development copy is running.
+6. Provide only the installed app, Bambu Studio 02.08.02.61, network access for OpenAI, and an API key. Confirm the system-only `PATH`. The app must supply its own CAD helper and pinned runtime. Keep source checkouts, developer tools, Python environments, and CAD caches out of the app's runtime inputs.
 7. In **Settings > Bambu Studio**, confirm version `02.08.02.61` and the selected installation path. Install it alongside another version as the install guide describes.
 8. In onboarding or **Settings > Agent**, select **OpenAI**, select an offered model, and save the API key through the app. Record the model ID. Confirm that the chat footer shows OpenAI and that model. Keep the key out of screenshots, recordings, and logs.
 9. Leave the external MCP endpoint off for the chat test. Start a recording before the first chat request. Capture both the action and its resulting screen.
@@ -85,6 +94,7 @@ Compare the approved hash, the export record's hash, and the `shasum` output for
 Keep one evidence record for the exact installed DMG. Include these results.
 
 - DMG filename, checksum, source commit, installed path and version, macOS version, chip, and Bambu Studio path and version.
+- GUI isolation label, console account, app data location, effective `PATH`, and whether this Mac built the DMG. Keep headless fresh-account and installed-release wrapper evidence separately labeled.
 - OpenAI model ID and both exact chat requests. Include any follow-up prompts or errors.
 - A watchable recording of chat, review, approval, and native Save for both objects. Include screenshots of the part's measured requirements and warnings.
 - Both exported 3MFs, revision IDs, approved package hashes, exported-file hashes, and Bambu Studio import and slice screenshots.

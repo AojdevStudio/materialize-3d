@@ -11,6 +11,14 @@ The 0.2.0 candidate adds general parts to the signs-only 0.1.0 release. The comm
 - An App Store Connect API key for `notarytool`: key id, issuer id, and the `.p8` content.
 - The arm64 CAD runtime for the tagged commit: the `cad-runtime-arm64` artifact of that commit's `CAD runtime` workflow run, or the output of `cad-runtime/build.sh arm64` on a Linux machine with Docker, buildx, and arm64 binfmt. Either way it must match `cad-runtime/pins-arm64.json`, which the CAD helper compiles in.
 
+### Release keychain input limits
+
+`build-macos.sh` requires nonempty `RELEASE_KEYCHAIN` and `RELEASE_KEYCHAIN_PASSWORD`. Both values must contain only printable ASCII, with no single quotes, double quotes, or backslashes. The keychain path must not start with a dash and must name an existing file.
+
+The script passes the unlock command to `security -i` on standard input. The complete command, including its quoting, spaces, and final newline, must be shorter than 1024 bytes. Preflight rejects unsupported characters, an overlong command, or a leading dash without printing the input values. Unlock failures report only the exit status.
+
+Do not rotate or rewrite user credentials to satisfy these limits. If existing credentials cannot meet them, record the unmet prerequisite and stop the release build.
+
 ## Steps
 
 1. Set the same version in `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`. Update only the root `materialize-3d` package entry in `src-tauri/Cargo.lock`. Keep dependency versions and `cad-host` versions unchanged. Prepare `docs/releases/v0.2.0.md` with acceptance marked pending, then land the version change through a pull request.
@@ -21,12 +29,13 @@ The 0.2.0 candidate adds general parts to the signs-only 0.1.0 release. The comm
    git tag v0.2.0 && git push origin v0.2.0
    ```
 
-3. In a clean checkout of the tag, export the credentials and the runtime's location, and run the script:
+3. In a clean checkout of the tag, have the authorized secret source inject the existing credentials into the shell environment. Set `RELEASE_KEYCHAIN` to the existing release keychain path and `CAD_RUNTIME_DIR` to the directory containing `Image`, `rootfs.img`, and `job.img`. Do not type secret values into commands, enable shell tracing, or print the environment. With those values already supplied, export the variable names and run the script:
 
    ```bash
-   export RELEASE_KEYCHAIN=~/Library/Keychains/<release>.keychain-db
-   export RELEASE_KEYCHAIN_PASSWORD=... APPLE_API_KEY_ID=... APPLE_API_ISSUER_ID=... APPLE_API_PRIVATE_KEY="$(cat AuthKey.p8)"
-   export CAD_RUNTIME_DIR=~/cad-runtime-arm64   # holds Image, rootfs.img, job.img
+   set +x
+   export RELEASE_KEYCHAIN RELEASE_KEYCHAIN_PASSWORD
+   export APPLE_API_KEY_ID APPLE_API_ISSUER_ID APPLE_API_PRIVATE_KEY
+   export CAD_RUNTIME_DIR
    scripts/release/build-macos.sh
    ```
 
@@ -42,6 +51,8 @@ The 0.2.0 candidate adds general parts to the signs-only 0.1.0 release. The comm
 
 ## Clean-install test
 
+Label this evidence **headless fresh-account**. Keep it separate from installed GUI evidence and record whether the Mac also built the DMG.
+
 `scripts/release/clean-install-test-macos.sh` installs the DMG the way a new person meets it, runs the CAD helper from the installed app, and has the app itself build the cable clip:
 
 ```bash
@@ -54,7 +65,9 @@ What "clean" covers: an account that has never run, approved, or installed Mater
 
 ## Verify the installed release
 
-`scripts/release/verify-installed-macos.sh` installs the built DMG into `/Applications` on an Apple Silicon Mac and checks it the way a new user meets it: Gatekeeper and the staple, the signature, the schema 3 migration, MCP off without the setting, the app's own keychain item remaining unchanged with MCP listening after a relaunch, the MCP endpoint's 401 without a valid token, and a sign built over MCP with a seeded token that stays pending, because the endpoint refuses to approve and approval stays with a person in the app. Each of these fails the run when it does not hold. It records the bundle inventory for inspection; the build script enforces the exact bundle file list. It takes the DMG and a checkout that holds `docs/acceptance/` and the schema 3 fixture.
+`scripts/release/verify-installed-macos.sh` installs the built DMG into `/Applications` on an Apple Silicon Mac and checks Gatekeeper and the staple, the signature, the schema 3 migration, MCP off without the setting, the app's own keychain item remaining unchanged with MCP listening after a relaunch, the MCP endpoint's 401 without a valid token, and a sign built over MCP with a seeded token that stays pending, because the endpoint refuses to approve and approval stays with a person in the app. Each of these fails the run when it does not hold. It records the bundle inventory for inspection; the build script enforces the exact bundle file list. It takes the DMG and a checkout that holds `docs/acceptance/` and the schema 3 fixture.
+
+Label this evidence **installed-release wrapper, isolated HOME under existing console login**. The wrapper uses a fresh throwaway HOME and keychains, with a schema 3 fixture for migration. It creates no fresh account. Its shell adds developer directories to `PATH`, so it does not establish the system-only `PATH` required for GUI acceptance. Its migration, keychain, and MCP results do not prove OpenAI GUI acceptance or an independent-machine test.
 
 ```bash
 scripts/release/verify-installed-macos.sh dist-release/Materialize-3D-0.2.0-macos-arm64.dmg .
@@ -70,8 +83,10 @@ Run it only when replacing the app in `/Applications` is intended: it refuses a 
 
 Follow [Verify the installed Mac app](verify-on-mac.md) after the scripted checks. The Mac native automation route is under audit. Use real input and native dialogs. Record a missing tool or permission as an unmet prerequisite rather than substituting the debug e2e endpoint.
 
+A fresh standard account logged into a desktop is the strongest GUI isolation option. An isolated HOME and test keychain under an existing console login are a separate option. Label the GUI evidence with the option used. Neither an isolated HOME nor a fresh account proves an independent-machine test. Both GUI options require fresh app data, only the system `PATH`, and no checkout runtime dependencies or CAD cache.
+
 A passing `--cad-self-test` proves a backend path through the installed binary. An MCP build proves the endpoint path. Neither proves OpenAI chat, the part detail, human approval, or the native Save dialog. `scripts/mac.ts` launches an e2e debug bundle, not the release installed from the DMG.
 
 The app must find its CAD helper and pinned runtime inside its installed bundle. Acceptance cannot depend on a source checkout, a developer Python environment, or a CAD cache. Preserve the bundle inventory and the runtime verification output with the GUI evidence.
 
-Physical print validation is separate from this checklist. A release never records a print result on a user's behalf.
+Physical print validation is separate from this checklist. Use [Physically accept the P2S sign and desk clip](acceptance/p2s-sign-and-part.md) for the exact software-verified exports. A release never records a print result on a user's behalf.
