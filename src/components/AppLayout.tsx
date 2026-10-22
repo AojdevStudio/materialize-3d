@@ -30,7 +30,7 @@ export function AppLayout() {
         </div>
       </div>
 
-      <StatusBar version="v0.1.0" />
+      <StatusBar />
     </div>
   )
 }
