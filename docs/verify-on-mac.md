@@ -26,7 +26,7 @@ For isolated-HOME GUI, keep the recorded test keychain setup active for each lau
 
 1. Use an Apple Silicon Mac on macOS 26.0 or later with the desktop session required by your selected GUI isolation option.
 2. Record the exact DMG filename, SHA-256, source commit, macOS version, and chip. Compare the DMG hash with its release checksum.
-3. Follow the [install guide](install-macos.md). Copy the app from the DMG to Applications and eject the DMG. Use the launch method for your selected GUI isolation option above.
+3. Follow the [install guide](install-macos.md). Copy the app from the DMG to Applications and eject the DMG. Preserve download quarantine for first-launch GUI acceptance. Use the launch method for your selected GUI isolation option above and record any macOS confirmation. The installed-release wrapper removes quarantine before launch, so its launch does not prove this step. If macOS shows no confirmation, record that observation and the machine's prior exposure to these bytes.
 4. Confirm the installed bundle version is `0.2.0`. For an installation in `/Applications`, read it with this command.
 
    ```bash
@@ -88,16 +88,17 @@ Use a new conversation so the sign's dimensions do not carry over. The dimension
 1. Send this exact request.
 
    ```text
-   Build a six-cable USB-C desk clip for a Bambu Lab P2S with a 0.4 mm nozzle. Use 4 mm cables with 0.4 mm clearance, an 18 mm desk, 60 mm overall width, 25 mm depth, 3 mm walls, and 1.2 mm fillets. Measure the overall width as 60 mm within 0.2 mm and the desk jaw opening as 18.4 mm within 0.2 mm. Use one filament. Show the checks and any print warnings.
+   Build a six-cable USB-C desk clip for a Bambu Lab P2S with a 0.4 mm nozzle. Use six 4.4 mm cable grooves, an 18.4 mm desk jaw opening, 60 mm overall width, 25 mm depth, walls at least 3 mm thick, and 1.2 mm fillets. Keep at least 3 mm of material outside each end groove. Measure width, depth, and jaw opening within 0.2 mm of their requested values. Use one filament. Orient the part on a flat side so it prints without supports. Show the checks and any print warnings.
    ```
 
 2. Wait for the real CAD build and slice to finish. Record the full prompt, selected model, tool result, revision ID, check counts, and build duration. If the runtime is unavailable, record the failure. Do not supply a development runtime or replace the run with a backend test.
 3. Open the part in the Signs view. Confirm that the part detail shows a rendered view, revision buttons, and measured requirements. Use **Show all checks** to inspect the complete results. Capture the width, jaw opening, and any failed checks or advisory warnings.
-4. Confirm that blocking checks pass and Print-tested is Not tested. Review every warning. Record the full package hash from the revision's stored artifacts with the read-only query below. A shortened hash on the button is not enough for the file comparison.
-5. Click **Approve**. When warnings exist, confirm that the approved state records the same warnings. Click **Export 3MF** and save `part-openai.3mf` through the native Save dialog.
-6. Hash the exported file with `shasum -a 256`. Compare its full digest with the approved package hash and record both.
-7. Open the exported 3MF as a project in Bambu Studio 02.08.02.61. Keep the project settings. Confirm P2S, the 0.4 mm nozzle, the requested dimensions, the filament mapping, and the support requirements. Slice and save a screenshot. Do not send a print job for this software acceptance step.
-8. Ask the assistant for a revision. Capture the new revision in the part detail and confirm that the earlier revision remains accessible. Approval must apply to the exact revision and package being exported.
+4. Compare the rendered geometry and measured mesh or STEP with every requested constraint. Check 60 mm width, 25 mm depth, an 18.4 mm jaw, six 4.4 mm grooves, 1.2 mm fillets, and at least 3 mm walls and outer groove margins. Record the measurement axes after rotation. Require a flat contact face and support-free orientation in the app's package. Selected passing measurements alone do not establish the other dimensions. If a dimension or print orientation fails, ask OpenAI to revise the part before approval. Warning acknowledgement does not correct geometry or supply supports.
+5. Confirm that blocking checks pass and Print-tested is Not tested. Review every warning. Record the full package hash from the revision's stored artifacts with the read-only query below. A shortened hash on the button is not enough for the file comparison.
+6. Click **Approve**. When warnings exist, confirm that the approved state records the same warnings. Click **Export 3MF** and save `part-openai.3mf` through the native Save dialog.
+7. Hash the exported file with `shasum -a 256`. Compare its full digest with the approved package hash and record both.
+8. Open the exported 3MF as a project in Bambu Studio 02.08.02.61. Keep the project settings. Confirm P2S, the 0.4 mm nozzle, the requested dimensions, the filament mapping, and the support-free placement. Slice and save a screenshot. Do not rotate the part or change supports in Bambu to correct the accepted export. A required correction must produce a new app revision, approval, and export. Do not send a print job for this software acceptance step.
+9. Ask the assistant for a revision. Capture the new revision in the part detail and confirm that the earlier revision remains accessible. Confirm that the new revision awaits approval and cannot export before its own GUI approval. Approval must apply to the exact revision and package being exported.
 
 ## Check persistence and failure handling
 
@@ -105,6 +106,12 @@ Use a new conversation so the sign's dimensions do not carry over. The dimension
 2. Start another build through chat and click **Stop** while it runs. Record the cancelled tool result and failed revision. An unfinished revision must not become approvable.
 3. Start another build, quit while it runs, and reopen with that same launch method and test environment. Record the interrupted state. Confirm that no build restarts on its own.
 4. Reuse an identical spec through the build tool and confirm that it reuses the verified build. Repeating natural-language chat alone does not prove reuse, because the model can generate a different spec. Keep this as a separate backend or MCP check if the GUI cannot reproduce an identical spec.
+
+Exercise these failures separately. Record the actual error, its recovery action, and a successful build after recovery. Do not count a failed revision tab or an assistant's summary as proof of the underlying failure.
+
+- **Invalid OpenAI credentials**. In the isolated test environment, save an invalid test key through Settings and submit a chat request. Capture the authentication error without exposing a real key. Restore the valid key privately through Settings and confirm that chat can build again.
+- **Unavailable Bambu Studio**. Launch the installed app in the test environment with `BAMBU_STUDIO_CLI` set to a recorded nonexistent path. This supported override takes precedence over both Settings and discovered installations. Start a GUI chat build and capture the error and its instruction to choose Bambu Studio in Settings. Do not move or delete a real installation. Quit, remove the test override, relaunch with the same HOME, test keychain, and system-only PATH, select the validated installation through Settings, and confirm that a build succeeds.
+- **CAD execution failure**. Through chat, request a deliberate, bounded CAD execution error in a separate test design. Retain the actual failed build tool result and CAD stage error. Confirm that the failed artifact cannot be approved or exported. Ask OpenAI to repair it and record the successful new revision. Automatic repair counts only when the failed execution and later successful build are both recorded. A measurement failure or scripted model response does not prove a real CAD execution failure.
 
 ## Read the full hashes
 
@@ -126,7 +133,7 @@ Keep one evidence record for the exact installed DMG. Include these results.
 - OpenAI model ID and both exact chat requests. Include any follow-up prompts or errors.
 - A watchable recording of chat, review, approval, and native Save for both objects. Include screenshots of the part's measured requirements and warnings.
 - Both exported 3MFs, revision IDs, approved package hashes, exported-file hashes, and Bambu Studio import and slice screenshots.
-- Relaunch, cancellation, and interruption results. Label each pass, fail, or not run with its reason.
+- Relaunch, cancellation, interruption, and all three failure recovery results. Label each pass, fail, or not run with its reason.
 - A statement of whether a physical print was attempted. Keep physical results separate from geometry, slicing, and GUI results.
 
 Build artifacts live under `~/Library/Application Support/com.aojdevstudio.materialize3d/signs/<build id>/`. Use the revision's `build_id` to locate its package, spec, checks, and slice output. Read the revision and export records for full approval and export hashes. Preserve that evidence before removing a test account.
