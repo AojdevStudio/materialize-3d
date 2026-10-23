@@ -7,4 +7,4 @@
 # undone by the next in-place regeneration. Drop this line once a threejs-materials
 # release allows pillow 12.3. Pillow 13 plans to remove deprecated APIs such as
 # fromarray(mode=), so check threejs-materials' Pillow calls before taking 13 this way.
-pillow==12.3.0
+pillow==13.0.0
