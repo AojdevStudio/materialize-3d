@@ -2,7 +2,7 @@
 
 Materialize 3D is a desktop app for creating 3D-printable objects through conversation. You describe what you want to the in-app assistant, the app builds and checks the print file, and you approve the exact file before it leaves the app.
 
-Version 0.2.0 is being prepared for three-color signs and general parts, with Bambu Lab P2S 0.4 mm 3MF export. Installed-release OpenAI chat, GUI export, and physical-print acceptance remain pending. See the [0.2.0 release notes](docs/releases/v0.2.0.md) for the evidence required before publication.
+The 0.2.0 source supports three-color signs and general parts, with Bambu Lab P2S 0.4 mm 3MF export. Check the [Releases page](https://github.com/AojdevStudio/materialize-3d/releases) for distribution status and the required software acceptance record attached to a published release. See the [0.2.0 release notes](docs/releases/v0.2.0.md) for the publication gates. Physical acceptance stays pending until Ossie chooses to print and inspects the objects.
 
 **[Published Mac releases (Apple Silicon)](https://github.com/AojdevStudio/materialize-3d/releases/latest)** · [Install guide](docs/install-macos.md) · [Acceptance checklist](docs/acceptance/p2s-test-sign.md)
 

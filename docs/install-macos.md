@@ -2,7 +2,7 @@
 
 Materialize 3D uses a disk image for Macs with Apple Silicon. You do not need Git, Bun, Rust, Xcode, a source checkout, or a CAD runtime cache.
 
-Version 0.2.0 is in preparation. Use these steps with its DMG once published. The [release notes](releases/v0.2.0.md) track pending acceptance. Earlier releases do not contain all the capabilities described here.
+Use these steps with the 0.2.0 DMG if it is published on the [Releases page](https://github.com/AojdevStudio/materialize-3d/releases). That page reports distribution status. Publication requires an attached software acceptance record for the exact download, as the [release notes](releases/v0.2.0.md) describe. Earlier releases do not contain all the capabilities described here.
 
 ## Requirements
 
@@ -14,7 +14,7 @@ Version 0.2.0 is in preparation. Use these steps with its DMG once published. Th
 ## Install
 
 1. Download `Materialize-3D-0.2.0-macos-arm64.dmg` from the [Releases page](https://github.com/AojdevStudio/materialize-3d/releases).
-2. Optional: check the download against the `.sha256` file on the same page:
+2. Compare the downloaded DMG's full SHA-256 with both the `.sha256` file and the software acceptance record attached to that release. Stop on a mismatch or missing evidence.
 
    ```bash
    shasum -a 256 ~/Downloads/Materialize-3D-0.2.0-macos-arm64.dmg

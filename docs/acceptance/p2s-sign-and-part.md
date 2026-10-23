@@ -1,10 +1,10 @@
 # Physically accept the P2S sign and desk clip
 
-While this source branch is under development, the release-provided 3MF files are not yet available. Physical acceptance is pending. This procedure starts no print and records no completed outcome for Ossie.
+Use this procedure only if the [Releases page](https://github.com/AojdevStudio/materialize-3d/releases) has the actual approved 3MF exports and the required software acceptance record attached to the release. Physical acceptance remains pending and each object is not printed unless Ossie records its print and inspection. This procedure starts no print and records no completed outcome for Ossie.
 
-The proposed distribution filenames are `Acceptance-Sign-P2S.3mf` and `Acceptance-Desk-Clip-P2S.3mf`. After [installed GUI acceptance](../verify-on-mac.md), the release engineer copies the exact software-verified exports to those names without changing their bytes. Keep the accompanying software evidence for the actual parameters, warnings, revision IDs, approved package hashes, and exported-file hashes.
+The proposed distribution filenames are `Acceptance-Sign-P2S.3mf` and `Acceptance-Desk-Clip-P2S.3mf`. Availability depends on actual approved exports attached to the release. After [installed GUI acceptance](../verify-on-mac.md), the release engineer copies the exact software-verified exports to those names without changing their bytes. The attached software acceptance record must identify the actual parameters, warnings, revision IDs, approved package hashes, and exported-file hashes. Excluded candidates are not acceptance exports.
 
-1. Compare each file's full SHA-256 with its exported-file hash and approved package hash in the accompanying software evidence. Stop on a mismatch or missing evidence. In the folder containing the files, run this read-only command.
+1. Compare each downloaded file's full SHA-256 with its exported-file hash and approved package hash in the attached software acceptance record. Stop on a mismatch or missing evidence. In the folder containing the files, run this read-only command.
 
    ```bash
    shasum -a 256 Acceptance-Sign-P2S.3mf Acceptance-Desk-Clip-P2S.3mf
