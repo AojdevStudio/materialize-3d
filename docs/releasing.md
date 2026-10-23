@@ -61,7 +61,7 @@ Record the exact source tag and commit, DMG filename and full SHA-256, installed
 
 Include every result required by the [source release notes](releases/v0.2.0.md) and [installed GUI checklist](verify-on-mac.md). Retain exact OpenAI model IDs, prompts and follow-ups, tool results, revision IDs, geometry measurements, checks, warnings, approval hashes, export IDs, destinations, and full exported-file hashes. Include watchable direct human GUI approval and native Save evidence, Bambu Studio 02.08.02.61 P2S 0.4 mm import and slice proof, and each persistence, cancellation, interruption, failure, and successful recovery result. Report failures and unrun checks with reasons. Excluded candidates must not appear as accepted exports.
 
-Copy the two accepted exports to the proposed distribution filenames without changing their bytes. Record those names and matching hashes. State all remaining limits. Keep physical acceptance pending and each object not printed unless Ossie records its actual print and inspection. Only Ossie decides to print.
+Copy the two accepted exports to the proposed distribution filenames without changing their bytes. Record those names and matching hashes. State all remaining limits. Physical acceptance remains pending until Ossie records an actual print and inspection. Only Ossie decides to print.
 
 ## Clean-install test
 
