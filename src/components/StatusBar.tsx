@@ -1,8 +1,5 @@
 import { usePrinterStore } from '../stores/printer'
-
-interface StatusBarProps {
-  version?: string
-}
+import { version } from '../../package.json'
 
 function formatEta(minutes: number | null): string | null {
   if (minutes == null || minutes <= 0) return null
@@ -11,7 +8,7 @@ function formatEta(minutes: number | null): string | null {
   return h > 0 ? `${h}h ${m}m` : `${m}m`
 }
 
-export function StatusBar({ version = 'v0.1.0' }: StatusBarProps) {
+export function StatusBar() {
   const connectionState = usePrinterStore((s) => s.connectionState)
   const printerName = usePrinterStore((s) => s.name) ?? 'No Printer'
   const nozzleTemp = usePrinterStore((s) => s.nozzleTemp)
@@ -36,7 +33,7 @@ export function StatusBar({ version = 'v0.1.0' }: StatusBarProps) {
   return (
     <footer className="status-bar">
       <div className="status-item">
-        <strong>{version}</strong>
+        <strong>v{version}</strong>
       </div>
 
       {isConnected && gcodeState && (

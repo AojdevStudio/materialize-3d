@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import AppLayout from '../components/AppLayout'
 import { NAV_ITEMS, getContextTitle } from '../components/Sidebar'
 import { MAIN_TABS, getDefaultTabForView } from '../components/MainPanel'
+import { version } from '../../package.json'
 
 describe('wireframe layout shell', () => {
   it('defines the sidebar destinations', () => {
@@ -46,6 +47,11 @@ describe('wireframe layout shell', () => {
     expect(markup).toContain('Materialize')
     expect(markup).toContain('No Printer')
     expect(markup).toContain('AI Assistant')
-    expect(markup).toContain('v0.1.0')
+  })
+
+  it('renders the package version in the footer', () => {
+    const markup = renderToStaticMarkup(<AppLayout />)
+
+    expect(markup).toContain(`<strong>v${version}</strong>`)
   })
 })

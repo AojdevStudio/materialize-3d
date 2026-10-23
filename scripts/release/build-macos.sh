@@ -19,6 +19,7 @@
 # Output: dist-release/Materialize-3D-<version>-macos-arm64.dmg and a .sha256
 # file next to it. The build never enables the e2e verification harness.
 set -euo pipefail
+set +x
 
 die() { echo "release: $*" >&2; exit 1; }
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -29,6 +30,20 @@ for var in RELEASE_KEYCHAIN RELEASE_KEYCHAIN_PASSWORD APPLE_API_KEY_ID APPLE_API
   CAD_RUNTIME_DIR; do
   [[ -n "${!var:-}" ]] || die "$var is not set"
 done
+# security -i has its own quoting and line parser. Reject ambiguous input and
+# keep the command below 1024 bytes rather than risk changing either argument.
+unlock_line="$(builtin printf 'unlock-keychain -p "%s" "%s"' "$RELEASE_KEYCHAIN_PASSWORD" "$RELEASE_KEYCHAIN")"
+(
+  export LC_ALL=C
+  for var in RELEASE_KEYCHAIN_PASSWORD RELEASE_KEYCHAIN; do
+    value="${!var}"
+    [[ "$value" != *[![:print:]]* && "$value" != *[\"\'\\]* ]] \
+      || die "$var must use printable ASCII without quotes or backslashes for security -i"
+  done
+  [[ ${#unlock_line} -lt 1023 ]] \
+    || die "security -i unlock command must be shorter than 1024 bytes including its newline"
+)
+[[ "$RELEASE_KEYCHAIN" != -* ]] || die "RELEASE_KEYCHAIN must not start with a dash"
 [[ -f "$RELEASE_KEYCHAIN" ]] || die "no keychain at $RELEASE_KEYCHAIN"
 [[ -d "$CAD_RUNTIME_DIR" ]] || die "no CAD runtime at $CAD_RUNTIME_DIR"
 
@@ -84,7 +99,13 @@ cleanup() {
   exit "$rc"
 }
 trap cleanup EXIT
-security unlock-keychain -p "$RELEASE_KEYCHAIN_PASSWORD" "$RELEASE_KEYCHAIN"
+# security -i can echo its input on either output stream, including on failure.
+builtin printf '%s\n' "$unlock_line" \
+  | security -i >/dev/null 2>&1 || {
+    rc=$?
+    echo "release: keychain unlock failed (status $rc)" >&2
+    exit "$rc"
+  }
 identity="$(security find-identity -v -p codesigning "$RELEASE_KEYCHAIN" \
   | awk -F'"' '/Developer ID Application/ { print $2; exit }')"
 [[ -n "$identity" ]] || die "no Developer ID Application identity in $RELEASE_KEYCHAIN"

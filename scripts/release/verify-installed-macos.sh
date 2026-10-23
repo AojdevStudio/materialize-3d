@@ -335,7 +335,7 @@ ditto "$MNT/Materialize 3D.app" "$APP"
 hdiutil detach "$MNT" >/dev/null; MNT=""
 xattr -w com.apple.quarantine "0081;$(printf %x "$(date +%s)");Safari;$(uuidgen)" "$APP"
 spctl --assess --type execute -vv "$APP" 2>&1 | tee -a "$RUN/evidence/actions.log"
-syspolicy_check distribution "$APP" 2>&1 | tail -2 | tee -a "$RUN/evidence/actions.log" || true
+syspolicy_check distribution "$APP" 2>&1 | tee -a "$RUN/evidence/actions.log"
 codesign -dv --verbose=2 "$APP" 2>&1 | grep -E "^(Identifier|Authority=Developer|TeamIdentifier|Runtime)" | tee -a "$RUN/evidence/actions.log"
 log "binary sha256 $(shasum -a 256 "$BIN" | cut -d' ' -f1), archs $(lipo -archs "$BIN"), min macOS $(plutil -extract LSMinimumSystemVersion raw "$APP/Contents/Info.plist")"
 log "bundle files: $(cd "$APP" && find . -type f | sed 's|^\./||' | sort | tr '\n' ' ')"

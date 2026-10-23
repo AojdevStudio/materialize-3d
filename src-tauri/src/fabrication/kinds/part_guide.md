@@ -49,7 +49,14 @@ with supports, or on its side.
 | `span` | overall extent along `axis` | `axis`, `mm`, `tol` |
 | `opening` | width of the empty gap along `axis` through `at` | `axis`, `at` in the gap, `mm`, `tol` |
 | `hole` | diameter of the hole whose centerline runs along `axis` through `at` | `axis`, `at` in the hole, `mm`, `tol` |
-| `min_wall` | the material at `at` is at least `mm` thick | `at` in the material, `mm` |
+| `min_wall` | the local enclosed-ball thickness estimate at `at` is at least `mm` | `at` in the material, `mm` |
+
+Declare the person's measurements as `requirements` in final print coordinates, after all cuts, fillets, and
+transforms. Cover the thinnest remaining regions, including rounded tips and groove margins, with probes inside
+the relevant features. `min_wall` conservatively estimates the diameter of an enclosed ball containing `at`,
+not a directional cross-section. Near a free edge, this estimate can approach zero even when a directional
+section is thick. Local passes do not certify the whole part's minimum. Report the minimum as unverified when
+the available checks do not establish it.
 
 ## Idioms
 
