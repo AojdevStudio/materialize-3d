@@ -2,7 +2,7 @@
 
 Use this checklist for 0.2.0 release acceptance. A pass requires the installed release to build both a sign and a general part through OpenAI chat, then export approved P2S 0.4 mm 3MFs through the GUI. This document is a recipe, not a record of a passing run.
 
-For physical acceptance of the exact software-verified exports, use [Physically accept the P2S sign and desk clip](acceptance/p2s-sign-and-part.md). The files are not yet available while this source branch is under development. Physical acceptance remains pending until Ossie chooses to print and inspects the actual objects.
+For physical acceptance of the exact software-verified exports, use [Physically accept the P2S sign and desk clip](acceptance/p2s-sign-and-part.md). Use only actual approved exports and the software acceptance record attached to a published release. Physical acceptance remains pending until Ossie chooses to print and inspects the actual objects.
 
 ## Choose GUI isolation
 
@@ -140,6 +140,6 @@ Build artifacts live under `~/Library/Application Support/com.aojdevstudio.mater
 
 ## Separate development and backend checks
 
-The [verification skill](../.agents/skills/verify-materialize-3d/SKILL.md) describes the Linux debug app and the macOS `--features e2e` debug build. `scripts/mac.ts` controls that debug build through its test endpoint and scripted dialogs. The release binary omits that endpoint and dialog override. A `mac.ts` run does not verify the installed release.
+The [verification skill](../.agents/skills/verify-materialize-3d/SKILL.md) describes the Linux debug app and the macOS `--features e2e` debug build. `.agents/skills/verify-materialize-3d/scripts/mac.ts` controls that debug build through its test endpoint and scripted dialogs. The release binary omits that endpoint and dialog override. A `mac.ts` run does not verify the installed release.
 
 The [release procedure](releasing.md) describes bundle, clean-account, migration, keychain, MCP, and CAD self-tests. Those checks support acceptance but do not exercise OpenAI chat, human approval, or the native Save dialog. A plain `bun tauri build --bundles app` also does not assemble the signed CAD helper and runtime required by the release.
