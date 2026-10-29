@@ -1,6 +1,8 @@
 import { create } from 'zustand'
 import { subscribeWithSelector } from 'zustand/middleware'
-import useTauriEvent from '../hooks/useTauriEvent'
+import { useEffect } from 'react'
+import { invoke } from '@tauri-apps/api/core'
+import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 
 export interface PrintHistoryRecord {
   id: string
@@ -19,17 +21,19 @@ export interface PrintHistoryRecord {
 
 interface PrintHistoryState {
   records: PrintHistoryRecord[]
+  loadError: string | null
   applySnapshot: (records: PrintHistoryRecord[]) => void
 }
 
-export const HISTORY_DEFAULT_STATE = {
-  records: [] as PrintHistoryRecord[],
+export const HISTORY_DEFAULT_STATE: Pick<PrintHistoryState, 'records' | 'loadError'> = {
+  records: [],
+  loadError: null,
 }
 
 export const usePrintHistoryStore = create<PrintHistoryState>()(
   subscribeWithSelector((set) => ({
     ...HISTORY_DEFAULT_STATE,
-    applySnapshot: (records) => set({ records }),
+    applySnapshot: (records) => set({ records, loadError: null }),
   })),
 )
 
@@ -38,8 +42,38 @@ export function applyHistorySnapshot(records: PrintHistoryRecord[]) {
 }
 
 export function usePrintHistoryEvents() {
-  useTauriEvent<PrintHistoryRecord[]>('history:changed', ({ payload }) => {
-    console.debug('event received:', 'history:changed', payload)
-    applyHistorySnapshot(payload)
-  })
+  useEffect(() => {
+    let disposed = false
+    let receivedEvent = false
+    let unlisten: UnlistenFn | null = null
+
+    const load = async () => {
+      try {
+        const teardown = await listen<PrintHistoryRecord[]>('history:changed', ({ payload }) => {
+          if (disposed) return
+          receivedEvent = true
+          applyHistorySnapshot(payload)
+        })
+        if (disposed) {
+          teardown()
+          return
+        }
+        unlisten = teardown
+
+        const records = await invoke<PrintHistoryRecord[]>('get_print_history')
+        // A full event snapshot supersedes the initial read, including deleted rows.
+        if (!disposed && !receivedEvent) applyHistorySnapshot(records)
+      } catch (error) {
+        if (!disposed && !receivedEvent) {
+          usePrintHistoryStore.setState({ loadError: error instanceof Error ? error.message : String(error) })
+        }
+      }
+    }
+
+    void load()
+    return () => {
+      disposed = true
+      unlisten?.()
+    }
+  }, [])
 }
