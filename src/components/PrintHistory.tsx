@@ -102,6 +102,18 @@ function HistoryCard({ record }: { record: PrintHistoryRecord }) {
 
 export function PrintHistory() {
   const records = usePrintHistoryStore((s) => s.records)
+  const loadError = usePrintHistoryStore((s) => s.loadError)
+
+  if (loadError !== null) {
+    return (
+      <div className="print-history" data-testid="print-history">
+        <div className="print-history-header">
+          <h2 className="print-history-title">Print History</h2>
+        </div>
+        <p role="alert">Could not load print history. {loadError}</p>
+      </div>
+    )
+  }
 
   if (records.length === 0) {
     return (

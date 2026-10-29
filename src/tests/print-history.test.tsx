@@ -83,6 +83,20 @@ describe('PrintHistory component', () => {
     expect(screen.getByText('Print history will appear here as prints complete')).toBeDefined()
   })
 
+  it('shows a load error instead of claiming history is empty, then clears it on a snapshot', async () => {
+    const { usePrintHistoryStore } = await import('../stores/printHistory')
+    usePrintHistoryStore.setState({ loadError: 'database not initialized' })
+    const { PrintHistory } = await import('../components/PrintHistory')
+    render(React.createElement(PrintHistory))
+
+    expect(screen.getByRole('alert').textContent).toContain('database not initialized')
+    expect(screen.queryByText('No prints recorded yet')).toBeNull()
+
+    act(() => usePrintHistoryStore.getState().applySnapshot(SAMPLE_RECORDS))
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.getAllByTestId('history-card')).toHaveLength(3)
+  })
+
   it('renders cards in correct order with model names when populated', async () => {
     const { usePrintHistoryStore } = await import('../stores/printHistory')
 
