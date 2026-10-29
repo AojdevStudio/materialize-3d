@@ -24,7 +24,7 @@ const SAMPLE_RECORDS: PrintHistoryRecord[] = [
     startedAt: '2026-03-15T08:00:00Z',
     completedAt: '2026-03-15T09:15:00Z',
     durationSeconds: 4500,
-    status: 'completed',
+    status: 'success',
     failReason: null,
     filamentGrams: 12.5,
     filamentMeters: 4.2,
@@ -52,7 +52,7 @@ const SAMPLE_RECORDS: PrintHistoryRecord[] = [
     startedAt: null,
     completedAt: '2026-03-13T10:00:00Z',
     durationSeconds: 30,
-    status: 'completed',
+    status: 'success',
     failReason: null,
     filamentGrams: null,
     filamentMeters: null,
@@ -102,7 +102,7 @@ describe('PrintHistory component', () => {
     expect(screen.getByText('Cable Clip')).toBeDefined()
   })
 
-  it('shows green success badge for completed prints', async () => {
+  it('shows a green Success badge for the persisted backend success status', async () => {
     const { usePrintHistoryStore } = await import('../stores/printHistory')
 
     act(() => {

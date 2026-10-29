@@ -44,7 +44,7 @@ async function handleDelete(id: string) {
 // ─── Component ───────────────────────────────────────────────────────────────
 
 function HistoryStatusBadge({ status, failReason }: { status: string; failReason: string | null }) {
-  const isSuccess = status === 'completed'
+  const isSuccess = status === 'success'
   const isFailed = status === 'failed'
   const variant = isSuccess ? 'history-status--success' : isFailed ? 'history-status--failed' : ''
   const label = isSuccess ? 'Success' : isFailed ? `Failed${failReason ? `: ${failReason}` : ''}` : status
