@@ -70,8 +70,10 @@ up() {
   done
 
   RUN=$RUNS/$(date +%Y%m%d-%H%M%S)
-  mkdir -p "$RUN"/{evidence,logs,pids,xdg/data,xdg/config,xdg/cache}
+  mkdir -p "$RUN"/{evidence,logs,pids,xdg/data/keyrings,xdg/config,xdg/cache}
   chmod 700 "$RUN"
+  # An existing XDG collection directory prevents the ~/.gnome2/keyrings fallback.
+  chmod 700 "$RUN/xdg/data/keyrings"
   RUN=$(cd "$RUN" && pwd)
   ln -sfn "$RUN" "$CURRENT"
 
