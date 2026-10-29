@@ -43,6 +43,8 @@ A development build is not an installed-release acceptance test. Parts need the 
 
 You need [Bun](https://bun.sh) 1.3, stable Rust, and on macOS the Xcode command line tools. On Linux, install the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/).
 
+Linux development builds also need a session D-Bus and an unlocked Secret Service, such as GNOME Keyring, to store API keys and printer access codes. Credential operations return an error when that service is unavailable. Builds that used kernel keyutils did not retain credentials across reboot. After upgrading from those builds, re-enter API keys and printer access codes. Saved printer configurations remain.
+
 ```bash
 bun install
 bun tauri dev

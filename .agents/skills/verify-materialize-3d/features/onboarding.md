@@ -32,6 +32,6 @@ Preconditions:
 
 ## Gotchas
 
-- `Test Connection` sends the form's initial empty values, whatever was typed, because its callbacks have empty dependency lists (`OnboardingWizard.tsx:168-172`, `:214`). It also calls a command that is not registered (`set_default_printer_config`, `lib.rs:130-138`). Expect "Connection failed". It may also leave a `printer_configs` row whose name falls back to "My Printer". This is a known defect and not a harness problem.
+- `Test Connection` saves the entered values and sets the configuration as default before attempting a connection. For an isolated check, use a loopback host and test credentials, then verify the saved host, serial, and default flag in `printer_configs`. A connection failure is expected without a printer. Repeated clicks still create duplicate configurations, tracked in issue #51.
 - `Continue` on either step works without configuring anything, just like `Skip for now`. With a key typed on the provider step, `Continue` saves it first and stays on the step if saving fails. Verify both buttons if a change touches navigation between steps.
 - The wizard renders before `close-inspector` can run, so take the welcome screenshot after closing the inspector or the page will be 600px tall.
