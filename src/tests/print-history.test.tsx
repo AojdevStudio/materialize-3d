@@ -24,7 +24,7 @@ const SAMPLE_RECORDS: PrintHistoryRecord[] = [
     startedAt: '2026-03-15T08:00:00Z',
     completedAt: '2026-03-15T09:15:00Z',
     durationSeconds: 4500,
-    status: 'completed',
+    status: 'success',
     failReason: null,
     filamentGrams: 12.5,
     filamentMeters: 4.2,
@@ -52,7 +52,7 @@ const SAMPLE_RECORDS: PrintHistoryRecord[] = [
     startedAt: null,
     completedAt: '2026-03-13T10:00:00Z',
     durationSeconds: 30,
-    status: 'completed',
+    status: 'success',
     failReason: null,
     filamentGrams: null,
     filamentMeters: null,
@@ -83,6 +83,20 @@ describe('PrintHistory component', () => {
     expect(screen.getByText('Print history will appear here as prints complete')).toBeDefined()
   })
 
+  it('shows a load error instead of claiming history is empty, then clears it on a snapshot', async () => {
+    const { usePrintHistoryStore } = await import('../stores/printHistory')
+    usePrintHistoryStore.setState({ loadError: 'database not initialized' })
+    const { PrintHistory } = await import('../components/PrintHistory')
+    render(React.createElement(PrintHistory))
+
+    expect(screen.getByRole('alert').textContent).toContain('database not initialized')
+    expect(screen.queryByText('No prints recorded yet')).toBeNull()
+
+    act(() => usePrintHistoryStore.getState().applySnapshot(SAMPLE_RECORDS))
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.getAllByTestId('history-card')).toHaveLength(3)
+  })
+
   it('renders cards in correct order with model names when populated', async () => {
     const { usePrintHistoryStore } = await import('../stores/printHistory')
 
@@ -102,7 +116,7 @@ describe('PrintHistory component', () => {
     expect(screen.getByText('Cable Clip')).toBeDefined()
   })
 
-  it('shows green success badge for completed prints', async () => {
+  it('shows a green Success badge for the persisted backend success status', async () => {
     const { usePrintHistoryStore } = await import('../stores/printHistory')
 
     act(() => {

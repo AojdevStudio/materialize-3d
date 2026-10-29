@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { render, cleanup, screen, fireEvent, waitFor } from '@testing-library/react'
+import { act, render, cleanup, screen, fireEvent, waitFor } from '@testing-library/react'
 
 // ── Tauri mocks (vi.hoisted so they're available when vi.mock factories run) ──
 const { invokeMock } = vi.hoisted(() => ({
@@ -99,6 +99,7 @@ describe('OnboardingWizard', () => {
 
   afterEach(() => {
     cleanup()
+    vi.useRealTimers()
   })
 
   it('renders with Welcome step visible on mount', () => {
@@ -166,6 +167,48 @@ describe('OnboardingWizard', () => {
     await waitFor(() => {
       expect(screen.getByTestId('step-complete')).toBeDefined()
     })
+  })
+
+  it('tests the typed printer values using the registered default-printer command', async () => {
+    vi.useFakeTimers()
+    let connected = false
+    invokeMock.mockImplementation(async (cmd: string) => {
+      switch (cmd) {
+        case 'get_printer_status':
+          return { isConnected: connected, connectionState: connected ? 'connected_mqtt' : 'disconnected', name: null }
+        case 'add_printer_config':
+          return { id: 'printer-test', name: 'Test printer', host: '192.0.2.10', serial: 'TEST-SERIAL' }
+        case 'set_default_printer':
+          return undefined
+        case 'connect_printer_by_config':
+          connected = true
+          return undefined
+        default:
+          throw new Error(`Unknown command: ${cmd}`)
+      }
+    })
+    useOnboardingStore.getState().setStep(2)
+    await act(async () => {
+      render(<OnboardingWizard onComplete={vi.fn()} />)
+    })
+    fireEvent.change(screen.getByTestId('input-host'), { target: { value: '192.0.2.10' } })
+    fireEvent.change(screen.getByTestId('input-access-code'), { target: { value: '12345678' } })
+    fireEvent.change(screen.getByTestId('input-device-id'), { target: { value: 'TEST-SERIAL' } })
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('btn-test-connection'))
+    })
+
+    expect(invokeMock).toHaveBeenCalledWith('add_printer_config', {
+      name: '192.0.2.10', host: '192.0.2.10', serial: 'TEST-SERIAL', accessCode: '12345678',
+    })
+    expect(invokeMock).toHaveBeenCalledWith('set_default_printer', { id: 'printer-test' })
+    expect(invokeMock).toHaveBeenCalledWith('connect_printer_by_config', { configId: 'printer-test' })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2000)
+    })
+    expect(screen.getByTestId('printer-detected').textContent).toContain('Test printer')
+    expect(invokeMock.mock.calls.filter(([cmd]) => cmd === 'add_printer_config')).toHaveLength(1)
   })
 
   it('"Launch App" on Complete step calls onComplete', async () => {
