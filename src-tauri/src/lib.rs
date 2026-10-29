@@ -258,7 +258,7 @@ pub fn run() {
                                 let state_arc = std::sync::Arc::clone(&*app_state);
                                 let printer_service = app.state::<PrinterService>().inner().clone();
 
-                                tokio::spawn(async move {
+                                tauri::async_runtime::spawn(async move {
                                     if let Err(e) = commands::connect_printer_by_config_inner(
                                         &config_id,
                                         &app_handle,
