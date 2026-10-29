@@ -62,7 +62,7 @@ ensure_deps() {
 
 up() {
   [[ -e "$CURRENT" ]] && die "run already active at $(readlink -f "$CURRENT"); run 'm3d.sh down' first"
-  for tool in Xvfb tauri-driver WebKitWebDriver xdotool ffmpeg bun cargo jq ss curl setsid keyctl; do
+  for tool in Xvfb tauri-driver WebKitWebDriver xdotool ffmpeg bun cargo jq ss curl setsid keyctl dbus-run-session gnome-keyring-daemon; do
     command -v "$tool" >/dev/null || die "missing $tool; this host cannot run verification (use the Linux host)"
   done
   for port in $VITE_PORT $DRIVER_PORT $NATIVE_PORT; do
@@ -71,6 +71,7 @@ up() {
 
   RUN=$RUNS/$(date +%Y%m%d-%H%M%S)
   mkdir -p "$RUN"/{evidence,logs,pids,xdg/data,xdg/config,xdg/cache}
+  chmod 700 "$RUN"
   RUN=$(cd "$RUN" && pwd)
   ln -sfn "$RUN" "$CURRENT"
 
@@ -92,13 +93,16 @@ up() {
   wait_for "curl -sf http://localhost:$VITE_PORT/" 60 || die "Vite not answering on :$VITE_PORT; see $RUN/logs/vite.log"
 
   # XDG_* isolates the app's SQLite DB, library files, and WebKit storage per run.
-  # Its own session keyring: the app stores API keys and the MCP token in the
-  # kernel keyring, and the launching shell's keyring is revoked when an SSH
-  # login ends, which would turn every credential read into "No matching entry".
+  # A private bus and Secret Service keep credentials out of the user's keyring.
+  # The empty password unlocks only this disposable run's collection.
+  # Keep a separate kernel session too, for before/after checks of older builds.
   # Bambu Studio's --help probe writes result.json in the inherited working
   # directory. Keep it with this run, without touching pre-existing checkout files.
   (cd "$RUN" && DISPLAY=$display XDG_DATA_HOME=$RUN/xdg/data XDG_CONFIG_HOME=$RUN/xdg/config XDG_CACHE_HOME=$RUN/xdg/cache \
-    spawn driver keyctl session - tauri-driver --port "$DRIVER_PORT" --native-port "$NATIVE_PORT")
+    spawn driver dbus-run-session -- bash -euc '
+      printf "\n" | gnome-keyring-daemon --unlock --components=secrets --control-directory="$XDG_DATA_HOME/keyring-control"
+      exec keyctl session - tauri-driver --port "$1" --native-port "$2"
+    ' -- "$DRIVER_PORT" "$NATIVE_PORT")
   wait_for "curl -sf http://127.0.0.1:$DRIVER_PORT/status" 20 || die "tauri-driver not answering; see $RUN/logs/driver.log"
 
   jq -n --arg run "$RUN" --arg display "$display" --arg binary "$BINARY" --arg rev "$(git -C "$ROOT" rev-parse --short HEAD)" \
