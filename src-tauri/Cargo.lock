@@ -3131,7 +3131,6 @@ checksum = "843fba2746e448b37e26a819579957415c8cef339bf08564fe8b7ddbd959573c"
 dependencies = [
  "crc32fast",
  "miniz_oxide",
- "zlib-rs",
 ]
 
 [[package]]
@@ -5734,6 +5733,7 @@ dependencies = [
  "chrono",
  "dirs 5.0.1",
  "earcutr",
+ "flate2",
  "futures",
  "i_overlay",
  "jsonschema",
@@ -7138,12 +7138,6 @@ name = "powerfmt"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "439ee305def115ba05938db6eb1644ff94165c5ab5e9420d1c1bcedbba909391"
-
-[[package]]
-name = "ppmd-rust"
-version = "1.5.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cd4acc8d264ea385db64ccfdcdfd5909ee9eda0975666723d59f3bfec80b3611"
 
 [[package]]
 name = "ppv-lite86"
@@ -12163,7 +12157,6 @@ dependencies = [
  "lzma-rust2",
  "memchr",
  "pbkdf2",
- "ppmd-rust",
  "sha1 0.11.0",
  "time",
  "typed-path",
@@ -12171,12 +12164,6 @@ dependencies = [
  "zopfli",
  "zstd",
 ]
-
-[[package]]
-name = "zlib-rs"
-version = "0.6.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b268e58e7c693d7c271f93ffc4ba3b380412554231c85bf61ca7af91042a4112"
 
 [[package]]
 name = "zmij"

@@ -257,7 +257,7 @@ fn package_is_deterministic_and_never_overwrites() {
     assert_eq!(leftovers, 2, "temporary files left behind");
 
     let mut zip = zip::ZipArchive::new(std::io::Cursor::new(a)).unwrap();
-    let names: Vec<String> = zip.file_names().map(str::to_owned).collect();
+    let names: Vec<String> = zip.file_names().map(|name| name.expect("entry name").into_owned()).collect();
     assert_eq!(
         names,
         [

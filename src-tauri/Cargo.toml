@@ -43,7 +43,11 @@ chrono = { version = "0.4", features = ["serde"] }
 dirs = "5"
 thiserror = "1"
 url = "2"
-zip = "9"
+# zip 9's default deflate feature switches flate2 to zlib-rs for the whole build, which changes
+# package bytes (see tests/fixtures/signs/characterization.json). These are zip 2's defaults on
+# flate2's default Rust backend, so packages stay byte-identical.
+zip = { version = "9", default-features = false, features = ["aes-crypto", "bzip2", "deflate64", "deflate-flate2", "deflate-zopfli", "lzma", "time", "xz", "zstd"] }
+flate2 = "1"
 quick-xml = "0.38"
 tempfile = "3"
 suppaftp = { version = "6", features = ["native-tls", "deprecated"] }

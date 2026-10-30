@@ -385,7 +385,7 @@ fn read_3mf(bytes: &[u8], units: Units, welder: &mut Welder, expanded: u64) -> R
         if declared > expanded {
             return Err(MeshImportError::Expanded);
         }
-        if entry.name().eq_ignore_ascii_case(MODEL_ENTRY) {
+        if entry.name().map_err(|_| MeshImportError::BadZip)?.eq_ignore_ascii_case(MODEL_ENTRY) {
             model = Some(i);
         }
     }
