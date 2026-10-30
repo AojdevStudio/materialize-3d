@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::Mutex;
 
 use chrono::{DateTime, Utc};
@@ -424,6 +425,8 @@ pub struct AppState {
     pub printer: Mutex<PrinterState>,
     pub workspace: Mutex<WorkspaceState>,
     pub print_queue: Mutex<Vec<QueuedJob>>,
+    /// File the print queue loads from and persists to. `None` keeps the queue in memory.
+    pub print_queue_file: Option<PathBuf>,
     pub openscad: Mutex<OpenScadSnapshot>,
     pub db: Mutex<Option<Connection>>,
     /// Deduplication guard: the `gcode_start_time` of the last recorded history entry.

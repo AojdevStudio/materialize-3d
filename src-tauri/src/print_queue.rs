@@ -1,14 +1,14 @@
-//! Persistent print queue backed by `app_data_dir/print_queue.json`.
+//! Print queue persisted to `AppState.print_queue_file`.
 //!
 //! All operations lock `AppState.print_queue` briefly, mutate, then persist.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::state::{AppState, QueuedJob, QueueStatus};
 
-/// Return the path to the persisted queue file.
-fn queue_file_path() -> PathBuf {
+/// Return the app's queue file path, `<data dir>/materialize-3d/print_queue.json`.
+pub fn queue_file_path() -> PathBuf {
     let base = dirs::data_dir().unwrap_or_else(|| PathBuf::from("."));
     base.join("materialize-3d").join("print_queue.json")
 }
@@ -68,14 +68,16 @@ pub fn update_job_status(state: &AppState, id: &str, status: QueueStatus) -> Res
     persist_queue(state)
 }
 
-/// Persist the current queue to disk as JSON.
+/// Persist the current queue to `state.print_queue_file` as JSON.
 pub fn persist_queue(state: &AppState) -> Result<(), String> {
+    let Some(path) = &state.print_queue_file else {
+        return Ok(());
+    };
     let queue = state
         .print_queue
         .lock()
         .map_err(|e| format!("failed to lock print queue: {e}"))?;
 
-    let path = queue_file_path();
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("failed to create queue directory: {e}"))?;
@@ -84,16 +86,15 @@ pub fn persist_queue(state: &AppState) -> Result<(), String> {
     let json = serde_json::to_string_pretty(&*queue)
         .map_err(|e| format!("failed to serialize queue: {e}"))?;
 
-    std::fs::write(&path, json).map_err(|e| format!("failed to write queue file: {e}"))?;
+    std::fs::write(path, json).map_err(|e| format!("failed to write queue file: {e}"))?;
 
     log::debug!("print_queue: persisted {} jobs to {}", queue.len(), path.display());
     Ok(())
 }
 
-/// Load the queue from disk. Returns an empty vec if the file is missing.
-pub fn load_queue() -> Vec<QueuedJob> {
-    let path = queue_file_path();
-    match std::fs::read_to_string(&path) {
+/// Load the queue from `path`. Returns an empty vec if the file is missing.
+pub fn load_queue(path: &Path) -> Vec<QueuedJob> {
+    match std::fs::read_to_string(path) {
         Ok(json) => match serde_json::from_str::<Vec<QueuedJob>>(&json) {
             Ok(jobs) => {
                 log::info!("print_queue: loaded {} jobs from {}", jobs.len(), path.display());
@@ -111,9 +112,12 @@ pub fn load_queue() -> Vec<QueuedJob> {
     }
 }
 
-/// Initialize the queue on AppState from the persisted file.
+/// Initialize the queue on AppState from `state.print_queue_file`.
 pub fn init_queue(state: &Arc<AppState>) {
-    let jobs = load_queue();
+    let Some(path) = &state.print_queue_file else {
+        return;
+    };
+    let jobs = load_queue(path);
     if let Ok(mut queue) = state.print_queue.lock() {
         *queue = jobs;
     }
@@ -125,6 +129,13 @@ pub fn init_queue(state: &Arc<AppState>) {
 mod tests {
     use super::*;
     use chrono::Utc;
+
+    fn state_with_queue_file(dir: &tempfile::TempDir) -> AppState {
+        AppState {
+            print_queue_file: Some(dir.path().join("print_queue.json")),
+            ..AppState::default()
+        }
+    }
 
     fn make_job(id: &str, name: &str) -> QueuedJob {
         QueuedJob {
@@ -143,7 +154,8 @@ mod tests {
 
     #[test]
     fn add_and_get_jobs() {
-        let state = AppState::default();
+        let dir = tempfile::tempdir().unwrap();
+        let state = state_with_queue_file(&dir);
         let job = make_job("j1", "benchy");
 
         add_job(&state, job.clone()).unwrap();
@@ -156,7 +168,8 @@ mod tests {
 
     #[test]
     fn remove_existing_job() {
-        let state = AppState::default();
+        let dir = tempfile::tempdir().unwrap();
+        let state = state_with_queue_file(&dir);
         add_job(&state, make_job("j1", "benchy")).unwrap();
         add_job(&state, make_job("j2", "hook")).unwrap();
 
@@ -170,26 +183,20 @@ mod tests {
 
     #[test]
     fn remove_nonexistent_returns_false() {
-        let state = AppState::default();
+        let dir = tempfile::tempdir().unwrap();
+        let state = state_with_queue_file(&dir);
         let removed = remove_job(&state, "doesnt-exist").unwrap();
         assert!(!removed);
     }
 
     #[test]
     fn persist_and_load_round_trip() {
-        // Use a temp dir to avoid clobbering real data
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("print_queue.json");
+        let state = state_with_queue_file(&dir);
+        add_job(&state, make_job("j1", "benchy")).unwrap();
+        add_job(&state, make_job("j2", "hook")).unwrap();
 
-        let jobs = vec![
-            make_job("j1", "benchy"),
-            make_job("j2", "hook"),
-        ];
-
-        let json = serde_json::to_string_pretty(&jobs).unwrap();
-        std::fs::write(&path, &json).unwrap();
-
-        let loaded: Vec<QueuedJob> = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let loaded = load_queue(&dir.path().join("print_queue.json"));
         assert_eq!(loaded.len(), 2);
         assert_eq!(loaded[0].id, "j1");
         assert_eq!(loaded[1].id, "j2");
@@ -197,8 +204,7 @@ mod tests {
 
     #[test]
     fn load_returns_empty_on_missing_file() {
-        // load_queue() uses a fixed path, but we can verify the parse logic
-        let empty: Vec<QueuedJob> = serde_json::from_str("[]").unwrap();
-        assert!(empty.is_empty());
+        let dir = tempfile::tempdir().unwrap();
+        assert!(load_queue(&dir.path().join("print_queue.json")).is_empty());
     }
 }

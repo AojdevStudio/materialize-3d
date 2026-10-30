@@ -11,7 +11,7 @@ For installed macOS release acceptance, follow [Verify the installed Mac app](..
 
 ## Where it runs
 
-Run on the Linux host, dev-substrate (`ssh ossie@dev-substrate`, Ubuntu 24.04.5). It has Xvfb, `WebKitWebDriver`, `tauri-driver` (`~/.cargo/bin`), xdotool, ffmpeg, and `keyctl`. `m3d.sh up` refuses to start on a host that is missing any of them. An Arch/Hyprland desktop lacks Xvfb, WebKitWebDriver, and tauri-driver, and it has no passwordless sudo.
+Run on the Linux host, dev-substrate (`ssh ossie@dev-substrate`, Ubuntu 24.04.5). It needs Xvfb, `WebKitWebDriver`, `tauri-driver` (`~/.cargo/bin`), xdotool, ffmpeg, `keyctl`, `dbus-run-session`, and `gnome-keyring-daemon`. `m3d.sh up` refuses to start on a host that is missing any of them. An Arch/Hyprland desktop lacks Xvfb, WebKitWebDriver, and tauri-driver, and it has no passwordless sudo.
 
 To verify work that lives on another machine, get the same tree onto the Linux host. Either push the branch and `git worktree add ~/m3d-<topic> <branch>`, or `rsync -a --exclude node_modules --exclude src-tauri/target <tree>/ ossie@dev-substrate:m3d-<topic>/`. Run every command below from that checkout's root.
 
@@ -33,7 +33,7 @@ $S/m3d.sh close-inspector    # debug builds dock devtools over the bottom 300px
 
 The driver and app run with the run directory as their working directory. The app probes Bambu Studio with `--help` whenever it detects the Studio version, for example in Settings, and the probe writes `result.json` there. `down` keeps this file with the run and leaves all pre-existing checkout files untouched. Compare `git status --short` before `up` and after `down` to check for Git-visible changes. Ignored build and dependency outputs, including `src-tauri/target` and `node_modules`, stay in the checkout.
 
-`up` launches tauri-driver, and so the app, under `keyctl session -`. The app keeps API keys and the MCP token in the Linux kernel keyring, and an SSH command's session keyring is revoked when the command ends. Without its own session keyring, every credential read fails with "No matching entry found in secure storage", the Agent section of Settings shows only that error, and enabling MCP fails.
+`up` launches tauri-driver and the app on a private D-Bus session with its own Secret Service. Its disposable collection lives under the run's `xdg/data`, uses an empty password, and is removed by `down`. The run directory is accessible only to its owner. Use test credentials for these runs. The operator's desktop keyring is not used. A separate kernel session remains for comparisons with older builds that used keyutils.
 
 Set `M3D_DISPLAY=:99` before `up` to reuse the long-lived devdesk Xvfb. `up` then starts no display of its own and `down` leaves `:99` running.
 

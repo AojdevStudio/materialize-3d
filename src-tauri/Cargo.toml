@@ -95,7 +95,7 @@ block2 = { version = "0.6", optional = true }
 keyring = { version = "3", features = ["windows-native"] }
 
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
-keyring = { version = "3", features = ["linux-native"] }
+keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
 
 # openat and fstat for reading a build's views without following symlinks; the CAD worker's Linux backend too.
 [target.'cfg(unix)'.dependencies]

@@ -85,6 +85,15 @@ mod tests {
         assert_eq!(SERVICE, "com.materialize3d");
     }
 
+    #[test]
+    fn default_store_keeps_credentials_until_deleted() {
+        use keyring::credential::CredentialPersistence;
+        assert!(matches!(
+            keyring::default::default_credential_builder().persistence(),
+            CredentialPersistence::UntilDelete
+        ));
+    }
+
     /// Verify keyring::Entry can be constructed without error for arbitrary keys.
     /// This tests the key format construction logic (service + key → Entry).
     #[test]

@@ -172,7 +172,7 @@ export default function OnboardingWizard({ onComplete }: OnboardingWizardProps) 
       })
 
       // Set as default printer for auto-connect
-      await invoke('set_default_printer_config', { id: config.id })
+      await invoke('set_default_printer', { id: config.id })
 
       // Connect using the saved config
       await invoke('connect_printer_by_config', { configId: config.id })
@@ -211,7 +211,7 @@ export default function OnboardingWizard({ onComplete }: OnboardingWizardProps) 
         connectionMessage: msg,
       }))
     }
-  }, [])
+  }, [printerForm])
 
   // ── Load the agent's current provider on LLM step mount ──
 

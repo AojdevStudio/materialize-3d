@@ -333,6 +333,10 @@ export function installTauriBrowserMock() {
       return structuredClone(mockState)
     }
 
+    if (cmd === 'get_print_history') {
+      return []
+    }
+
     if (cmd === 'sync_makerworld_webview') {
       return {}
     }

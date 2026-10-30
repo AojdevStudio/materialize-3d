@@ -59,7 +59,10 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
-        .manage(Arc::new(AppState::default()))
+        .manage(Arc::new(AppState {
+            print_queue_file: Some(print_queue::queue_file_path()),
+            ..AppState::default()
+        }))
         .manage(PrinterService::new())
         .manage(MakerWorldService::default())
         .manage(SlicerService::default())
@@ -255,7 +258,7 @@ pub fn run() {
                                 let state_arc = std::sync::Arc::clone(&*app_state);
                                 let printer_service = app.state::<PrinterService>().inner().clone();
 
-                                tokio::spawn(async move {
+                                tauri::async_runtime::spawn(async move {
                                     if let Err(e) = commands::connect_printer_by_config_inner(
                                         &config_id,
                                         &app_handle,
