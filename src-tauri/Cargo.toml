@@ -43,7 +43,7 @@ chrono = { version = "0.4", features = ["serde"] }
 dirs = "5"
 thiserror = "1"
 url = "2"
-zip = "2"
+zip = "9"
 quick-xml = "0.38"
 tempfile = "3"
 suppaftp = { version = "6", features = ["native-tls", "deprecated"] }
