@@ -234,4 +234,46 @@ mod tests {
         let result = eventloop.poll().await;
         assert!(matches!(result, Err(rumqttc::ConnectionError::Tls(_))), "a closed connection fails the TLS handshake: {result:?}");
     }
+
+    const SERIAL: &str = "01P00A000000000";
+
+    /// Runs one TLS handshake between `client` and a local server presenting `chain`.
+    async fn handshake(
+        client: ClientConfig,
+        chain: Vec<CertificateDer<'static>>,
+        key: &rcgen::KeyPair,
+    ) -> std::io::Result<()> {
+        use rumqttc::tokio_rustls::rustls::{pki_types::PrivateKeyDer, ServerConfig};
+        use rumqttc::tokio_rustls::{TlsAcceptor, TlsConnector};
+
+        let key = PrivateKeyDer::try_from(key.serialize_der()).expect("server key");
+        let server = ServerConfig::builder_with_provider(Arc::new(ring::default_provider()))
+            .with_safe_default_protocol_versions()
+            .expect("protocol versions")
+            .with_no_client_auth()
+            .with_single_cert(chain, key)
+            .expect("server config");
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+        tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.expect("accept");
+            drop(TlsAcceptor::from(Arc::new(server)).accept(tcp).await);
+        });
+
+        let tcp = tokio::net::TcpStream::connect(addr).await?;
+        let name = ServerName::IpAddress(addr.ip().into());
+        TlsConnector::from(Arc::new(client)).connect(name, tcp).await.map(drop)
+    }
+
+    #[tokio::test]
+    async fn printer_tls_rejects_a_self_signed_impostor() {
+        let key = rcgen::KeyPair::generate().expect("key");
+        let mut params = rcgen::CertificateParams::new(Vec::<String>::new()).expect("params");
+        params.distinguished_name.push(rcgen::DnType::CommonName, SERIAL);
+        let cert = params.self_signed(&key).expect("self-signed cert");
+
+        let config = build_bambu_tls_config().expect("printer TLS config");
+        let result = handshake(config, vec![cert.der().clone()], &key).await;
+        assert!(result.is_err(), "an impostor's self-signed certificate must fail the handshake");
+    }
 }
