@@ -2,7 +2,7 @@
 
 Materialize 3D uses a disk image for Macs with Apple Silicon. You do not need Git, Bun, Rust, Xcode, a source checkout, or a CAD runtime cache.
 
-Use these steps with the 0.2.0 DMG if it is published on the [Releases page](https://github.com/AojdevStudio/materialize-3d/releases). That page reports distribution status. Publication requires an attached software acceptance record for the exact download, as the [release notes](releases/v0.2.0.md) describe. Earlier releases do not contain all the capabilities described here.
+Use these steps with the 0.2.1 DMG if it is published on the [Releases page](https://github.com/AojdevStudio/materialize-3d/releases). That page reports distribution status. Publication requires an attached software acceptance record for the exact download, as the [release notes](releases/v0.2.1.md) describe. Releases before 0.2.0 do not contain all the capabilities described here.
 
 ## Requirements
 
@@ -13,16 +13,16 @@ Use these steps with the 0.2.0 DMG if it is published on the [Releases page](htt
 
 ## Install
 
-1. Download `Materialize-3D-0.2.0-macos-arm64.dmg` from the [Releases page](https://github.com/AojdevStudio/materialize-3d/releases).
+1. Download `Materialize-3D-0.2.1-macos-arm64.dmg` from the [Releases page](https://github.com/AojdevStudio/materialize-3d/releases).
 2. Compare the downloaded DMG's full SHA-256 with both the `.sha256` file and the software acceptance record attached to that release. Stop on a mismatch or missing evidence.
 
    ```bash
-   shasum -a 256 ~/Downloads/Materialize-3D-0.2.0-macos-arm64.dmg
+   shasum -a 256 ~/Downloads/Materialize-3D-0.2.1-macos-arm64.dmg
    ```
 
 3. Open the disk image and drag **Materialize 3D** into **Applications**.
 4. Open Materialize 3D from Applications. The release procedure requires Developer ID signing and Apple notarization. Confirm the download prompt. If macOS rejects the app, keep the error for the release report.
-5. In the first-run setup, choose Anthropic or OpenAI and paste your API key. You can skip this and add the key later in **Settings > Agent**. The key is stored in your macOS Keychain. Both providers remain available. For the 0.2.0 acceptance run, choose OpenAI and record the selected model.
+5. In the first-run setup, choose Anthropic or OpenAI and paste your API key. You can skip this and add the key later in **Settings > Agent**. The key is stored in your macOS Keychain. Both providers remain available. For the 0.2.1 acceptance run, choose OpenAI and record the selected model.
 
 ## Set up Bambu Studio
 

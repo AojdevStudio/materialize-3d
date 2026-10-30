@@ -2,11 +2,11 @@
 
 Materialize 3D is a desktop app for creating 3D-printable objects through conversation. You describe what you want to the in-app assistant, the app builds and checks the print file, and you approve the exact file before it leaves the app.
 
-The 0.2.0 source supports three-color signs and general parts, with Bambu Lab P2S 0.4 mm 3MF export. Check the [Releases page](https://github.com/AojdevStudio/materialize-3d/releases) for distribution status and the required software acceptance record attached to a published release. See the [0.2.0 release notes](docs/releases/v0.2.0.md) for the publication gates. Physical acceptance stays pending until Ossie chooses to print and inspects the objects.
+The 0.2.1 source supports three-color signs and general parts, with Bambu Lab P2S 0.4 mm 3MF export. Check the [Releases page](https://github.com/AojdevStudio/materialize-3d/releases) for distribution status and the required software acceptance record attached to a published release. See the [0.2.1 release notes](docs/releases/v0.2.1.md) for the changes since 0.2.0 and the publication gates. Physical acceptance stays pending until Ossie chooses to print and inspects the objects.
 
 **[Published Mac releases (Apple Silicon)](https://github.com/AojdevStudio/materialize-3d/releases/latest)** · [Install guide](docs/install-macos.md) · [Acceptance checklist](docs/acceptance/p2s-test-sign.md)
 
-## Signs and parts in 0.2.0
+## Signs and parts in 0.2.1
 
 1. **Describe.** Ask the assistant for a sign or a functional part with dimensions and material requirements.
 2. **Generate.** The app builds a face-down, three-color sign or runs generated build123d code in an isolated CAD worker for a part.
@@ -16,7 +16,7 @@ The 0.2.0 source supports three-color signs and general parts, with Bambu Lab P2
 
 An optional local MCP endpoint (off by default, loopback only, token protected) lets other agents build and read signs and parts with the same tools the assistant uses. They cannot approve either.
 
-The app also contains earlier tools (model library, 3D preview, MakerWorld browser, OpenSCAD editor, print monitor, print history). Their presence does not establish 0.2.0 release acceptance. Materialize 3D does not send these approved packages to the printer. Print the exported 3MF from Bambu Studio.
+The app also contains earlier tools (model library, 3D preview, MakerWorld browser, OpenSCAD editor, print monitor, print history). Their presence does not establish 0.2.1 release acceptance. Materialize 3D does not send these approved packages to the printer. Print the exported 3MF from Bambu Studio.
 
 ## Requirements
 
