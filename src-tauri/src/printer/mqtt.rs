@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use rumqttc::tokio_rustls::rustls::{
     client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
+    crypto::{ring, CryptoProvider},
     pki_types::{CertificateDer, ServerName, UnixTime},
     ClientConfig, DigitallySignedStruct, RootCertStore, SignatureScheme,
 };
@@ -99,6 +100,16 @@ impl ServerCertVerifier for BambuCertVerifier {
     }
 }
 
+/// Makes ring the process-wide rustls provider unless one is set. reqwest 0.13 enables aws-lc-rs
+/// beside ring, so rustls cannot choose by itself, and rumqttc builds the cloud config with
+/// `ClientConfig::builder()`, which needs that default.
+fn ensure_crypto_provider() {
+    if CryptoProvider::get_default().is_none() {
+        // Fails only when another thread installed a provider first, which is also a usable default.
+        let _ = ring::default_provider().install_default();
+    }
+}
+
 /// Build a rustls `ClientConfig` for local Bambu printer connections.
 /// Uses the bundled CA cert and a custom verifier that skips hostname checks.
 fn build_bambu_tls_config() -> Result<ClientConfig, String> {
@@ -118,6 +129,7 @@ fn build_bambu_tls_config() -> Result<ClientConfig, String> {
 
     let verifier = BambuCertVerifier::new(Arc::new(root_store));
 
+    ensure_crypto_provider();
     let config = ClientConfig::builder()
         .dangerous()
         .with_custom_certificate_verifier(Arc::new(verifier))
@@ -139,6 +151,7 @@ pub fn connect(config: &MqttConfig) -> Result<(AsyncClient, EventLoop), String> 
         opts.set_transport(Transport::tls_with_config(tls_config.into()));
     } else {
         // Cloud broker: use Simple TLS which loads native system CAs
+        ensure_crypto_provider();
         let ca_bytes = BAMBU_CA_PEM.to_vec();
         opts.set_transport(Transport::tls(ca_bytes, None, None));
     }
@@ -202,5 +215,23 @@ mod tests {
         let (client, _eventloop) = connect(&config).expect("connect should return client pair");
         // Client was created — we don't try to actually connect here
         drop(client);
+    }
+
+    #[tokio::test]
+    async fn cloud_tls_setup_fails_the_handshake_instead_of_panicking() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let port = listener.local_addr().expect("local addr").port();
+        tokio::spawn(async move { drop(listener.accept().await) });
+        let config = MqttConfig {
+            host: "127.0.0.1".into(),
+            port,
+            username: "test".into(),
+            password: "test".into(),
+            client_id: "test-cloud".into(),
+            use_bambu_ca: false,
+        };
+        let (_client, mut eventloop) = connect(&config).expect("client pair");
+        let result = eventloop.poll().await;
+        assert!(matches!(result, Err(rumqttc::ConnectionError::Tls(_))), "a closed connection fails the TLS handshake: {result:?}");
     }
 }
