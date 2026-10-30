@@ -231,6 +231,7 @@ mod tests {
             use_bambu_ca: false,
         };
         let (_client, mut eventloop) = connect(&config).expect("client pair");
-        assert!(eventloop.poll().await.is_err(), "a closed connection fails the TLS handshake");
+        let result = eventloop.poll().await;
+        assert!(matches!(result, Err(rumqttc::ConnectionError::Tls(_))), "a closed connection fails the TLS handshake: {result:?}");
     }
 }
