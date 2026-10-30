@@ -236,14 +236,16 @@ fn a_zip_bomb_is_refused_by_entry_count_and_by_expanded_size() {
     declared[directory + 24..directory + 28].copy_from_slice(&over.to_le_bytes());
     assert_eq!(read(&declared, Units::Mm), Err(MeshImportError::Expanded));
 
-    // A model whose header understates it stops at the cap when read.
+    // A model whose header understates it is refused. zip 9.0.1 and later fail a read past the
+    // declared size, so the parser reports unreadable XML before the cap is reached.
     let padded = format!("{body}{}", " ".repeat(64 << 10));
     let mut bomb = zip_of(&[("3D/3dmodel.model", padded.as_bytes())]);
     assert!(bomb.len() < 8 << 10, "deflated to {} bytes", bomb.len());
     let directory = bomb.windows(4).rposition(|w| w == b"PK\x01\x02").expect("directory entry");
     bomb[directory + 24..directory + 28].copy_from_slice(&100u32.to_le_bytes());
     bomb[22..26].copy_from_slice(&100u32.to_le_bytes());
-    assert_eq!(read_3mf_expanding_to(&bomb, Units::Mm, 32 << 10), Err(MeshImportError::Expanded), "it declares 100 bytes");
+    let refused = read_3mf_expanding_to(&bomb, Units::Mm, 32 << 10);
+    assert!(matches!(refused, Err(MeshImportError::BadXml(_))), "it declares 100 bytes: {refused:?}");
 }
 
 /// An entry name that could leave its folder refuses the whole file, though
