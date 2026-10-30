@@ -6,13 +6,12 @@
  * `success` on the exact head is the pass signal. The gate reads the latest run per check
  * suite, and Pullfrog has one suite per commit, so its reruns collapse to one run. A second
  * run of that name, or a run from another app, means another producer used the name, and
- * no verdict on that commit is trusted. One exception: when the bot approved
- * the previous head and the head is a merge commit on top of it (a conflict fix), the
- * approval carries forward, provided the merged-in parent is on the base branch and no
- * finished verdict on the head itself says otherwise.
+ * no verdict on that commit is trusted. Every merge requires a successful verdict on the
+ * exact head, including a merge commit that resolves conflicts.
  *
- * The kit's source repo is Ossie's curated settings repo, and no review bot gates it. The
- * list lives here in the kit, never in a file the target repo could edit. It holds SHA-256
+ * The kit's source repo is the owner's curated settings repo, and no review bot gates it.
+ * The owner also exempted two repos with no review bot installed, which take local reviews only
+ * (2026-10-27), and six product meta (planning) repos with no review bot installed (2026-10-29). The list lives here in the kit, never in a file the target repo could edit. It holds SHA-256
  * digests of lowercase `owner/name`, so the kit can ship to public repos without naming a
  * private one. The exemption holds only when the merge command names the repo itself,
  * because a repo guessed from the cwd or the environment can differ from the one gh merges.
@@ -23,13 +22,22 @@ export const PASS_SIGNAL = "pullfrog-approval";
 export const PASS_APP = "pullfrog";
 
 const BOT_EXEMPT = new Set([
-  "6159f38c55dea314c96c15a2b5ddf2edd32a5b51019c9d0b4521e2ff077c0815",
-  "8425c2e91b73ef6b8e23370c43b9c5d4bb3db376684cbadcc131c269dff47bbe",
+  "sha256:61:59:f3:8c:55:de:a3:14:c9:6c:15:a2:b5:dd:f2:ed:d3:2a:5b:51:01:9c:9d:0b:45:21:e2:ff:07:7c:08:15",
+  "sha256:84:25:c2:e9:1b:73:ef:6b:8e:23:37:0c:43:b9:c5:d4:bb:3d:b3:76:68:4c:ba:dc:c1:31:c2:69:df:f4:7b:be",
+  "sha256:2a:c1:f2:9e:c5:a3:38:67:97:c9:ab:31:e1:3b:8c:4f:63:46:b3:92:11:eb:40:66:e9:3f:44:8b:4c:f7:96:74",
+  "sha256:9b:98:ef:a7:4d:ad:15:2a:b3:62:db:66:30:bb:27:60:3c:d2:ac:3c:13:b5:a5:65:44:32:a4:1e:3e:ca:46:3b",
+  "sha256:c8:17:59:66:37:f0:0a:16:33:ec:6c:b2:54:96:61:8f:52:15:4b:43:eb:1a:e2:84:28:bc:b0:24:7a:34:72:6a",
+  "sha256:00:cb:41:cb:ec:c8:f6:49:69:37:8b:d6:74:1e:bc:84:8b:e3:0a:77:3b:9e:14:b9:9f:36:09:18:07:20:3f:4a",
+  "sha256:d0:b2:20:80:6e:04:c3:c3:e1:fb:f9:d5:b5:b1:47:14:10:c1:92:3d:b0:f0:10:c7:1c:5f:a0:1d:61:99:fb:a4",
+  "sha256:31:4d:64:65:db:3e:85:9f:55:3a:7d:87:a9:0f:a9:55:9a:c6:81:1b:8f:a7:14:b9:69:d0:9a:53:6e:82:69:03",
+  "sha256:8a:60:35:cf:9f:fe:e9:f6:e6:73:7e:2b:f7:84:b6:13:af:92:3f:a7:e4:f4:28:ba:d5:3e:d5:de:f6:7a:9b:07",
+  "sha256:51:1f:ed:46:6f:52:26:97:e0:71:43:ad:a6:19:ec:44:c7:32:52:01:90:5d:9c:ac:b5:5f:b5:76:35:fa:7c:a8",
+  "sha256:af:68:ff:91:e8:1e:9f:10:fe:b5:34:02:ca:5f:43:53:b5:be:14:60:2f:2d:36:0c:a7:c6:a6:4b:8d:f4:67:e0",
 ]);
 
 /** True for a repo that no review bot gates. `repo` is `owner/name`, any case. */
 export const botExempt = (repo: string): boolean =>
-  BOT_EXEMPT.has(new Bun.CryptoHasher("sha256").update(repo.toLowerCase()).digest("hex"));
+  BOT_EXEMPT.has(new Bun.CryptoHasher("sha256").update(repo.toLowerCase()).digest("hex").replace(/(..)(?=.)/g, "$1:").replace(/^/, "sha256:"));
 
 export interface CheckRun {
   name: string;
@@ -45,34 +53,26 @@ export interface HeadState {
   /** The merge command named the repo with `-R`, a PR URL, or a literal REST path. */
   pinned: boolean;
   sha: string;
-  parents: string[];
   /** Latest check-runs named PASS_SIGNAL on the head. */
   runs: CheckRun[];
-  /** Latest check-runs named PASS_SIGNAL on parents[0]. Fetched only for a merge commit. */
-  parentRuns?: CheckRun[];
-  /** For a merge commit: parents[1] is the base branch head or one of its ancestors. */
-  mergesBase?: boolean;
 }
 
 export type MergeVerdict =
-  | { ok: true; via: "approval" | "conflict-fix" | "exempt" }
+  | { ok: true; via: "approval" | "exempt" }
   | { ok: false; reason: string };
 
-/**
- * The bot's current verdict on one commit. `open` (missing or running) lets a conflict fix
- * inherit its parent's approval. `refused` (finished non-success, or untrusted) never does.
- */
-export type Verdict = { state: "pass" } | { state: "open" | "refused"; why: string };
+/** The bot's current verdict on one commit. Only a completed exact-head success passes. */
+type Verdict = { state: "pass" } | { state: "refused"; why: string };
 
-export function verdictOf(runs: CheckRun[]): Verdict {
+function verdictOf(runs: CheckRun[]): Verdict {
   const named = runs.filter((r) => r.name === PASS_SIGNAL);
-  if (named.length === 0) return { state: "open", why: `no ${PASS_SIGNAL} check-run exists` };
+  if (named.length === 0) return { state: "refused", why: `no ${PASS_SIGNAL} check-run exists` };
   if (named.length > 1) {
     return { state: "refused", why: `${named.length} latest ${PASS_SIGNAL} check-runs exist (apps: ${named.map((r) => r.app).join(", ")}), so the verdict is ambiguous` };
   }
   const [run] = named;
   if (run.app !== PASS_APP) return { state: "refused", why: `${PASS_SIGNAL} comes from the ${run.app} app, not ${PASS_APP}` };
-  if (run.status !== "completed") return { state: "open", why: `${PASS_SIGNAL} is ${run.status}` };
+  if (run.status !== "completed") return { state: "refused", why: `${PASS_SIGNAL} is ${run.status}` };
   return run.conclusion === "success" ? { state: "pass" } : { state: "refused", why: `${PASS_SIGNAL} concluded ${run.conclusion}` };
 }
 
@@ -83,7 +83,5 @@ export function decideMerge(head: HeadState): MergeVerdict {
   }
   const verdict = verdictOf(head.runs);
   if (verdict.state === "pass") return { ok: true, via: "approval" };
-  const conflictFix = verdict.state === "open" && head.parents.length === 2 && head.mergesBase === true;
-  if (conflictFix && head.parentRuns && verdictOf(head.parentRuns).state === "pass") return { ok: true, via: "conflict-fix" };
   return { ok: false, reason: `${verdict.why} on head ${head.sha.slice(0, 7)}. A missing, running, failed, or untrusted verdict does not pass.` };
 }
