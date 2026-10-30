@@ -217,7 +217,7 @@ fn a_file_that_is_not_a_mesh_is_refused_without_repeating_it() {
 
 /// A zip with more entries than the cap, or entries that declare more bytes
 /// than the cap, is refused before anything is expanded. A model entry whose
-/// header understates it stops at the cap when read.
+/// header understates it is refused when the zip read passes its declared size.
 #[test]
 fn a_zip_bomb_is_refused_by_entry_count_and_by_expanded_size() {
     let piece = slab_on_a_post(0.0);
