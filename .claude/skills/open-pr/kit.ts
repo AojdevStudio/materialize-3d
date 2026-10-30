@@ -3,7 +3,7 @@
  * Installs the PR kit into a repo, so every agent that opens the repo carries it,
  * cloud sessions included. Run it again to update; a second run changes nothing.
  *
- *   bun kit.ts install <repo> [--runs-on <label>]
+ *   bun kit.ts install <repo> [--runs-on <label>] [--layout skills|developer]
  *   bun kit.ts stamp    rewrite VERSION after a kit change, bumping its version by one (source folder only)
  *   bun kit.ts check    exit 1 when VERSION does not match the shipped files
  *
@@ -24,13 +24,18 @@
  *   .claude/settings.json                             the PreToolUse gate hook
  *   .github/workflows/pr-kit.yml                      the PR body check in CI
  *   AGENTS.md (and CLAUDE.md when it does not load AGENTS.md)  the rule block
+ *   only the real one of AGENTS.md and CLAUDE.md when the other is a symlink whose text is exactly its name
  */
 
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
-import { basename, join, relative } from "node:path";
+import { basename, join, relative, resolve } from "node:path";
 import { parseArgs } from "node:util";
 
 const SKILLS = ["open-pr", "land-pr"] as const;
+const LAYOUTS = [
+  { name: "skills", directory: ".claude/skills" },
+  { name: "developer", directory: ".dev/pr-kit" },
+] as const;
 const SOURCE = { "open-pr": import.meta.dir, "land-pr": join(import.meta.dir, "..", "land-pr") } satisfies Record<(typeof SKILLS)[number], string>;
 const MARKER = ".pr-kit";
 const VERSION = "VERSION";
@@ -40,27 +45,27 @@ const VERSION = "VERSION";
  * digest. The kit sits there under a folder named for the repo, at `<name>/kits/pr`.
  */
 const SOURCE_OWNER = "AojdevStudio";
-const SOURCE_REPO = "6159f38c55dea314c96c15a2b5ddf2edd32a5b51019c9d0b4521e2ff077c0815";
+const SOURCE_REPO = "sha256:61:59:f3:8c:55:de:a3:14:c9:6c:15:a2:b5:dd:f2:ed:d3:2a:5b:51:01:9c:9d:0b:45:21:e2:ff:07:7c:08:15";
 const STAMP_FIX = "VERSION does not match the kit's shipped files. Run bun kit.ts stamp after a kit change, and commit VERSION with it.";
 const UPDATE_COPY = "Update the copy from the kit's source folder (kits/pr) with sk push or a pull. Only the source folder stamps.";
-const HOOK = 'bun "$CLAUDE_PROJECT_DIR/.claude/skills/open-pr/gate.ts"';
 const BLOCK_START = "<!-- pr-kit:start -->";
 const BLOCK_END = "<!-- pr-kit:end -->";
-const BLOCK = `${BLOCK_START}
+const ruleBlock = (directory: string) => `${BLOCK_START}
 ## Pull requests
 
-- Open every PR with the \`open-pr\` skill and land it with the \`land-pr\` skill. Both live in \`.claude/skills/\`.
+- Open every PR with \`${directory}/open-pr/SKILL.md\` and land it with \`${directory}/land-pr/SKILL.md\`. Read the full skill before use.
 - The PR body has five fixed sections: Problem, Change, Proof, Review, Merge danger. Merge danger names the door and the blast radius.
 - The open-pr gate and the \`pr-kit\` CI check refuse a body that breaks the contract. Fix the body. Never route around either.
 ${BLOCK_END}`;
 
 const shippedFiles = (dir: string) => readdirSync(dir).filter((f) => !f.startsWith(".") && !f.endsWith(".test.ts") && statSync(join(dir, f)).isFile());
 const sha256 = (data: string | Uint8Array) => new Bun.CryptoHasher("sha256").update(data).digest("hex");
+const fingerprint = (hex: string) => `sha256:${hex.replace(/(..)(?=.)/g, "$1:")}`;
 
 /** The sha256 of every shipped file but VERSION, as sorted `<skill>/<file>\n<file sha256>\n` lines. */
 function kitDigest(): string {
   const files = SKILLS.flatMap((name) => shippedFiles(SOURCE[name]).filter((f) => f !== VERSION).map((f) => `${name}/${f}`)).sort();
-  return sha256(files.map((rel) => `${rel}\n${sha256(readFileSync(join(SOURCE["open-pr"], "..", rel)))}\n`).join(""));
+  return fingerprint(sha256(files.map((rel) => `${rel}\n${sha256(readFileSync(join(SOURCE["open-pr"], "..", rel)))}\n`).join("")));
 }
 
 interface Stamp {
@@ -68,12 +73,13 @@ interface Stamp {
   digest: string;
 }
 
-const STAMP_LINE = /^(\d+) ([0-9a-f]{64})$/;
+const DIGEST_PATTERN = "(?:[0-9a-f]{64}|sha256:(?:[0-9a-f]{2}:){31}[0-9a-f]{2})";
+const STAMP_LINE = new RegExp(`^(\\d+) (${DIGEST_PATTERN})$`);
 
 function parseStamp(text: string): Stamp | undefined {
   const m = STAMP_LINE.exec(text.replace(/\n$/, ""));
   const version = Number(m?.[1]);
-  return m && Number.isSafeInteger(version) ? { version, digest: m[2] } : undefined;
+  return m && Number.isSafeInteger(version) ? { version, digest: m[2].startsWith("sha256:") ? m[2] : fingerprint(m[2]) } : undefined;
 }
 
 const versionPath = join(SOURCE["open-pr"], VERSION);
@@ -90,7 +96,12 @@ function inSourceFolder(): boolean {
   return Bun.spawnSync(["git", "rev-parse", "--show-toplevel"], { cwd: dir, stdout: "ignore", stderr: "ignore" }).exitCode === 0;
 }
 
-const { values, positionals } = parseArgs({ allowPositionals: true, options: { "runs-on": { type: "string" } } });
+const USAGE = "usage: bun kit.ts install <repo> [--runs-on <label>] [--layout skills|developer] | stamp | check";
+const { values, positionals } = parseArgs({ allowPositionals: true, options: { "runs-on": { type: "string" }, layout: { type: "string" }, help: { type: "boolean", short: "h" } } });
+if (values.help) {
+  console.log(USAGE);
+  process.exit(0);
+}
 const [verb, target] = positionals;
 if (verb === "stamp") {
   if (!inSourceFolder()) throw new Error("stamp runs only in the kit's source folder (<repo>/kits/pr/open-pr). This copy is installed or synced; update it instead.");
@@ -121,14 +132,23 @@ if (verb === "check") {
   process.exit(0);
 }
 if (verb !== "install" || !target) {
-  console.error("usage: bun kit.ts install <repo> [--runs-on <label>] | stamp | check");
+  console.error(USAGE);
   process.exit(1);
 }
-const repo = target.replace(/\/+$/, "");
+const repo = resolve(target);
 if (!existsSync(join(repo, ".git"))) throw new Error(`${repo} is not a git checkout`);
+const requestedLayout = LAYOUTS.find((layout) => layout.name === values.layout);
+if (values.layout !== undefined && !requestedLayout) throw new Error("--layout must be skills or developer");
+const installedLayouts = () => LAYOUTS.filter(({ directory }) => SKILLS.some((name) => existsSync(join(repo, directory, name, MARKER))));
+const installed = installedLayouts();
+if (installed.length > 1) throw new Error("PR kit markers exist in both layouts. Resolve the duplicate install before updating.");
+if (requestedLayout && installed[0] && requestedLayout !== installed[0]) throw new Error("Changing PR kit layout requires removing the old install and its hook and discovery links first.");
+const layout = requestedLayout ?? installed[0] ?? LAYOUTS[0];
+const HOOK = `bun "$CLAUDE_PROJECT_DIR/${layout.directory}/open-pr/gate.ts"`;
+const BLOCK = ruleBlock(layout.directory);
 
 const MARKER_HEADER = "Installed by the PR kit (open-pr/kit.ts). Edit the kit at its source, not here.";
-const MARKER_LINE = /^version (\d+) ([0-9a-f]{64})\r?$/;
+const MARKER_LINE = new RegExp(`^version (\\d+) (${DIGEST_PATTERN})\\r?$`);
 
 /**
  * Both skills' installed markers: the version and digest each records. A marker with only its
@@ -137,7 +157,7 @@ const MARKER_LINE = /^version (\d+) ([0-9a-f]{64})\r?$/;
  */
 function installedMarkers(): { marker: string; version: number; digest?: string }[] {
   return SKILLS.flatMap((name) => {
-    const marker = join(repo, ".claude", "skills", name, MARKER);
+    const marker = join(repo, layout.directory, name, MARKER);
     if (!existsSync(marker)) return [];
     const rest = readFileSync(marker, "utf8").replace(/\n$/, "").split("\n").filter((line) => line.replace(/\r$/, "") !== MARKER_HEADER);
     if (rest.length === 0) return [{ marker, version: 0 }];
@@ -146,7 +166,7 @@ function installedMarkers(): { marker: string; version: number; digest?: string 
     if (!m || !Number.isSafeInteger(version)) {
       throw new Error(`${marker} does not read as "version <version> <digest>": ${JSON.stringify(rest.join("\n"))}. Delete the marker's damaged lines, or the whole marker if you cannot tell which install wrote it, then rerun.`);
     }
-    return [{ marker, version, digest: m[2] }];
+    return [{ marker, version, digest: m[2].startsWith("sha256:") ? m[2] : fingerprint(m[2]) }];
   });
 }
 
@@ -156,6 +176,7 @@ const markerText = `${MARKER_HEADER}\nversion ${own.version} ${own.digest}\n`;
 
 /** Refuses when the repo's installed kit is newer than this copy, or the same version with other files. */
 const guardInstalled = () => {
+  if (installedLayouts().some((other) => other !== layout)) throw new Error("PR kit markers exist in both layouts. Resolve the duplicate install before updating.");
   for (const { marker, version, digest } of installedMarkers()) {
     const where = `The installed version is recorded in ${marker}.`;
     if (version > own.version) {
@@ -166,7 +187,6 @@ const guardInstalled = () => {
     }
   }
 };
-guardInstalled();
 
 const GH_TIMEOUT_MS = Number(process.env.PR_KIT_GH_TIMEOUT_MS) || 15_000;
 
@@ -182,7 +202,7 @@ function sourceStamp(): { repo: string; stamp: Stamp } | { why: string } {
   if (!Bun.which("gh")) return { why: "gh is not on PATH" };
   const list = gh(["repo", "list", SOURCE_OWNER, "--limit", "1000", "--json", "nameWithOwner", "--jq", ".[].nameWithOwner"]);
   if ("why" in list) return list;
-  const source = list.out.split("\n").find((r) => sha256(r.toLowerCase()) === SOURCE_REPO);
+  const source = list.out.split("\n").find((r) => fingerprint(sha256(r.toLowerCase())) === SOURCE_REPO);
   if (!source) return { why: "gh cannot see the kit's source repo" };
   const answer = gh(["api", "-H", "Accept: application/vnd.github.raw", `repos/${source}/contents/${source.split("/")[1]}/kits/pr/open-pr/${VERSION}?ref=main`]);
   if ("why" in answer) return answer;
@@ -201,7 +221,7 @@ function writeIfChanged(path: string, text: string): void {
 }
 
 function copySkill(name: (typeof SKILLS)[number]): void {
-  const dest = join(repo, ".claude", "skills", name);
+  const dest = join(repo, layout.directory, name);
   if (existsSync(dest) && !existsSync(join(dest, MARKER))) {
     throw new Error(`${relative(repo, dest)} exists and is not the PR kit. Move it, then rerun.`);
   }
@@ -285,23 +305,69 @@ function runnerLabel(): string {
 }
 
 function writeWorkflow(label: string): void {
-  const yml = readFileSync(join(SOURCE["open-pr"], "pr-kit.yml"), "utf8").replace("__RUNS_ON__", label);
+  const yml = readFileSync(join(SOURCE["open-pr"], "pr-kit.yml"), "utf8").replace("__RUNS_ON__", label).replaceAll(".claude/skills/", `${layout.directory}/`);
   writeIfChanged(join(repo, ".github", "workflows", "pr-kit.yml"), yml);
 }
 
-function writeBlock(path: string): void {
-  const text = existsSync(path) ? readFileSync(path, "utf8") : "";
+type InstructionWrite = { path: string; text: string };
+
+function replaceRuleBlock(text: string, path: string): string {
+  const starts = text.split(BLOCK_START).length - 1;
+  const ends = text.split(BLOCK_END).length - 1;
   const at = text.indexOf(BLOCK_START);
   const end = text.indexOf(BLOCK_END);
-  const next = at >= 0 && end > at
-    ? text.slice(0, at) + BLOCK + text.slice(end + BLOCK_END.length)
-    : `${text.replace(/\s*$/, text ? "\n\n" : "")}${BLOCK}\n`;
-  writeIfChanged(path, next);
+  if (starts === 0 && ends === 0) return `${text}${text ? "\n\n" : ""}${BLOCK}\n`;
+  if (starts !== 1 || ends !== 1 || end < at) {
+    throw new Error(`${path} has invalid PR kit instruction markers. Expected none or one ordered pair, found ${starts} start and ${ends} end markers.`);
+  }
+  return text.slice(0, at) + BLOCK + text.slice(end + BLOCK_END.length);
 }
 
-// Resolve the runner before any write, so a missing label cannot leave a partial install, and
-// before the remote check, so that failure costs no gh calls.
+function assertDestination(path: string, directory = false): void {
+  const info = lstatSync(path, { throwIfNoEntry: false });
+  if (info?.isSymbolicLink()) throw new Error(`${path} is a symlink. Install into real directories and files.`);
+  if (info && (directory ? !info.isDirectory() : !info.isFile())) throw new Error(`${path} has the wrong file type for this install.`);
+  if (path !== repo) assertDestination(join(path, ".."), true);
+}
+
+/**
+ * The repo's only instruction file when one root instruction file is a symlink whose text is
+ * exactly the other's name, the one link the kit accepts. The named file must be a real file.
+ */
+function instructionAlias(): "AGENTS.md" | "CLAUDE.md" | undefined {
+  for (const [link, target] of [["AGENTS.md", "CLAUDE.md"], ["CLAUDE.md", "AGENTS.md"]] as const) {
+    const linkPath = join(repo, link);
+    if (!lstatSync(linkPath, { throwIfNoEntry: false })?.isSymbolicLink() || readlinkSync(linkPath) !== target) continue;
+    const targetPath = join(repo, target);
+    if (!lstatSync(targetPath, { throwIfNoEntry: false })?.isFile()) throw new Error(`${linkPath} links to ${targetPath}, which is not a real file. Point ${link} at a real ${target}, then rerun.`);
+    return target;
+  }
+  return undefined;
+}
+
+function preflightDestinations(): InstructionWrite[] {
+  for (const name of SKILLS) {
+    const dest = join(repo, layout.directory, name);
+    assertDestination(dest, true);
+    if (existsSync(dest) && !existsSync(join(dest, MARKER))) throw new Error(`${relative(repo, dest)} exists and is not the PR kit. Move it, then rerun.`);
+    for (const file of [...shippedFiles(SOURCE[name]), MARKER]) assertDestination(join(dest, file));
+  }
+  const alias = instructionAlias();
+  const instructionFiles = alias ? [alias] : ["AGENTS.md", "CLAUDE.md"];
+  for (const file of [".claude/settings.json", ".github/workflows/pr-kit.yml", ...instructionFiles]) assertDestination(join(repo, file));
+  if (layout.name === "skills") assertDestination(join(repo, ".agents", "skills"), true);
+  return instructionFiles.flatMap((file) => {
+    const path = join(repo, file);
+    if (file === "CLAUDE.md" && !existsSync(path)) return [];
+    const text = existsSync(path) ? readFileSync(path, "utf8") : "";
+    const next = replaceRuleBlock(text, path);
+    return file === "CLAUDE.md" && !alias && text.includes("AGENTS.md") ? [] : [{ path, text: next }];
+  });
+}
+
 const label = runnerLabel();
+preflightDestinations();
+guardInstalled();
 const remote = sourceStamp();
 if ("why" in remote) console.log(`Remote version check skipped (this install was not compared with kits/pr): ${remote.why}.`);
 else if (remote.stamp.version > own.version) {
@@ -313,14 +379,13 @@ else if (remote.stamp.version > own.version) {
   throw new Error(`this kit copy is version ${own.version} but ${remote.repo} kits/pr on main is at ${remote.stamp.version}. Install from kits/pr after the change merges to main.`);
 }
 // The remote lookup can take seconds, so read the markers again: another install may have landed.
+const instructions = preflightDestinations();
 guardInstalled();
 for (const name of SKILLS) copySkill(name);
-for (const name of SKILLS) linkSkill(name);
+if (layout.name === "skills") for (const name of SKILLS) linkSkill(name);
 wireHook();
 writeWorkflow(label);
-writeBlock(join(repo, "AGENTS.md"));
-const claude = join(repo, "CLAUDE.md");
-if (existsSync(claude) && !readFileSync(claude, "utf8").includes("AGENTS.md")) writeBlock(claude);
+for (const { path, text } of instructions) writeIfChanged(path, text);
 
 console.log(changes.length ? changes.map((c) => `- ${c}`).join("\n") : "PR kit already current.");
 console.log("Next: commit these files in their own PR, then make the pr-kit check required in the repo ruleset.");
