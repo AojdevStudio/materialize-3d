@@ -60,16 +60,16 @@ The key is the sha256 of `git ls-files -s -z` over the listed paths (`scripts/ci
 
 A failed API call, an answer that is not the JSON expected, or no run that passes every check is a miss, and the run does the full work. It never passes on a record it could not read. On a hit, the log and the step summary of both jobs show `CAD runtime reused: run <id> passed both jobs with full work under the key <key>`, with a link to that run. On a miss, the images job's log shows `cad-runtime key: miss,` and the reason.
 
-**Who can write a record that a pull request reads.** Only a passed run of this workflow from a same-repository head, because every other run fails the checks above:
+**Who can write a record that a pull request or a push to `main` reads.** Only a passed run of this workflow from a same-repository head, because every other run fails the checks above:
 
 - A run of another workflow fails the path check. This covers Pullfrog's runs, which are `workflow_dispatch` runs on `main` that read pull request content. Those runs can write into `main`'s Actions cache scope, so an Actions cache entry would not be a trustworthy record.
 - A fork's run fails the head repository check, and the record job never runs for one.
 - A Dependabot run fails the actor checks, and the record job never runs for one.
-- A same-repository branch can carry a workflow that uploads any artifact. Anyone who can push such a branch can already edit this workflow, so the record adds no writer that the branch did not already have.
+- A same-repository branch can carry a workflow that uploads any artifact. Anyone who can push such a branch can already edit this workflow, so the record adds no writer that the branch did not already have. The lookup does not rebuild the source run's tree, so such a branch could forge a record that a push to `main` then reuses. The nightly run never reads records, so a forged record shows up within a day instead of on merge.
 
 A record from any passed run counts, in any pull request or on `main`, because the key covers every path in `scripts/ci/cad-runtime-paths.txt`, the inputs the runtime is built, bundled, and tested from. The images job also runs `scripts/ci/check-image-host.sh` and the key test, which check the host and the scripts but do not change what is built, so they are not on the list.
 
-**What the key does not cover.** The runner hosts themselves: Docker, qemu, the Rust toolchain on the Mac, and the cached kernel and wheels. The image builds still compare every digest with the committed `pins-<arch>.json`, and the nightly run always does the full work with clean uncached builds, so host drift shows up within a day. A push to `main` does the full work only when no passed run has recorded its key. The nightly run has its own concurrency group, so a push to `main` cannot cancel it.
+**What the key does not cover.** The runner hosts themselves: Docker, qemu, the Rust toolchain on the Mac, and the cached kernel and wheels. The image builds still compare every digest with the committed `pins-<arch>.json`, and the nightly run always does the full work with clean builds that skip Docker's build cache, so host drift shows up within a day. The wheel and kernel tarball caches are not refreshed, but every build checks them by hash. A push to `main` does the full work only when no passed run has recorded its key. The nightly run has its own concurrency group, so a push to `main` cannot cancel it.
 
 ## Keeping fork pull requests off these machines
 

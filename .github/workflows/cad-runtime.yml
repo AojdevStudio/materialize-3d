@@ -33,8 +33,8 @@
 #          and the key. A merge that changes no runtime input keeps the key its
 #          pull request already proved, so it rebuilds nothing.
 #   full   everything else. The nightly schedule and manual runs always do the full
-#          work, with clean uncached builds, so drift on the runner hosts (Docker,
-#          qemu, the cached kernel and wheels) shows up within a day.
+#          work, with clean builds that skip Docker's build cache, so drift on the
+#          runner hosts (Docker, buildx, qemu) shows up within a day.
 # It decides the same way, separately, for the two part-kind jobs (`backend_work`),
 # over the runtime inputs and the app's inputs together
 # (scripts/ci/cad-backend-paths.txt, `--backend` in both scripts), so a change to

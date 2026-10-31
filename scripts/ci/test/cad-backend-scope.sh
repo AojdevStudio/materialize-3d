@@ -96,7 +96,7 @@ commit "outside"
 [[ "$(scope)" == relevant=false && "$(scope --backend)" == relevant=false ]] || fail "a change outside both lists was relevant"
 back
 
-# Pushes and manual runs always do the full work.
+# Pushes, manual runs, and the nightly schedule are always in scope. The workflow then reuses a record or does the full work.
 [[ "$("$repo/scripts/ci/cad-runtime-scope.sh" --backend push 2> /dev/null)" == relevant=true ]] \
   || fail "a push did not make the part-kind jobs relevant"
 

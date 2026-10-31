@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Decides whether the CAD runtime jobs do their full work for this event, and prints `relevant=true` or
-# `relevant=false` for $GITHUB_OUTPUT:
+# Decides whether this event can touch the CAD runtime at all, and prints `relevant=true` or `relevant=false` for
+# $GITHUB_OUTPUT. A relevant event then reuses a passed run's record or does the full work, as cad-runtime.yml decides:
 #   scripts/ci/cad-runtime-scope.sh [--backend] <event name> [<base sha> <head sha>]
 # With --backend it decides for the part-kind jobs instead, over scripts/ci/cad-runtime-paths.txt and
 # scripts/ci/cad-backend-paths.txt together, as `cad-runtime-key.sh --backend` keys them.
-# A push to main and a manual dispatch always do. A pull request does when it changes a path in
+# A push to main, a manual dispatch, and the nightly schedule always are. A pull request is when it changes a path in
 # scripts/ci/cad-runtime-paths.txt, compared with its merge base; otherwise the jobs still run and succeed fast, so
 # their check-runs are present and green on every pull request once they are required checks. The key script reads
 # the same list (scripts/ci/cad-runtime-key.sh), so what counts as a runtime input is decided in one place.
