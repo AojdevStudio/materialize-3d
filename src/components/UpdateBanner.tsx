@@ -14,24 +14,25 @@ export function formatProgress(progress: UpdateProgress | null): string {
  * until Update now is clicked. Later hides it until the next launch.
  */
 export function UpdateBanner() {
-  const { phase, available, error, progress, dismissed } = useUpdateStore()
+  const { phase, available, error, failed, progress, dismissed } = useUpdateStore()
   if (dismissed) return null
   if (phase === 'error' && error) {
+    const installFailed = failed === 'install' && available
     return (
       <div className={styles.banner} role="alert" data-testid="update-banner">
         <div className={styles.text}>
-          <strong>{available ? `Materialize 3D ${available.version} did not install.` : 'Could not check for updates.'}</strong>
+          <strong>{installFailed ? `Materialize 3D ${available.version} did not install.` : 'Could not check for updates.'}</strong>
           <span className={styles.error} data-testid="update-error">{error}</span>
           <span>The current version keeps running.</span>
         </div>
         <div className={styles.actions}>
-          {available && (
+          {installFailed && (
             <button type="button" className={styles.primary} onClick={() => void installUpdate()}>
               Try again
             </button>
           )}
           <button type="button" onClick={dismissUpdate}>
-            {available ? 'Later' : 'Dismiss'}
+            {installFailed ? 'Later' : 'Dismiss'}
           </button>
         </div>
       </div>

@@ -54,8 +54,11 @@ struct Progress {
 /// Bytes between two progress events, so a large archive does not flood the UI.
 const PROGRESS_STEP: u64 = 1 << 20;
 
+/// How long a feed check may take. The download has no deadline, because the archive is large.
+const CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 fn updater<R: Runtime>(app: &AppHandle<R>) -> Result<Updater, String> {
-    let builder = app.updater_builder();
+    let builder = app.updater_builder().timeout(CHECK_TIMEOUT);
     // The verification harness points debug builds at a local test feed. Release builds never compile this.
     #[cfg(debug_assertions)]
     let builder = match std::env::var("M3D_E2E_UPDATE_FEED") {
@@ -135,22 +138,28 @@ pub async fn update_install(
 }
 
 /// Backs up the database and print queue, then runs `install` only if the
-/// backup is complete and checked. Both locks stay held through the install,
-/// so nothing the app writes after the backup is lost by restoring it.
+/// backup is complete and checked.
+///
+/// The locks are held for the backup only. On macOS the install can ask for an
+/// administrator's approval on the main thread, and a command waiting there for
+/// one of these locks would deadlock it. A write between the backup and the
+/// restart stays in the live database, not in the backup.
 pub(crate) fn backup_then_install(
     state: &AppState,
     from: &str,
     to: &str,
     install: impl FnOnce() -> Result<(), String>,
 ) -> Result<PathBuf, String> {
-    let db = state.db.lock().map_err(|e| format!("Did not update: the database lock failed: {e}"))?;
-    let conn = db.as_ref().ok_or("Did not update: the database is not open")?;
-    let _queue = state
-        .print_queue
-        .lock()
-        .map_err(|e| format!("Did not update: the print queue lock failed: {e}"))?;
-    let backup = back_up(conn, state.print_queue_file.as_deref(), from, to)
-        .map_err(|e| format!("Did not update, because the backup failed: {e}"))?;
+    let backup = {
+        let db = state.db.lock().map_err(|e| format!("Did not update: the database lock failed: {e}"))?;
+        let conn = db.as_ref().ok_or("Did not update: the database is not open")?;
+        let _queue = state
+            .print_queue
+            .lock()
+            .map_err(|e| format!("Did not update: the print queue lock failed: {e}"))?;
+        back_up(conn, state.print_queue_file.as_deref(), from, to)
+            .map_err(|e| format!("Did not update, because the backup failed: {e}"))?
+    };
     log::info!("updater: backed up the app data to {}", backup.display());
     install().map_err(|e| format!("{e}. Your data was backed up to {} first.", backup.display()))?;
     Ok(backup)
@@ -356,6 +365,7 @@ mod tests {
         let backup = backup_then_install(&state, "0.2.1", "0.3.0", || {
             let backups: Vec<_> = std::fs::read_dir(dir.path().join("backups")).expect("backups").collect();
             assert_eq!(backups.len(), 1, "the backup exists before the install runs");
+            assert!(state.db.try_lock().is_ok() && state.print_queue.try_lock().is_ok(), "the install runs unlocked");
             Ok(())
         })
         .expect("installed");

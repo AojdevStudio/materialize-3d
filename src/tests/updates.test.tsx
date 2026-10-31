@@ -111,6 +111,17 @@ describe('updates', () => {
     expect(screen.queryByTestId('update-banner')).toBeNull()
   })
 
+  it('a failed recheck reports a check failure, not a failed install', async () => {
+    feed(NEWER)
+    render(<UpdateBanner />)
+    await act(() => checkForUpdatesAtLaunch())
+    feed(new Error('Could not check for updates: timed out'))
+    await act(() => checkForUpdates())
+    expect(screen.getByRole('alert').textContent).toContain('Could not check for updates.')
+    expect(screen.getByRole('alert').textContent).not.toContain('did not install')
+    expect(installCalls()).toHaveLength(0)
+  })
+
   it('checks once when asked twice at the same time', async () => {
     feed(CURRENT)
     await Promise.all([checkForUpdates(), checkForUpdates(), checkForUpdatesAtLaunch()])

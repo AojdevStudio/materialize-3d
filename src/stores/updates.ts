@@ -25,6 +25,8 @@ interface UpdateState {
   phase: UpdatePhase
   available: AvailableUpdate | null
   error: string | null
+  /** Which step the error came from. */
+  failed: 'check' | 'install' | null
   progress: UpdateProgress | null
   /** Later hides the banner for this launch only. The next launch asks again. */
   dismissed: boolean
@@ -34,6 +36,7 @@ export const UPDATE_DEFAULT_STATE: UpdateState = {
   phase: 'idle',
   available: null,
   error: null,
+  failed: null,
   progress: null,
   dismissed: false,
 }
@@ -56,7 +59,7 @@ export function checkForUpdates(): Promise<void> {
           : { phase: 'upToDate', available: null },
       )
     } catch (error) {
-      useUpdateStore.setState({ phase: 'error', error: String(error) })
+      useUpdateStore.setState({ phase: 'error', error: String(error), failed: 'check' })
     } finally {
       inFlight = null
     }
@@ -83,7 +86,7 @@ export async function installUpdate(): Promise<void> {
   try {
     await invoke('update_install', { version: available.version })
   } catch (error) {
-    useUpdateStore.setState({ phase: 'error', error: String(error), progress: null })
+    useUpdateStore.setState({ phase: 'error', error: String(error), failed: 'install', progress: null })
   }
 }
 
