@@ -1,6 +1,6 @@
 # Verify the installed Mac app
 
-Use this checklist for 0.2.0 release acceptance. A pass requires the installed release to build both a sign and a general part through OpenAI chat, then export approved P2S 0.4 mm 3MFs through the GUI. This document is a recipe, not a record of a passing run.
+Use this checklist for 0.2.1 release acceptance. A pass requires the installed release to build both a sign and a general part through OpenAI chat, then export approved P2S 0.4 mm 3MFs through the GUI. This document is a recipe, not a record of a passing run.
 
 For physical acceptance of the exact software-verified exports, use [Physically accept the P2S sign and desk clip](acceptance/p2s-sign-and-part.md). Use only actual approved exports and the software acceptance record attached to a published release. Physical acceptance remains pending until Ossie chooses to print and inspects the actual objects.
 
@@ -27,7 +27,7 @@ For isolated-HOME GUI, keep the recorded test keychain setup active for each lau
 1. Use an Apple Silicon Mac on macOS 26.0 or later with the desktop session required by your selected GUI isolation option.
 2. Record the exact DMG filename, SHA-256, source commit, macOS version, and chip. Compare the DMG hash with its release checksum.
 3. Follow the [install guide](install-macos.md). Copy the app from the DMG to Applications and eject the DMG. Preserve download quarantine for first-launch GUI acceptance. Use the launch method for your selected GUI isolation option above and record any macOS confirmation. The installed-release wrapper removes quarantine before launch, so its launch does not prove this step. If macOS shows no confirmation, record that observation and the machine's prior exposure to these bytes.
-4. Confirm the installed bundle version is `0.2.0`. For an installation in `/Applications`, read it with this command.
+4. Confirm the installed bundle version is `0.2.1`. For an installation in `/Applications`, read it with this command.
 
    ```bash
    defaults read "/Applications/Materialize 3D.app/Contents/Info.plist" CFBundleShortVersionString
