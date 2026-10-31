@@ -1,0 +1,198 @@
+{
+  "page": "/models/[designId]",
+  "query": {
+    "designId": "2133969-onion-potato-dispenser-with-garlic-add-on"
+  },
+  "buildId": "LElUdGooAwiI8Gl-34BSQ",
+  "props": {
+    "pageProps": {
+      "design": {
+        "id": 2133969,
+        "title": "Onion & Potato Dispenser with Garlic Add-on",
+        "slug": "onion-potato-dispenser-with-garlic-add-on",
+        "coverUrl": "https://makerworld.bblmw.com/makerworld/model/US1bbcd056ab08a2/design/2025-12-19_f8284f536d6e8.png",
+        "likeCount": 7924,
+        "collectionCount": 32013,
+        "shareCount": 0,
+        "printCount": 4871,
+        "commentCount": 585,
+        "downloadCount": 7863,
+        "rawModelFileDownloadCount": 0,
+        "readCount": 0,
+        "defaultInstanceId": 2311143,
+        "designCreator": {
+          "name": "Oli🇨🇭",
+          "handle": "Oli_CH"
+        },
+        "designExtension": {
+          "design_pictures": [
+            {
+              "name": "cover",
+              "url": "https://makerworld.bblmw.com/makerworld/model/US1bbcd056ab08a2/design/2025-12-19_f8284f536d6e8.png"
+            },
+            {
+              "name": "2.png",
+              "url": "https://makerworld.bblmw.com/makerworld/model/US1bbcd056ab08a2/design/2025-12-19_e4d67e3976b73.png"
+            }
+          ]
+        },
+        "instances": [
+          {
+            "id": 2311143,
+            "title": "Onion & Potato Dispenser – Original Size",
+            "isDefault": false,
+            "ratingScoreTotal": 1141,
+            "ratingCount": 233,
+            "score": 0.9865802913346381,
+            "downloadCount": 8102,
+            "printCount": 3168,
+            "extention": {
+              "modelInfo": {
+                "f3mf": {
+                  "size": 596638
+                }
+              }
+            }
+          },
+          {
+            "id": 2311147,
+            "title": "Garlic Add-on – Original Size",
+            "isDefault": false,
+            "ratingScoreTotal": 414,
+            "ratingCount": 84,
+            "score": 0.983668671245786,
+            "downloadCount": 375,
+            "printCount": 194,
+            "extention": {
+              "modelInfo": {
+                "f3mf": {
+                  "size": 462922
+                }
+              }
+            }
+          },
+          {
+            "id": 2311148,
+            "title": "Onion & Potato Dispenser – 20% Smaller",
+            "isDefault": false,
+            "ratingScoreTotal": 207,
+            "ratingCount": 42,
+            "score": 0.9678621955416206,
+            "downloadCount": 957,
+            "printCount": 645,
+            "extention": {
+              "modelInfo": {
+                "f3mf": {
+                  "size": 596733
+                }
+              }
+            }
+          },
+          {
+            "id": 2311150,
+            "title": "Garlic Add-on – 20% Smaller",
+            "isDefault": false,
+            "ratingScoreTotal": 54,
+            "ratingCount": 11,
+            "score": 0.8864649466432527,
+            "downloadCount": 68,
+            "printCount": 30,
+            "extention": {
+              "modelInfo": {
+                "f3mf": {
+                  "size": 462725
+                }
+              }
+            }
+          },
+          {
+            "id": 2311157,
+            "title": "Onion & Potato Dispenser – 30% Smaller",
+            "isDefault": false,
+            "ratingScoreTotal": 223,
+            "ratingCount": 46,
+            "score": 0.969328175747181,
+            "downloadCount": 1025,
+            "printCount": 734,
+            "extention": {
+              "modelInfo": {
+                "f3mf": {
+                  "size": 595295
+                }
+              }
+            }
+          },
+          {
+            "id": 2311159,
+            "title": "Garlic Add-on – 30% Smaller",
+            "isDefault": false,
+            "ratingScoreTotal": 24,
+            "ratingCount": 5,
+            "score": 0.7699151382425403,
+            "downloadCount": 22,
+            "printCount": 18,
+            "extention": {
+              "modelInfo": {
+                "f3mf": {
+                  "size": 462205
+                }
+              }
+            }
+          },
+          {
+            "id": 3016940,
+            "title": "Faster using minimal support. Perfect Quality.",
+            "isDefault": false,
+            "ratingScoreTotal": 20,
+            "ratingCount": 4,
+            "score": 0.7483909594372101,
+            "downloadCount": 116,
+            "printCount": 60,
+            "extention": {
+              "modelInfo": {
+                "f3mf": {
+                  "size": 720262
+                }
+              }
+            }
+          },
+          {
+            "id": 2425773,
+            "title": "PLA Utility, Clean Bridging, Low Support",
+            "isDefault": false,
+            "ratingScoreTotal": 10,
+            "ratingCount": 2,
+            "score": 0.5979430758191819,
+            "downloadCount": 96,
+            "printCount": 25,
+            "extention": {
+              "modelInfo": {
+                "f3mf": {
+                  "size": 669586
+                }
+              }
+            }
+          },
+          {
+            "id": 2325166,
+            "title": "No support, faster, less filament, slight quality DECLINE",
+            "isDefault": false,
+            "ratingScoreTotal": 4,
+            "ratingCount": 1,
+            "score": 0.27103209019947966,
+            "downloadCount": 124,
+            "printCount": 26,
+            "extention": {
+              "modelInfo": {
+                "f3mf": {
+                  "size": 807528
+                }
+              }
+            }
+          }
+        ]
+      },
+      "commentAndInstRatingCount": 585
+    }
+  }
+}
