@@ -56,8 +56,8 @@ const PROGRESS_STEP: u64 = 1 << 20;
 
 fn updater<R: Runtime>(app: &AppHandle<R>) -> Result<Updater, String> {
     let builder = app.updater_builder();
-    // Verification runs on Linux read a local test feed. Release builds never compile this.
-    #[cfg(feature = "e2e")]
+    // The verification harness points debug builds at a local test feed. Release builds never compile this.
+    #[cfg(debug_assertions)]
     let builder = match std::env::var("M3D_E2E_UPDATE_FEED") {
         Ok(feed) => builder
             .endpoints(vec![feed.parse().map_err(|e| format!("M3D_E2E_UPDATE_FEED: {e}"))?])
