@@ -923,11 +923,26 @@ mod tests {
         #[test]
         fn a_finished_download_appears_in_the_library_once() {
             let download = download_of_a_detected_model();
+            let earlier = LibraryModel {
+                id: "earlier".into(),
+                model_name: "Earlier Import".into(),
+                author: None,
+                source_url: None,
+                imported_at: "2026-01-01T00:00:00Z".into(),
+                thumbnail_url: None,
+                file_path: None,
+                folder_path: "/library/earlier-import".into(),
+                rating: None,
+                download_count: None,
+                file_count: None,
+            };
+            database::insert_library_model(download.state.db.lock().unwrap().as_ref().unwrap(), &earlier).unwrap();
 
             finish(&download);
 
             let rows = library(&download.state);
-            assert_eq!(rows.len(), 1);
+            assert_eq!(rows.len(), 2);
+            assert_eq!(rows[1], earlier);
             assert_eq!(rows[0].model_name, "Onion & Potato Dispenser");
             assert_eq!(rows[0].author.as_deref(), Some("Maker"));
             assert_eq!(rows[0].source_url.as_deref(), Some("https://makerworld.com/en/models/2311143"));
