@@ -645,90 +645,12 @@ pub fn scan_library_filesystem(conn: &Connection, library_root: &Path) -> Result
         };
 
         let path = entry.path();
-        if !path.is_dir() {
+        if !path.is_dir() || !path.join("metadata.json").exists() {
             continue;
         }
 
-        let metadata_path = path.join("metadata.json");
-        if !metadata_path.exists() {
-            continue;
-        }
-
-        let raw = match std::fs::read_to_string(&metadata_path) {
-            Ok(s) => s,
-            Err(e) => {
-                log::warn!(
-                    "library: failed to read '{}': {e}",
-                    metadata_path.display()
-                );
-                continue;
-            }
-        };
-
-        let meta: StoredImportMetadataCompat = match serde_json::from_str(&raw) {
-            Ok(m) => m,
-            Err(e) => {
-                log::warn!(
-                    "library: failed to parse '{}': {e}",
-                    metadata_path.display()
-                );
-                continue;
-            }
-        };
-
-        let folder_path_str = path.to_string_lossy().to_string();
-
-        // Derive fields from the nested model if present
-        let model_name = meta
-            .model
-            .as_ref()
-            .and_then(|m| m.title.clone())
-            .unwrap_or_else(|| {
-                path.file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "Unknown".to_string())
-            });
-
-        let author = meta.model.as_ref().and_then(|m| m.author.clone());
-        let source_url = meta
-            .source_url
-            .or_else(|| meta.model.as_ref().and_then(|m| m.source_url.clone()));
-        let thumbnail_url = meta
-            .model
-            .as_ref()
-            .and_then(|m| m.images.first().cloned());
-        let rating = meta.model.as_ref().and_then(|m| m.rating);
-        let download_count = meta.model.as_ref().and_then(|m| m.download_count);
-        let file_count = Some(meta.files.len() as u32);
-
-        // Pick first file as representative file_path
-        let file_path = meta.files.first().map(|f| {
-            path.join(f).to_string_lossy().to_string()
-        });
-
-        let imported_at = meta
-            .imported_at
-            .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
-
-        let library_model = LibraryModel {
-            id: uuid::Uuid::new_v4().to_string(),
-            model_name,
-            author,
-            source_url,
-            imported_at,
-            thumbnail_url,
-            file_path,
-            folder_path: folder_path_str,
-            rating,
-            download_count,
-            file_count,
-        };
-
-        if let Err(e) = insert_library_model(conn, &library_model) {
-            log::warn!(
-                "library: failed to insert model from '{}': {e}",
-                path.display()
-            );
+        if let Err(e) = index_library_folder(conn, &path) {
+            log::warn!("library: skipped '{}': {e}", path.display());
             continue;
         }
 
@@ -737,6 +659,69 @@ pub fn scan_library_filesystem(conn: &Connection, library_root: &Path) -> Result
 
     log::info!("library: indexed {indexed} models from filesystem");
     Ok(indexed)
+}
+
+/// Add one import folder to the library. A folder already in the library keeps
+/// its row (`folder_path` is UNIQUE and the insert is `INSERT OR IGNORE`).
+pub fn index_library_folder(conn: &Connection, folder: &Path) -> Result<(), String> {
+    insert_library_model(conn, &library_model_from_folder(folder)?)
+}
+
+/// Build the library row for one import folder from its `metadata.json`.
+/// The launch scan and a finished MakerWorld download both use this mapping.
+pub fn library_model_from_folder(folder: &Path) -> Result<LibraryModel, String> {
+    let metadata_path = folder.join("metadata.json");
+    let raw = std::fs::read_to_string(&metadata_path)
+        .map_err(|e| format!("failed to read '{}': {e}", metadata_path.display()))?;
+    let meta: StoredImportMetadataCompat = serde_json::from_str(&raw)
+        .map_err(|e| format!("failed to parse '{}': {e}", metadata_path.display()))?;
+
+    let model_name = meta
+        .model
+        .as_ref()
+        .and_then(|m| m.title.clone())
+        .unwrap_or_else(|| {
+            folder
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| "Unknown".to_string())
+        });
+
+    let author = meta.model.as_ref().and_then(|m| m.author.clone());
+    let source_url = meta
+        .source_url
+        .or_else(|| meta.model.as_ref().and_then(|m| m.source_url.clone()));
+    let thumbnail_url = meta
+        .model
+        .as_ref()
+        .and_then(|m| m.images.first().cloned());
+    let rating = meta.model.as_ref().and_then(|m| m.rating);
+    let download_count = meta.model.as_ref().and_then(|m| m.download_count);
+    let file_count = Some(meta.files.len() as u32);
+
+    // Pick first file as representative file_path
+    let file_path = meta
+        .files
+        .first()
+        .map(|f| folder.join(f).to_string_lossy().to_string());
+
+    let imported_at = meta
+        .imported_at
+        .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
+
+    Ok(LibraryModel {
+        id: uuid::Uuid::new_v4().to_string(),
+        model_name,
+        author,
+        source_url,
+        imported_at,
+        thumbnail_url,
+        file_path,
+        folder_path: folder.to_string_lossy().to_string(),
+        rating,
+        download_count,
+        file_count,
+    })
 }
 
 // ─── Printer Config CRUD ──────────────────────────────────────────────────────

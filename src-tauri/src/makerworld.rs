@@ -476,6 +476,15 @@ fn finalize_import<R: Runtime>(
     state: &Arc<AppState>,
     downloaded_path: &Path,
 ) -> Result<(), String> {
+    finalize_import_into(app, state, &library_root(app)?, downloaded_path)
+}
+
+fn finalize_import_into<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &Arc<AppState>,
+    library_dir: &Path,
+    downloaded_path: &Path,
+) -> Result<(), String> {
     let downloaded_path = downloaded_path
         .canonicalize()
         .unwrap_or_else(|_| downloaded_path.to_path_buf());
@@ -522,20 +531,45 @@ fn finalize_import<R: Runtime>(
         )
     };
 
-    persist_import_metadata(app, &model_name, model_id.as_deref(), &source_url, detected_model, imported_files)?;
-    state.emit_state_change(app, "workspace:changed")
+    let model_dir = persist_import_metadata(
+        library_dir,
+        &model_name,
+        model_id.as_deref(),
+        &source_url,
+        detected_model,
+        imported_files,
+    )?;
+    let added = add_import_to_library(app, state, &model_dir);
+    state.emit_state_change(app, "workspace:changed")?;
+    added
 }
 
-fn persist_import_metadata<R: Runtime>(
+fn add_import_to_library<R: Runtime>(
     app: &AppHandle<R>,
+    state: &Arc<AppState>,
+    model_dir: &Path,
+) -> Result<(), String> {
+    {
+        let db = state
+            .db
+            .lock()
+            .map_err(|error| format!("failed to lock db: {error}"))?;
+        let conn = db.as_ref().ok_or_else(|| "database not initialized".to_string())?;
+        crate::database::index_library_folder(conn, model_dir)?;
+    }
+    crate::commands::emit_library_changed(app, state);
+    Ok(())
+}
+
+fn persist_import_metadata(
+    library_dir: &Path,
     model_name: &str,
     model_id: Option<&str>,
     source_url: &str,
     detected_model: Option<MakerWorldModel>,
     imported_files: Vec<String>,
-) -> Result<(), String> {
-    let library_dir = library_root(app)?;
-    fs::create_dir_all(&library_dir)
+) -> Result<PathBuf, String> {
+    fs::create_dir_all(library_dir)
         .map_err(|error| format!("failed to create makerworld library root: {error}"))?;
 
     let folder_name = match model_id {
@@ -559,7 +593,8 @@ fn persist_import_metadata<R: Runtime>(
         serde_json::to_vec_pretty(&metadata)
             .map_err(|error| format!("failed to serialize makerworld metadata: {error}"))?,
     )
-    .map_err(|error| format!("failed to write makerworld metadata: {error}"))
+    .map_err(|error| format!("failed to write makerworld metadata: {error}"))?;
+    Ok(model_dir)
 }
 
 fn prepare_download_destination<R: Runtime>(
@@ -823,5 +858,120 @@ mod tests {
             infer_download_filename(&opaque, Some(&model)),
             "simple-headphone-hook.3mf"
         );
+    }
+
+    mod library_import {
+        use std::{
+            path::{Path, PathBuf},
+            sync::{Arc, Mutex},
+        };
+
+        use tauri::{
+            test::{mock_builder, mock_context, noop_assets, MockRuntime},
+            App, Listener,
+        };
+
+        use super::super::finalize_import_into;
+        use crate::database;
+        use crate::state::{AppState, LibraryModel, MakerWorldModel};
+
+        struct Download {
+            app: App<MockRuntime>,
+            state: Arc<AppState>,
+            library_events: Arc<Mutex<Vec<Vec<LibraryModel>>>>,
+            library_dir: tempfile::TempDir,
+            file: PathBuf,
+        }
+
+        fn download_of_a_detected_model() -> Download {
+            let app = mock_builder().build(mock_context(noop_assets())).expect("mock app");
+            let state = Arc::new(AppState::default());
+            *state.db.lock().unwrap() = Some(database::init_db(Path::new(":memory:")).unwrap());
+            state.workspace.lock().unwrap().makerworld.detected_model = Some(MakerWorldModel {
+                id: Some("2311143".into()),
+                title: "Onion & Potato Dispenser".into(),
+                author: Some("Maker".into()),
+                source_url: "https://makerworld.com/en/models/2311143".into(),
+                images: vec!["https://example.com/dispenser.jpg".into()],
+                ..Default::default()
+            });
+
+            let library_events = Arc::new(Mutex::new(Vec::new()));
+            let sink = library_events.clone();
+            app.listen_any("library:changed", move |event| {
+                sink.lock().unwrap().push(serde_json::from_str(event.payload()).unwrap());
+            });
+
+            let library_dir = tempfile::tempdir().unwrap();
+            let model_dir = library_dir.path().join("onion-potato-dispenser-2311143");
+            std::fs::create_dir_all(&model_dir).unwrap();
+            let file = model_dir.join("dispenser.zip");
+            std::fs::write(&file, b"zip").unwrap();
+
+            Download { app, state, library_events, library_dir, file }
+        }
+
+        fn finish(download: &Download) {
+            finalize_import_into(download.app.handle(), &download.state, download.library_dir.path(), &download.file)
+                .unwrap();
+        }
+
+        fn library(state: &AppState) -> Vec<LibraryModel> {
+            database::get_all_library_models(state.db.lock().unwrap().as_ref().unwrap()).unwrap()
+        }
+
+        #[test]
+        fn a_finished_download_appears_in_the_library_once() {
+            let download = download_of_a_detected_model();
+            let earlier = LibraryModel {
+                id: "earlier".into(),
+                model_name: "Earlier Import".into(),
+                author: None,
+                source_url: None,
+                imported_at: "2026-01-01T00:00:00Z".into(),
+                thumbnail_url: None,
+                file_path: None,
+                folder_path: "/library/earlier-import".into(),
+                rating: None,
+                download_count: None,
+                file_count: None,
+            };
+            database::insert_library_model(download.state.db.lock().unwrap().as_ref().unwrap(), &earlier).unwrap();
+
+            finish(&download);
+
+            let rows = library(&download.state);
+            assert_eq!(rows.len(), 2);
+            assert_eq!(rows[1], earlier);
+            assert_eq!(rows[0].model_name, "Onion & Potato Dispenser");
+            assert_eq!(rows[0].author.as_deref(), Some("Maker"));
+            assert_eq!(rows[0].source_url.as_deref(), Some("https://makerworld.com/en/models/2311143"));
+            assert_eq!(*download.library_events.lock().unwrap(), vec![rows.clone()]);
+
+            finish(&download);
+
+            assert_eq!(library(&download.state), rows);
+            assert_eq!(download.library_events.lock().unwrap().len(), 2);
+        }
+
+        #[test]
+        fn the_launch_scan_builds_the_same_row_as_the_download() {
+            let download = download_of_a_detected_model();
+            finish(&download);
+            let launched = AppState::default();
+            *launched.db.lock().unwrap() = Some(database::init_db(Path::new(":memory:")).unwrap());
+
+            let scanned = database::scan_library_filesystem(
+                launched.db.lock().unwrap().as_ref().unwrap(),
+                download.library_dir.path(),
+            )
+            .unwrap();
+
+            let without_id = |rows: Vec<LibraryModel>| {
+                rows.into_iter().map(|row| LibraryModel { id: String::new(), ..row }).collect::<Vec<_>>()
+            };
+            assert_eq!(scanned, 1);
+            assert_eq!(without_id(library(&launched)), without_id(library(&download.state)));
+        }
     }
 }
