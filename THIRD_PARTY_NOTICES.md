@@ -19,9 +19,11 @@ The app interface uses DM Sans, Instrument Serif, and JetBrains Mono. Sign lette
 
 Materialize 3D does not include or redistribute Bambu Studio itself. It runs a copy that you install from Bambu Lab.
 
-## Bambu Lab CA certificate
+## Bambu Lab CA certificates
 
-`src-tauri/certs/bambu-ca.pem` is the public root certificate that Bambu Lab printers present (`CN=BBL CA`, `O=BBL Technologies Co., Ltd`). The app embeds it to verify TLS connections to a printer.
+`src-tauri/certs/bambu-ca.pem` is Bambu Lab's public `BBL CA` root certificate (`O=BBL Technologies Co., Ltd`). The app embeds it for the Bambu cloud MQTT connection.
+
+`src-tauri/certs/bambu-printer-roots.pem` is a copy of Bambu Studio's `resources/cert/printer.cer` at https://github.com/bambulab/BambuStudio/blob/f75448910c279287556ff8347606c87138c22347/resources/cert/printer.cer. It holds Bambu Lab's public printer root certificates: `BBL CA` and the `BBL CA2 RSA` and `BBL CA2 ECC` roots. The app embeds them to verify TLS connections to a printer on the local network.
 
 ## Software dependencies
 
