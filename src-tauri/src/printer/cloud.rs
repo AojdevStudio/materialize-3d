@@ -6,7 +6,7 @@
 use serde::Deserialize;
 
 use crate::printer::credentials::BambuCredentials;
-use crate::printer::mqtt::MqttConfig;
+use crate::printer::mqtt::{Broker, MqttConfig};
 
 /// Cloud MQTT broker host.
 pub const CLOUD_MQTT_HOST: &str = "us.mqtt.bambulab.com";
@@ -89,7 +89,7 @@ pub fn cloud_mqtt_config(creds: &BambuCredentials) -> MqttConfig {
         username: creds.cloud_mqtt_username(),
         password: creds.access_token.clone(),
         client_id: format!("materialize-{}", creds.printer.device_id),
-        use_bambu_ca: false, // Cloud uses standard CAs
+        broker: Broker::Cloud,
     }
 }
 
@@ -101,7 +101,7 @@ pub fn local_mqtt_config(creds: &BambuCredentials) -> MqttConfig {
         username: creds.local_mqtt_username().to_string(),
         password: creds.local_mqtt_password().to_string(),
         client_id: format!("materialize-local-{}", creds.printer.device_id),
-        use_bambu_ca: true, // Local printer uses self-signed Bambu CA
+        broker: Broker::Printer { serial: creds.printer.device_id.clone() },
     }
 }
 
@@ -134,7 +134,7 @@ mod tests {
         assert_eq!(cfg.port, 8883);
         assert_eq!(cfg.username, "u_12345");
         assert_eq!(cfg.password, "test-token");
-        assert!(!cfg.use_bambu_ca);
+        assert_eq!(cfg.broker, Broker::Cloud);
     }
 
     #[test]
@@ -145,6 +145,6 @@ mod tests {
         assert_eq!(cfg.port, 8883);
         assert_eq!(cfg.username, "bblp");
         assert_eq!(cfg.password, "deadbeef");
-        assert!(cfg.use_bambu_ca);
+        assert_eq!(cfg.broker, Broker::Printer { serial: "ABCD1234".into() });
     }
 }
