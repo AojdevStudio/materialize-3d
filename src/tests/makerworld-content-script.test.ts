@@ -116,6 +116,43 @@ describe('MakerWorld content script', () => {
     expect(report.detectedModel).toMatchObject({ rating: 4.9, reviewCount: 585, downloadCount: 7863 })
   })
 
+  it('does not retry a failed design request when only the page markup changed', async () => {
+    const { dom, reports, fetchCalls, waitForReport } = runContentScript(`${MODEL_URL}#profileId-2311143`, searchNextData, () =>
+      respond(null, 503),
+    )
+    await vi.waitFor(() => expect(fetchCalls).toHaveLength(1))
+    await waitForReport()
+    const reportsBefore = reports.length
+
+    dom.window.document.body.append(dom.window.document.createElement('div'))
+    await vi.waitFor(() => expect(reports.length).toBeGreaterThan(reportsBefore))
+    await new Promise((resolve) => setTimeout(resolve, 50))
+
+    expect(fetchCalls).toEqual([DESIGN_PATH])
+  })
+
+  it('retries a failed design request when navigation and a page mutation land in one debounce window', async () => {
+    let attempts = 0
+    const { dom, fetchCalls, waitForReport } = runContentScript(`${MODEL_URL}#profileId-2311143`, searchNextData, () =>
+      ++attempts === 1 ? respond(null, 503) : respond(designFixture),
+    )
+    await vi.waitFor(() => expect(fetchCalls).toHaveLength(1))
+    await waitForReport()
+
+    const { document, history } = dom.window
+    history.pushState({}, '', 'https://makerworld.com/en/search/models?keyword=onion')
+    document.body.append(document.createElement('div'))
+    await waitForReport((report) => report.pageKind === 'search')
+
+    history.pushState({}, '', `${MODEL_URL}#profileId-2311143`)
+    document.body.append(document.createElement('div'))
+    const report = await waitForReport(hasRating)
+
+    expect(fetchCalls).toEqual([DESIGN_PATH, DESIGN_PATH])
+    expect(report.detectedModel).toMatchObject({ rating: 4.9, reviewCount: 585, downloadCount: 7863 })
+    expect(report.detectedModel!.files).toHaveLength(9)
+  })
+
   it('shows no rating when the page names no print profile', async () => {
     const { waitForReport } = runContentScript(MODEL_URL, nextDataScript(nextDataFixture))
     const report = await waitForReport()

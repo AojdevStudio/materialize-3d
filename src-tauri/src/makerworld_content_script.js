@@ -202,7 +202,7 @@
     await invoke('report_makerworld_page', { payload });
   };
 
-  const scan = async (reason) => {
+  const scan = async (reason, retryFailed) => {
     const currentUrl = window.location.href;
     const pageKind = currentPageKind();
     if (pageKind !== 'model') return send(currentUrl, pageKind, null, reason);
@@ -215,15 +215,22 @@
 
     // Replace the previous model's numbers while this model's record loads.
     await send(currentUrl, pageKind, modelFromDom(), reason);
-    const design = await requestDesign(modelId, reason !== 'mutation');
+    const design = await requestDesign(modelId, retryFailed);
     if (!design || window.location.href !== currentUrl) return;
     await send(currentUrl, pageKind, modelFromDesign(design) || modelFromDom(), reason);
   };
 
+  // Mutation-only scans never retry a failed request, so an outage costs one request per navigation, not per DOM change.
   let reportTimer = null;
+  let retryPending = false;
   const report = (reason) => {
+    if (reason !== 'mutation') retryPending = true;
     if (reportTimer) clearTimeout(reportTimer);
-    reportTimer = setTimeout(() => void scan(reason), 220);
+    reportTimer = setTimeout(() => {
+      const retryFailed = retryPending;
+      retryPending = false;
+      void scan(reason, retryFailed);
+    }, 220);
   };
 
   const triggerImport = async () => {
