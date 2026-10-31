@@ -68,29 +68,40 @@
 
   const selectedProfileId = () => window.location.hash.match(/profileId-(\d+)/)?.[1] || null;
 
+  const embeddedDesign = (modelId) => {
+    const design = readNextData()?.props?.pageProps?.design;
+    return design && String(design.id) === modelId ? design : null;
+  };
+
   // Next.js keeps the first page's __NEXT_DATA__ after a client-side route change,
   // so a model opened from search must be fetched the way the page itself does.
-  const fetchedDesigns = new Map();
-  const loadDesign = async (modelId) => {
-    const embedded = readNextData()?.props?.pageProps?.design;
-    if (embedded && String(embedded.id) === modelId) return embedded;
+  const DESIGN_REQUEST_TIMEOUT_MS = 10000;
+  const designRequests = new Map();
+  const requestDesign = (modelId, retryFailed) => {
+    const existing = designRequests.get(modelId);
+    if (existing && !(retryFailed && existing.failed)) return existing.promise;
 
-    if (!fetchedDesigns.has(modelId)) {
-      fetchedDesigns.set(
-        modelId,
-        fetch(`/api/v1/design-service/design/${modelId}`, { credentials: 'include' })
-          .then((response) => {
-            if (!response.ok) throw new Error(`HTTP ${response.status}`);
-            return response.json();
-          })
-          .catch((error) => {
-            console.warn('[materialize] makerworld design request failed', modelId, error);
-            return null;
-          }),
-      );
-    }
-    const fetched = await fetchedDesigns.get(modelId);
-    return fetched && String(fetched.id) === modelId ? fetched : null;
+    const entry = { design: null, failed: false, promise: null };
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), DESIGN_REQUEST_TIMEOUT_MS);
+    entry.promise = fetch(`/api/v1/design-service/design/${modelId}`, { credentials: 'include', signal: controller.signal })
+      .then((response) => {
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return response.json();
+      })
+      .then((design) => {
+        if (!design || String(design.id) !== modelId) throw new Error('response is not this model');
+        entry.design = design;
+        return design;
+      })
+      .catch((error) => {
+        console.warn('[materialize] makerworld design request failed', modelId, error);
+        entry.failed = true;
+        return null;
+      })
+      .finally(() => clearTimeout(timeout));
+    designRequests.set(modelId, entry);
+    return entry.promise;
   };
 
   const profileRating = (instance) => {
@@ -170,12 +181,6 @@
     };
   };
 
-  const extractModel = async () => {
-    const modelId = modelIdFromPath();
-    const design = modelId ? await loadDesign(modelId) : null;
-    return (design && modelFromDesign(design)) || modelFromDom();
-  };
-
   const currentPageKind = () => {
     const pathname = window.location.pathname;
     if (/\/search\//.test(pathname)) return 'search';
@@ -184,25 +189,41 @@
     return 'other';
   };
 
+  const send = async (currentUrl, pageKind, detectedModel, reason) => {
+    const payload = {
+      currentUrl,
+      pageKind,
+      detectedModel,
+      lastExtractionError: null,
+    };
+    if (payload.pageKind === 'model' && !payload.detectedModel) {
+      payload.lastExtractionError = `Model page detected but structured metadata extraction failed (${reason})`;
+    }
+    await invoke('report_makerworld_page', { payload });
+  };
+
+  const scan = async (reason) => {
+    const currentUrl = window.location.href;
+    const pageKind = currentPageKind();
+    if (pageKind !== 'model') return send(currentUrl, pageKind, null, reason);
+
+    const modelId = modelIdFromPath();
+    const known = modelId ? embeddedDesign(modelId) || designRequests.get(modelId)?.design : null;
+    if (known || !modelId) {
+      return send(currentUrl, pageKind, (known && modelFromDesign(known)) || modelFromDom(), reason);
+    }
+
+    // Replace the previous model's numbers while this model's record loads.
+    await send(currentUrl, pageKind, modelFromDom(), reason);
+    const design = await requestDesign(modelId, reason !== 'mutation');
+    if (!design || window.location.href !== currentUrl) return;
+    await send(currentUrl, pageKind, modelFromDesign(design) || modelFromDom(), reason);
+  };
+
   let reportTimer = null;
   const report = (reason) => {
     if (reportTimer) clearTimeout(reportTimer);
-    reportTimer = setTimeout(async () => {
-      const currentUrl = window.location.href;
-      const pageKind = currentPageKind();
-      const detectedModel = pageKind === 'model' ? await extractModel() : null;
-      if (window.location.href !== currentUrl) return;
-      const payload = {
-        currentUrl,
-        pageKind,
-        detectedModel,
-        lastExtractionError: null,
-      };
-      if (payload.pageKind === 'model' && !payload.detectedModel) {
-        payload.lastExtractionError = `Model page detected but structured metadata extraction failed (${reason})`;
-      }
-      await invoke('report_makerworld_page', { payload });
-    }, 220);
+    reportTimer = setTimeout(() => void scan(reason), 220);
   };
 
   const triggerImport = async () => {
