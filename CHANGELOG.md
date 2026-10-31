@@ -9,10 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.2.1] - 2026-10-30
 
-Security updates and bug fixes. No new features. The full notes are in [docs/releases/v0.2.1.md](docs/releases/v0.2.1.md).
+A printer certificate check, security updates, and bug fixes. No new features. The full notes are in [docs/releases/v0.2.1.md](docs/releases/v0.2.1.md).
 
 ### Security
 
+- Local printer connections check the printer's TLS certificate against Bambu's printer roots and the printer's serial number. Before, any device on the network could pose as the printer and receive the access code (#66). File upload over FTPS still accepts any certificate (#65).
 - `zip` 9.1.3 replaces 2.4.2. It fixes a critical advisory where a crafted archive shows different contents to different readers, plus two more. Sign packages keep the same bytes.
 - `rumqttc` 0.25.1 moves printer connections from `rustls` 0.22.4 to `rustls` 0.23.46, which also fixes four `rustls` advisories.
 - The bundled CAD runtime moves to Pillow 13.0.0, which fixes 41 advisories, and certifi 2026.10.23, which stops trusting an emSign root whose intermediate keys were compromised.
