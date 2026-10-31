@@ -9,7 +9,7 @@ The 0.2.1 candidate updates libraries with security advisories and fixes bugs fo
 - An Apple Silicon Mac on macOS 26 or later with Xcode command line tools, Bun, and Rust. The app requires macOS 26.0.
 - A keychain that holds a Developer ID Application identity, and its password.
 - An App Store Connect API key for `notarytool`: key id, issuer id, and the `.p8` content.
-- The arm64 CAD runtime for the tagged commit: the `cad-runtime-arm64` artifact of that commit's `CAD runtime` workflow run, or the output of `cad-runtime/build.sh arm64` on a Linux machine with Docker, buildx, and arm64 binfmt. Either way it must match `cad-runtime/pins-arm64.json`, which the CAD helper compiles in.
+- The arm64 CAD runtime for the tagged commit: the `cad-runtime-arm64` artifact of a manual `CAD runtime` run on the tag (`gh workflow run cad-runtime.yml --ref v0.2.0`), which always does the full work, or the output of `cad-runtime/build.sh arm64` on a Linux machine with Docker, buildx, and arm64 binfmt. Either way it must match `cad-runtime/pins-arm64.json`, which the CAD helper compiles in.
 
 ### Release keychain input limits
 

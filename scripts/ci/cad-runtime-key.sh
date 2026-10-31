@@ -99,7 +99,7 @@ case "${1:-}" in
       if jq -e --arg repo "$repo" --argjson id "$run_id" '
         .id == $id and .path == ".github/workflows/cad-runtime.yml"
         and .status == "completed" and .conclusion == "success"
-        and (.event == "pull_request" or .event == "push" or .event == "workflow_dispatch")
+        and (.event == "pull_request" or .event == "push" or .event == "workflow_dispatch" or .event == "schedule")
         and .repository.full_name == $repo and .head_repository.full_name == $repo
         and ([.actor.login, .triggering_actor.login]
           | all(type == "string" and . != "" and . != "dependabot[bot]"))' <<< "$run" > /dev/null

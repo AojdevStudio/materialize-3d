@@ -7,9 +7,9 @@
 #      maintainer approves only after reading every change under .github/.
 #      Agents never approve one. This guard holds even when a fork edits this
 #      file, because a pull request runs the workflow files from its own head.
-#   2. Each job's `if:` admits only a push to main, a manual dispatch, or a pull
-#      request whose head branch is in this repository, so an approved fork run
-#      that leaves this file alone still skips these jobs. It also refuses
+#   2. Each job's `if:` admits only a push to main, a manual dispatch, the nightly
+#      schedule, or a pull request whose head branch is in this repository, so an
+#      approved fork run that leaves this file alone still skips these jobs. It also refuses
 #      Dependabot, as the actor and as a pull request's author: the runners run
 #      as a host user whose gh login the runner guard uses, so a dependency
 #      update's code must not run there. A person regenerates the pins for a
@@ -27,10 +27,14 @@
 # run does:
 #   none   a pull request that changes nothing the runtime is built, bundled, or
 #          tested from (scripts/ci/cad-runtime-paths.txt): both jobs pass in seconds.
-#   reuse  a pull request whose runtime key (scripts/ci/cad-runtime-key.sh) has a
-#          record from a run where both jobs did their full work and passed: both
-#          jobs pass and print that run's id and the key.
-#   full   everything else. Pushes to main and manual runs always do the full work.
+#   reuse  a pull request or a push to main whose runtime key
+#          (scripts/ci/cad-runtime-key.sh) has a record from a run where both jobs
+#          did their full work and passed: both jobs pass and print that run's id
+#          and the key. A merge that changes no runtime input keeps the key its
+#          pull request already proved, so it rebuilds nothing.
+#   full   everything else. The nightly schedule and manual runs always do the full
+#          work, with clean builds that skip Docker's build cache, so drift on the
+#          runner hosts (Docker, buildx, qemu) shows up within a day.
 # It decides the same way, separately, for the two part-kind jobs (`backend_work`),
 # over the runtime inputs and the app's inputs together
 # (scripts/ci/cad-backend-paths.txt, `--backend` in both scripts), so a change to
@@ -51,9 +55,15 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+  # 09 UTC is the quietest hour for this repository's runs, so the full work holds
+  # the one Linux runner while no pull request is waiting for it.
+  schedule:
+    - cron: "7 9 * * *"
 
+# The nightly run has its own group, so a push to main never cancels the one run
+# that always does the full work.
 concurrency:
-  group: cad-runtime-${{ github.ref }}
+  group: cad-runtime-${{ github.event_name == 'schedule' && 'nightly' || github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -64,7 +74,7 @@ jobs:
     name: CAD runtime images reproduce
     if: >-
       github.actor != 'dependabot[bot]' && (
-      github.event_name == 'push' || github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' ||
       (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
       && github.event.pull_request.user.login != 'dependabot[bot]'))
     runs-on: [self-hosted, Linux, X64, m3d-linux-kvm]
@@ -105,8 +115,8 @@ jobs:
         id: key
         if: steps.scope.outputs.relevant == 'true'
         run: scripts/ci/cad-runtime-key.sh >> "$GITHUB_OUTPUT"
-      # Only a pull request looks for a record. Any lookup failure is a miss, and
-      # the run then does the full work.
+      # A pull request and a push to main look for a record. Any lookup failure is
+      # a miss, and the run then does the full work.
       - name: Decide this run's work for both jobs
         id: work
         env:
@@ -120,7 +130,7 @@ jobs:
           if [[ "$RELEVANT" != true ]]; then
             echo "work=none" >> "$GITHUB_OUTPUT"
             echo "No CAD runtime path changed; the image builds are skipped and this check passes." >> "$GITHUB_STEP_SUMMARY"
-          elif [[ "$EVENT" == pull_request ]] && found="$(scripts/ci/cad-runtime-key.sh lookup "$REPO")" \
+          elif [[ "$EVENT" == pull_request || "$EVENT" == push ]] && found="$(scripts/ci/cad-runtime-key.sh lookup "$REPO")" \
             && [[ "$found" == *"key=$KEY" ]]; then
             source_run="$(sed -n 's/^source_run=//p' <<< "$found")"
             printf 'work=reuse\nsource_run=%s\n' "$source_run" >> "$GITHUB_OUTPUT"
@@ -153,7 +163,7 @@ jobs:
           if [[ "$RELEVANT" != true ]]; then
             echo "work=none" >> "$GITHUB_OUTPUT"
             echo "No part-kind input changed; the part-kind jobs pass without building." >> "$GITHUB_STEP_SUMMARY"
-          elif [[ "$EVENT" == pull_request ]] && found="$(scripts/ci/cad-runtime-key.sh --backend lookup "$REPO")" \
+          elif [[ "$EVENT" == pull_request || "$EVENT" == push ]] && found="$(scripts/ci/cad-runtime-key.sh --backend lookup "$REPO")" \
             && [[ "$found" == *"key=$KEY" ]]; then
             source_run="$(sed -n 's/^source_run=//p' <<< "$found")"
             printf 'work=reuse\nsource_run=%s\n' "$source_run" >> "$GITHUB_OUTPUT"
@@ -232,7 +242,7 @@ jobs:
     needs: images
     if: >-
       github.actor != 'dependabot[bot]' && (
-      github.event_name == 'push' || github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' ||
       (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
       && github.event.pull_request.user.login != 'dependabot[bot]'))
     runs-on: [self-hosted, macOS, ARM64, m3d-mac-vz]
@@ -327,7 +337,7 @@ jobs:
     needs: images
     if: >-
       github.actor != 'dependabot[bot]' && (
-      github.event_name == 'push' || github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' ||
       (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
       && github.event.pull_request.user.login != 'dependabot[bot]'))
     runs-on: [self-hosted, Linux, X64, m3d-linux-kvm]
@@ -412,7 +422,7 @@ jobs:
     needs: images
     if: >-
       github.actor != 'dependabot[bot]' && (
-      github.event_name == 'push' || github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' ||
       (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
       && github.event.pull_request.user.login != 'dependabot[bot]'))
     runs-on: [self-hosted, macOS, ARM64, m3d-mac-vz]
@@ -504,7 +514,7 @@ jobs:
     needs: [images, helper, part-linux, part-macos]
     if: >-
       github.actor != 'dependabot[bot]' && (
-      github.event_name == 'push' || github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' ||
       (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
       && github.event.pull_request.user.login != 'dependabot[bot]'))
     runs-on: [self-hosted, Linux, X64, m3d-linux-kvm]

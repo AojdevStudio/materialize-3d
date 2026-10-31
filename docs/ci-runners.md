@@ -9,10 +9,10 @@ Four jobs in `.github/workflows/cad-runtime.yml` run on machines Ossie owns: all
 | `CAD part kind on the Linux backend` | `dev-substrate-materialize-3d` | `dev-substrate` | `self-hosted`, `Linux`, `X64`, `m3d-linux-kvm` | The app's `part` kind on the amd64 image under QEMU's microvm machine (the `linux-cad-test` feature) and the real Bambu Studio: the three proof parts, Bambu's support warning as advisory, a failing fillet, and a hostile script. |
 | `CAD part kind on the macOS backend` | `mac-mini-m4-materialize-3d-cad` | the Mac mini | `self-hosted`, `macOS`, `ARM64`, `m3d-mac-vz` | The same tests on the arm64 image through the ad hoc signed helper and Apple's Virtualization framework, then the app binary building the cable clip with the helper and runtime laid out as in the bundle (`--cad-self-test`). |
 
-Every job runs on every push to `main`, every manual dispatch, and every same-repository pull request, so its check-run is always present. The full work takes about 85 minutes, most of it two arm64 builds under qemu. Pushes to `main` and manual dispatches always do the full work. On a pull request, the images job decides once for the images and helper jobs:
+Every job runs on every push to `main`, every manual dispatch, the nightly schedule (09:07 UTC), and every same-repository pull request, so its check-run is always present. The full work takes about 85 minutes, most of it two arm64 builds under qemu user-mode emulation (about 38 minutes each, against about 3 minutes for each amd64 build). Manual dispatches and the nightly schedule always do the full work. On a pull request or a push to `main`, the images job decides once for the images and helper jobs:
 
-- **None.** The pull request changes no path in `scripts/ci/cad-runtime-paths.txt`, compared with its merge base (`scripts/ci/cad-runtime-scope.sh`). Both jobs skip the heavy steps and pass in seconds.
-- **Reuse.** The runtime key has a record of a run in which both jobs did their full work and passed. Both jobs skip the heavy steps, pass, and print the source run id and the key in the log and the step summary.
+- **None.** A pull request that changes no path in `scripts/ci/cad-runtime-paths.txt`, compared with its merge base (`scripts/ci/cad-runtime-scope.sh`). Both jobs skip the heavy steps and pass in seconds.
+- **Reuse.** The runtime key has a record of a run in which both jobs did their full work and passed. Both jobs skip the heavy steps, pass, and print the source run id and the key in the log and the step summary. A merge that changes no runtime input keeps the key that its pull request, or an earlier run on `main`, already proved, so it holds the Linux runner for about a minute instead of 85.
 - **Full.** Everything else, including a record that cannot be looked up or read.
 
 `scripts/ci/cad-runtime-paths.txt` lists `cad-runtime/`, `cad-host/`, `scripts/release/`, the workflow, the list itself, and the scope and key scripts. A path belongs on it only when it changes what the images and helper jobs build or what the helper's restriction tests prove. The app's files, including `cad_worker.rs`, which compiles in the runtime pins, go on the part-kind list below instead.
@@ -50,38 +50,38 @@ The key is the sha256 of `git ls-files -s -z` over the listed paths (`scripts/ci
 
 **When a record is written.** Only by the `CAD runtime pass record` job, which `needs` all four self-hosted jobs and carries their `if:` guard. GitHub runs it only when all four passed, so a failure in any job records nothing. It writes `cad-runtime-pass-<key>` only when the images and helper jobs both set `done`, and `cad-backend-pass-<key>` only when both part-kind jobs set `done`, which each job does in a step after its last heavy step, so the step runs only when every step before it passed. A failed, cancelled, skipped, or reused run writes nothing. A re-run of a run that passed replaces its record under the same name. The job recomputes each key from its own checkout and refuses to write when it differs from the images job's key. It runs on the Linux runner and can queue behind the build jobs. It builds nothing and holds no secret.
 
-**When a record is used.** Only on a `pull_request` event whose scope is not none. The lookup (`cad-runtime-key.sh lookup`) uses the job's `GITHUB_TOKEN`, which the images job grants `actions: read` for this. It accepts a run only when all of these hold:
+**When a record is used.** On a `pull_request` event whose scope is not none, and on a push to `main`. The lookup (`cad-runtime-key.sh lookup`) uses the job's `GITHUB_TOKEN`, which the images job grants `actions: read` for this. It accepts a run only when all of these hold:
 
 - An artifact named exactly `cad-runtime-pass-<key>` belongs to the run.
-- The run is of `.github/workflows/cad-runtime.yml`, and its event is `pull_request`, `push`, or `workflow_dispatch`.
+- The run is of `.github/workflows/cad-runtime.yml`, and its event is `pull_request`, `push`, `workflow_dispatch`, or `schedule`.
 - The run is completed with the conclusion `success`, so every job in it, the record job included, passed.
 - The run's repository and head repository are both this repository.
 - The run names both its actor and its triggering actor, and neither of them is `dependabot[bot]`.
 
 A failed API call, an answer that is not the JSON expected, or no run that passes every check is a miss, and the run does the full work. It never passes on a record it could not read. On a hit, the log and the step summary of both jobs show `CAD runtime reused: run <id> passed both jobs with full work under the key <key>`, with a link to that run. On a miss, the images job's log shows `cad-runtime key: miss,` and the reason.
 
-**Who can write a record that a pull request reads.** Only a passed run of this workflow from a same-repository head, because every other run fails the checks above:
+**Who can write a record that a pull request or a push to `main` reads.** Only a passed run of this workflow from a same-repository head, because every other run fails the checks above:
 
 - A run of another workflow fails the path check. This covers Pullfrog's runs, which are `workflow_dispatch` runs on `main` that read pull request content. Those runs can write into `main`'s Actions cache scope, so an Actions cache entry would not be a trustworthy record.
 - A fork's run fails the head repository check, and the record job never runs for one.
 - A Dependabot run fails the actor checks, and the record job never runs for one.
-- A same-repository branch can carry a workflow that uploads any artifact. Anyone who can push such a branch can already edit this workflow, so the record adds no writer that the branch did not already have.
+- A same-repository branch can carry a workflow that uploads any artifact. Anyone who can push such a branch can already edit this workflow, so the record adds no writer that the branch did not already have. The lookup does not rebuild the source run's tree, so such a branch could forge a record that a push to `main` then reuses. The nightly run never reads records, so a forged record shows up within a day instead of on merge.
 
 A record from any passed run counts, in any pull request or on `main`, because the key covers every path in `scripts/ci/cad-runtime-paths.txt`, the inputs the runtime is built, bundled, and tested from. The images job also runs `scripts/ci/check-image-host.sh` and the key test, which check the host and the scripts but do not change what is built, so they are not on the list.
 
-**What the key does not cover.** The runner hosts themselves: Docker, qemu, the Rust toolchain on the Mac, and the cached kernel and wheels. The image builds still compare every digest with the committed `pins-<arch>.json`, and pushes to `main` always do the full work, so host drift shows up on the next push to `main`.
+**What the key does not cover.** The runner hosts themselves: Docker, qemu, the Rust toolchain on the Mac, and the cached kernel and wheels. The image builds still compare every digest with the committed `pins-<arch>.json`, and the nightly run always does the full work with clean builds that skip Docker's build cache, so host drift shows up within a day. The wheel and kernel tarball caches are not refreshed, but every build checks them by hash. A push to `main` does the full work only when no passed run has recorded its key. The nightly run has its own concurrency group, so a push to `main` cannot cancel it.
 
 ## Keeping fork pull requests off these machines
 
 The repository is public, so a pull request from a fork could try to run code on these runners. A user-owned repository has no runner groups to limit which workflows may use a runner, and a fork's pull request runs the workflow files from its own head, so a fork can delete an `if:` or add its own self-hosted workflow. Three guards stand in the way:
 
 1. **The fork approval policy.** No workflow run from a fork starts until a maintainer approves it. A maintainer approves a fork's run only after reading every change under `.github/`; agents never approve one. This is the guard that holds against a fork that edits the workflows.
-2. **The same-repo condition.** Build jobs run only on a push to `main`, a manual dispatch where supported, or a pull request whose head branch is in this repository. The PR body job uses `pull_request_target`, checks only the base SHA, and admits only same-repository, non-Dependabot pull requests. Pullfrog's app can dispatch fork PR reviews on the default branch, so `workflow_dispatch` alone is not a trust check. Before checkout or the Pullfrog action, `actions/github-script@v8` parses the prompt from an environment variable. It requires a JSON envelope with `~pullfrog: true`, `event.is_pr: true`, a safe positive integer `event.issue_number`, and `event.authorPermission` of `admin`, `maintain`, or `write`. It rejects Dependabot as either the dispatch actor or the original triggerer. It then reads the actual PR through GitHub's API and requires a head in this repository and an author other than `dependabot[bot]`. A malformed or unsupported prompt or a failed API call fails the job before checkout. Provider credentials remain scoped to the Pullfrog action step. The build condition is:
+2. **The same-repo condition.** Build jobs run only on a push to `main`, a manual dispatch where supported, the nightly schedule in `cad-runtime.yml`, or a pull request whose head branch is in this repository. The PR body job uses `pull_request_target`, checks only the base SHA, and admits only same-repository, non-Dependabot pull requests. Pullfrog's app can dispatch fork PR reviews on the default branch, so `workflow_dispatch` alone is not a trust check. Before checkout or the Pullfrog action, `actions/github-script@v8` parses the prompt from an environment variable. It requires a JSON envelope with `~pullfrog: true`, `event.is_pr: true`, a safe positive integer `event.issue_number`, and `event.authorPermission` of `admin`, `maintain`, or `write`. It rejects Dependabot as either the dispatch actor or the original triggerer. It then reads the actual PR through GitHub's API and requires a head in this repository and an author other than `dependabot[bot]`. A malformed or unsupported prompt or a failed API call fails the job before checkout. Provider credentials remain scoped to the Pullfrog action step. The build condition is:
 
    ```yaml
    if: >-
      github.actor != 'dependabot[bot]' && (
-     github.event_name == 'push' || github.event_name == 'workflow_dispatch' ||
+     github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' ||
      (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
      && github.event.pull_request.user.login != 'dependabot[bot]'))
    ```
