@@ -173,6 +173,9 @@ no_hit() { if lookup > /dev/null; then fail "$1"; fi; }
 
 artifacts "$name:11"; run 11
 hit 11 "a passed same-repository run with this key's record was not a hit"
+run 11 '.event = "push"'; hit 11 "a passed push to main with this key's record was not a hit"
+run 11 '.event = "schedule"'; hit 11 "a passed nightly run with this key's record was not a hit"
+run 11
 if PATH="$work/bin:$PATH" STUB="$stub" EXPECTED_NAME="$name" GH_TOKEN='' \
   "$repo/scripts/ci/cad-runtime-key.sh" lookup o/r > /dev/null 2>&1; then fail "a lookup without a token was a hit"; fi
 run 11 '.conclusion = "failure"'; no_hit "a failed run's record was a hit"
