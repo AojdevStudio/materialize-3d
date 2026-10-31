@@ -530,7 +530,7 @@ pub fn delete_print_history_item(
 // ─── Library Commands ─────────────────────────────────────────────────────────
 
 /// Helper to emit `library:changed` with the full model list.
-fn emit_library_changed(app: &AppHandle, state: &Arc<AppState>) {
+pub(crate) fn emit_library_changed<R: Runtime>(app: &AppHandle<R>, state: &Arc<AppState>) {
     let models = {
         let db_guard = match state.db.lock() {
             Ok(g) => g,

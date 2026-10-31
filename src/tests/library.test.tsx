@@ -230,6 +230,30 @@ describe('ModelLibrary component', () => {
 
     expect(invokeMock).toHaveBeenCalledWith('get_library_models')
   })
+
+  it('shows a model from a library:changed event without reloading', async () => {
+    invokeMock.mockClear()
+    listenMock.mockClear()
+    const { ModelLibrary } = await import('../components/ModelLibrary')
+    const { useLibraryEvents } = await import('../stores/libraryStore')
+    function OpenLibrary() {
+      useLibraryEvents()
+      return React.createElement(ModelLibrary)
+    }
+    await act(async () => {
+      render(React.createElement(OpenLibrary))
+    })
+    expect(screen.getByTestId('model-library-empty')).toBeDefined()
+
+    const [, onLibraryChanged] = listenMock.mock.calls.find(([name]) => name === 'library:changed')!
+    act(() => {
+      onLibraryChanged({ payload: [SAMPLE_MODELS[0]] })
+    })
+
+    expect(screen.getAllByTestId('library-card')).toHaveLength(1)
+    expect(screen.getByText('Headphone Hook')).toBeDefined()
+    expect(invokeMock).toHaveBeenCalledTimes(1)
+  })
 })
 
 describe('ModelLibrary helpers', () => {
