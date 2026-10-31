@@ -24,6 +24,19 @@ Use these steps with the 0.2.1 DMG if it is published on the [Releases page](htt
 4. Open Materialize 3D from Applications. The release procedure requires Developer ID signing and Apple notarization. Confirm the download prompt. If macOS rejects the app, keep the error for the release report.
 5. In the first-run setup, choose Anthropic or OpenAI and paste your API key. You can skip this and add the key later in **Settings > Agent**. The key is stored in your macOS Keychain. Both providers remain available. For the 0.2.1 acceptance run, choose OpenAI and record the selected model.
 
+## Updates
+
+At launch, Materialize 3D checks the [Releases page](https://github.com/AojdevStudio/materialize-3d/releases) for a newer release. When one exists, a strip under the toolbar shows the new version with **Update now** and **Later**.
+
+- **Update now** downloads the update, checks its signature, backs up your data, installs the update, and restarts the app.
+- **Later** keeps the current version running. The app asks again at the next launch.
+
+Nothing installs without your click. If the check or the download fails, the app shows the error and keeps running. **Settings > About** shows the installed version and has a **Check for updates** button.
+
+Before it installs, the app copies its database and print queue to `~/Library/Application Support/com.aojdevstudio.materialize3d/backups/<old version>-to-<new version>-<time>/`. If that copy fails, the app does not update. Your settings, designs, and keys stay where they are.
+
+The first version with updates must be installed from its DMG. Later versions arrive through **Update now**.
+
 ## Set up Bambu Studio
 
 Materialize 3D looks for Bambu Studio 02.08.02.61 in `/Applications`, in `~/Applications`, and in folders one level inside `~/Applications`. **Settings > Bambu Studio** shows the version and location it found.

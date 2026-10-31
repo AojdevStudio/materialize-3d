@@ -83,6 +83,8 @@
     "allow-update-settings",
     "allow-bambu-studio-status",
     "allow-choose-bambu-studio",
-    "allow-clear-bambu-studio"
+    "allow-clear-bambu-studio",
+    "allow-update-check",
+    "allow-update-install"
   ]
 }

@@ -48,5 +48,14 @@
       "minimumSystemVersion": "26.0",
       "hardenedRuntime": true
     }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDhEQjg3ODAwNzNEQjU0QUIKUldTclZOdHpBSGk0amR2OWF4c3ZlUUFTVHV1MTJsRFpDVVhvL0UxYkhyQjRLUy9kc3NHMkNvZ28K",
+      "endpoints": [
+        "https://github.com/AojdevStudio/materialize-3d/releases/latest/download/latest.json"
+      ],
+      "requireSignedVersion": true
+    }
   }
 }

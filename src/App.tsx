@@ -11,6 +11,7 @@ import { usePrinterConfigEvents, usePrinterConfigStore, hydratePrinterConfigs } 
 import { useSettingsEvents, hydrateSettings } from './stores/settings'
 import { useDesignsEvents } from './stores/designs'
 import { useUiStore } from './stores/ui'
+import { checkForUpdatesAtLaunch, useUpdateEvents } from './stores/updates'
 import './styles/global.css'
 
 declare global {
@@ -40,6 +41,11 @@ function AppStateBridge() {
   usePrinterConfigEvents()
   useSettingsEvents()
   useDesignsEvents()
+  useUpdateEvents()
+
+  useEffect(() => {
+    void checkForUpdatesAtLaunch()
+  }, [])
 
   useEffect(() => {
     const hydrate = async () => {

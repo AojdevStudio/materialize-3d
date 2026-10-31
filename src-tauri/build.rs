@@ -91,4 +91,6 @@ const APP_COMMANDS: &[&str] = &[
     "bambu_studio_status",
     "choose_bambu_studio",
     "clear_bambu_studio",
+    "update_check",
+    "update_install",
 ];

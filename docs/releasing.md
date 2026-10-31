@@ -9,6 +9,7 @@ The 0.2.1 candidate updates libraries with security advisories and fixes bugs fo
 - An Apple Silicon Mac on macOS 26 or later with Xcode command line tools, Bun, and Rust. The app requires macOS 26.0.
 - A keychain that holds a Developer ID Application identity, and its password.
 - An App Store Connect API key for `notarytool`: key id, issuer id, and the `.p8` content.
+- The updater signing key: BWS secrets `MATERIALIZE3D_TAURI_UPDATER_PRIVATE_KEY` and `MATERIALIZE3D_TAURI_UPDATER_KEY_PASSWORD`. The build reads them as `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. Its public key is `plugins.updater.pubkey` in `src-tauri/tauri.conf.json`. This minisign key is separate from the Developer ID certificate. Never generate a new one for a release: installed apps accept only updates signed by the key they were built with.
 - The arm64 CAD runtime for the tagged commit: the `cad-runtime-arm64` artifact of a manual `CAD runtime` run on the tag (`gh workflow run cad-runtime.yml --ref v0.2.0`), which always does the full work, or the output of `cad-runtime/build.sh arm64` on a Linux machine with Docker, buildx, and arm64 binfmt. Either way it must match `cad-runtime/pins-arm64.json`, which the CAD helper compiles in.
 
 ### Release keychain input limits
@@ -36,11 +37,21 @@ Do not rotate or rewrite user credentials to satisfy these limits. If existing c
    unset ALLOW_UNTAGGED
    export RELEASE_KEYCHAIN RELEASE_KEYCHAIN_PASSWORD
    export APPLE_API_KEY_ID APPLE_API_ISSUER_ID APPLE_API_PRIVATE_KEY
+   export TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD
    export CAD_RUNTIME_DIR
    scripts/release/build-macos.sh
    ```
 
-   With `ALLOW_UNTAGGED` unset, the script refuses a dirty tree, an untagged commit, mismatched versions, or a CAD runtime that does not match the helper's pins. Never use the rehearsal override for the final build. It builds the CAD helper from `cad-host/` and places it at `Contents/MacOS/materialize-cad-host`, with the runtime at `Contents/Resources/cad-runtime/{Image,rootfs.img,job.img}`. It compiles the signing team into the app with `M3D_CAD_HELPER_TEAM` and requires that team for the helper. It signs the helper first, with the hardened runtime and the virtualization entitlement, then the app around it, and notarizes and staples both the app and the DMG; the app's staple covers the helper. Then it checks Gatekeeper acceptance, the architecture, the absence of the e2e harness and of build-machine paths in both executables, and runs `scripts/release/check-app-bundle.sh`: the exact file list of the app bundle, macOS 26.0 as the minimum, the helper's signature and its only entitlement, and the bundled runtime against the helper's pins. It writes `dist-release/Materialize-3D-<version>-macos-arm64.dmg` and a `.sha256` file.
+   With `ALLOW_UNTAGGED` unset, the script refuses a dirty tree, an untagged commit, mismatched versions, a `TAURI_CONFIG` override, or a CAD runtime that does not match the helper's pins. Never use the rehearsal override for the final build. It builds the CAD helper from `cad-host/` and places it at `Contents/MacOS/materialize-cad-host`, with the runtime at `Contents/Resources/cad-runtime/{Image,rootfs.img,job.img}`. It compiles the signing team into the app with `M3D_CAD_HELPER_TEAM` and requires that team for the helper. It signs the helper first, with the hardened runtime and the virtualization entitlement, then the app around it, and notarizes and staples both the app and the DMG; the app's staple covers the helper. Then it checks Gatekeeper acceptance, the architecture, the absence of the e2e harness and of build-machine paths in both executables, and runs `scripts/release/check-app-bundle.sh`: the exact file list of the app bundle, macOS 26.0 as the minimum, the helper's signature and its only entitlement, and the bundled runtime against the helper's pins. It writes `dist-release/Materialize-3D-<version>-macos-arm64.dmg` and a `.sha256` file.
+
+   The script also writes the update assets from the same stapled app, after the bundle check and before the DMG:
+
+   - `Materialize-3D-<version>-macos-arm64.app.tar.gz`, the update archive. The script unpacks it and checks the signature, the staple, and the bundle file list again.
+   - `Materialize-3D-<version>-macos-arm64.app.tar.gz.sig`, its minisign signature, bound to the version. The script stops when the signature's key id differs from the public key in `tauri.conf.json`.
+   - `Materialize-3D-<version>-macos-arm64.app.tar.gz.sha256`.
+   - `latest.json`, the update feed: version, notes, date, signature, and the archive's download URL on the `v<version>` release.
+
+   The script stops when either updater secret is missing or signing fails.
 
 4. Run the clean-install and installed-release scripts below. Then run the [installed GUI checklist](verify-on-mac.md) on that exact DMG, with OpenAI chat for both signs and parts. Keep the exported 3MFs, matching approval and export hashes, Bambu Studio P2S 0.4 mm slice proof, and the GUI recording. Backend and MCP checks do not replace this GUI run.
 5. Complete the required software acceptance record below and prepare an external release body from the source notes. Put the exact tagged source commit and final DMG checksum in both. Do not edit tracked notes to insert their own source commit or DMG checksum. Keep shared release tags unchanged. If source or packaging changes, build and test a new candidate. Required software checks and release approval gate publication. After they pass, publish the DMG, its checksum, the completed record, and both actual approved exports. The filenames below require the completed files described here, not placeholders.
@@ -48,10 +59,30 @@ Do not rotate or rewrite user credentials to satisfy these limits. If existing c
    ```bash
    gh release create v0.2.1 --verify-tag --title "Materialize 3D 0.2.1" --notes-file dist-release/release-notes.md \
      dist-release/Materialize-3D-0.2.1-macos-arm64.dmg dist-release/Materialize-3D-0.2.1-macos-arm64.dmg.sha256 \
+     dist-release/latest.json dist-release/Materialize-3D-0.2.1-macos-arm64.app.tar.gz \
+     dist-release/Materialize-3D-0.2.1-macos-arm64.app.tar.gz.sig \
      dist-release/software-acceptance.md dist-release/Acceptance-Sign-P2S.3mf dist-release/Acceptance-Desk-Clip-P2S.3mf
    ```
 
-6. Download the published DMG, checksum file, record, and approved exports from the actual release. Compare the downloaded DMG's full SHA-256 with the build checksum, published checksum file, release body, and acceptance record. Compare both downloaded 3MF hashes with their approved and exported hashes in the record. Stop on any mismatch or missing attachment. Retain this published-download proof with the release evidence.
+   Attach the three update assets under exactly these names, because `latest.json` names the archive's URL.
+
+   Publishing a release as **Latest** is what updates installed apps. Each installed app reads `https://github.com/AojdevStudio/materialize-3d/releases/latest/download/latest.json` at launch, and offers the update when that version is newer than its own. A draft or a prerelease never reaches installed apps. To hold a release back, publish it as a draft or prerelease, or leave the earlier release marked Latest until the download check below passes.
+
+   The first release that contains the updater must still be installed by hand from its DMG. Only later releases arrive as updates.
+
+6. Download the published DMG, checksum file, update assets, record, and approved exports from the actual release. Compare the downloaded DMG's full SHA-256 with the build checksum, published checksum file, release body, and acceptance record. Compare the downloaded archive's full SHA-256 with its build checksum. Compare the downloaded `latest.json` and `.sig` byte for byte with the files in `dist-release/`. Compare both downloaded 3MF hashes with their approved and exported hashes in the record. Then confirm that the Latest feed URL serves the same `latest.json`. Stop on any mismatch or missing attachment. Retain this published-download proof with the release evidence.
+
+   ```bash
+   mkdir -p dist-release/published && cd dist-release/published
+   gh release download v0.2.1 -R AojdevStudio/materialize-3d
+   shasum -a 256 Materialize-3D-0.2.1-macos-arm64.app.tar.gz
+   cat ../Materialize-3D-0.2.1-macos-arm64.app.tar.gz.sha256
+   cmp latest.json ../latest.json
+   cmp Materialize-3D-0.2.1-macos-arm64.app.tar.gz.sig ../Materialize-3D-0.2.1-macos-arm64.app.tar.gz.sig
+   curl -fsSL https://github.com/AojdevStudio/materialize-3d/releases/latest/download/latest.json | cmp - ../latest.json
+   ```
+
+   The last command passes only after the release is published as Latest.
 
 ## Required software acceptance record
 
