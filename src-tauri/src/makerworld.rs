@@ -579,12 +579,18 @@ fn persist_import_metadata(
     let model_dir = library_dir.join(folder_name);
     fs::create_dir_all(&model_dir)
         .map_err(|error| format!("failed to create makerworld model directory: {error}"))?;
+    let canonical_model_dir = model_dir
+        .canonicalize()
+        .map_err(|error| format!("failed to resolve makerworld model directory: {error}"))?;
 
     let metadata = StoredImportMetadata {
         imported_at: Utc::now().to_rfc3339(),
         source_url: source_url.into(),
         model: detected_model,
-        files: imported_files,
+        files: imported_files
+            .into_iter()
+            .filter(|file| Path::new(file).parent() == Some(canonical_model_dir.as_path()))
+            .collect(),
     };
 
     let metadata_path = model_dir.join("metadata.json");
@@ -885,7 +891,7 @@ mod tests {
             App, Listener,
         };
 
-        use super::super::finalize_import_into;
+        use super::super::{finalize_import_into, slugify};
         use crate::database;
         use crate::state::{AppState, LibraryModel, MakerWorldModel};
 
@@ -926,8 +932,39 @@ mod tests {
         }
 
         fn finish(download: &Download) {
-            finalize_import_into(download.app.handle(), &download.state, download.library_dir.path(), &download.file)
-                .unwrap();
+            finish_file(download, &download.file);
+        }
+
+        fn finish_file(download: &Download, file: &Path) {
+            finalize_import_into(download.app.handle(), &download.state, download.library_dir.path(), file).unwrap();
+        }
+
+        fn download_file_of(download: &Download, id: &str, title: &str, file_name: &str) -> PathBuf {
+            download.state.workspace.lock().unwrap().makerworld.detected_model = Some(MakerWorldModel {
+                id: Some(id.into()),
+                title: title.into(),
+                source_url: format!("https://makerworld.com/en/models/{id}"),
+                ..Default::default()
+            });
+            let model_dir = download.library_dir.path().join(format!("{}-{id}", slugify(title)));
+            std::fs::create_dir_all(&model_dir).unwrap();
+            let file = model_dir.join(file_name);
+            std::fs::write(&file, b"zip").unwrap();
+            file
+        }
+
+        fn metadata_files(file: &Path) -> Vec<String> {
+            let raw = std::fs::read_to_string(file.parent().unwrap().join("metadata.json")).unwrap();
+            serde_json::from_str::<serde_json::Value>(&raw).unwrap()["files"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|path| path.as_str().unwrap().to_string())
+                .collect()
+        }
+
+        fn path_of(file: &Path) -> String {
+            file.canonicalize().unwrap().to_string_lossy().to_string()
         }
 
         fn library(state: &AppState) -> Vec<LibraryModel> {
@@ -986,6 +1023,41 @@ mod tests {
             };
             assert_eq!(scanned, 1);
             assert_eq!(without_id(library(&launched)), without_id(library(&download.state)));
+        }
+
+        #[test]
+        fn each_model_downloaded_in_a_session_lists_only_its_own_file() {
+            let download = download_of_a_detected_model();
+            finish(&download);
+            let hook = download_file_of(&download, "1073764", "Simple Headphone Hook", "hook.3mf");
+            finish_file(&download, &hook);
+
+            assert_eq!(metadata_files(&download.file), vec![path_of(&download.file)]);
+            assert_eq!(metadata_files(&hook), vec![path_of(&hook)]);
+
+            let rows = library(&download.state);
+            let row_of = |name: &str| rows.iter().find(|row| row.model_name == name).unwrap();
+            let dispenser_row = row_of("Onion & Potato Dispenser");
+            assert_eq!(dispenser_row.file_path, Some(path_of(&download.file)));
+            assert_eq!(dispenser_row.file_count, Some(1));
+            let hook_row = row_of("Simple Headphone Hook");
+            assert_eq!(hook_row.file_path, Some(path_of(&hook)));
+            assert_eq!(hook_row.file_count, Some(1));
+        }
+
+        #[test]
+        fn a_model_keeps_each_of_its_downloads_once() {
+            let download = download_of_a_detected_model();
+            finish(&download);
+            let hook = download_file_of(&download, "1073764", "Simple Headphone Hook", "hook.3mf");
+            finish_file(&download, &hook);
+            let second_plate =
+                download_file_of(&download, "2311143", "Onion & Potato Dispenser", "dispenser-plate-2.zip");
+            finish_file(&download, &second_plate);
+            finish_file(&download, &second_plate);
+
+            assert_eq!(metadata_files(&download.file), vec![path_of(&download.file), path_of(&second_plate)]);
+            assert_eq!(metadata_files(&hook), vec![path_of(&hook)]);
         }
     }
 }
