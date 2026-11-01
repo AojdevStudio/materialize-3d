@@ -1310,7 +1310,7 @@ mod tests {
         let path = schema_5_database(dir.path());
 
         inject(&[Fault::HardLinkUnsupported, Fault::PlantBackup]);
-        let err = init_db(&path).err().expect("the migration stops").to_string();
+        let err = init_db(&path).expect_err("the migration stops").to_string();
 
         assert!(!faulted(Fault::PlantBackup), "the file was planted just before publishing");
         assert!(err.contains("could not publish the checked copy"), "{err}");
@@ -1327,7 +1327,7 @@ mod tests {
         let before = revision_columns(&Connection::open(&path).unwrap(), SIGN_REVISION_COLUMNS);
 
         inject(&[Fault::HardLinkUnsupported, Fault::CutPublished]);
-        let err = init_db(&path).err().expect("the migration stops").to_string();
+        let err = init_db(&path).expect_err("the migration stops").to_string();
         assert!(err.contains("could not publish the checked copy"), "{err}");
         assert!(backup_of(&path).symlink_metadata().is_err(), "the broken copy was removed");
         assert_eq!(version_of(&path), 5, "migration 006 did not run");
@@ -1360,7 +1360,7 @@ mod tests {
         }
         let before = std::fs::read(&path).unwrap();
 
-        let err = init_db(&path).err().expect("the newer database is refused");
+        let err = init_db(&path).expect_err("the newer database is refused");
 
         assert!(matches!(err, InitError::NewerSchema { found } if found == SCHEMA_VERSION + 1), "{err}");
         assert_eq!(std::fs::read(&path).unwrap(), before, "the database is byte for byte unchanged");
@@ -1376,7 +1376,7 @@ mod tests {
         let before = revision_columns(&Connection::open(&path).unwrap(), SIGN_REVISION_COLUMNS);
 
         inject(&[Fault::CutStaged]);
-        let err = init_db(&path).err().expect("the migration stops").to_string();
+        let err = init_db(&path).expect_err("the migration stops").to_string();
         assert!(err.contains("could not back up the database"), "{err}");
         assert_eq!(version_of(&path), 5, "migration 006 did not run");
         assert!(backup_of(&path).symlink_metadata().is_err(), "nothing was published under the backup's name");
@@ -1397,7 +1397,7 @@ mod tests {
         drop(Connection::open(backup_of(&path)).unwrap());
         let left = std::fs::read(backup_of(&path)).unwrap();
 
-        let err = init_db(&path).err().expect("the migration stops").to_string();
+        let err = init_db(&path).expect_err("the migration stops").to_string();
         assert!(err.contains("is not a copy of this database"), "{err}");
         assert_eq!(version_of(&path), 5, "migration 006 did not run");
         assert_eq!(std::fs::read(backup_of(&path)).unwrap(), left, "the existing file is left alone");
