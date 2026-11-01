@@ -11,7 +11,9 @@ use serde_json::{json, Value};
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
-use super::commands::{choose_model, default_model, model_setting, models, offered_model};
+use super::commands::{
+    base_url_setting, choose_model, default_model, model_setting, models, offered_model, save_base_url, save_model, BaseUrl,
+};
 use crate::fabrication::checks::{test_support, CheckId};
 use crate::fabrication::kind::{find, KindDriver, View, KINDS};
 use crate::fabrication::printer::P2S_04;
@@ -400,7 +402,7 @@ async fn a_provider_error_ends_the_turn_with_one_error_and_nothing_said() {
 #[tokio::test]
 async fn a_missing_api_key_fails_before_anything_is_sent_or_stored() {
     let h = harness();
-    let model = choose_model(Provider::Openai, default_model(Provider::Openai).into(), None);
+    let model = choose_model(Provider::Openai, default_model(Provider::Openai).into(), None, None);
     assert!(matches!(&model, Err(TurnEnd::Failed { kind: AgentErrorKind::MissingApiKey, .. })));
 
     let turn = Turn::new(&h, "t1", Arc::new(FakeActions::default()), None);
@@ -422,11 +424,78 @@ fn a_retired_model_reads_as_the_default_and_an_unknown_model_is_refused() {
     assert_eq!(read("anthropic:claude-sonnet-5"), (Provider::Anthropic, "claude-opus-5-5".to_owned()));
     assert_eq!(read("openai:gpt-6.1-sol"), (Provider::Openai, "gpt-6.1-sol".to_owned()));
 
-    assert_eq!(offered_model(Provider::Openai, ""), Ok("gpt-6-astra"));
-    assert_eq!(offered_model(Provider::Anthropic, "claude-fable-5-1"), Ok("claude-fable-5-1"));
-    let refused = offered_model(Provider::Openai, "gpt-5.5").expect_err("gpt-5.5 is retired");
+    assert_eq!(offered_model(Provider::Openai, "", false).as_deref(), Ok("gpt-6-astra"));
+    assert_eq!(offered_model(Provider::Anthropic, "claude-fable-5-1", false).as_deref(), Ok("claude-fable-5-1"));
+    let refused = offered_model(Provider::Openai, "gpt-5.5", false).expect_err("gpt-5.5 is retired");
     assert!(refused.contains("gpt-5.5"), "{refused}");
-    assert!(offered_model(Provider::Openai, "claude-opus-5-5").is_err(), "a model of the other provider is refused");
+    assert!(offered_model(Provider::Openai, "claude-opus-5-5", false).is_err(), "a model of the other provider is refused");
+}
+
+#[test]
+fn a_server_address_is_https_or_http_to_a_loopback_or_private_address() {
+    for typed in [
+        "https://gateway.example/v1",
+        "https://gateway.example",
+        "http://127.0.0.1:8317/v1",
+        "http://localhost:8317",
+        "http://10.0.0.5",
+        "http://172.16.0.1/v1",
+        "http://192.168.1.20:8317",
+        "http://100.64.0.1:8317",
+        "http://100.127.255.254",
+        "http://[::1]:8317",
+        "http://[fd7a:115c:a1e0::1]:8317/v1",
+    ] {
+        assert_eq!(BaseUrl::parse(typed).as_ref().map(BaseUrl::as_str), Ok(typed), "kept exactly as typed");
+    }
+    for refused in [
+        "gateway.example/v1",
+        "ftp://gateway.example",
+        "http://gateway.example/v1",
+        "http://8.8.8.8",
+        "http://100.128.0.1",
+        "http://[2001:db8::1]",
+        "https://user:secret@gateway.example",
+        "https://gateway.example/v1?key=secret",
+        "https://gateway.example/v1#key",
+        "file:///etc/passwd",
+    ] {
+        assert!(BaseUrl::parse(refused).is_err(), "{refused}");
+    }
+}
+
+#[test]
+fn a_typed_model_needs_a_server_address_survives_a_restart_and_resets_when_the_address_is_cleared() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("test.db");
+    let conn = crate::database::init_db(&path).expect("init db");
+    assert!(save_model(&conn, Provider::Openai, "kimi-k3").is_err(), "no typed model without a server address");
+    assert!(save_base_url(&conn, Provider::Openai, "http://gateway.example/v1").is_err(), "plain http to a public name");
+    assert_eq!(base_url_setting(&conn, Provider::Openai).expect("read"), None, "a refused address is not stored");
+
+    save_base_url(&conn, Provider::Openai, "https://gateway.example/v1").expect("save address");
+    save_model(&conn, Provider::Openai, "kimi-k3").expect("save typed model");
+    drop(conn);
+
+    let conn = crate::database::init_db(&path).expect("reopen db");
+    assert_eq!(model_setting(&conn).expect("model"), (Provider::Openai, "kimi-k3".to_owned()));
+    assert_eq!(base_url_setting(&conn, Provider::Openai).expect("read").as_deref(), Some("https://gateway.example/v1"));
+
+    save_base_url(&conn, Provider::Openai, "").expect("clear address");
+    assert_eq!(base_url_setting(&conn, Provider::Openai).expect("read"), None);
+    assert_eq!(model_setting(&conn).expect("model"), (Provider::Openai, default_model(Provider::Openai).to_owned()));
+}
+
+#[tokio::test]
+async fn a_saved_server_address_that_is_not_allowed_fails_before_anything_is_sent() {
+    let h = harness();
+    let model = choose_model(Provider::Anthropic, default_model(Provider::Anthropic).into(), Some("key".into()), Some("http://8.8.8.8"));
+    let turn = Turn::new(&h, "t1", Arc::new(FakeActions::default()), None);
+    let events = turn.run("hi", model).await;
+    assert_eq!(events.iter().map(kind).collect::<Vec<_>>(), ["turnStarted", "error"]);
+    let Some(AgentEvent::Error { message, .. }) = events.last() else { unreachable!() };
+    assert!(message.contains("server address"), "{message}");
+    assert!(history(&h).is_empty());
 }
 
 #[tokio::test]
@@ -530,7 +599,7 @@ async fn live_openai_turn_builds_a_verified_sign() {
         let events = turn
             .run(
                 "Make a 150 x 210 mm door sign that says BACK SHORTLY in navy on white with a teal rule under it",
-                choose_model(Provider::Openai, (*model).into(), Some(api_key.clone())),
+                choose_model(Provider::Openai, (*model).into(), Some(api_key.clone()), None),
             )
             .await;
         print_sequence(&events);
@@ -1131,16 +1200,24 @@ async fn mcp_returns_the_same_content_as_the_in_app_tool_result() {
 
 // ─── Rig =0.42.0: view images inside tool results, on the wire ─────────────
 
-/// A local stand-in for a provider: records each request body and refuses
-/// the request, so nothing needs a key and nothing goes further.
-async fn record_one_request(send: impl AsyncFnOnce(String)) -> Value {
+/// One request a provider stand-in received.
+struct Recorded {
+    path: String,
+    headers: axum::http::HeaderMap,
+    body: Value,
+}
+
+/// A local stand-in for a provider: records each request and refuses it, so
+/// nothing needs a key and nothing goes further.
+async fn record_one_request(send: impl AsyncFnOnce(String)) -> Recorded {
     use axum::body::Bytes;
-    let bodies = Arc::new(Mutex::new(Vec::<Bytes>::new()));
-    let recorded = bodies.clone();
-    let router = axum::Router::new().fallback(move |body: Bytes| {
+    use axum::http::{HeaderMap, Uri};
+    let requests = Arc::new(Mutex::new(Vec::<(Uri, HeaderMap, Bytes)>::new()));
+    let recorded = requests.clone();
+    let router = axum::Router::new().fallback(move |uri: Uri, headers: HeaderMap, body: Bytes| {
         let recorded = recorded.clone();
         async move {
-            recorded.lock().expect("bodies").push(body);
+            recorded.lock().expect("requests").push((uri, headers, body));
             (axum::http::StatusCode::BAD_REQUEST, axum::Json(json!({ "error": { "type": "invalid_request_error", "message": "recorded" } })))
         }
     });
@@ -1149,9 +1226,38 @@ async fn record_one_request(send: impl AsyncFnOnce(String)) -> Value {
     let server = tokio::spawn(async move { axum::serve(listener, router).await });
     send(url).await;
     server.abort();
-    let bodies = bodies.lock().expect("bodies");
-    assert_eq!(bodies.len(), 1, "one request");
-    serde_json::from_slice(&bodies[0]).expect("a JSON request body")
+    let mut requests = requests.lock().expect("requests");
+    assert_eq!(requests.len(), 1, "one request");
+    let (uri, headers, body) = requests.remove(0);
+    Recorded { path: uri.path().to_owned(), headers, body: serde_json::from_slice(&body).expect("a JSON request body") }
+}
+
+/// A saved server address takes the turn's request, at the provider's path
+/// under the address as typed, with the saved key. The refusal reaches the
+/// chat as a provider error that never shows the key.
+#[tokio::test]
+async fn a_saved_server_address_routes_the_turn_to_it() {
+    for (provider, typed_path, request_path, key_header) in [
+        (Provider::Anthropic, "", "/v1/messages", "x-api-key"),
+        (Provider::Openai, "/v1", "/v1/responses", "authorization"),
+    ] {
+        let h = harness();
+        let mut events = Vec::new();
+        let recorded = record_one_request(async |url| {
+            let base_url = format!("{url}{typed_path}");
+            let model = choose_model(provider, "gateway-model".into(), Some("gateway-key".into()), Some(&base_url));
+            events = Turn::new(&h, "t1", Arc::new(FakeActions::default()), None).run("hi", model).await;
+        })
+        .await;
+        assert_eq!(recorded.path, request_path, "{provider:?}");
+        assert!(recorded.headers[key_header].to_str().expect("header").ends_with("gateway-key"), "{provider:?}");
+        assert_eq!(recorded.body["model"], "gateway-model", "{provider:?}");
+        let Some(AgentEvent::Error { kind: AgentErrorKind::Provider, message }) = events.last() else {
+            panic!("{provider:?} ends in a provider error: {events:?}");
+        };
+        println!("{provider:?} refusal in chat: {message}");
+        assert!(!message.contains("gateway-key"), "{message}");
+    }
 }
 
 /// Polls a provider stream until it ends; the request goes out on the first poll.
@@ -1222,7 +1328,8 @@ async fn rig_sends_the_view_images_inside_the_tool_result_to_anthropic_and_opena
         let client = anthropic::Client::builder().api_key("test-key").base_url(url).build().expect("client");
         drain(replay(client.completion_model(default_model(Provider::Anthropic))).stream().await).await;
     })
-    .await;
+    .await
+    .body;
     println!("anthropic request body: {}", serde_json::to_string_pretty(&shortened(&anthropic_body)).expect("json"));
     let tool_result = anthropic_body["messages"]
         .as_array()
@@ -1250,7 +1357,8 @@ async fn rig_sends_the_view_images_inside_the_tool_result_to_anthropic_and_opena
         }
         drain(builder.stream().await).await;
     })
-    .await;
+    .await
+    .body;
     println!("openai request body: {}", serde_json::to_string_pretty(&shortened(&openai_body)).expect("json"));
     let output = openai_body["input"]
         .as_array()

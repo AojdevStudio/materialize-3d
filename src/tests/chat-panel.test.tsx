@@ -24,6 +24,7 @@ interface Turn {
 let turns: Turn[]
 let calls: { cmd: string; args: Record<string, unknown> }[]
 let history: HistoryEntry[]
+let baseUrl: string | null
 
 const SIGN: BuildResult = {
   revision_id: 'rev-2',
@@ -55,6 +56,7 @@ beforeEach(() => {
   turns = []
   calls = []
   history = []
+  baseUrl = null
   useAgentStore.setState({ status: null })
   useUiStore.setState(UI_DEFAULT_STATE)
   mockIPC(
@@ -63,7 +65,13 @@ beforeEach(() => {
       calls.push({ cmd, args })
       switch (cmd) {
         case 'agent_status':
-          return { provider: 'anthropic', model: 'claude-opus-5-5', models: ['claude-opus-5-5', 'claude-fable-5-1'], hasApiKey: true }
+          return {
+            provider: 'anthropic',
+            model: 'claude-opus-5-5',
+            models: ['claude-opus-5-5', 'claude-fable-5-1'],
+            hasApiKey: true,
+            baseUrl,
+          }
         case 'agent_history':
           return { conversationId: 'conv-1', entries: history }
         case 'agent_cancel':
@@ -268,6 +276,12 @@ describe('ChatPanel', () => {
     expect(error.textContent).toContain('Anthropic API key is missing. The request was not sent.')
     fireEvent.click(within(error).getByText('Open Settings'))
     expect(useUiStore.getState().settingsOpen).toBe(true)
+  })
+
+  it('the footer shows a saved server address next to the provider and model', async () => {
+    baseUrl = 'https://gateway.example/v1'
+    render(<ChatPanel />)
+    expect(await screen.findByText('Anthropic · Opus 5.5 · https://gateway.example/v1')).toBeTruthy()
   })
 
   it('Stop cancels the running turn by its turn id', async () => {

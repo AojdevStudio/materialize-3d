@@ -1,8 +1,11 @@
 //! Tauri commands for the chat UI. API keys live in the OS keyring under
 //! `api_key:<provider>` and are never logged; the chosen model is the
-//! `agent.model` setting, stored as `provider:model`.
+//! `agent.model` setting, stored as `provider:model`. A provider's server
+//! address, when the person saved one, is the `agent.base_url:<provider>`
+//! setting, stored exactly as typed.
 
 use std::collections::HashMap;
+use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 
 use rusqlite::Connection;
@@ -38,16 +41,53 @@ pub fn default_model(provider: Provider) -> &'static str {
     models(provider)[0]
 }
 
-/// Resolves a requested model: empty means the default, and a model the
-/// provider does not offer is refused.
-pub(super) fn offered_model(provider: Provider, model: &str) -> Result<&'static str, String> {
+/// Resolves a requested model: empty means the default. A model the provider
+/// does not offer is refused, unless the provider has a custom server address,
+/// which may name its models differently.
+pub(super) fn offered_model(provider: Provider, model: &str, custom_server: bool) -> Result<String, String> {
     match model.trim() {
-        "" => Ok(default_model(provider)),
-        model => models(provider)
-            .iter()
-            .copied()
-            .find(|offered| *offered == model)
-            .ok_or_else(|| format!("{model} is not an offered {} model", provider_id(provider))),
+        "" => Ok(default_model(provider).to_owned()),
+        model if custom_server || models(provider).contains(&model) => Ok(model.to_owned()),
+        model => Err(format!("{model} is not an offered {} model", provider_id(provider))),
+    }
+}
+
+/// A provider server address the person saved: an `https://` URL, or an
+/// `http://` URL to a loopback or private address, such as a gateway on the
+/// tailnet. It is kept exactly as typed; nothing appends or guesses a path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BaseUrl(String);
+
+impl BaseUrl {
+    pub fn parse(text: &str) -> Result<Self, String> {
+        let text = text.trim();
+        let url = url::Url::parse(text).map_err(|_| format!("{text} is not a full address. Use one like https://gateway.example/v1"))?;
+        if !url.username().is_empty() || url.password().is_some() || url.query().is_some() || url.fragment().is_some() {
+            return Err("the server address cannot hold a user name, password, query, or fragment".into());
+        }
+        let private_host = match url.host() {
+            Some(url::Host::Domain(domain)) => domain == "localhost",
+            Some(url::Host::Ipv4(ip)) => is_private(IpAddr::V4(ip)),
+            Some(url::Host::Ipv6(ip)) => is_private(IpAddr::V6(ip)),
+            None => false,
+        };
+        match url.scheme() {
+            "https" => Ok(Self(text.to_owned())),
+            "http" if private_host => Ok(Self(text.to_owned())),
+            _ => Err("the server address must start with https://, or http:// for a loopback or private address".into()),
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Loopback, private network, or the shared range Tailscale uses (100.64.0.0/10).
+fn is_private(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => ip.is_loopback() || ip.is_private() || (ip.octets()[0] == 100 && ip.octets()[1] & 0xc0 == 64),
+        IpAddr::V6(ip) => ip.is_loopback() || ip.is_unique_local(),
     }
 }
 
@@ -62,24 +102,73 @@ fn key_name(provider: Provider) -> String {
     format!("api_key:{}", provider_id(provider))
 }
 
+fn base_url_name(provider: Provider) -> String {
+    format!("agent.base_url:{}", provider_id(provider))
+}
+
+/// The server address saved for a provider, as stored. A stored value is
+/// parsed again where it is used, so a bad one never sends a key anywhere.
+pub(super) fn base_url_setting(conn: &Connection, provider: Provider) -> store::Result<Option<String>> {
+    database::get_setting(conn, &base_url_name(provider)).map_err(store::StoreError::Settings)
+}
+
 /// Reads `agent.model`; a missing or unreadable value means the default. A
 /// stored model the provider no longer offers reads as that provider's default,
-/// so a retired model never stays selected. The setting is not rewritten.
+/// so a retired model never stays selected, unless the provider has a custom
+/// server address. The setting is not rewritten.
 pub(super) fn model_setting(conn: &Connection) -> store::Result<(Provider, String)> {
     let stored = database::get_setting(conn, MODEL_SETTING).map_err(store::StoreError::Settings)?;
     let parsed = stored.as_deref().and_then(|value| {
         let (provider, model) = value.split_once(':')?;
         let provider = [Provider::Anthropic, Provider::Openai].into_iter().find(|p| provider_id(*p) == provider)?;
-        Some((provider, offered_model(provider, model).unwrap_or(default_model(provider))))
+        Some((provider, model))
     });
-    let (provider, model) = parsed.unwrap_or((Provider::Anthropic, default_model(Provider::Anthropic)));
-    Ok((provider, model.to_owned()))
+    let Some((provider, model)) = parsed else {
+        return Ok((Provider::Anthropic, default_model(Provider::Anthropic).to_owned()));
+    };
+    let custom_server = base_url_setting(conn, provider)?.is_some();
+    Ok((provider, offered_model(provider, model, custom_server).unwrap_or_else(|_| default_model(provider).to_owned())))
+}
+
+/// Stores the model for `provider`; see [`offered_model`].
+pub(super) fn save_model(conn: &Connection, provider: Provider, model: &str) -> Result<(), String> {
+    let custom_server = base_url_setting(conn, provider).map_err(|e| e.to_string())?.is_some();
+    let model = offered_model(provider, model, custom_server)?;
+    database::upsert_setting(conn, MODEL_SETTING, &format!("{}:{model}", provider_id(provider)))
+}
+
+/// Stores a provider's server address. Empty clears it, and a provider that
+/// is in use returns to its default model, since a model the gateway named may
+/// not exist on the provider's own server.
+pub(super) fn save_base_url(conn: &Connection, provider: Provider, base_url: &str) -> Result<(), String> {
+    if base_url.trim().is_empty() {
+        database::delete_setting(conn, &base_url_name(provider))?;
+        let (active, _) = model_setting(conn).map_err(|e| e.to_string())?;
+        if active == provider {
+            save_model(conn, provider, "")?;
+        }
+        return Ok(());
+    }
+    let base_url = BaseUrl::parse(base_url)?;
+    database::upsert_setting(conn, &base_url_name(provider), base_url.as_str())
 }
 
 /// Picks the turn's model, refusing before any network call when no key is stored.
-pub fn choose_model(provider: Provider, model: String, api_key: Option<String>) -> Result<ModelChoice, TurnEnd> {
+/// A saved server address that no longer parses refuses the turn as well.
+pub fn choose_model(
+    provider: Provider,
+    model: String,
+    api_key: Option<String>,
+    base_url: Option<&str>,
+) -> Result<ModelChoice, TurnEnd> {
+    let base_url = base_url.map(BaseUrl::parse).transpose().map_err(|err| {
+        TurnEnd::failed(
+            AgentErrorKind::Provider,
+            format!("The saved {} server address is not allowed: {err}. Change it in the agent settings.", provider_id(provider)),
+        )
+    })?;
     match api_key.filter(|key| !key.trim().is_empty()) {
-        Some(api_key) => Ok(ModelChoice::Provider { provider, model, api_key }),
+        Some(api_key) => Ok(ModelChoice::Provider { provider, model, api_key, base_url }),
         None => Err(TurnEnd::failed(
             AgentErrorKind::MissingApiKey,
             format!("No {} API key is saved. Add one in the agent settings.", provider_id(provider)),
@@ -88,9 +177,13 @@ pub fn choose_model(provider: Provider, model: String, api_key: Option<String>) 
 }
 
 async fn status(state: &AppState) -> Result<AgentStatus, String> {
-    let (provider, model) = store::with_conn(state, |conn| model_setting(conn)).map_err(|e| e.to_string())?;
+    let (provider, model, base_url) = store::with_conn(state, |conn| {
+        let (provider, model) = model_setting(conn)?;
+        Ok((provider, model, base_url_setting(conn, provider)?))
+    })
+    .map_err(|e| e.to_string())?;
     let has_api_key = credentials::has_credential(&key_name(provider)).await?;
-    Ok(AgentStatus { provider, model, models: models(provider), has_api_key })
+    Ok(AgentStatus { provider, model, models: models(provider), has_api_key, base_url })
 }
 
 /// Cancel handles for running turns, keyed by the UI's turn id.
@@ -164,20 +257,26 @@ pub async fn agent_clear_api_key(state: State<'_, Arc<AppState>>, provider: Prov
 }
 
 /// An empty `model` selects the provider's default; a model the provider does
-/// not offer is refused and nothing is stored.
+/// not offer is refused and nothing is stored, unless the provider has a
+/// custom server address.
 #[tauri::command]
 pub async fn agent_set_model(
     state: State<'_, Arc<AppState>>,
     provider: Provider,
     model: String,
 ) -> Result<AgentStatus, String> {
-    let model = offered_model(provider, &model)?;
-    let value = format!("{}:{model}", provider_id(provider));
-    store::with_conn(&state, |conn| {
-        database::upsert_setting(conn, MODEL_SETTING, &value)
-            .map_err(store::StoreError::Settings)
-    })
-    .map_err(|e| e.to_string())?;
+    store::with_conn(&state, |conn| Ok(save_model(conn, provider, &model))).map_err(|e| e.to_string())??;
+    status(&state).await
+}
+
+/// An empty `base_url` clears the address, so the provider's own server is used.
+#[tauri::command]
+pub async fn agent_set_base_url(
+    state: State<'_, Arc<AppState>>,
+    provider: Provider,
+    base_url: String,
+) -> Result<AgentStatus, String> {
+    store::with_conn(&state, |conn| Ok(save_base_url(conn, provider, &base_url))).map_err(|e| e.to_string())??;
     status(&state).await
 }
 
@@ -212,9 +311,13 @@ pub async fn agent_send(
 ) -> Result<(), String> {
     let cancel = turns.begin(&conversation_id, &turn_id)?;
 
-    let model = match store::with_conn(&state, |conn| model_setting(conn)) {
-        Ok((provider, model)) => match credentials::get_credential(&key_name(provider)).await {
-            Ok(api_key) => choose_model(provider, model, api_key),
+    let setting = store::with_conn(&state, |conn| {
+        let (provider, model) = model_setting(conn)?;
+        Ok((provider, model, base_url_setting(conn, provider)?))
+    });
+    let model = match setting {
+        Ok((provider, model, base_url)) => match credentials::get_credential(&key_name(provider)).await {
+            Ok(api_key) => choose_model(provider, model, api_key, base_url.as_deref()),
             Err(err) => Err(TurnEnd::failed(AgentErrorKind::Internal, format!("reading the API key failed: {err}"))),
         },
         Err(err) => Err(TurnEnd::from(err)),

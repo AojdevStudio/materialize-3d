@@ -117,6 +117,7 @@ pub fn run() {
             agent::commands::agent_set_api_key,
             agent::commands::agent_clear_api_key,
             agent::commands::agent_set_model,
+            agent::commands::agent_set_base_url,
             agent::commands::agent_history,
             agent::commands::agent_new_conversation,
             agent::commands::agent_send,

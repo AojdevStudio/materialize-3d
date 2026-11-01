@@ -40,14 +40,28 @@ const AGENT_MODELS: Record<string, string[]> = {
   openai: ['gpt-6-astra', 'gpt-6.1-sol'],
 }
 let agentModel = { provider: 'anthropic', model: 'claude-opus-5-5' }
-/** Stands in for the Rust agent: an empty model means the provider's first. */
+let agentBaseUrls = new Map<string, string>()
+/**
+ * Stands in for the Rust agent: an empty model means the provider's first,
+ * and clearing the server address of the provider in use resets its model.
+ */
 function fakeAgent(cmd: string, args?: Record<string, string>) {
   if (cmd === 'agent_set_api_key') agentKeys.add(args!.provider!)
   if (cmd === 'agent_clear_api_key') agentKeys.delete(args!.provider!)
   if (cmd === 'agent_set_model') {
     agentModel = { provider: args!.provider!, model: args!.model! || AGENT_MODELS[args!.provider!]![0]! }
   }
-  return Promise.resolve({ ...agentModel, models: AGENT_MODELS[agentModel.provider], hasApiKey: agentKeys.has(agentModel.provider) })
+  if (cmd === 'agent_set_base_url' && args!.baseUrl) agentBaseUrls.set(args!.provider!, args!.baseUrl)
+  if (cmd === 'agent_set_base_url' && !args!.baseUrl) {
+    agentBaseUrls.delete(args!.provider!)
+    agentModel = { provider: args!.provider!, model: AGENT_MODELS[args!.provider!]![0]! }
+  }
+  return Promise.resolve({
+    ...agentModel,
+    models: AGENT_MODELS[agentModel.provider],
+    hasApiKey: agentKeys.has(agentModel.provider),
+    baseUrl: agentBaseUrls.get(agentModel.provider) ?? null,
+  })
 }
 
 function emitEvent<T>(name: string, payload: T) {
@@ -167,6 +181,7 @@ describe('SettingsPanel component', () => {
   beforeEach(async () => {
     agentKeys = new Set()
     agentModel = { provider: 'anthropic', model: 'claude-opus-5-5' }
+    agentBaseUrls = new Map()
     agentInvokeMock.mockReset()
     agentInvokeMock.mockImplementation(fakeAgent)
     const { useAgentStore } = await import('../stores/agent')
@@ -309,6 +324,34 @@ describe('SettingsPanel component', () => {
     await waitFor(() => expect((screen.getByTestId('agent-provider') as HTMLSelectElement).value).toBe('openai'))
     expect(agentInvokeMock).toHaveBeenLastCalledWith('agent_set_model', { provider: 'openai', model: '' })
     expect((screen.getByTestId('agent-model') as HTMLSelectElement).value).toBe('gpt-6-astra')
+  })
+
+  it('a saved server address allows a typed model ID, and clearing it removes that choice', async () => {
+    invokeMock.mockResolvedValue(MOCK_PROFILES)
+    const { SettingsPanel } = await import('../components/SettingsPanel')
+    render(React.createElement(SettingsPanel, { isOpen: true, onClose: vi.fn() }))
+
+    const address = (await screen.findByTestId('agent-base-url')) as HTMLInputElement
+    expect(screen.queryByTestId('agent-model-id')).toBeNull()
+    fireEvent.change(address, { target: { value: 'https://gateway.example/v1' } })
+    fireEvent.click(screen.getByTestId('agent-base-url-save'))
+    await waitFor(() =>
+      expect(agentInvokeMock).toHaveBeenCalledWith('agent_set_base_url', {
+        provider: 'anthropic',
+        baseUrl: 'https://gateway.example/v1',
+      }),
+    )
+
+    fireEvent.change(await screen.findByTestId('agent-model-id'), { target: { value: 'kimi-k3' } })
+    fireEvent.click(screen.getByTestId('agent-model-id-save'))
+    await waitFor(() => expect((screen.getByTestId('agent-model') as HTMLSelectElement).value).toBe('kimi-k3'))
+    expect(agentInvokeMock).toHaveBeenCalledWith('agent_set_model', { provider: 'anthropic', model: 'kimi-k3' })
+
+    fireEvent.click(screen.getByTestId('agent-base-url-clear'))
+    await waitFor(() => expect(screen.queryByTestId('agent-model-id')).toBeNull())
+    expect(agentInvokeMock).toHaveBeenLastCalledWith('agent_set_base_url', { provider: 'anthropic', baseUrl: '' })
+    expect(address.value).toBe('')
+    expect((screen.getByTestId('agent-model') as HTMLSelectElement).value).toBe('claude-opus-5-5')
   })
 
   it('the model select lists exactly the models the agent status offers', async () => {

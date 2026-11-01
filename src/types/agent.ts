@@ -25,6 +25,8 @@ export interface AgentStatus {
   /** The models offered for `provider`, default first. */
   models: string[]
   hasApiKey: boolean
+  /** The server address saved for `provider`; null means its own server. */
+  baseUrl: string | null
 }
 
 export type ToolCallStatus = 'started' | 'completed' | 'failed' | 'cancelled' | 'interrupted'

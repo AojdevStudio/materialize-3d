@@ -16,12 +16,15 @@ interface AgentStore {
   setApiKey: (provider: Provider, apiKey: string) => Promise<AgentStatus>
   clearApiKey: (provider: Provider) => Promise<AgentStatus>
   setModel: (provider: Provider, model: string) => Promise<AgentStatus>
+  setBaseUrl: (provider: Provider, baseUrl: string) => Promise<AgentStatus>
 }
 
 /**
  * Mirror of the Rust agent's settings. The Rust agent owns the offered models
  * (status.models, default first) and the active choice; setModel with an empty
- * model picks the provider's default. Every command returns the fresh
+ * model picks the provider's default. With a server address saved, setModel
+ * also takes a typed model ID; setBaseUrl with an empty address clears it and
+ * returns the provider to its default model. Every command returns the fresh
  * AgentStatus, so each call replaces the stored copy; errors propagate to the
  * caller, which shows them next to the control that failed.
  */
@@ -37,6 +40,7 @@ export const useAgentStore = create<AgentStore>()((set) => {
     setApiKey: (provider, apiKey) => apply(invoke<AgentStatus>('agent_set_api_key', { provider, apiKey })),
     clearApiKey: (provider) => apply(invoke<AgentStatus>('agent_clear_api_key', { provider })),
     setModel: (provider, model) => apply(invoke<AgentStatus>('agent_set_model', { provider, model })),
+    setBaseUrl: (provider, baseUrl) => apply(invoke<AgentStatus>('agent_set_base_url', { provider, baseUrl })),
   }
 })
 

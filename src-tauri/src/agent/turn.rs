@@ -17,6 +17,7 @@ use rig::providers::{anthropic, openai};
 use rig::streaming::{StreamedAssistantContent, StreamingChat};
 use serde_json::json;
 
+use super::commands::BaseUrl;
 use super::prompt::system_prompt;
 use super::protocol::{AgentErrorKind, AgentEvent, Provider, ToolCallStatus};
 use super::store::{self, StoreError, TextSegment};
@@ -35,7 +36,8 @@ const ANTHROPIC_MAX_TOKENS: u64 = 8_192;
 
 /// The model a turn talks to.
 pub enum ModelChoice {
-    Provider { provider: Provider, model: String, api_key: String },
+    /// `base_url` replaces the provider's own server when the person saved one.
+    Provider { provider: Provider, model: String, api_key: String, base_url: Option<BaseUrl> },
     /// A scripted model for tests.
     #[cfg(test)]
     Scripted(rig::test_utils::MockCompletionModel),
@@ -88,12 +90,26 @@ impl From<StreamingError> for TurnEnd {
 fn build_agent(model: ModelChoice, scope: &Arc<TurnScope>, kinds: &[&'static dyn KindDriver]) -> Result<rig::Agent, TurnEnd> {
     let provider_error = |err: rig::http_client::Error| TurnEnd::failed(AgentErrorKind::Provider, err.to_string());
     let builder = match model {
-        ModelChoice::Provider { provider: Provider::Anthropic, model, api_key } => anthropic::Client::new(&api_key)
+        ModelChoice::Provider { provider: Provider::Anthropic, model, api_key, base_url } => {
+            let client = anthropic::Client::builder().api_key(api_key);
+            match base_url {
+                Some(base_url) => client.base_url(base_url.as_str()),
+                None => client,
+            }
+            .build()
             .map_err(provider_error)?
             .agent(model)
-            .max_tokens(ANTHROPIC_MAX_TOKENS),
-        ModelChoice::Provider { provider: Provider::Openai, model, api_key } => {
-            openai::Client::new(&api_key).map_err(provider_error)?.agent(model)
+            .max_tokens(ANTHROPIC_MAX_TOKENS)
+        }
+        ModelChoice::Provider { provider: Provider::Openai, model, api_key, base_url } => {
+            let client = openai::Client::builder().api_key(api_key);
+            match base_url {
+                Some(base_url) => client.base_url(base_url.as_str()),
+                None => client,
+            }
+            .build()
+            .map_err(provider_error)?
+            .agent(model)
         }
         #[cfg(test)]
         ModelChoice::Scripted(model) => rig::client::AgentModelExt::into_agent_builder(model),

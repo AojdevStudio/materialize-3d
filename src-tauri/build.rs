@@ -62,6 +62,7 @@ const APP_COMMANDS: &[&str] = &[
     "agent_set_api_key",
     "agent_clear_api_key",
     "agent_set_model",
+    "agent_set_base_url",
     "agent_history",
     "agent_new_conversation",
     "agent_send",

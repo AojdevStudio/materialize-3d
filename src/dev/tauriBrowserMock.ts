@@ -790,8 +790,9 @@ const MOCK_MODELS: Record<Provider, string[]> = {
 }
 
 const mockAgent = {
-  status: { provider: 'anthropic', model: 'claude-opus-5-5', models: MOCK_MODELS.anthropic, hasApiKey: true } as AgentStatus,
+  status: { provider: 'anthropic', model: 'claude-opus-5-5', models: MOCK_MODELS.anthropic, hasApiKey: true, baseUrl: null } as AgentStatus,
   keys: new Set<Provider>(['anthropic']),
+  baseUrls: new Map<Provider, string>(),
   conversationId: 'mock-conversation-1',
   conversationCount: 1,
   history: [] as HistoryEntry[],
@@ -799,7 +800,11 @@ const mockAgent = {
   revision: 1,
 }
 
-const agentStatus = (): AgentStatus => ({ ...mockAgent.status, hasApiKey: mockAgent.keys.has(mockAgent.status.provider) })
+const agentStatus = (): AgentStatus => ({
+  ...mockAgent.status,
+  hasApiKey: mockAgent.keys.has(mockAgent.status.provider),
+  baseUrl: mockAgent.baseUrls.get(mockAgent.status.provider) ?? null,
+})
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -817,9 +822,22 @@ function handleAgentCommand(cmd: string, payload: unknown): unknown {
     case 'agent_set_model': {
       const provider = args.provider as Provider
       const models = MOCK_MODELS[provider]
-      const model = (args.model as string) || models[0]!
-      if (!models.includes(model)) throw new Error(`${model} is not an offered ${provider} model`)
+      const model = (args.model as string).trim() || models[0]!
+      if (!models.includes(model) && !mockAgent.baseUrls.has(provider)) {
+        throw new Error(`${model} is not an offered ${provider} model`)
+      }
       mockAgent.status = { ...mockAgent.status, provider, model, models }
+      return agentStatus()
+    }
+    case 'agent_set_base_url': {
+      const provider = args.provider as Provider
+      const baseUrl = (args.baseUrl as string).trim()
+      if (baseUrl) {
+        mockAgent.baseUrls.set(provider, baseUrl)
+      } else {
+        mockAgent.baseUrls.delete(provider)
+        if (mockAgent.status.provider === provider) mockAgent.status = { ...mockAgent.status, model: MOCK_MODELS[provider][0]! }
+      }
       return agentStatus()
     }
     case 'agent_history':

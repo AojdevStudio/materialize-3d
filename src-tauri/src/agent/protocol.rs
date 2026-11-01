@@ -47,6 +47,8 @@ pub struct AgentStatus {
     /// The models offered for `provider`, default first.
     pub models: &'static [&'static str],
     pub has_api_key: bool,
+    /// The server address saved for `provider`; `None` means its own server.
+    pub base_url: Option<String>,
 }
 
 /// One persisted chat entry, as the UI renders history after a restart.
