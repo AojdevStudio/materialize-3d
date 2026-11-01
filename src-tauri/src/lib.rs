@@ -46,6 +46,7 @@ use printer::PrinterService;
 use slicer::SlicerService;
 use state::AppState;
 use tauri::Manager;
+use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 
 /// The one expansion of `generate_context!`: on macOS it embeds Info.plist as a
 /// symbol, so a second expansion (the ACL tests) would not link.
@@ -160,8 +161,32 @@ pub fn run() {
             let db_path = app_data_dir.join("materialize.db");
 
             let app_state = app.state::<Arc<AppState>>();
-            let conn = database::init_db(&db_path)
-                .map_err(|e| format!("database init failed: {e}"))?;
+            let conn = match database::init_db(&db_path) {
+                Ok(conn) => conn,
+                Err(database::InitError::NewerSchema { found }) => {
+                    log::error!("setup: refusing {}: schema {found} is newer than {}", db_path.display(), database::SCHEMA_VERSION);
+                    if let Some(window) = app.get_webview_window("main") {
+                        window.hide()?;
+                    }
+                    let version = &app.package_info().version;
+                    let handle = app.handle().clone();
+                    app.dialog()
+                        .message(format!(
+                            "A newer version of Materialize 3D saved your data (database schema {found}). This version ({version}) reads schema {} and older, so it opened nothing and changed nothing.\n\n\
+                             Do one of these:\n\
+                             • Install the newer version of Materialize 3D again.\n\
+                             • Or, with Materialize 3D closed, restore the backup from before the update: copy materialize.db from the folder in {} whose name starts with \"{version}-to-\" over {}.",
+                            database::SCHEMA_VERSION,
+                            app_data_dir.join("backups").display(),
+                            db_path.display(),
+                        ))
+                        .title("Materialize 3D needs a newer version")
+                        .kind(MessageDialogKind::Error)
+                        .show(move |_| handle.exit(1));
+                    return Ok(());
+                }
+                Err(e) => return Err(format!("database init failed: {e}").into()),
+            };
             {
                 let mut db_guard = app_state
                     .db

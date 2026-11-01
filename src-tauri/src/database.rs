@@ -46,8 +46,26 @@ struct StoredImportMetadataCompat {
     files: Vec<String>,
 }
 
+/// Why `init_db` returned no connection.
+#[derive(Debug, thiserror::Error)]
+pub enum InitError {
+    /// A newer app wrote this database. It was left exactly as it was.
+    #[error("the database has schema {found}, newer than schema {SCHEMA_VERSION}, the newest this version supports")]
+    NewerSchema { found: i32 },
+    #[error("{0}")]
+    Failed(String),
+}
+
+impl From<String> for InitError {
+    fn from(why: String) -> Self {
+        Self::Failed(why)
+    }
+}
+
 /// Open (or create) the SQLite database, enable WAL + foreign keys, and run migrations.
-pub fn init_db(db_path: &Path) -> Result<Connection, String> {
+///
+/// A database a newer app wrote is refused before anything writes to it.
+pub fn init_db(db_path: &Path) -> Result<Connection, InitError> {
     log::info!("database: initializing SQLite at {}", db_path.display());
 
     if let Some(parent) = db_path.parent() {
@@ -57,6 +75,13 @@ pub fn init_db(db_path: &Path) -> Result<Connection, String> {
 
     let conn = Connection::open(db_path)
         .map_err(|e| format!("failed to open SQLite database: {e}"))?;
+
+    let found: i32 = conn
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .map_err(|e| format!("failed to read user_version: {e}"))?;
+    if found > SCHEMA_VERSION {
+        return Err(InitError::NewerSchema { found });
+    }
 
     conn.pragma_update(None, "journal_mode", "WAL")
         .map_err(|e| format!("failed to set WAL journal mode: {e}"))?;
@@ -1285,7 +1310,7 @@ mod tests {
         let path = schema_5_database(dir.path());
 
         inject(&[Fault::HardLinkUnsupported, Fault::PlantBackup]);
-        let err = init_db(&path).err().expect("the migration stops");
+        let err = init_db(&path).err().expect("the migration stops").to_string();
 
         assert!(!faulted(Fault::PlantBackup), "the file was planted just before publishing");
         assert!(err.contains("could not publish the checked copy"), "{err}");
@@ -1302,7 +1327,7 @@ mod tests {
         let before = revision_columns(&Connection::open(&path).unwrap(), SIGN_REVISION_COLUMNS);
 
         inject(&[Fault::HardLinkUnsupported, Fault::CutPublished]);
-        let err = init_db(&path).err().expect("the migration stops");
+        let err = init_db(&path).err().expect("the migration stops").to_string();
         assert!(err.contains("could not publish the checked copy"), "{err}");
         assert!(backup_of(&path).symlink_metadata().is_err(), "the broken copy was removed");
         assert_eq!(version_of(&path), 5, "migration 006 did not run");
@@ -1337,7 +1362,7 @@ mod tests {
 
         let err = init_db(&path).err().expect("the newer database is refused");
 
-        assert!(err.contains("newer"), "{err}");
+        assert!(matches!(err, InitError::NewerSchema { found } if found == SCHEMA_VERSION + 1), "{err}");
         assert_eq!(std::fs::read(&path).unwrap(), before, "the database is byte for byte unchanged");
         assert!(!path.with_file_name("materialize.db-wal").exists(), "no WAL file was started");
     }
@@ -1351,7 +1376,7 @@ mod tests {
         let before = revision_columns(&Connection::open(&path).unwrap(), SIGN_REVISION_COLUMNS);
 
         inject(&[Fault::CutStaged]);
-        let err = init_db(&path).err().expect("the migration stops");
+        let err = init_db(&path).err().expect("the migration stops").to_string();
         assert!(err.contains("could not back up the database"), "{err}");
         assert_eq!(version_of(&path), 5, "migration 006 did not run");
         assert!(backup_of(&path).symlink_metadata().is_err(), "nothing was published under the backup's name");
@@ -1372,7 +1397,7 @@ mod tests {
         drop(Connection::open(backup_of(&path)).unwrap());
         let left = std::fs::read(backup_of(&path)).unwrap();
 
-        let err = init_db(&path).err().expect("the migration stops");
+        let err = init_db(&path).err().expect("the migration stops").to_string();
         assert!(err.contains("is not a copy of this database"), "{err}");
         assert_eq!(version_of(&path), 5, "migration 006 did not run");
         assert_eq!(std::fs::read(backup_of(&path)).unwrap(), left, "the existing file is left alone");
