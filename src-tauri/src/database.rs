@@ -1321,6 +1321,27 @@ mod tests {
         Connection::open(path).unwrap().pragma_query_value(None, "user_version", |row| row.get(0)).unwrap()
     }
 
+    /// An older app given a database a newer app wrote refuses it and leaves
+    /// every byte as it was: no WAL switch, no migration, no version change.
+    #[test]
+    fn a_database_from_a_newer_app_is_refused_and_left_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("materialize.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch("CREATE TABLE written_by_a_newer_app (note TEXT); INSERT INTO written_by_a_newer_app VALUES ('keep me');")
+                .unwrap();
+            conn.pragma_update(None, "user_version", SCHEMA_VERSION + 1).unwrap();
+        }
+        let before = std::fs::read(&path).unwrap();
+
+        let err = init_db(&path).err().expect("the newer database is refused");
+
+        assert!(err.contains("newer"), "{err}");
+        assert_eq!(std::fs::read(&path).unwrap(), before, "the database is byte for byte unchanged");
+        assert!(!path.with_file_name("materialize.db-wal").exists(), "no WAL file was started");
+    }
+
     /// A copy cut short stops the migration without leaving anything under the
     /// backup's name, and the next launch makes a good copy and migrates.
     #[test]
