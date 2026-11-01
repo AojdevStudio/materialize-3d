@@ -34,9 +34,10 @@ pub const MAX_TURNS: usize = 8;
 /// Anthropic requires an explicit output budget.
 const ANTHROPIC_MAX_TOKENS: u64 = 8_192;
 
-/// Whether the app log keeps a record.
-pub fn app_log_keeps(_record: &log::Metadata<'_>) -> bool {
-    true
+/// Whether the app log keeps a record. It leaves out rig's records, because rig
+/// logs provider replies and a gateway's reply can quote the request's API key.
+pub fn app_log_keeps(record: &log::Metadata<'_>) -> bool {
+    !matches!(record.target().split("::").next(), Some("rig" | "rig_core"))
 }
 
 /// The model a turn talks to.
@@ -49,6 +50,16 @@ pub enum ModelChoice {
     /// A scripted model whose next reply reads the request, for tests.
     #[cfg(test)]
     Responding(super::tests::Responder),
+}
+
+impl ModelChoice {
+    fn api_key(&self) -> Option<&str> {
+        match self {
+            ModelChoice::Provider { api_key, .. } => Some(api_key),
+            #[cfg(test)]
+            ModelChoice::Scripted(_) | ModelChoice::Responding(_) => None,
+        }
+    }
 }
 
 /// How a turn ended. Each turn reports exactly one, as its last event.
@@ -69,6 +80,17 @@ impl TurnEnd {
             TurnEnd::Finished => AgentEvent::TurnFinished,
             TurnEnd::Cancelled => AgentEvent::TurnCancelled,
             TurnEnd::Failed { kind, message } => AgentEvent::Error { kind: *kind, message: message.clone() },
+        }
+    }
+
+    /// A gateway's error reply can quote the request's headers, so a failure
+    /// never shows the key the turn was sent with.
+    fn without_api_key(self, api_key: Option<&str>) -> Self {
+        match (self, api_key) {
+            (TurnEnd::Failed { kind, message }, Some(api_key)) => {
+                TurnEnd::Failed { kind, message: message.replace(api_key, "[API key]") }
+            }
+            (end, _) => end,
         }
     }
 }
@@ -92,11 +114,20 @@ impl From<StreamingError> for TurnEnd {
     }
 }
 
+/// The HTTP client of a provider turn. It follows no redirect, so a request and
+/// its key reach only the provider's own server or the saved address.
+fn http_client() -> Result<rig_reqwest::Client, TurnEnd> {
+    rig_reqwest::Client::builder()
+        .redirect(rig_reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|err| TurnEnd::failed(AgentErrorKind::Internal, format!("building the HTTP client failed: {err}")))
+}
+
 fn build_agent(model: ModelChoice, scope: &Arc<TurnScope>, kinds: &[&'static dyn KindDriver]) -> Result<rig::Agent, TurnEnd> {
     let provider_error = |err: rig::http_client::Error| TurnEnd::failed(AgentErrorKind::Provider, err.to_string());
     let builder = match model {
         ModelChoice::Provider { provider: Provider::Anthropic, model, api_key, base_url } => {
-            let client = anthropic::Client::builder().api_key(api_key);
+            let client = anthropic::Client::builder().api_key(api_key).http_client(http_client()?);
             match base_url {
                 Some(base_url) => client.base_url(base_url.as_str()),
                 None => client,
@@ -107,7 +138,7 @@ fn build_agent(model: ModelChoice, scope: &Arc<TurnScope>, kinds: &[&'static dyn
             .max_tokens(ANTHROPIC_MAX_TOKENS)
         }
         ModelChoice::Provider { provider: Provider::Openai, model, api_key, base_url } => {
-            let client = openai::Client::builder().api_key(api_key);
+            let client = openai::Client::builder().api_key(api_key).http_client(http_client()?);
             match base_url {
                 Some(base_url) => client.base_url(base_url.as_str()),
                 None => client,
@@ -139,7 +170,10 @@ pub async fn run_turn(scope: Arc<TurnScope>, text: String, model: Result<ModelCh
     });
     let mut user_message = None;
     let end = match model {
-        Ok(model) => drive(&scope, &text, model, &mut user_message).await.err().unwrap_or(TurnEnd::Finished),
+        Ok(model) => {
+            let api_key = model.api_key().map(str::to_owned);
+            drive(&scope, &text, model, &mut user_message).await.err().unwrap_or(TurnEnd::Finished).without_api_key(api_key.as_deref())
+        }
         Err(end) => end,
     };
     let end = settle(&scope, &text, user_message.as_deref(), end).await;
