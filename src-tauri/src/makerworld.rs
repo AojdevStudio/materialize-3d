@@ -756,7 +756,7 @@ fn sanitize_model(model: MakerWorldModel) -> MakerWorldModel {
         title: sanitize_required_string(model.title, 160).unwrap_or_else(|| "MakerWorld Model".into()),
         author: sanitize_optional_string(model.author, 120),
         source_url: sanitize_url_string(Some(model.source_url)).unwrap_or_else(|| MAKERWORLD_HOME_URL.into()),
-        rating: model.rating.map(|value| value.clamp(0.0, 5.0)),
+        rating: model.rating.filter(|value| (0.0..=5.0).contains(value)),
         review_count: model.review_count,
         download_count: model.download_count,
         images,
@@ -812,7 +812,7 @@ fn slugify(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{classify_page_kind, infer_download_filename, slugify};
+    use super::{classify_page_kind, infer_download_filename, sanitize_model, slugify};
     use crate::state::{MakerWorldModel, MAKERWORLD_HOME_URL, MakerWorldPageKind};
     use url::Url;
 
@@ -831,6 +831,20 @@ mod tests {
             classify_page_kind("https://makerworld.com/en/challenges"),
             MakerWorldPageKind::Other
         );
+    }
+
+    #[test]
+    fn sanitize_model_drops_a_rating_outside_zero_to_five() {
+        let with_rating = |rating| MakerWorldModel {
+            title: "Onion & Potato Dispenser".into(),
+            source_url: "https://makerworld.com/en/models/2133969".into(),
+            rating: Some(rating),
+            ..Default::default()
+        };
+
+        assert_eq!(sanitize_model(with_rating(4.9)).rating, Some(4.9));
+        assert_eq!(sanitize_model(with_rating(233.0)).rating, None);
+        assert_eq!(sanitize_model(with_rating(-1.0)).rating, None);
     }
 
     #[test]
