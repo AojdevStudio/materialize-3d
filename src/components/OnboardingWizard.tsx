@@ -24,6 +24,7 @@ export const useOnboardingStore = create<OnboardingStore>((set) => ({
 interface LlmState {
   provider: Provider
   apiKey: string
+  baseUrl: string
   saving: boolean
   error: string | null
 }
@@ -58,7 +59,13 @@ export default function OnboardingWizard({ onComplete }: OnboardingWizardProps) 
 
   // LLM provider state; the Rust agent stores the key and reports hasApiKey
   const agentStatus = useAgentStore((s) => s.status)
-  const [llm, setLlm] = useState<LlmState>({ provider: 'anthropic', apiKey: '', saving: false, error: null })
+  const [llm, setLlm] = useState<LlmState>({
+    provider: 'anthropic',
+    apiKey: '',
+    baseUrl: '',
+    saving: false,
+    error: null,
+  })
 
   // Printer state
   const [printer, setPrinter] = useState<PrinterState>({
@@ -81,21 +88,31 @@ export default function OnboardingWizard({ onComplete }: OnboardingWizardProps) 
     setStep(Math.min(currentStep + 1, STEP_COUNT - 1))
   }, [currentStep, setStep])
 
-  // ── API key ──
+  // ── API key and server address ──
 
   const keyStored = agentStatus?.provider === llm.provider && agentStatus.hasApiKey
 
-  /** Makes the chosen provider active, then stores the typed key. Returns false on failure. */
-  const saveKey = useCallback(async (): Promise<boolean> => {
+  /**
+   * Makes the chosen provider active, then stores the typed key and the
+   * address field when it differs from that provider's saved address. The
+   * field shows no saved address for a provider that was not active, so a
+   * blank field clears one. Returns false on failure.
+   */
+  const saveProvider = useCallback(async (): Promise<boolean> => {
     const apiKey = llm.apiKey.trim()
-    if (!apiKey) return true
+    const baseUrl = llm.baseUrl.trim()
+    const agent = useAgentStore.getState()
+    const active = agent.status?.provider === llm.provider ? agent.status : null
+    if (!apiKey && baseUrl === (active?.baseUrl ?? '')) return true
     setLlm((prev) => ({ ...prev, saving: true, error: null }))
     try {
-      const agent = useAgentStore.getState()
-      if (agent.status?.provider !== llm.provider) {
-        await agent.setModel(llm.provider, '')
+      const selected = active ?? (await agent.setModel(llm.provider, ''))
+      if (baseUrl !== (selected.baseUrl ?? '')) {
+        await agent.setBaseUrl(llm.provider, baseUrl)
       }
-      await agent.setApiKey(llm.provider, apiKey)
+      if (apiKey) {
+        await agent.setApiKey(llm.provider, apiKey)
+      }
       setLlm((prev) => ({ ...prev, apiKey: '', saving: false }))
       return true
     } catch (err) {
@@ -103,7 +120,7 @@ export default function OnboardingWizard({ onComplete }: OnboardingWizardProps) 
       setLlm((prev) => ({ ...prev, saving: false, error: message }))
       return false
     }
-  }, [llm.apiKey, llm.provider])
+  }, [llm.apiKey, llm.baseUrl, llm.provider])
 
   // ── Printer detection on step mount ──
 
@@ -222,7 +239,7 @@ export default function OnboardingWizard({ onComplete }: OnboardingWizardProps) 
       .getState()
       .refresh()
       .then((status) => {
-        if (!cancelled) setLlm((prev) => ({ ...prev, provider: status.provider }))
+        if (!cancelled) setLlm((prev) => ({ ...prev, provider: status.provider, baseUrl: status.baseUrl ?? '' }))
       })
       .catch((err: unknown) => console.error('onboarding:agent-status failed', err))
     return () => {
@@ -293,7 +310,14 @@ export default function OnboardingWizard({ onComplete }: OnboardingWizardProps) 
               role="radio"
               aria-checked={llm.provider === p}
               className={llm.provider === p ? 'selected' : undefined}
-              onClick={() => setLlm((prev) => ({ ...prev, provider: p, error: null }))}
+              onClick={() =>
+                setLlm((prev) => ({
+                  ...prev,
+                  provider: p,
+                  baseUrl: (agentStatus?.provider === p ? agentStatus.baseUrl : null) ?? '',
+                  error: null,
+                }))
+              }
               data-testid={`provider-${p}`}
             >
               {PROVIDER_LABELS[p]}
@@ -315,6 +339,19 @@ export default function OnboardingWizard({ onComplete }: OnboardingWizardProps) 
           />
         </div>
 
+        <div className="onboarding-field">
+          <label className="onboarding-label" htmlFor="ob-base-url">Server address</label>
+          <input
+            id="ob-base-url"
+            autoComplete="off"
+            className="onboarding-input"
+            placeholder="https://gateway.example/v1"
+            value={llm.baseUrl}
+            onChange={(e) => setLlm((prev) => ({ ...prev, baseUrl: e.target.value }))}
+            data-testid="input-base-url"
+          />
+        </div>
+
         {keyStored && !llm.apiKey && (
           <div className="onboarding-connection-result success" data-testid="api-key-stored">Key stored</div>
         )}
@@ -327,7 +364,7 @@ export default function OnboardingWizard({ onComplete }: OnboardingWizardProps) 
         <button
           className="onboarding-btn-primary"
           disabled={llm.saving}
-          onClick={() => void saveKey().then((saved) => saved && nextStep())}
+          onClick={() => void saveProvider().then((saved) => saved && nextStep())}
           data-testid="btn-llm-continue"
         >
           {llm.saving ? 'Saving…' : 'Continue'}

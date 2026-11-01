@@ -27,17 +27,37 @@ import { useAgentStore } from '../stores/agent'
 
 // ── Helpers ──
 
-/** Default invoke mock: agent without a key, basic printer status */
-function setupDefaultMocks() {
+/**
+ * Default invoke mock: Anthropic active, basic printer status. The agent keeps
+ * a key and a server address per provider, as the Rust agent does, and starts
+ * with the given ones.
+ */
+function setupDefaultMocks(saved: { keys?: string[]; baseUrls?: Record<string, string> } = {}) {
   const models: Record<string, string[]> = { anthropic: ['claude-opus-5-5', 'claude-fable-5-1'], openai: ['gpt-6-astra', 'gpt-6.1-sol'] }
-  let agent = { provider: 'anthropic', model: 'claude-opus-5-5', models: models.anthropic, hasApiKey: false }
+  const keys = new Set(saved.keys)
+  const baseUrls = new Map(Object.entries(saved.baseUrls ?? {}))
+  let active = { provider: 'anthropic', model: 'claude-opus-5-5' }
+  const agent = () => ({
+    ...active,
+    models: models[active.provider]!,
+    hasApiKey: keys.has(active.provider),
+    baseUrl: baseUrls.get(active.provider) ?? null,
+  })
   invokeMock.mockImplementation(async (cmd: string, payload?: any) => {
-    if (cmd === 'agent_status') return agent
+    if (cmd === 'agent_status') return agent()
     if (cmd === 'agent_set_model') {
-      const offered = models[payload.provider]!
-      return (agent = { provider: payload.provider, model: payload.model || offered[0]!, models: offered, hasApiKey: false })
+      active = { provider: payload.provider, model: payload.model || models[payload.provider]![0]! }
+      return agent()
     }
-    if (cmd === 'agent_set_api_key') return (agent = { ...agent, hasApiKey: true })
+    if (cmd === 'agent_set_base_url') {
+      if (payload.baseUrl) baseUrls.set(payload.provider, payload.baseUrl)
+      else baseUrls.delete(payload.provider)
+      return agent()
+    }
+    if (cmd === 'agent_set_api_key') {
+      keys.add(payload.provider)
+      return agent()
+    }
     if (cmd === 'agent_history') return { conversationId: 'c1', entries: [] }
     if (cmd === 'get_settings') return {} // No onboarding.completed
     if (cmd === 'get_app_state') {
@@ -137,6 +157,61 @@ describe('OnboardingWizard', () => {
     await waitFor(() => expect(screen.getByTestId('step-bambu')).toBeDefined())
     expect(invokeMock).toHaveBeenCalledWith('agent_set_model', { provider: 'openai', model: '' })
     expect(invokeMock).toHaveBeenCalledWith('agent_set_api_key', { provider: 'openai', apiKey: 'sk-test' })
+  })
+
+  it('LLM step stores a typed server address on Continue', async () => {
+    useOnboardingStore.getState().setStep(1)
+    render(<OnboardingWizard onComplete={vi.fn()} />)
+
+    fireEvent.change(screen.getByTestId('input-base-url'), { target: { value: 'https://gateway.example/v1' } })
+    fireEvent.change(screen.getByTestId('input-api-key'), { target: { value: 'sk-test' } })
+    fireEvent.click(screen.getByTestId('btn-llm-continue'))
+
+    await waitFor(() => expect(screen.getByTestId('step-bambu')).toBeDefined())
+    expect(invokeMock).toHaveBeenCalledWith('agent_set_base_url', { provider: 'anthropic', baseUrl: 'https://gateway.example/v1' })
+    expect(invokeMock).toHaveBeenCalledWith('agent_set_api_key', { provider: 'anthropic', apiKey: 'sk-test' })
+  })
+
+  it('LLM step stores a changed address alone when the key is already stored', async () => {
+    setupDefaultMocks({ keys: ['anthropic'] })
+    useOnboardingStore.getState().setStep(1)
+    render(<OnboardingWizard onComplete={vi.fn()} />)
+
+    await screen.findByTestId('api-key-stored')
+    fireEvent.change(screen.getByTestId('input-base-url'), { target: { value: 'https://gateway.example/v1' } })
+    fireEvent.click(screen.getByTestId('btn-llm-continue'))
+
+    await waitFor(() => expect(screen.getByTestId('step-bambu')).toBeDefined())
+    expect(useAgentStore.getState().status).toMatchObject({ provider: 'anthropic', baseUrl: 'https://gateway.example/v1' })
+    expect(invokeMock.mock.calls.filter(([cmd]) => cmd === 'agent_set_api_key')).toHaveLength(0)
+  })
+
+  it('LLM step shows the active provider\'s saved address and an empty one for another provider', async () => {
+    setupDefaultMocks({ baseUrls: { anthropic: 'https://gateway.example/v1' } })
+    useOnboardingStore.getState().setStep(1)
+    render(<OnboardingWizard onComplete={vi.fn()} />)
+
+    const address = screen.getByTestId('input-base-url') as HTMLInputElement
+    await waitFor(() => expect(address.value).toBe('https://gateway.example/v1'))
+    fireEvent.click(screen.getByTestId('provider-openai'))
+    expect(address.value).toBe('')
+    fireEvent.click(screen.getByTestId('provider-anthropic'))
+    expect(address.value).toBe('https://gateway.example/v1')
+  })
+
+  it('LLM step sends a new key where the address field says, not to a hidden saved gateway', async () => {
+    setupDefaultMocks({ baseUrls: { openai: 'https://old-gateway.example/v1' } })
+    useOnboardingStore.getState().setStep(1)
+    render(<OnboardingWizard onComplete={vi.fn()} />)
+
+    await waitFor(() => expect(useAgentStore.getState().status?.provider).toBe('anthropic'))
+    fireEvent.click(screen.getByTestId('provider-openai'))
+    expect((screen.getByTestId('input-base-url') as HTMLInputElement).value).toBe('')
+    fireEvent.change(screen.getByTestId('input-api-key'), { target: { value: 'sk-new' } })
+    fireEvent.click(screen.getByTestId('btn-llm-continue'))
+
+    await waitFor(() => expect(screen.getByTestId('step-bambu')).toBeDefined())
+    expect(useAgentStore.getState().status).toMatchObject({ provider: 'openai', hasApiKey: true, baseUrl: null })
   })
 
   it('"Skip" on LLM step advances to Bambu step', async () => {

@@ -57,7 +57,7 @@ fn app_context() -> tauri::Context<tauri::Wry> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_log::Builder::default().build())
+        .plugin(tauri_plugin_log::Builder::default().filter(agent::turn::app_log_keeps).build())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
@@ -117,6 +117,7 @@ pub fn run() {
             agent::commands::agent_set_api_key,
             agent::commands::agent_clear_api_key,
             agent::commands::agent_set_model,
+            agent::commands::agent_set_base_url,
             agent::commands::agent_history,
             agent::commands::agent_new_conversation,
             agent::commands::agent_send,

@@ -240,6 +240,7 @@ function StatusLine() {
       {status && (
         <span className={styles.muted}>
           {PROVIDER_LABELS[status.provider]} · {modelLabel(status.model)}
+          {status.baseUrl !== null && ` · ${status.baseUrl}`}
         </span>
       )}
       <span className={running ? undefined : styles.dim}>

@@ -55,6 +55,7 @@
     "allow-agent-set-api-key",
     "allow-agent-clear-api-key",
     "allow-agent-set-model",
+    "allow-agent-set-base-url",
     "allow-agent-history",
     "allow-agent-new-conversation",
     "allow-agent-send",

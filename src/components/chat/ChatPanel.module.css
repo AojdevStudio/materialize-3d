@@ -233,10 +233,14 @@
   white-space: nowrap;
 }
 
-.statusLine > span:nth-child(2) {
+.statusLine > span:first-child {
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.statusLine > span:nth-child(2) {
+  flex-shrink: 0;
 }
 
 .stop {

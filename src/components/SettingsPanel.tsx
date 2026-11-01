@@ -196,12 +196,23 @@ export function SettingsPanel({
   )
 }
 
-/** Provider, model, and API key for the Rust agent. The key is write-only here. */
+/**
+ * Provider, model, API key, and server address for the Rust agent. The key is
+ * write-only here. A saved server address also allows a typed model ID.
+ */
 function AgentSection({ active }: { active: boolean }) {
   const status = useAgentStore((s) => s.status)
   const [apiKey, setApiKey] = useState('')
+  const [modelId, setModelId] = useState('')
+  const [address, setAddress] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const savedAddress = status?.baseUrl ?? ''
+
+  useEffect(() => {
+    setAddress(savedAddress)
+    setModelId('')
+  }, [status?.provider, savedAddress])
 
   useEffect(() => {
     if (!active) return
@@ -232,8 +243,8 @@ function AgentSection({ active }: { active: boolean }) {
     )
   }
 
-  const { provider, model, models, hasApiKey } = status
-  const { setModel, setApiKey: storeKey, clearApiKey } = useAgentStore.getState()
+  const { provider, model, models, hasApiKey, baseUrl } = status
+  const { setModel, setApiKey: storeKey, clearApiKey, setBaseUrl } = useAgentStore.getState()
 
   return (
     <div className="settings-section">
@@ -264,11 +275,39 @@ function AgentSection({ active }: { active: boolean }) {
           data-testid="agent-model"
           onChange={(e) => void run(() => setModel(provider, e.target.value))}
         >
-          {models.map((m) => (
+          {(models.includes(model) ? models : [...models, model]).map((m) => (
             <option key={m} value={m}>{modelLabel(m)}</option>
           ))}
         </select>
       </label>
+
+      {baseUrl !== null && (
+        <form
+          className="settings-field"
+          onSubmit={(e) => {
+            e.preventDefault()
+            const typed = modelId.trim()
+            if (!typed) return
+            void run(async () => {
+              await setModel(provider, typed)
+              setModelId('')
+            })
+          }}
+        >
+          <span>Model ID</span>
+          <input
+            type="text"
+            autoComplete="off"
+            value={modelId}
+            placeholder={model}
+            onChange={(e) => setModelId(e.target.value)}
+            data-testid="agent-model-id"
+          />
+          <button type="submit" disabled={busy || !modelId.trim()} data-testid="agent-model-id-save">
+            Save
+          </button>
+        </form>
+      )}
 
       <form
         className="settings-field"
@@ -307,6 +346,35 @@ function AgentSection({ active }: { active: boolean }) {
       <div className="settings-hint" data-testid="agent-key-state">
         {hasApiKey ? 'Key stored' : 'No key stored'}
       </div>
+
+      <form
+        className="settings-field"
+        onSubmit={(e) => {
+          e.preventDefault()
+          void run(() => setBaseUrl(provider, address))
+        }}
+      >
+        <span>Server address</span>
+        <input
+          type="text"
+          autoComplete="off"
+          value={address}
+          placeholder="https://gateway.example/v1"
+          onChange={(e) => setAddress(e.target.value)}
+          data-testid="agent-base-url"
+        />
+        <button type="submit" disabled={busy || address.trim() === savedAddress} data-testid="agent-base-url-save">
+          Save
+        </button>
+        <button
+          type="button"
+          disabled={busy || baseUrl === null}
+          onClick={() => void run(() => setBaseUrl(provider, ''))}
+          data-testid="agent-base-url-clear"
+        >
+          Clear
+        </button>
+      </form>
       {error && <div className="settings-slicer-warning" role="alert">{error}</div>}
     </div>
   )
