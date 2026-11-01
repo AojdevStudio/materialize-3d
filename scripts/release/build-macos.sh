@@ -10,14 +10,21 @@
 #   APPLE_API_KEY_ID            App Store Connect API key id (notarytool)
 #   APPLE_API_ISSUER_ID         its issuer id
 #   APPLE_API_PRIVATE_KEY       the .p8 key content
+#   TAURI_SIGNING_PRIVATE_KEY           the updater's minisign private key
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  its password
 # CAD_RUNTIME_DIR names the arm64 CAD runtime to bundle: the Image, rootfs.img,
 # and job.img that cad-runtime/build.sh arm64 writes (or the cad-runtime-arm64
 # artifact of the CAD runtime workflow). They must match the pins the helper
 # compiles in from cad-runtime/pins-arm64.json, or the build stops.
-# ALLOW_UNTAGGED=1 permits a rehearsal build from a commit without the tag.
+# ALLOW_UNTAGGED=1 permits a rehearsal build from a commit without the tag. Only
+# a rehearsal may set TAURI_CONFIG, which changes the config built into the app
+# (for example, a local update feed for an update test).
 #
-# Output: dist-release/Materialize-3D-<version>-macos-arm64.dmg and a .sha256
-# file next to it. The build never enables the e2e verification harness.
+# Output in dist-release/: Materialize-3D-<version>-macos-arm64.dmg with a .sha256
+# file, and the update assets: Materialize-3D-<version>-macos-arm64.app.tar.gz
+# (the final notarized app), its .sig and .sha256, and latest.json, the feed
+# installed apps read once the release is published as Latest. The build never
+# enables the e2e verification harness.
 set -euo pipefail
 set +x
 
@@ -27,7 +34,7 @@ cd "$root"
 
 [[ "$(uname -s)/$(uname -m)" == Darwin/arm64 ]] || die "run on an Apple Silicon Mac"
 for var in RELEASE_KEYCHAIN RELEASE_KEYCHAIN_PASSWORD APPLE_API_KEY_ID APPLE_API_ISSUER_ID APPLE_API_PRIVATE_KEY \
-  CAD_RUNTIME_DIR; do
+  TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD CAD_RUNTIME_DIR; do
   [[ -n "${!var:-}" ]] || die "$var is not set"
 done
 # security -i has its own quoting and line parser. Reject ambiguous input and
@@ -59,6 +66,9 @@ if [[ "${ALLOW_UNTAGGED:-}" != 1 ]]; then
     || die "HEAD is not tag v$version"
 fi
 commit="$(git rev-parse HEAD)"
+if [[ -n "${TAURI_CONFIG:-}" && "${ALLOW_UNTAGGED:-}" != 1 ]]; then
+  die "TAURI_CONFIG is set: a release builds tauri.conf.json exactly as committed"
+fi
 
 # The release keychain is unlocked for this shell's security session only. A
 # keychain that sits on the user's search list while locked in the desktop
@@ -140,8 +150,9 @@ helper_bin="${CARGO_TARGET_DIR:-$root/cad-host/target}/release/materialize-cad-h
 target="${CARGO_TARGET_DIR:-$root/src-tauri/target}"
 rm -rf "$target/release/bundle"
 bun install --frozen-lockfile
+# The updater key signs only the finished archive below, so the app build never sees it.
 RUSTFLAGS="--remap-path-prefix=$HOME=~" M3D_CAD_HELPER_TEAM="$team" env -u VITE_M3D_E2E -u APPLE_SIGNING_IDENTITY \
-  bun tauri build --bundles app
+  -u TAURI_SIGNING_PRIVATE_KEY -u TAURI_SIGNING_PRIVATE_KEY_PASSWORD bun tauri build --bundles app
 app="$target/release/bundle/macos/Materialize 3D.app"
 bin="$app/Contents/MacOS/materialize-3d"
 helper="$app/Contents/MacOS/materialize-cad-host"
@@ -177,7 +188,7 @@ plist="$app/Contents/Info.plist"
 # under pipefail exactly when a match is found.
 for exe in "$bin" "$helper"; do
   strings "$exe" > "$workdir/strings.txt"
-  if grep -qE 'M3D_E2E_(TOKEN|PORT|DATA_DIR)' "$workdir/strings.txt"; then die "the e2e harness is in $exe"; fi
+  if grep -qE 'M3D_E2E_(TOKEN|PORT|DATA_DIR|UPDATE_FEED)' "$workdir/strings.txt"; then die "the e2e harness is in $exe"; fi
   if grep -qF "$HOME" "$workdir/strings.txt"; then die "$exe embeds the build machine's home path"; fi
 done
 # The team the app requires of its CAD helper, compiled in from M3D_CAD_HELPER_TEAM above.
@@ -187,6 +198,43 @@ if grep -rlq __M3D_E2E_DIALOGS__ dist; then die "the scripted file dialog is in 
 # The exact file list, the minimum macOS, the helper's signature and
 # entitlement, and the bundled runtime against the helper's pins.
 scripts/release/check-app-bundle.sh "$app" "$team"
+
+# The update archive holds the app exactly as notarized and stapled above. Its
+# minisign signature is what installed apps check before they replace
+# themselves, and it binds the version, which tauri.conf.json requires.
+echo "release: building and signing the update archive"
+out="$root/dist-release"
+mkdir -p "$out"
+archive_name="Materialize-3D-$version-macos-arm64.app.tar.gz"
+archive="$out/$archive_name"
+rm -f "$archive" "$archive.sig" "$archive.sha256" "$out/latest.json"
+COPYFILE_DISABLE=1 tar --no-mac-metadata --no-xattrs --no-acls --no-fflags -czf "$archive" \
+  -C "$(dirname "$app")" "$(basename "$app")"
+unpacked="$workdir/unpacked"
+mkdir -p "$unpacked"
+tar -xzf "$archive" -C "$unpacked"
+codesign --verify --deep --strict "$unpacked/Materialize 3D.app"
+xcrun stapler validate "$unpacked/Materialize 3D.app"
+scripts/release/check-app-bundle.sh "$unpacked/Materialize 3D.app" "$team"
+bun tauri signer sign --app-version "$version" "$archive" >/dev/null || die "signing the update archive failed"
+[[ -s "$archive.sig" ]] || die "the updater signer wrote no signature"
+# A signature from any key but the one tauri.conf.json trusts would make every
+# installed app refuse this update, so the key ids must match.
+key_id() { base64 -d <<<"$1" | sed -n 2p | base64 -d | head -c 10 | tail -c 8 | xxd -p; }
+trusted="$(key_id "$(bun -p "require('./src-tauri/tauri.conf.json').plugins.updater.pubkey")")"
+[[ -n "$trusted" && "$(key_id "$(cat "$archive.sig")")" == "$trusted" ]] \
+  || die "the update archive is not signed by the key in tauri.conf.json"
+UPDATE_VERSION="$version" UPDATE_SIGNATURE="$(cat "$archive.sig")" \
+  UPDATE_URL="https://github.com/AojdevStudio/materialize-3d/releases/download/v$version/$archive_name" \
+  UPDATE_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)" bun -e '
+    const version = process.env.UPDATE_VERSION
+    console.log(JSON.stringify({
+      version,
+      notes: `Materialize 3D ${version}. What changed: https://github.com/AojdevStudio/materialize-3d/releases/tag/v${version}`,
+      pub_date: process.env.UPDATE_DATE,
+      platforms: { "darwin-aarch64": { signature: process.env.UPDATE_SIGNATURE, url: process.env.UPDATE_URL } },
+    }, null, 2))' > "$out/latest.json"
+( cd "$out" && shasum -a 256 "$archive_name" > "$archive_name.sha256" )
 
 echo "release: building, signing, and notarizing the DMG"
 stage="$workdir/dmg"
@@ -201,12 +249,12 @@ xcrun stapler staple "$dmg"
 xcrun stapler validate "$dmg"
 spctl --assess --type open --context context:primary-signature "$dmg"
 
-out="$root/dist-release"
 name="Materialize-3D-$version-macos-arm64.dmg"
-mkdir -p "$out"
 cp "$dmg" "$out/$name"
 ( cd "$out" && shasum -a 256 "$name" > "$name.sha256" )
 echo "release: $out/$name"
 echo "release: commit $commit"
 echo "release: signed by $identity"
 cat "$out/$name.sha256"
+echo "release: update assets $out/latest.json, $archive_name and its .sig"
+cat "$out/$archive_name.sha256"

@@ -5,6 +5,7 @@ import { PROVIDERS, PROVIDER_LABELS, modelLabel, useAgentStore } from '../stores
 import type { Provider } from '../types/agent'
 import { BambuStudioSection } from './BambuStudioSection'
 import { McpSection } from './McpSection'
+import { AboutSection } from './AboutSection'
 
 interface ProfileList {
   qualities: string[]
@@ -188,6 +189,8 @@ export function SettingsPanel({
       </div>
 
       <McpSection active={isOpen} />
+
+      <AboutSection active={isOpen} />
 
     </div>
   )

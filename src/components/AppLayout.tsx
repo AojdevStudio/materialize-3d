@@ -5,6 +5,7 @@ import MainPanel from './MainPanel'
 import Sidebar from './Sidebar'
 import StatusBar from './StatusBar'
 import Toolbar from './Toolbar'
+import UpdateBanner from './UpdateBanner'
 import { useUiStore } from '../stores/ui'
 import { useWorkspaceStore } from '../stores/workspace'
 
@@ -15,6 +16,7 @@ export function AppLayout() {
   return (
     <div className="app-layout">
       <Toolbar />
+      <UpdateBanner />
 
       <div className="main-layout">
         <Sidebar activeView={sidebarItem} onNavigate={(view) => void setActiveView(view)} />

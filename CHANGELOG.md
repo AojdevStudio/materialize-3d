@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- The Mac app checks for a newer release at launch and offers **Update now** or **Later**. Update now downloads the update, checks its signature, backs up the database and print queue, installs, and restarts. Later asks again at the next launch. **Settings > About** shows the installed version and checks on request (#72).
+- The release build signs an update archive of the notarized app and writes `latest.json`, the feed installed apps read from the latest GitHub release (#72).
+
 ## [0.2.1] - 2026-10-30
 
 A printer certificate check, security updates, and bug fixes. No new features. The full notes are in [docs/releases/v0.2.1.md](docs/releases/v0.2.1.md).

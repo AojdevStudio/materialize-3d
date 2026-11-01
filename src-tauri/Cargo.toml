@@ -59,6 +59,9 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 uuid = { version = "1", features = ["v4"] }
 tauri-plugin-notification = "2"
 tauri-plugin-dialog = "~2.6.0"
+# 2.13 and later require tauri 2.12, so this stays on the tauri 2.11 line above. The zip feature only
+# unpacks Windows installers and pulls in zip 4, which carries advisories. macOS updates are .tar.gz.
+tauri-plugin-updater = { version = "~2.12.0", default-features = false, features = ["rustls-tls", "system-proxy"] }
 
 # fabrication
 earcutr = "0.5"

@@ -22,6 +22,7 @@ pub mod slicer;
 /// Exposed for integration tests only.
 #[doc(hidden)]
 pub mod state;
+mod updater;
 
 use std::sync::Arc;
 
@@ -59,6 +60,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(Arc::new(AppState {
             print_queue_file: Some(print_queue::queue_file_path()),
             ..AppState::default()
@@ -68,6 +70,7 @@ pub fn run() {
         .manage(SlicerService::default())
         .manage(OpenScadService::default())
         .manage(agent::commands::AgentTurns::default())
+        .manage(updater::PendingUpdate::default())
         .invoke_handler(tauri::generate_handler![
             get_app_state,
             set_active_view,
@@ -142,6 +145,8 @@ pub fn run() {
             studio_commands::bambu_studio_status,
             studio_commands::choose_bambu_studio,
             studio_commands::clear_bambu_studio,
+            updater::update_check,
+            updater::update_install,
         ])
         .setup(|app| {
             // Initialize SQLite database
