@@ -15,7 +15,9 @@ Run on the Linux host, dev-substrate (`ssh ossie@dev-substrate`, Ubuntu 24.04.5)
 
 To verify work that lives on another machine, get the same tree onto the Linux host. Either push the branch and `git worktree add ~/m3d-<topic> <branch>`, or `rsync -a --exclude node_modules --exclude src-tauri/target <tree>/ ossie@dev-substrate:m3d-<topic>/`. Run every command below from that checkout's root.
 
-Only one run per host. Vite's port 1420 is fixed by `vite.config.ts` (`strictPort`) and by `devUrl` in `tauri.conf.json`. `up` refuses when 1420, 4444, or 4445 is already bound. Never drive an instance you did not start.
+Only one run per host. Vite's port 1420 is fixed by `vite.config.ts` (`strictPort`) and by `devUrl` in `tauri.conf.json`. `up` refuses when 1420, 4444, or 4445 is already bound. Never drive an instance you did not start, and never run `down` on one.
+
+Other agents share this host. Hold `~/m3d-ui.lock` for the whole run, from `up` through `down`, so two runs never fight over the ports or the `current` link. Put the run in one script and start it with `flock -w 1800 ~/m3d-ui.lock bash <script>`, or open the lock in the script with `exec 9>~/m3d-ui.lock` and `flock -w 1800 9`. `flock -n ~/m3d-ui.lock true` tells you whether the lock is free. A held lock means another run is live, so wait for it instead of stopping it.
 
 ## Launch
 

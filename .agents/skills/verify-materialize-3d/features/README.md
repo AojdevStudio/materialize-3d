@@ -38,13 +38,14 @@ For installed macOS release acceptance, use [Verify the installed Mac app](../..
 
 ## Feature entry contract
 
-Each feature file has an H1 and one paragraph of user-visible behavior, followed by exactly four H2s in this order: `Sub-features`, `How to get to it (user POV)`, `Driving it with wd.ts`, and `Gotchas`. Lines marked **(observed 2026-10-05)** were driven live on `f01f418`. Lines marked **(observed 2026-09-25)** were driven on `86ea7c8`, which is not an ancestor of `main`, and lines marked **(observed 2026-09-26)** in [signs](./signs.md) on `e258688`. Everything else comes from reading the code and should be confirmed on first use.
+Each feature file has an H1 and one paragraph of user-visible behavior, followed by exactly four H2s in this order: `Sub-features`, `How to get to it (user POV)`, `Driving it with wd.ts`, and `Gotchas`. Lines marked **(observed 2026-11-01)** were driven live on `4205181`. Lines marked **(observed 2026-10-05)** were driven live on `f01f418`. Lines marked **(observed 2026-09-25)** were driven on `86ea7c8`, which is not an ancestor of `main`, and lines marked **(observed 2026-09-26)** in [signs](./signs.md) on `e258688`. Everything else comes from reading the code and should be confirmed on first use.
 
 ## Features
 
 - [Onboarding](./onboarding.md) covers the four-step first-run wizard, its skip paths, and the persisted completion flag.
 - [Navigation](./navigation.md) covers the sidebar, the workspace tabs, and the Library and History views.
-- [Settings](./settings.md) covers the Bambu Studio location, print defaults, the agent provider, model, and API key, notifications, auto-connect, and the External agents (MCP) switch.
+- [Settings](./settings.md) covers the Bambu Studio location, print defaults, the agent provider, model, and API key, notifications, auto-connect, and the External agents (MCP) switch, and links the About section.
+- [Updater](./updater.md) covers the update banner at launch, Later, Settings > About with its manual check, the wait for running builds, and the failed check and failed install states.
 - [Design (OpenSCAD)](./design-openscad.md) covers opening a `.scad` file, rendering, and parameters.
 - [Signs](./signs.md) covers building a sign from a spec file, reviewing a revision, hash-bound approval, export, and recording a print result.
 - [Printers](./printers.md) covers adding, switching, and deleting printer configs, and connection states.

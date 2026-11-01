@@ -25,6 +25,7 @@ Preconditions:
 - **Design via sidebar (observed 2026-10-05).** Run `$S/wd.ts click "button[aria-label=Design]"` and `$S/wd.ts wait "[data-testid=design-tab]"`. `[data-testid=design-tab-empty]` reads "No file open", and the selected tab is `OpenSCAD`.
 - **Signs tab (observed 2026-10-05).** Run `$S/wd.ts click "text=Signs"` and `$S/wd.ts wait "[data-testid=signs-view]"`. The tab renders the Signs view, see [signs](./signs.md).
 - **Tab bar (observed 2026-10-05).** Run `$S/wd.ts click "text=Model Library"` and `$S/wd.ts wait "[data-testid=model-library]"`. Per the source, a fresh run shows `[data-testid=model-library-empty]` with "No models in library". That text was not checked live.
+- **Download shows at once.** Open the `MakerWorld` tab, load a model page, and click `Import to Library`. When the download finishes, `$S/wd.ts click "text=Model Library"` shows a `[data-testid=library-card]` for it before any relaunch. Relaunch and the count of `library-card` is unchanged. Not driven: the embedded MakerWorld page is signed out on dev-substrate, so the status stays at `DOWNLOADING` and no file is written.
 - **Library search.** Run `$S/wd.ts type "[data-testid=library-search-input]" "zzz"`. With models present, `[data-testid=model-library-no-results]` appears.
 - **History (observed 2026-10-05).** Run `$S/wd.ts click "button[aria-label=History]"` and `$S/wd.ts wait "[data-testid=print-history-empty]"`. It reads "No prints recorded yet", and `nav[aria-label=Primary]` is still mounted.
 - **Print Queue (observed 2026-10-05).** Run `$S/wd.ts click 'button[aria-label="Print Queue"]'`. The selected tab is `3D Preview`.
@@ -36,5 +37,5 @@ Preconditions:
 - `Print Queue` has no tab of its own. It falls through to the 3D Preview tab.
 - Quote the `Print Queue` label in CSS: `button[aria-label="Print Queue"]`. Unquoted, the selector fails with "invalid selector".
 - The context panel's "Local models and recent imports" list is static placeholder content. Do not treat it as library data.
-- Library rows come only from a startup scan of `<data>/library/makerworld/<slug>/metadata.json`. A new download appears after a relaunch.
+- A finished MakerWorld download shows in Model Library at once. `add_import_to_library` in `src-tauri/src/makerworld.rs` indexes the model folder and emits `library:changed` with the full list, and the library store replaces its rows. No relaunch is needed. The startup scan of `<data>/library/makerworld/<slug>/metadata.json` only reconciles rows on the next launch, and `INSERT OR IGNORE` keeps a folder from showing twice. Each `metadata.json` lists only the files in its own folder, so a card's file and file count belong to that model. Not observed live, because a download needs a MakerWorld login that no machine has.
 - Print History rows need a real print to finish. The view does not load stored rows at mount.
