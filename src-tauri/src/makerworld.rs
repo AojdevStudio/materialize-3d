@@ -1046,7 +1046,7 @@ mod tests {
         }
 
         #[test]
-        fn a_model_keeps_each_of_its_downloads_once() {
+        fn a_model_keeps_each_download_of_a_session_once() {
             let download = download_of_a_detected_model();
             finish(&download);
             let hook = download_file_of(&download, "1073764", "Simple Headphone Hook", "hook.3mf");
