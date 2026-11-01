@@ -28,6 +28,8 @@ interface UpdateState {
   /** Which step the error came from. */
   failed: 'check' | 'install' | null
   progress: UpdateProgress | null
+  /** Running builds the downloaded update waits for before it installs. 0 when it is not waiting. */
+  waitingFor: number
   /** Later hides the banner for this launch only. The next launch asks again. */
   dismissed: boolean
 }
@@ -38,6 +40,7 @@ export const UPDATE_DEFAULT_STATE: UpdateState = {
   error: null,
   failed: null,
   progress: null,
+  waitingFor: 0,
   dismissed: false,
 }
 
@@ -74,6 +77,10 @@ export function checkForUpdatesAtLaunch(): Promise<void> {
   return checkForUpdates()
 }
 
+export function waitingMessage(builds: number): string {
+  return `Waiting for ${builds === 1 ? '1 build' : `${builds} builds`} to finish. Then the update installs and the app restarts.`
+}
+
 export function dismissUpdate(): void {
   useUpdateStore.setState({ dismissed: true })
 }
@@ -82,17 +89,20 @@ export function dismissUpdate(): void {
 export async function installUpdate(): Promise<void> {
   const { available, phase } = useUpdateStore.getState()
   if (!available || phase === 'installing') return
-  useUpdateStore.setState({ phase: 'installing', error: null, progress: null, dismissed: false })
+  useUpdateStore.setState({ phase: 'installing', error: null, progress: null, waitingFor: 0, dismissed: false })
   try {
     await invoke('update_install', { version: available.version })
   } catch (error) {
-    useUpdateStore.setState({ phase: 'error', error: String(error), failed: 'install', progress: null })
+    useUpdateStore.setState({ phase: 'error', error: String(error), failed: 'install', progress: null, waitingFor: 0 })
   }
 }
 
 export function useUpdateEvents() {
   useTauriEvent<UpdateProgress>('update:progress', ({ payload }) => {
     useUpdateStore.setState({ progress: payload })
+  })
+  useTauriEvent<number>('update:waiting', ({ payload }) => {
+    useUpdateStore.setState({ waitingFor: payload })
   })
 }
 

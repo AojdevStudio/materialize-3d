@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react'
 import { getVersion } from '@tauri-apps/api/app'
-import { checkForUpdates, installUpdate, useUpdateStore } from '../stores/updates'
+import { checkForUpdates, installUpdate, useUpdateStore, waitingMessage } from '../stores/updates'
 
 /** Settings > About: the installed version and a manual update check. */
 export function AboutSection({ active }: { active: boolean }) {
   const [version, setVersion] = useState<string | null>(null)
-  const { phase, available, error } = useUpdateStore()
+  const { phase, available, error, waitingFor } = useUpdateStore()
 
   useEffect(() => {
     if (!active) return
@@ -34,7 +34,7 @@ export function AboutSection({ active }: { active: boolean }) {
       <div className="settings-hint" data-testid="about-status" role={phase === 'error' ? 'alert' : undefined}>
         {phase === 'upToDate' && 'Materialize 3D is up to date.'}
         {phase === 'available' && available && `Version ${available.version} is available.`}
-        {installing && 'Installing the update. The app restarts when it is done.'}
+        {installing && (waitingFor > 0 ? waitingMessage(waitingFor) : 'Installing the update. The app restarts when it is done.')}
         {phase === 'error' && error}
       </div>
     </div>

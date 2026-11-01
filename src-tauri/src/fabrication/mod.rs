@@ -1,4 +1,5 @@
 pub mod bambu;
+pub mod build_gate;
 pub mod cad_worker;
 pub mod checks;
 pub mod inputs;
