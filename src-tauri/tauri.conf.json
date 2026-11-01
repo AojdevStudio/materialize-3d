@@ -13,6 +13,7 @@
     "windows": [
       {
         "label": "main",
+        "create": false,
         "title": "Materialize 3D",
         "width": 1440,
         "height": 900,

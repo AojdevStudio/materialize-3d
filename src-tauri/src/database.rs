@@ -80,6 +80,9 @@ pub fn init_db(db_path: &Path) -> Result<Connection, InitError> {
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .map_err(|e| format!("failed to read user_version: {e}"))?;
     if found > SCHEMA_VERSION {
+        // Closing would otherwise checkpoint the newer app's WAL into the file.
+        conn.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, true)
+            .map_err(|e| format!("failed to keep the newer database's WAL as it is: {e}"))?;
         return Err(InitError::NewerSchema { found });
     }
 
@@ -1347,24 +1350,31 @@ mod tests {
     }
 
     /// An older app given a database a newer app wrote refuses it and leaves
-    /// every byte as it was: no WAL switch, no migration, no version change.
+    /// every byte as it was: no WAL switch, no checkpoint, no migration, no
+    /// version change. The WAL case keeps the newer app's last writes in the
+    /// WAL file, as a crash or kill leaves them.
     #[test]
     fn a_database_from_a_newer_app_is_refused_and_left_unchanged() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("materialize.db");
-        {
-            let conn = Connection::open(&path).unwrap();
-            conn.execute_batch("CREATE TABLE written_by_a_newer_app (note TEXT); INSERT INTO written_by_a_newer_app VALUES ('keep me');")
-                .unwrap();
-            conn.pragma_update(None, "user_version", SCHEMA_VERSION + 1).unwrap();
+        for journal_mode in ["DELETE", "WAL"] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("materialize.db");
+            let wal = path.with_file_name("materialize.db-wal");
+            {
+                let conn = Connection::open(&path).unwrap();
+                conn.pragma_update(None, "journal_mode", journal_mode).unwrap();
+                conn.execute_batch("CREATE TABLE written_by_a_newer_app (note TEXT); INSERT INTO written_by_a_newer_app VALUES ('keep me');")
+                    .unwrap();
+                conn.pragma_update(None, "user_version", SCHEMA_VERSION + 1).unwrap();
+                conn.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, true).unwrap();
+            }
+            let before = (std::fs::read(&path).unwrap(), std::fs::read(&wal).ok());
+            assert_eq!(before.1.is_some(), journal_mode == "WAL", "{journal_mode}: the WAL file holds the newer app's writes");
+
+            let err = init_db(&path).expect_err("the newer database is refused");
+
+            assert!(matches!(err, InitError::NewerSchema { found } if found == SCHEMA_VERSION + 1), "{journal_mode}: {err}");
+            assert_eq!((std::fs::read(&path).unwrap(), std::fs::read(&wal).ok()), before, "{journal_mode}: byte for byte unchanged");
         }
-        let before = std::fs::read(&path).unwrap();
-
-        let err = init_db(&path).expect_err("the newer database is refused");
-
-        assert!(matches!(err, InitError::NewerSchema { found } if found == SCHEMA_VERSION + 1), "{err}");
-        assert_eq!(std::fs::read(&path).unwrap(), before, "the database is byte for byte unchanged");
-        assert!(!path.with_file_name("materialize.db-wal").exists(), "no WAL file was started");
     }
 
     /// A copy cut short stops the migration without leaving anything under the

@@ -165,20 +165,21 @@ pub fn run() {
                 Ok(conn) => conn,
                 Err(database::InitError::NewerSchema { found }) => {
                     log::error!("setup: refusing {}: schema {found} is newer than {}", db_path.display(), database::SCHEMA_VERSION);
-                    if let Some(window) = app.get_webview_window("main") {
-                        window.hide()?;
-                    }
                     let version = &app.package_info().version;
                     let handle = app.handle().clone();
                     app.dialog()
                         .message(format!(
                             "A newer version of Materialize 3D saved your data (database schema {found}). This version ({version}) reads schema {} and older, so it opened nothing and changed nothing.\n\n\
                              Do one of these:\n\
-                             • Install the newer version of Materialize 3D again.\n\
-                             • Or, with Materialize 3D closed, restore the backup from before the update: copy materialize.db from the folder in {} whose name starts with \"{version}-to-\" over {}.",
+                             • Install the newer version of Materialize 3D again. Your data stays as it is.\n\
+                             • Or go back to your data from before the update. This loses everything saved since then. \
+                             When the in-app updater installed the newer version, it made a backup folder in {} whose name starts with \"{version}-to-\". \
+                             With Materialize 3D closed, copy materialize.db from that folder over {}, and delete materialize.db-wal and materialize.db-shm beside it if they are there. \
+                             If the folder holds print_queue.json, copy it over {}.",
                             database::SCHEMA_VERSION,
                             app_data_dir.join("backups").display(),
                             db_path.display(),
+                            print_queue::queue_file_path().display(),
                         ))
                         .title("Materialize 3D needs a newer version")
                         .kind(MessageDialogKind::Error)
@@ -308,6 +309,10 @@ pub fn run() {
                     }
                 }
             }
+
+            // tauri.conf.json leaves the window uncreated, so a refused database never shows the UI.
+            let main_window = app.config().app.windows.iter().find(|w| w.label == "main").ok_or("tauri.conf.json has no main window")?;
+            tauri::WebviewWindowBuilder::from_config(app.handle(), main_window)?.build()?;
 
             // The docked inspector shrinks the page; verification runs keep it closed.
             #[cfg(debug_assertions)]
