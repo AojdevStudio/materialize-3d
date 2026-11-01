@@ -74,10 +74,12 @@ pub fn init_db(db_path: &Path) -> Result<Connection, InitError> {
     }
 
     // A read-only connection can neither switch the journal mode nor fold a
-    // newer app's WAL into the file, so the version check changes nothing.
+    // newer app's WAL into the file, so the version check changes no data.
     if db_path.exists() {
-        let found: i32 = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX)
-            .and_then(|probe| probe.pragma_query_value(None, "user_version", |row| row.get(0)))
+        let probe = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX)
+            .map_err(|e| format!("failed to open SQLite database read-only: {e}"))?;
+        let found: i32 = probe
+            .pragma_query_value(None, "user_version", |row| row.get(0))
             .map_err(|e| format!("failed to read user_version: {e}"))?;
         if found > SCHEMA_VERSION {
             return Err(InitError::NewerSchema { found });
@@ -102,12 +104,15 @@ pub fn init_db(db_path: &Path) -> Result<Connection, InitError> {
 pub const SCHEMA_VERSION: i32 = 6;
 
 /// Run all pending migrations based on `PRAGMA user_version`.
-fn run_migrations(conn: &Connection) -> Result<(), String> {
+fn run_migrations(conn: &Connection) -> Result<(), InitError> {
     let version: i32 = conn
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .map_err(|e| format!("failed to read user_version: {e}"))?;
 
     log::info!("database: current schema version = {version}");
+    if version > SCHEMA_VERSION {
+        return Err(InitError::NewerSchema { found: version });
+    }
 
     if version < 1 {
         log::info!("database: applying migration 001 — create print_history table");
@@ -1383,6 +1388,19 @@ mod tests {
             assert!(after.0 == database, "{case}: the database file is byte for byte unchanged");
             assert!(after.1 == wal, "{case}: the WAL holds exactly the newer app's writes");
         }
+    }
+
+    /// The migration ladder itself refuses a newer schema, so a database that
+    /// turns newer after `init_db` checked it still never runs old migrations.
+    #[test]
+    fn migrations_refuse_a_newer_schema() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "user_version", SCHEMA_VERSION + 1).unwrap();
+
+        let err = run_migrations(&conn).expect_err("a newer schema is refused");
+
+        assert!(matches!(err, InitError::NewerSchema { found } if found == SCHEMA_VERSION + 1), "{err}");
+        assert_eq!(conn.query_row("SELECT count(*) FROM sqlite_master", [], |row| row.get::<_, i64>(0)).unwrap(), 0, "no table was created");
     }
 
     /// A copy cut short stops the migration without leaving anything under the
