@@ -284,6 +284,11 @@ describe('ChatPanel', () => {
     expect(await screen.findByText('Anthropic · Opus 5.5 · https://gateway.example/v1')).toBeTruthy()
   })
 
+  it('the footer shows no address when none is saved', async () => {
+    render(<ChatPanel />)
+    expect(await screen.findByText('Anthropic · Opus 5.5')).toBeTruthy()
+  })
+
   it('Stop cancels the running turn by its turn id', async () => {
     render(<ChatPanel />)
     const turn = await sendMessage('Make a sign')

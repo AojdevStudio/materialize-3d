@@ -354,6 +354,34 @@ describe('SettingsPanel component', () => {
     expect((screen.getByTestId('agent-model') as HTMLSelectElement).value).toBe('claude-opus-5-5')
   })
 
+  it('an unsaved address does not follow a switch to a provider with the same saved address', async () => {
+    invokeMock.mockResolvedValue(MOCK_PROFILES)
+    const { SettingsPanel } = await import('../components/SettingsPanel')
+    render(React.createElement(SettingsPanel, { isOpen: true, onClose: vi.fn() }))
+
+    const address = (await screen.findByTestId('agent-base-url')) as HTMLInputElement
+    fireEvent.change(address, { target: { value: 'https://anthropic-draft.example/v1' } })
+    fireEvent.change(screen.getByTestId('agent-provider'), { target: { value: 'openai' } })
+
+    await waitFor(() => expect((screen.getByTestId('agent-provider') as HTMLSelectElement).value).toBe('openai'))
+    expect(address.value).toBe('')
+    expect((screen.getByTestId('agent-base-url-save') as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('an unsaved model ID does not follow a switch to a provider on the same gateway', async () => {
+    agentBaseUrls = new Map([['anthropic', 'https://gateway.example/v1'], ['openai', 'https://gateway.example/v1']])
+    invokeMock.mockResolvedValue(MOCK_PROFILES)
+    const { SettingsPanel } = await import('../components/SettingsPanel')
+    render(React.createElement(SettingsPanel, { isOpen: true, onClose: vi.fn() }))
+
+    fireEvent.change(await screen.findByTestId('agent-model-id'), { target: { value: 'anthropic-draft-model' } })
+    fireEvent.change(screen.getByTestId('agent-provider'), { target: { value: 'openai' } })
+
+    await waitFor(() => expect((screen.getByTestId('agent-provider') as HTMLSelectElement).value).toBe('openai'))
+    expect((screen.getByTestId('agent-model-id') as HTMLInputElement).value).toBe('')
+    expect((screen.getByTestId('agent-model-id-save') as HTMLButtonElement).disabled).toBe(true)
+  })
+
   it('the model select lists exactly the models the agent status offers', async () => {
     invokeMock.mockResolvedValue(MOCK_PROFILES)
     const { SettingsPanel } = await import('../components/SettingsPanel')
