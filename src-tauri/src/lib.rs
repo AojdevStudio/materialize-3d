@@ -173,8 +173,8 @@ pub fn run() {
                              Do one of these:\n\
                              • Install the newer version of Materialize 3D again. Your data stays as it is.\n\
                              • Or go back to your data from before the update. This loses everything saved since then. \
-                             When the in-app updater installed the newer version, it made a backup folder in {} whose name starts with \"{version}-to-\". \
-                             With Materialize 3D closed, copy materialize.db from that folder over {}, and delete materialize.db-wal and materialize.db-shm beside it if they are there. \
+                             Each in-app update made a backup folder in {}, named <old version>-to-<new version>-<time>. \
+                             With Materialize 3D closed, copy materialize.db from the folder of the update you are undoing over {}, and delete materialize.db-wal and materialize.db-shm beside it if they are there. \
                              If the folder holds print_queue.json, copy it over {}.",
                             database::SCHEMA_VERSION,
                             app_data_dir.join("backups").display(),
@@ -196,6 +196,9 @@ pub fn run() {
                 *db_guard = Some(conn);
             }
             log::info!("setup: SQLite database initialized at {}", db_path.display());
+            // tauri.conf.json leaves the window uncreated, so a refused database never shows the UI.
+            let main_window = app.config().app.windows.iter().find(|w| w.label == "main").ok_or("tauri.conf.json has no main window")?;
+            tauri::WebviewWindowBuilder::from_config(app.handle(), main_window)?.build()?;
 
             // A build that was running when the app stopped can never finish;
             // record it as failed and remove its directory.
@@ -309,10 +312,6 @@ pub fn run() {
                     }
                 }
             }
-
-            // tauri.conf.json leaves the window uncreated, so a refused database never shows the UI.
-            let main_window = app.config().app.windows.iter().find(|w| w.label == "main").ok_or("tauri.conf.json has no main window")?;
-            tauri::WebviewWindowBuilder::from_config(app.handle(), main_window)?.build()?;
 
             // The docked inspector shrinks the page; verification runs keep it closed.
             #[cfg(debug_assertions)]

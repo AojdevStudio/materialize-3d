@@ -73,18 +73,27 @@ pub fn init_db(db_path: &Path) -> Result<Connection, InitError> {
             .map_err(|e| format!("failed to create database directory: {e}"))?;
     }
 
+    let mut wal = db_path.as_os_str().to_owned();
+    wal.push("-wal");
+    let keep_wal = Path::new(&wal).exists();
     let conn = Connection::open(db_path)
         .map_err(|e| format!("failed to open SQLite database: {e}"))?;
 
+    // A WAL file left beside the database holds writes not yet in it. If the
+    // database is refused, closing must not fold them in. Without one, the
+    // normal close removes the empty WAL and shm files the read creates.
+    let keep_wal_on_close = |keep: bool| {
+        conn.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, keep)
+            .map_err(|e| format!("failed to set checkpoint on close: {e}"))
+    };
+    keep_wal_on_close(keep_wal)?;
     let found: i32 = conn
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .map_err(|e| format!("failed to read user_version: {e}"))?;
     if found > SCHEMA_VERSION {
-        // Closing would otherwise checkpoint the newer app's WAL into the file.
-        conn.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, true)
-            .map_err(|e| format!("failed to keep the newer database's WAL as it is: {e}"))?;
         return Err(InitError::NewerSchema { found });
     }
+    keep_wal_on_close(false)?;
 
     conn.pragma_update(None, "journal_mode", "WAL")
         .map_err(|e| format!("failed to set WAL journal mode: {e}"))?;
@@ -1350,30 +1359,35 @@ mod tests {
     }
 
     /// An older app given a database a newer app wrote refuses it and leaves
-    /// every byte as it was: no WAL switch, no checkpoint, no migration, no
-    /// version change. The WAL case keeps the newer app's last writes in the
-    /// WAL file, as a crash or kill leaves them.
+    /// every file as it was: no WAL switch, no checkpoint, no migration, no
+    /// version change, no stray WAL or shm file. The newer app either closed
+    /// cleanly or left its last writes in the WAL file, as a crash does.
     #[test]
     fn a_database_from_a_newer_app_is_refused_and_left_unchanged() {
-        for journal_mode in ["DELETE", "WAL"] {
+        for (journal_mode, crashed) in [("DELETE", false), ("WAL", false), ("WAL", true)] {
+            let case = format!("{journal_mode}, crashed: {crashed}");
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("materialize.db");
-            let wal = path.with_file_name("materialize.db-wal");
+            // SQLite rebuilds the shm index on every open, so only its presence is compared.
+            let files = || {
+                let read = |name: &str| std::fs::read(path.with_file_name(name)).ok();
+                (read("materialize.db"), read("materialize.db-wal"), path.with_file_name("materialize.db-shm").exists())
+            };
             {
                 let conn = Connection::open(&path).unwrap();
                 conn.pragma_update(None, "journal_mode", journal_mode).unwrap();
                 conn.execute_batch("CREATE TABLE written_by_a_newer_app (note TEXT); INSERT INTO written_by_a_newer_app VALUES ('keep me');")
                     .unwrap();
                 conn.pragma_update(None, "user_version", SCHEMA_VERSION + 1).unwrap();
-                conn.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, true).unwrap();
+                conn.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, crashed).unwrap();
             }
-            let before = (std::fs::read(&path).unwrap(), std::fs::read(&wal).ok());
-            assert_eq!(before.1.is_some(), journal_mode == "WAL", "{journal_mode}: the WAL file holds the newer app's writes");
+            let before = files();
+            assert_eq!(before.1.is_some(), crashed, "{case}: only a crash leaves the newer app's writes in a WAL file");
 
             let err = init_db(&path).expect_err("the newer database is refused");
 
-            assert!(matches!(err, InitError::NewerSchema { found } if found == SCHEMA_VERSION + 1), "{journal_mode}: {err}");
-            assert_eq!((std::fs::read(&path).unwrap(), std::fs::read(&wal).ok()), before, "{journal_mode}: byte for byte unchanged");
+            assert!(matches!(err, InitError::NewerSchema { found } if found == SCHEMA_VERSION + 1), "{case}: {err}");
+            assert!(files() == before, "{case}: the database and WAL are byte for byte unchanged, and no file appeared or vanished");
         }
     }
 
