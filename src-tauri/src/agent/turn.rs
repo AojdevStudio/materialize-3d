@@ -34,6 +34,11 @@ pub const MAX_TURNS: usize = 8;
 /// Anthropic requires an explicit output budget.
 const ANTHROPIC_MAX_TOKENS: u64 = 8_192;
 
+/// Whether the app log keeps a record.
+pub fn app_log_keeps(_record: &log::Metadata<'_>) -> bool {
+    true
+}
+
 /// The model a turn talks to.
 pub enum ModelChoice {
     /// `base_url` replaces the provider's own server when the person saved one.

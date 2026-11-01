@@ -2,7 +2,7 @@
 //! scripted model. Tests marked `#[ignore]` need Bambu Studio
 //! (`BAMBU_STUDIO_CLI`), and the live one also needs `OPENAI_API_KEY`.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -22,7 +22,7 @@ use rig::completion::Message;
 use super::protocol::{AgentErrorKind, AgentEvent, HistoryEntry, Provider, ToolCallStatus};
 use super::store;
 use super::tools::TurnScope;
-use super::turn::{run_turn, ModelChoice, TurnEnd};
+use super::turn::{app_log_keeps, run_turn, ModelChoice, TurnEnd};
 use crate::actions::{ActionError, RequestActions, RequestActor};
 use crate::fabrication::kind::BuildControl;
 use crate::fabrication::pipeline::{self, BuildError, BuildOutcome, BuildRequest, BuildStep, Workspace};
@@ -1221,9 +1221,7 @@ async fn record_one_request(send: impl AsyncFnOnce(String)) -> Recorded {
             (axum::http::StatusCode::BAD_REQUEST, axum::Json(json!({ "error": { "type": "invalid_request_error", "message": "recorded" } })))
         }
     });
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.expect("bind");
-    let url = format!("http://127.0.0.1:{}", listener.local_addr().expect("addr").port());
-    let server = tokio::spawn(async move { axum::serve(listener, router).await });
+    let (url, server) = serve(router).await;
     send(url).await;
     server.abort();
     let mut requests = requests.lock().expect("requests");
@@ -1257,6 +1255,87 @@ async fn a_saved_server_address_routes_the_turn_to_it() {
         };
         println!("{provider:?} refusal in chat: {message}");
         assert!(!message.contains("gateway-key"), "{message}");
+    }
+}
+
+async fn serve(router: axum::Router) -> (String, tokio::task::JoinHandle<std::io::Result<()>>) {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.expect("bind");
+    let url = format!("http://127.0.0.1:{}", listener.local_addr().expect("addr").port());
+    (url, tokio::spawn(async move { axum::serve(listener, router).await }))
+}
+
+#[tokio::test]
+async fn a_gateway_redirect_is_not_followed() {
+    for (provider, typed_path) in [(Provider::Anthropic, ""), (Provider::Openai, "/v1")] {
+        let reached = Arc::new(AtomicUsize::new(0));
+        let count = reached.clone();
+        let (elsewhere, elsewhere_server) = serve(axum::Router::new().fallback(move || {
+            count.fetch_add(1, Ordering::SeqCst);
+            async { axum::http::StatusCode::BAD_REQUEST }
+        }))
+        .await;
+        let location = format!("{elsewhere}/capture");
+        let (gateway, gateway_server) = serve(axum::Router::new().fallback(move || {
+            let location = location.clone();
+            async move { (axum::http::StatusCode::TEMPORARY_REDIRECT, [(axum::http::header::LOCATION, location)]) }
+        }))
+        .await;
+        let h = harness();
+        let model = choose_model(provider, "gateway-model".into(), Some("gateway-key".into()), Some(&format!("{gateway}{typed_path}")));
+        let events = Turn::new(&h, "t1", Arc::new(FakeActions::default()), None).run("hi", model).await;
+        gateway_server.abort();
+        elsewhere_server.abort();
+        assert_eq!(reached.load(Ordering::SeqCst), 0, "{provider:?} followed the redirect");
+        assert!(matches!(events.last(), Some(AgentEvent::Error { kind: AgentErrorKind::Provider, .. })), "{events:?}");
+    }
+}
+
+const ECHOED_KEY: &str = "echoed-gateway-key";
+
+struct EchoedKeyLogs(Mutex<Vec<(String, log::Level, String)>>);
+
+impl log::Log for EchoedKeyLogs {
+    fn enabled(&self, _: &log::Metadata<'_>) -> bool {
+        true
+    }
+
+    fn log(&self, record: &log::Record<'_>) {
+        let line = record.args().to_string();
+        if line.contains(ECHOED_KEY) {
+            self.0.lock().expect("logs").push((record.target().to_owned(), record.level(), line));
+        }
+    }
+
+    fn flush(&self) {}
+}
+
+static ECHOED_KEY_LOGS: EchoedKeyLogs = EchoedKeyLogs(Mutex::new(Vec::new()));
+
+#[tokio::test]
+async fn a_gateway_that_echoes_the_key_never_shows_it_in_chat_or_the_app_log() {
+    log::set_logger(&ECHOED_KEY_LOGS).expect("the only logger of the test binary");
+    log::set_max_level(log::LevelFilter::Trace);
+    for (provider, typed_path) in [(Provider::Anthropic, ""), (Provider::Openai, "/v1")] {
+        let (gateway, server) = serve(axum::Router::new().fallback(|headers: axum::http::HeaderMap| async move {
+            let message = format!("headers: {headers:?}");
+            (axum::http::StatusCode::BAD_REQUEST, axum::Json(json!({ "error": { "type": "invalid_request_error", "message": message } })))
+        }))
+        .await;
+        let h = harness();
+        let model = choose_model(provider, "gateway-model".into(), Some(ECHOED_KEY.into()), Some(&format!("{gateway}{typed_path}")));
+        let events = Turn::new(&h, "t1", Arc::new(FakeActions::default()), None).run("hi", model).await;
+        server.abort();
+        let Some(AgentEvent::Error { kind: AgentErrorKind::Provider, message }) = events.last() else {
+            panic!("{provider:?} ends in a provider error: {events:?}");
+        };
+        assert!(message.contains("400 Bad Request") && message.contains("headers:"), "{provider:?} keeps the reply: {message}");
+        assert!(!message.contains(ECHOED_KEY), "{provider:?} shows the key in chat: {message}");
+    }
+    let logged = ECHOED_KEY_LOGS.0.lock().expect("logs");
+    assert!(!logged.is_empty(), "rig logs the gateway's reply");
+    for (target, level, line) in logged.iter() {
+        let record = log::Metadata::builder().target(target).level(*level).build();
+        assert!(!app_log_keeps(&record), "the app log keeps the key: {target} {line}");
     }
 }
 
