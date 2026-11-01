@@ -173,7 +173,7 @@ pub fn run() {
                              Do one of these:\n\
                              • Install the newer version of Materialize 3D again. Your data stays as it is.\n\
                              • Or go back to your data from before the update. This loses everything saved since then. \
-                             Each in-app update made a backup folder in {}, named <old version>-to-<new version>-<time>. \
+                             Each in-app update made a backup folder in {}, named <old version>-to-<new version>-<time>. A folder that starts with \"{version}-to-\" is from the update away from this version. \
                              With Materialize 3D closed, copy materialize.db from the folder of the update you are undoing over {}, and delete materialize.db-wal and materialize.db-shm beside it if they are there. \
                              If the folder holds print_queue.json, copy it over {}.",
                             database::SCHEMA_VERSION,
