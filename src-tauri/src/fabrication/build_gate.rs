@@ -23,6 +23,7 @@ pub struct Running<'a>(&'a BuildGate);
 /// Held by the updater from the idle check until the restart. Dropping it,
 /// when the install fails, lets builds start again.
 #[must_use]
+#[derive(Debug)]
 pub struct Closed<'a>(&'a BuildGate);
 
 impl BuildGate {

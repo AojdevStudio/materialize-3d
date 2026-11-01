@@ -23,6 +23,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Runtime, State};
 use tauri_plugin_updater::{Update, Updater, UpdaterExt};
 
+use crate::fabrication::build_gate::Closed;
 use crate::state::AppState;
 
 /// The update the last check found, kept for `update_install`.
@@ -140,7 +141,7 @@ pub async fn update_install(
             log::warn!("updater: could not report the builds it waits for: {e}");
         }
     };
-    let backup = install_when_idle(&state, &update.current_version, &update.version, waiting, || {
+    let (backup, _closed) = install_when_idle(&state, &update.current_version, &update.version, waiting, || {
         update.install(&bytes).map_err(|e| format!("The update did not install: {e}"))
     })
     .await?;
@@ -151,20 +152,21 @@ pub async fn update_install(
 /// Waits until no build runs, backs up the database and print queue, then runs
 /// `install` only if the backup is complete and checked. `waiting` hears how many
 /// builds are running at each check. Builds are refused from the end of the wait
-/// until the restart, or until this fails.
+/// until this fails, or until the returned guard drops. The caller holds it
+/// through the restart.
 ///
 /// The locks are held for the backup only. On macOS the install can ask for an
 /// administrator's approval on the main thread, and a command waiting there for
 /// one of these locks would deadlock it. A write between the backup and the
 /// restart stays in the live database, not in the backup.
-pub(crate) async fn install_when_idle(
-    state: &AppState,
+pub(crate) async fn install_when_idle<'a>(
+    state: &'a AppState,
     from: &str,
     to: &str,
     waiting: impl FnMut(usize),
     install: impl FnOnce() -> Result<(), String>,
-) -> Result<PathBuf, String> {
-    let _closed = state.builds.close_when_idle(waiting).await;
+) -> Result<(PathBuf, Closed<'a>), String> {
+    let closed = state.builds.close_when_idle(waiting).await;
     let backup = {
         let db = state.db.lock().map_err(|e| format!("Did not update: the database lock failed: {e}"))?;
         let conn = db.as_ref().ok_or("Did not update: the database is not open")?;
@@ -177,7 +179,7 @@ pub(crate) async fn install_when_idle(
     };
     log::info!("updater: backed up the app data to {}", backup.display());
     install().map_err(|e| format!("{e}. Your data was backed up to {} first.", backup.display()))?;
-    Ok(backup)
+    Ok((backup, closed))
 }
 
 /// Writes `backups/<from>-to-<to>-<time>/` beside the live database: a
@@ -377,7 +379,7 @@ mod tests {
     async fn a_checked_backup_comes_before_the_install() {
         let dir = tempfile::tempdir().expect("tempdir");
         let state = state_in(dir.path());
-        let backup = install_when_idle(&state, "0.2.1", "0.3.0", |_| {}, || {
+        let (backup, _closed) = install_when_idle(&state, "0.2.1", "0.3.0", |_| {}, || {
             let backups: Vec<_> = std::fs::read_dir(dir.path().join("backups")).expect("backups").collect();
             assert_eq!(backups.len(), 1, "the backup exists before the install runs");
             assert!(state.db.try_lock().is_ok() && state.print_queue.try_lock().is_ok(), "the install runs unlocked");
@@ -408,8 +410,17 @@ mod tests {
         assert!(tokio::time::timeout(wait, &mut update).await.is_err(), "the update waits while the build runs");
         assert!(!installed.load(Ordering::SeqCst), "nothing installs while a build runs");
         drop(build);
-        tokio::time::timeout(wait, &mut update).await.expect("the update goes ahead once the build ends").expect("installed");
+        let _installed =
+            tokio::time::timeout(wait, &mut update).await.expect("the update goes ahead once the build ends").expect("installed");
         assert!(installed.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn no_build_starts_after_the_install_until_the_restart() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = state_in(dir.path());
+        let _installed = install_when_idle(&state, "0.2.1", "0.3.0", |_| {}, || Ok(())).await.expect("installed");
+        assert!(state.builds.enter().is_none(), "the restart would kill a build that starts now");
     }
 
     #[tokio::test]
@@ -426,6 +437,7 @@ mod tests {
         .expect_err("the backup must fail");
         assert!(!installed.load(Ordering::SeqCst), "nothing installs without a backup");
         assert!(error.contains("backup failed"), "{error}");
+        assert!(state.builds.enter().is_some(), "the app runs on and builds again");
     }
 
     #[tokio::test]
