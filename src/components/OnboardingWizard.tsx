@@ -93,21 +93,21 @@ export default function OnboardingWizard({ onComplete }: OnboardingWizardProps) 
   const keyStored = agentStatus?.provider === llm.provider && agentStatus.hasApiKey
 
   /**
-   * Makes the chosen provider active, then stores the typed key and a changed
-   * server address. Returns false on failure.
+   * Makes the chosen provider active, then stores the typed key and the
+   * address field when it differs from that provider's saved address. The
+   * field shows no saved address for a provider that was not active, so a
+   * blank field clears one. Returns false on failure.
    */
   const saveProvider = useCallback(async (): Promise<boolean> => {
     const apiKey = llm.apiKey.trim()
     const baseUrl = llm.baseUrl.trim()
     const agent = useAgentStore.getState()
-    const savedBaseUrl = agent.status?.provider === llm.provider ? (agent.status.baseUrl ?? '') : ''
-    if (!apiKey && baseUrl === savedBaseUrl) return true
+    const active = agent.status?.provider === llm.provider ? agent.status : null
+    if (!apiKey && baseUrl === (active?.baseUrl ?? '')) return true
     setLlm((prev) => ({ ...prev, saving: true, error: null }))
     try {
-      if (agent.status?.provider !== llm.provider) {
-        await agent.setModel(llm.provider, '')
-      }
-      if (baseUrl !== savedBaseUrl) {
+      const selected = active ?? (await agent.setModel(llm.provider, ''))
+      if (baseUrl !== (selected.baseUrl ?? '')) {
         await agent.setBaseUrl(llm.provider, baseUrl)
       }
       if (apiKey) {

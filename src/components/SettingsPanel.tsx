@@ -209,7 +209,10 @@ function AgentSection({ active }: { active: boolean }) {
   const [error, setError] = useState<string | null>(null)
   const savedAddress = status?.baseUrl ?? ''
 
-  useEffect(() => setAddress(savedAddress), [savedAddress])
+  useEffect(() => {
+    setAddress(savedAddress)
+    setModelId('')
+  }, [status?.provider, savedAddress])
 
   useEffect(() => {
     if (!active) return
