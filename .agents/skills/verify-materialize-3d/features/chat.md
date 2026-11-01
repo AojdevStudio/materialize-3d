@@ -4,7 +4,7 @@ The AI assistant panel on the right of the main UI takes a message and runs the 
 
 ## Sub-features
 
-- `chat-panel` is the always-mounted panel with the "AI Assistant" header, `New conversation`, starter prompts, and a `<Provider> · <model>` line.
+- `chat-panel` is the always-mounted panel with the "AI Assistant" header, `New conversation`, starter prompts, and a `<Provider> · <model>` line, followed by ` · <server address>` when one is saved.
 - `chat-send` sends the text in `chat-input`. `chat-stop` stops a running turn.
 - `chat-credential` shows an inline `chat-error` with an `Open Settings` control when the provider has no key.
 - `chat-tools` covers tool calls in the transcript: `tool-build` (with `data-state`), `tool-steps`, and `tool-result`. A finished build fires `designs:open`, see [signs](./signs.md).
@@ -20,7 +20,7 @@ The AI assistant panel on the right of the main UI takes a message and runs the 
 Preconditions:
 
 - Onboarding completed per the baseline in README.md.
-- For a real response, the provider in Settings has a key stored and the host has network. dev-substrate has no provider credential, so chat with a key is unreachable there.
+- For a real response, the provider in Settings has a key stored and the host has network. dev-substrate has no direct provider key. Ossie's CLIProxyAPI gateway answers from dev-substrate. The `claudex` config in `~/.config/claudex/` on Ossie's Linux workstation names the gateway address and its key file. Save both in onboarding or Settings. Keep both out of tracked files and evidence, and paint the gateway host over in screenshots.
 
 - **Panel present (observed 2026-10-05, footer 2026-10-06).** Run `$S/wd.ts text "[data-testid=chat-panel]"`. It reads "AI Assistant / New conversation / No messages yet. Ask for a part, a sign, or a printer action. / Design a door sign / Check printer status / List my recent signs / OpenAI · GPT-6 Astra / Send" after the provider was set to OpenAI in Settings.
 - **No key (observed 2026-10-05).** Run `$S/wd.ts click "text=Check printer status"` and `$S/wd.ts wait "[data-testid=chat-error]"`. It reads "No openai API key is saved. Add one in the agent settings. Open Settings to add a key, then retry."
@@ -29,7 +29,9 @@ Preconditions:
 - **New conversation (observed 2026-10-05).** Click `[data-testid=chat-new-conversation]`. The panel shows the empty state again.
 - **Type and send.** Run `$S/wd.ts type "[data-testid=chat-input]" "<message>"` and `$S/wd.ts click "[data-testid=chat-send]"`.
 - **Installed 0.2.0 OpenAI acceptance.** Follow [Verify the installed Mac app](../../../../docs/verify-on-mac.md) for sign and part prompts, GUI review, approval, export hashes, and Bambu Studio P2S 0.4 mm import. This run remains pending. A debug or MCP build does not replace it.
-- **With a key.** An assistant reply streams in. A build shows `[data-testid=tool-build]`, whose `data-state` tracks progress, plus `tool-steps` and `tool-result`. The finished build opens in the Signs view. Verify the new `revisions` row in `DB`. This path was not driven live. Do not report it as verified.
+- **With a key, through the gateway (observed 2026-11-01).** With the gateway address and key saved for Anthropic and the model ID `claude-sonnet-5-5`, send "Make a 150 x 210 mm door sign that says BACK SHORTLY in navy on white with a teal rule under it". The reply streams in, `[data-testid=tool-build]` reaches `data-state` `done`, and the Signs view opens r2 with 27 of 27 checks passed. A direct provider key was not driven.
+- **Address cleared (observed 2026-11-01).** Clear the address and send a message with the gateway key still stored. `chat-error` reads "CompletionError: ProviderResponseError: status 401 Unauthorized" with Anthropic's "invalid x-api-key", so the request reached the provider's own server.
+- **Wrong address (observed 2026-11-01).** Save `http://127.0.0.1:9/v1` and send a message. `chat-error` reads "CompletionError: ProviderError: Http client error: error sending request for url (http://127.0.0.1:9/v1/messages)".
 
 ## Gotchas
 
