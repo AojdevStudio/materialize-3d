@@ -46,13 +46,44 @@ struct StoredImportMetadataCompat {
     files: Vec<String>,
 }
 
+/// Why `init_db` returned no connection.
+#[derive(Debug, thiserror::Error)]
+pub enum InitError {
+    /// A newer app wrote this database. Its contents were left exactly as they were.
+    #[error("the database has schema {found}, newer than schema {SCHEMA_VERSION}, the newest this version supports")]
+    NewerSchema { found: i32 },
+    #[error("{0}")]
+    Failed(String),
+}
+
+impl From<String> for InitError {
+    fn from(why: String) -> Self {
+        Self::Failed(why)
+    }
+}
+
 /// Open (or create) the SQLite database, enable WAL + foreign keys, and run migrations.
-pub fn init_db(db_path: &Path) -> Result<Connection, String> {
+///
+/// A database a newer app wrote is refused before anything writes to it.
+pub fn init_db(db_path: &Path) -> Result<Connection, InitError> {
     log::info!("database: initializing SQLite at {}", db_path.display());
 
     if let Some(parent) = db_path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("failed to create database directory: {e}"))?;
+    }
+
+    // A read-only connection can neither switch the journal mode nor fold a
+    // newer app's WAL into the file, so the version check changes no data.
+    if db_path.exists() {
+        let probe = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX)
+            .map_err(|e| format!("failed to open SQLite database read-only: {e}"))?;
+        let found: i32 = probe
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .map_err(|e| format!("failed to read user_version: {e}"))?;
+        if found > SCHEMA_VERSION {
+            return Err(InitError::NewerSchema { found });
+        }
     }
 
     let conn = Connection::open(db_path)
@@ -73,12 +104,15 @@ pub fn init_db(db_path: &Path) -> Result<Connection, String> {
 pub const SCHEMA_VERSION: i32 = 6;
 
 /// Run all pending migrations based on `PRAGMA user_version`.
-fn run_migrations(conn: &Connection) -> Result<(), String> {
+fn run_migrations(conn: &Connection) -> Result<(), InitError> {
     let version: i32 = conn
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .map_err(|e| format!("failed to read user_version: {e}"))?;
 
     log::info!("database: current schema version = {version}");
+    if version > SCHEMA_VERSION {
+        return Err(InitError::NewerSchema { found: version });
+    }
 
     if version < 1 {
         log::info!("database: applying migration 001 — create print_history table");
@@ -1285,7 +1319,7 @@ mod tests {
         let path = schema_5_database(dir.path());
 
         inject(&[Fault::HardLinkUnsupported, Fault::PlantBackup]);
-        let err = init_db(&path).err().expect("the migration stops");
+        let err = init_db(&path).expect_err("the migration stops").to_string();
 
         assert!(!faulted(Fault::PlantBackup), "the file was planted just before publishing");
         assert!(err.contains("could not publish the checked copy"), "{err}");
@@ -1302,7 +1336,7 @@ mod tests {
         let before = revision_columns(&Connection::open(&path).unwrap(), SIGN_REVISION_COLUMNS);
 
         inject(&[Fault::HardLinkUnsupported, Fault::CutPublished]);
-        let err = init_db(&path).err().expect("the migration stops");
+        let err = init_db(&path).expect_err("the migration stops").to_string();
         assert!(err.contains("could not publish the checked copy"), "{err}");
         assert!(backup_of(&path).symlink_metadata().is_err(), "the broken copy was removed");
         assert_eq!(version_of(&path), 5, "migration 006 did not run");
@@ -1321,6 +1355,54 @@ mod tests {
         Connection::open(path).unwrap().pragma_query_value(None, "user_version", |row| row.get(0)).unwrap()
     }
 
+    /// An older app given a database a newer app wrote refuses it and leaves
+    /// its contents as they were: no WAL switch, no checkpoint, no migration,
+    /// no version change. The newer app either closed cleanly or left its last
+    /// writes in the WAL file, as a crash does.
+    #[test]
+    fn a_database_from_a_newer_app_is_refused_and_left_unchanged() {
+        for (journal_mode, crashed) in [("DELETE", false), ("WAL", false), ("WAL", true)] {
+            let case = format!("{journal_mode}, crashed: {crashed}");
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("materialize.db");
+            // No WAL file and an empty one hold the same thing: no pending writes.
+            let contents = || {
+                let wal = std::fs::read(path.with_file_name("materialize.db-wal")).unwrap_or_default();
+                (std::fs::read(&path).unwrap(), wal)
+            };
+            {
+                let conn = Connection::open(&path).unwrap();
+                conn.pragma_update(None, "journal_mode", journal_mode).unwrap();
+                conn.execute_batch("CREATE TABLE written_by_a_newer_app (note TEXT); INSERT INTO written_by_a_newer_app VALUES ('keep me');")
+                    .unwrap();
+                conn.pragma_update(None, "user_version", SCHEMA_VERSION + 1).unwrap();
+                conn.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, crashed).unwrap();
+            }
+            let (database, wal) = contents();
+            assert_eq!(!wal.is_empty(), crashed, "{case}: only a crash leaves the newer app's writes in the WAL");
+
+            let err = init_db(&path).expect_err("the newer database is refused");
+
+            assert!(matches!(err, InitError::NewerSchema { found } if found == SCHEMA_VERSION + 1), "{case}: {err}");
+            let after = contents();
+            assert!(after.0 == database, "{case}: the database file is byte for byte unchanged");
+            assert!(after.1 == wal, "{case}: the WAL holds exactly the newer app's writes");
+        }
+    }
+
+    /// The migration ladder itself refuses a newer schema, so a database that
+    /// turns newer after `init_db` checked it still never runs old migrations.
+    #[test]
+    fn migrations_refuse_a_newer_schema() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "user_version", SCHEMA_VERSION + 1).unwrap();
+
+        let err = run_migrations(&conn).expect_err("a newer schema is refused");
+
+        assert!(matches!(err, InitError::NewerSchema { found } if found == SCHEMA_VERSION + 1), "{err}");
+        assert_eq!(conn.query_row("SELECT count(*) FROM sqlite_master", [], |row| row.get::<_, i64>(0)).unwrap(), 0, "no table was created");
+    }
+
     /// A copy cut short stops the migration without leaving anything under the
     /// backup's name, and the next launch makes a good copy and migrates.
     #[test]
@@ -1330,7 +1412,7 @@ mod tests {
         let before = revision_columns(&Connection::open(&path).unwrap(), SIGN_REVISION_COLUMNS);
 
         inject(&[Fault::CutStaged]);
-        let err = init_db(&path).err().expect("the migration stops");
+        let err = init_db(&path).expect_err("the migration stops").to_string();
         assert!(err.contains("could not back up the database"), "{err}");
         assert_eq!(version_of(&path), 5, "migration 006 did not run");
         assert!(backup_of(&path).symlink_metadata().is_err(), "nothing was published under the backup's name");
@@ -1351,7 +1433,7 @@ mod tests {
         drop(Connection::open(backup_of(&path)).unwrap());
         let left = std::fs::read(backup_of(&path)).unwrap();
 
-        let err = init_db(&path).err().expect("the migration stops");
+        let err = init_db(&path).expect_err("the migration stops").to_string();
         assert!(err.contains("is not a copy of this database"), "{err}");
         assert_eq!(version_of(&path), 5, "migration 006 did not run");
         assert_eq!(std::fs::read(backup_of(&path)).unwrap(), left, "the existing file is left alone");

@@ -46,6 +46,7 @@ use printer::PrinterService;
 use slicer::SlicerService;
 use state::AppState;
 use tauri::Manager;
+use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 
 /// The one expansion of `generate_context!`: on macOS it embeds Info.plist as a
 /// symbol, so a second expansion (the ACL tests) would not link.
@@ -160,8 +161,33 @@ pub fn run() {
             let db_path = app_data_dir.join("materialize.db");
 
             let app_state = app.state::<Arc<AppState>>();
-            let conn = database::init_db(&db_path)
-                .map_err(|e| format!("database init failed: {e}"))?;
+            let conn = match database::init_db(&db_path) {
+                Ok(conn) => conn,
+                Err(database::InitError::NewerSchema { found }) => {
+                    log::error!("setup: refusing {}: schema {found} is newer than {}", db_path.display(), database::SCHEMA_VERSION);
+                    let version = &app.package_info().version;
+                    let handle = app.handle().clone();
+                    app.dialog()
+                        .message(format!(
+                            "A newer version of Materialize 3D saved your data (database schema {found}). This version ({version}) reads schema {} and older, so it opened nothing and changed nothing.\n\n\
+                             Do one of these:\n\
+                             • Install the newer version of Materialize 3D again. Your data stays as it is.\n\
+                             • Or go back to your data from before the update. This loses everything saved since then. \
+                             Each in-app update made a backup folder in {}, named <old version>-to-<new version>-<time>. A folder that starts with \"{version}-to-\" is from an update away from this version. If there are several, use the one with the latest time. \
+                             With Materialize 3D closed, copy materialize.db from the folder of the update you are undoing over {}, and delete materialize.db-wal and materialize.db-shm beside it if they are there. \
+                             If the folder holds print_queue.json, copy it over {}.",
+                            database::SCHEMA_VERSION,
+                            app_data_dir.join("backups").display(),
+                            db_path.display(),
+                            print_queue::queue_file_path().display(),
+                        ))
+                        .title("Materialize 3D needs a newer version")
+                        .kind(MessageDialogKind::Error)
+                        .show(move |_| handle.exit(1));
+                    return Ok(());
+                }
+                Err(e) => return Err(format!("database init failed: {e}").into()),
+            };
             {
                 let mut db_guard = app_state
                     .db
@@ -170,6 +196,9 @@ pub fn run() {
                 *db_guard = Some(conn);
             }
             log::info!("setup: SQLite database initialized at {}", db_path.display());
+            // tauri.conf.json leaves the window uncreated, so a refused database never shows the UI.
+            let main_window = app.config().app.windows.iter().find(|w| w.label == "main").ok_or("tauri.conf.json has no main window")?;
+            tauri::WebviewWindowBuilder::from_config(app.handle(), main_window)?.build()?;
 
             // A build that was running when the app stopped can never finish;
             // record it as failed and remove its directory.
