@@ -1,6 +1,6 @@
 # Settings
 
-The Settings popover lets a user locate Bambu Studio, choose default print quality and filament, pick the agent provider and model, store an API key, toggle notifications and auto-connect, and turn on the MCP server for external agents. Every change saves immediately and survives a relaunch.
+The Settings popover lets a user locate Bambu Studio, choose default print quality and filament, pick the agent provider and model, store an API key, toggle notifications and auto-connect, turn on the MCP server for external agents, and see the installed version with a manual update check. Every change saves immediately and survives a relaunch.
 
 ## Sub-features
 
@@ -11,6 +11,7 @@ The Settings popover lets a user locate Bambu Studio, choose default print quali
 - `settings-agent-key` covers `agent-key-state`, the `agent-api-key` field, and `agent-api-key-save` and `agent-api-key-clear`. The key goes to the keyring under `api_key:<provider>`.
 - `settings-notifications` covers the `Print complete`, `Print failed`, and `Filament low` checkboxes. They default to `true`.
 - `settings-connection` covers the `Auto-connect on launch` checkbox. It defaults to `false`.
+- `settings-about` covers the About section: `about-section`, `about-version`, `about-check`, `about-update-now`, and `about-status`. It is the last section. See [updater](./updater.md) for the recipe.
 - `settings-mcp` covers the External agents section: `mcp-section`, `mcp-enabled`, `mcp-url`, `mcp-copy-command`, `mcp-rotate-token`, and `mcp-message`. The switch is stored as `mcp.enabled`, and the token goes to the keyring under `mcp:token`. See [mcp](./mcp.md).
 
 ## How to get to it (user POV)
@@ -24,7 +25,7 @@ Preconditions:
 
 - Onboarding completed per the baseline in README.md.
 
-- **Open (observed 2026-09-25).** Run `$S/wd.ts click "button[aria-label=Settings]"`, `$S/wd.ts wait "[role=dialog][aria-label=Settings]"`, and `$S/wd.ts wait "[data-testid=bambu-studio-section]" 20000`. Sections Bambu Studio, Defaults, Agent, Notifications, Connection, and External agents appear. The Bambu Studio section shows the detected version and path, or setup steps when no validated copy is found.
+- **Open (observed 2026-09-25).** Run `$S/wd.ts click "button[aria-label=Settings]"`, `$S/wd.ts wait "[role=dialog][aria-label=Settings]"`, and `$S/wd.ts wait "[data-testid=bambu-studio-section]" 20000`. Sections Bambu Studio, Defaults, Agent, Notifications, Connection, and External agents appear. About follows them since PR 78 **(observed 2026-11-01)**. The Bambu Studio section shows the detected version and path, or setup steps when no validated copy is found.
 - **Bambu Studio (observed 2026-10-05).** Run `$S/wd.ts text "[data-testid=bambu-studio-found]"`. With the host's copy found, it reads "Bambu Studio 02.08.02.61 ✓".
 - **Change quality (observed 2026-09-25).** Run `$S/wd.ts click 'xpath=//div[@role="dialog"]//label[contains(., "Quality")]//option[@value="0.16"]'` and `$S/wd.ts attr 'xpath=//div[@role="dialog"]//label[contains(., "Quality")]//select' value`. It prints `0.16`.
 - **Side effect (observed 2026-09-25).** Read `select key, value from settings` from `DB`. It contains `default.quality = 0.16`.
@@ -46,4 +47,5 @@ Preconditions:
 - The stored default filament `PLA Basic` is not one of the options, so a fresh run displays `Bambu PETG Basic`, the first option, without writing it.
 - Without its own session keyring, the Agent section shows only "keyring entry error for key=api_key:anthropic: No matching entry found in secure storage", and enabling MCP fails with the same error for `mcp:token`. `m3d.sh up` prevents this by running the app under `keyctl session -`, see SKILL.md.
 - The External agents hint still reads "External agents can build and read signs". That text is stale, because MCP also imports parts.
+- About sits below External agents. Run `$S/wd.ts hover "[data-testid=about-section]"` to scroll it into view before a screenshot.
 - Settings has no printer section. Printers live in the toolbar popover, see [printers](./printers.md).
