@@ -434,6 +434,8 @@ pub struct AppState {
     pub last_recorded_start_time: Mutex<Option<String>>,
     /// Currently selected printer config ID (for multi-printer support).
     pub selected_printer_id: Mutex<Option<String>>,
+    /// Running builds, which an update waits for before it restarts the app.
+    pub builds: crate::fabrication::build_gate::BuildGate,
 }
 
 impl AppState {

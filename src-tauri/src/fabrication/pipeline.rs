@@ -242,6 +242,8 @@ pub enum BuildError {
     Slicer(BambuError),
     #[error("build cancelled")]
     Cancelled,
+    #[error("an update is installing and the app is about to restart. Build again after it restarts.")]
+    UpdateInstalling,
     #[error(transparent)]
     Revision(#[from] RevisionError),
     #[error("database is not initialized")]
@@ -355,6 +357,7 @@ fn build_as(
     control: &BuildControl<'_>,
     claim: fn(&mut Connection, &NewRevision) -> Result<Claim, RevisionError>,
 ) -> Result<BuildOutcome, BuildError> {
+    let _running = state.builds.enter().ok_or(BuildError::UpdateInstalling)?;
     let driver = kind::find(&request.kind).ok_or_else(|| BuildError::UnknownKind(request.kind.clone()))?;
     let ctx = workspace.kernel_context();
     if !driver.available(&ctx) {

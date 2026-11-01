@@ -4,7 +4,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const invokeMock = vi.fn()
 vi.mock('@tauri-apps/api/core', () => ({ invoke: (...args: unknown[]) => invokeMock(...args) }))
-vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn(async () => () => {}) }))
+const listeners = new Map<string, (event: { payload: unknown }) => void>()
+vi.mock('@tauri-apps/api/event', () => ({
+  listen: vi.fn(async (name: string, handler: (event: { payload: unknown }) => void) => {
+    listeners.set(name, handler)
+    return () => listeners.delete(name)
+  }),
+}))
 vi.mock('@tauri-apps/api/app', () => ({ getVersion: vi.fn(async () => '0.2.1') }))
 
 import { AboutSection } from '../components/AboutSection'
@@ -13,6 +19,7 @@ import {
   checkForUpdates,
   checkForUpdatesAtLaunch,
   resetUpdateStoreForTests,
+  useUpdateEvents,
   type UpdateCheck,
 } from '../stores/updates'
 
@@ -34,6 +41,17 @@ function feed(check: UpdateCheck | Error, install: () => Promise<unknown> = asyn
     if (cmd === 'update_install') return install()
     throw new Error(`unexpected ${cmd}`)
   })
+}
+
+function UpdateEvents() {
+  useUpdateEvents()
+  return null
+}
+
+function emit(name: string, payload: unknown) {
+  const handler = listeners.get(name)
+  if (!handler) throw new Error(`nothing listens for ${name}`)
+  act(() => handler({ payload }))
 }
 
 const installCalls = () => invokeMock.mock.calls.filter(([cmd]) => cmd === 'update_install')
@@ -86,6 +104,31 @@ describe('updates', () => {
     await waitFor(() => expect(screen.getByTestId('update-now').textContent).toBe('Updating…'))
     fireEvent.click(screen.getByTestId('update-now'))
     expect(installCalls()).toEqual([['update_install', { version: '0.3.0' }]])
+  })
+
+  it('Update now says it waits for running builds, in the banner and in Settings > About', async () => {
+    feed(NEWER, () => new Promise(() => {}))
+    render(
+      <>
+        <UpdateEvents />
+        <UpdateBanner />
+        <AboutSection active />
+      </>,
+    )
+    await act(() => checkForUpdatesAtLaunch())
+    fireEvent.click(screen.getByTestId('update-now'))
+    await waitFor(() => expect(listeners.has('update:waiting')).toBe(true))
+
+    emit('update:waiting', 2)
+    const waiting = 'Waiting for 2 builds to finish. Then the update installs and the app restarts.'
+    expect(screen.getByTestId('update-progress').textContent).toBe(waiting)
+    expect(screen.getByTestId('about-status').textContent).toBe(waiting)
+    emit('update:waiting', 1)
+    expect(screen.getByTestId('about-status').textContent).toBe('Waiting for 1 build to finish. Then the update installs and the app restarts.')
+
+    emit('update:waiting', 0)
+    expect(screen.getByTestId('update-progress').textContent).not.toContain('Waiting')
+    expect(screen.getByTestId('about-status').textContent).toBe('Installing the update. The app restarts when it is done.')
   })
 
   it('a failed install shows the error, keeps the app running, and can be retried', async () => {

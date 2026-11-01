@@ -1,4 +1,4 @@
-import { dismissUpdate, installUpdate, useUpdateStore, type UpdateProgress } from '../stores/updates'
+import { dismissUpdate, installUpdate, useUpdateStore, waitingMessage, type UpdateProgress } from '../stores/updates'
 import styles from './UpdateBanner.module.css'
 
 export function formatProgress(progress: UpdateProgress | null): string {
@@ -14,7 +14,7 @@ export function formatProgress(progress: UpdateProgress | null): string {
  * until Update now is clicked. Later hides it until the next launch.
  */
 export function UpdateBanner() {
-  const { phase, available, error, failed, progress, dismissed } = useUpdateStore()
+  const { phase, available, error, failed, progress, waitingFor, dismissed } = useUpdateStore()
   if (dismissed) return null
   if (phase === 'error' && error) {
     const installFailed = failed === 'install' && available
@@ -45,7 +45,11 @@ export function UpdateBanner() {
       <div className={styles.text}>
         <strong data-testid="update-version">Materialize 3D {available.version} is available.</strong>
         <span>You have {available.currentVersion}.</span>
-        {installing && <span data-testid="update-progress">{formatProgress(progress)} The app restarts when the update is installed.</span>}
+        {installing && (
+          <span data-testid="update-progress">
+            {waitingFor > 0 ? waitingMessage(waitingFor) : `${formatProgress(progress)} The app restarts when the update is installed.`}
+          </span>
+        )}
         {available.notes && !installing && (
           <details className={styles.notes}>
             <summary>What's new</summary>
