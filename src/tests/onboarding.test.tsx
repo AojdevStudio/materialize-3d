@@ -214,6 +214,56 @@ describe('OnboardingWizard', () => {
     expect(useAgentStore.getState().status).toMatchObject({ provider: 'openai', hasApiKey: true, baseUrl: null })
   })
 
+  it('LLM step empties a typed key when the provider changes, so Continue stores no key', async () => {
+    useOnboardingStore.getState().setStep(1)
+    render(<OnboardingWizard onComplete={vi.fn()} />)
+
+    await waitFor(() => expect(useAgentStore.getState().status?.provider).toBe('anthropic'))
+    const input = screen.getByTestId('input-api-key') as HTMLInputElement
+    fireEvent.change(input, { target: { value: 'sk-ant-typed' } })
+    fireEvent.click(screen.getByTestId('provider-openai'))
+    expect(input.value).toBe('')
+    fireEvent.click(screen.getByTestId('provider-anthropic'))
+    expect(input.value).toBe('')
+    fireEvent.click(screen.getByTestId('btn-llm-continue'))
+
+    await waitFor(() => expect(screen.getByTestId('step-bambu')).toBeDefined())
+    expect(invokeMock.mock.calls.filter(([cmd]) => cmd === 'agent_set_api_key')).toHaveLength(0)
+  })
+
+  it('LLM step keeps a typed key when the selected provider is clicked again', async () => {
+    useOnboardingStore.getState().setStep(1)
+    render(<OnboardingWizard onComplete={vi.fn()} />)
+
+    await waitFor(() => expect(useAgentStore.getState().status?.provider).toBe('anthropic'))
+    const input = screen.getByTestId('input-api-key') as HTMLInputElement
+    fireEvent.change(input, { target: { value: 'sk-ant-typed' } })
+    fireEvent.click(screen.getByTestId('provider-anthropic'))
+    expect(input.value).toBe('sk-ant-typed')
+  })
+
+  it('LLM step empties a key typed before the agent status reports another provider', async () => {
+    setupDefaultMocks()
+    const defaults = invokeMock.getMockImplementation()!
+    let reportStatus: () => void = () => {}
+    invokeMock.mockImplementation((cmd: string, payload?: unknown) =>
+      cmd === 'agent_status'
+        ? new Promise((resolve) => {
+            reportStatus = () => resolve({ provider: 'openai', model: 'gpt-6-astra', models: ['gpt-6-astra'], hasApiKey: false, baseUrl: null })
+          })
+        : defaults(cmd, payload),
+    )
+    useOnboardingStore.getState().setStep(1)
+    render(<OnboardingWizard onComplete={vi.fn()} />)
+
+    const input = screen.getByTestId('input-api-key') as HTMLInputElement
+    fireEvent.change(input, { target: { value: 'sk-ant-typed' } })
+    await act(async () => reportStatus())
+
+    expect(screen.getByTestId('provider-openai').getAttribute('aria-checked')).toBe('true')
+    expect(input.value).toBe('')
+  })
+
   it('"Skip" on LLM step advances to Bambu step', async () => {
     const onComplete = vi.fn()
     useOnboardingStore.getState().setStep(1)
