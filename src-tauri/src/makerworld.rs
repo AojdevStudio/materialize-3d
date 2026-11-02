@@ -62,10 +62,9 @@ struct PendingDownloads {
     refused: HashMap<String, usize>,
 }
 
-/// The transfers of one URL that have not all finished. Every start lands in the first start's folder.
-#[derive(Debug)]
+/// The transfers of one URL that have not all finished.
+#[derive(Debug, Default)]
 struct UrlDownloads {
-    folder: PathBuf,
     reserved: Vec<PathBuf>,
     in_flight: usize,
 }
@@ -73,10 +72,6 @@ struct UrlDownloads {
 impl PendingDownloads {
     /// Reserves a destination no file and no other transfer holds. WebKitGTK and WebKit refuse an existing one.
     fn start(&mut self, url: &str, folder: &Path, filename: &str) -> PathBuf {
-        let folder = self
-            .by_url
-            .get(url)
-            .map_or_else(|| folder.to_path_buf(), |downloads| downloads.folder.clone());
         let name = Path::new(filename);
         let stem = name.file_stem().unwrap_or(name.as_os_str()).to_string_lossy();
         let extension = name.extension().map(|extension| format!(".{}", extension.to_string_lossy()));
@@ -90,11 +85,7 @@ impl PendingDownloads {
             destination = folder.join(format!("{stem} ({copy}){}", extension.as_deref().unwrap_or_default()));
         }
 
-        let downloads = self.by_url.entry(url.into()).or_insert_with(|| UrlDownloads {
-            folder,
-            reserved: Vec::new(),
-            in_flight: 0,
-        });
+        let downloads = self.by_url.entry(url.into()).or_default();
         downloads.reserved.push(destination.clone());
         downloads.in_flight += 1;
         destination
@@ -943,8 +934,7 @@ mod tests {
         assert!(pending.by_url.is_empty());
 
         pending.start(url, &first, "hook.3mf");
-        let second = pending.start(url, &downloads.path().join("second"), "hook.3mf");
-        assert_eq!(second, first.join("hook (1).3mf"), "a later start lands in the first start's folder");
+        assert_eq!(pending.start(url, &first, "hook.3mf"), first.join("hook (1).3mf"));
         assert_eq!(pending.finish(url, None, true), None, "two transfers, a pathless finish is not guessed");
         assert_eq!(pending.finish(url, None, true), None);
         assert!(pending.by_url.is_empty());
