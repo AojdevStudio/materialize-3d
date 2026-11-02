@@ -414,7 +414,9 @@ button {
 }
 
 .printer-selector-submit:disabled {
-  opacity: 0.5;
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+  filter: none;
   cursor: not-allowed;
 }
 
@@ -609,7 +611,7 @@ button {
 
 .settings-field button:disabled,
 .settings-actions button:disabled {
-  color: var(--text-tertiary);
+  color: var(--text-secondary);
   cursor: not-allowed;
 }
 
@@ -678,7 +680,8 @@ button {
 }
 
 .connection-error-btn:disabled {
-  opacity: 0.45;
+  border-color: var(--border);
+  color: var(--text-secondary);
   cursor: not-allowed;
 }
 
