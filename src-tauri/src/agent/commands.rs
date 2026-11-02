@@ -91,7 +91,7 @@ fn is_private(ip: IpAddr) -> bool {
     }
 }
 
-fn provider_id(provider: Provider) -> &'static str {
+pub(super) fn provider_id(provider: Provider) -> &'static str {
     match provider {
         Provider::Anthropic => "anthropic",
         Provider::Openai => "openai",
