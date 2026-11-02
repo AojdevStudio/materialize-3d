@@ -29,6 +29,11 @@ interface LlmState {
   error: string | null
 }
 
+/** A typed key belongs to the provider it was typed for, so a different provider starts empty. */
+function switchProvider(prev: LlmState, provider: Provider, baseUrl: string): LlmState {
+  return { ...prev, provider, baseUrl, apiKey: provider === prev.provider ? prev.apiKey : '' }
+}
+
 interface PrinterState {
   detected: boolean
   name: string | null
@@ -239,7 +244,7 @@ export default function OnboardingWizard({ onComplete }: OnboardingWizardProps) 
       .getState()
       .refresh()
       .then((status) => {
-        if (!cancelled) setLlm((prev) => ({ ...prev, provider: status.provider, baseUrl: status.baseUrl ?? '' }))
+        if (!cancelled) setLlm((prev) => switchProvider(prev, status.provider, status.baseUrl ?? ''))
       })
       .catch((err: unknown) => console.error('onboarding:agent-status failed', err))
     return () => {
@@ -312,9 +317,7 @@ export default function OnboardingWizard({ onComplete }: OnboardingWizardProps) 
               className={llm.provider === p ? 'selected' : undefined}
               onClick={() =>
                 setLlm((prev) => ({
-                  ...prev,
-                  provider: p,
-                  baseUrl: (agentStatus?.provider === p ? agentStatus.baseUrl : null) ?? '',
+                  ...switchProvider(prev, p, (agentStatus?.provider === p ? agentStatus.baseUrl : null) ?? ''),
                   error: null,
                 }))
               }
