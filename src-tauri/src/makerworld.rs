@@ -816,6 +816,9 @@ fn slugify(value: &str) -> String {
     }
 }
 
+#[cfg(all(test, target_os = "linux"))]
+mod webkitgtk_downloads;
+
 #[cfg(test)]
 mod tests {
     use super::{classify_page_kind, infer_download_filename, sanitize_model, slugify};

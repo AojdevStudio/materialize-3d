@@ -93,6 +93,11 @@ tauri = { version = "~2.11.6", features = ["test"] }
 # Generates src/types/generated.ts from the Rust types the frontend reads; see tools::frontend_types.
 ts-rs = "12"
 
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+gtk = "0.18"
+socket2 = "0.6"
+wry = { version = "0.55", default-features = false }
+
 # OS-native credential store: Keychain (macOS), Credential Manager (Windows),
 # Secret Service (Linux).
 [target.'cfg(target_os = "macos")'.dependencies]
