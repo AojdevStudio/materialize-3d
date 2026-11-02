@@ -11,7 +11,7 @@
 # placeholder on an elevated panel) records its lowest reading. The fix is a design
 # token change, which needs a mock first.
 
-# Sidebar and tab bar labels (inactive), and the send button.
+# Sidebar and tab bar labels (inactive).
 2.70  button "Library"
 2.70  button "MakerWorld"
 2.70  button "Design"
@@ -23,7 +23,6 @@
 2.53  button "3D Preview"
 2.70  button "OpenSCAD"
 2.70  button "Print History"
-2.70  button "chat-send"
 
 # Context panel search placeholders, one per view.
 2.83  input "Library search" (placeholder)
@@ -40,5 +39,3 @@
 
 # Settings popover.
 2.53  button "Close settings"
-2.53  button "agent-api-key-save"
-2.53  button "agent-api-key-clear"

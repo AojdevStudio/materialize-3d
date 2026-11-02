@@ -54,7 +54,7 @@
 }
 
 .linkButton:disabled {
-  color: var(--text-tertiary);
+  color: var(--text-secondary);
   cursor: not-allowed;
 }
 
@@ -296,6 +296,6 @@
 .send:disabled {
   background: none;
   border-color: var(--border);
-  color: var(--text-tertiary);
+  color: var(--text-secondary);
   cursor: not-allowed;
 }

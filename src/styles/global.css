@@ -609,7 +609,7 @@ button {
 
 .settings-field button:disabled,
 .settings-actions button:disabled {
-  color: var(--text-tertiary);
+  color: var(--text-secondary);
   cursor: not-allowed;
 }
 
