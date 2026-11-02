@@ -108,23 +108,34 @@ fn without_key(message: &str, key: &str) -> String {
     message
 }
 
+/// A key's `%` matches both as itself and as the start of `%25`, so a match
+/// keeps every place it can reach and ends at the farthest.
 fn without_percent_encoded_key(message: &str, key: &[u8]) -> String {
     let bytes = message.as_bytes();
     let hex = |digit: u8| char::from(digit).to_digit(16);
+    let after = |at: usize, byte: u8| {
+        let written = (bytes.get(at) == Some(&byte)).then_some(at + 1);
+        let encoded = match bytes.get(at..at + 3) {
+            Some([b'%', high, low]) if hex(*high).zip(hex(*low)).is_some_and(|(high, low)| high * 16 + low == u32::from(byte)) => {
+                Some(at + 3)
+            }
+            _ => None,
+        };
+        written.into_iter().chain(encoded)
+    };
     let mut kept = String::with_capacity(message.len());
     let mut copied = 0;
     for (at, _) in message.char_indices() {
         if at < copied {
             continue;
         }
-        let end = key.iter().try_fold(at, |at, &byte| match &bytes[at..] {
-            [first, ..] if *first == byte => Some(at + 1),
-            [b'%', high, low, ..] if hex(*high).zip(hex(*low)).is_some_and(|(high, low)| high * 16 + low == u32::from(byte)) => {
-                Some(at + 3)
-            }
-            _ => None,
+        let ends = key.iter().try_fold(vec![at], |ends, &byte| {
+            let mut next: Vec<usize> = ends.into_iter().flat_map(|end| after(end, byte)).collect();
+            next.sort_unstable();
+            next.dedup();
+            (!next.is_empty()).then_some(next)
         });
-        if let Some(end) = end {
+        if let Some(&end) = ends.as_ref().and_then(|ends| ends.last()) {
             kept.push_str(&message[copied..at]);
             kept.push_str("[API key]");
             copied = end;
