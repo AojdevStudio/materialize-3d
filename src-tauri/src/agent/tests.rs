@@ -1334,8 +1334,10 @@ fn failed_turn_lines(logs: &Logs) -> Vec<String> {
 }
 
 /// Its percent-encoding differs from it, and its base64 holds a `+` or `/` at
-/// every byte offset, so the URL-safe forms differ from the standard ones.
-const ECHOED_KEY: &str = "echoed+gateway/key???";
+/// every byte offset, so the URL-safe forms differ from the standard ones. Its
+/// `%` comes before hex digits, so a `%` in a reply can start the key's `%`
+/// written as itself or as `%25`.
+const ECHOED_KEY: &str = "echoed+gateway/key=%41???";
 
 /// The key in each form a gateway's error reply might quote it in, by label.
 fn echoed_key_forms() -> Vec<(String, String)> {
@@ -1343,8 +1345,9 @@ fn echoed_key_forms() -> Vec<(String, String)> {
     let url_safe = |form: String| form.replace('+', "-").replace('/', "_");
     let mut forms = vec![
         ("plain".to_owned(), ECHOED_KEY.to_owned()),
-        ("percent".to_owned(), "echoed%2Bgateway%2Fkey%3F%3F%3F".to_owned()),
-        ("percent-partial-lowercase".to_owned(), "echoed%2bgateway/key%3f??".to_owned()),
+        ("percent".to_owned(), "echoed%2Bgateway%2Fkey%3D%2541%3F%3F%3F".to_owned()),
+        ("percent-partial-lowercase".to_owned(), "echoed%2bgateway/key=%41%3f??".to_owned()),
+        ("percent-sign-only".to_owned(), "echoed+gateway/key=%2541???".to_owned()),
         ("base64".to_owned(), crate::tools::base64(key)),
         ("base64-url-unpadded".to_owned(), url_safe(crate::tools::base64(key)).trim_end_matches('=').to_owned()),
     ];
