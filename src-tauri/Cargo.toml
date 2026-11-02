@@ -11,10 +11,10 @@ name = "materialize_3d_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
-# Tauri crates stay on one release line. The 2.12 runtime crates fall inside
-# tauri 2.11's version ranges but do not compile against it, so every crate of
-# the line is bounded here; patch releases within the line still update.
-tauri-build = { version = "~2.6.3", features = [] }
+# Tauri crates stay on one release line. A newer line's runtime crates can fall
+# inside an older tauri's version ranges without compiling against it, so every
+# crate of the line is bounded here; patch releases within the line still update.
+tauri-build = { version = "~2.7.4", features = [] }
 
 [features]
 # Verification harness for driving the app on macOS; never enabled in release builds.
@@ -27,12 +27,12 @@ linux-cad-test = []
 log = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tauri = { version = "~2.11.6", features = ["devtools", "unstable"] }
-tauri-runtime = "~2.11.3"
-tauri-runtime-wry = "~2.11.4"
-tauri-utils = "~2.9.3"
-tauri-macros = "~2.6.3"
-tauri-codegen = "~2.6.3"
+tauri = { version = "~2.12.5", features = ["devtools", "unstable"] }
+tauri-runtime = "~2.12.2"
+tauri-runtime-wry = "~2.12.3"
+tauri-utils = "~2.10.2"
+tauri-macros = "~2.7.4"
+tauri-codegen = "~2.7.4"
 tauri-plugin-log = "2"
 tauri-plugin-opener = "2"
 rumqttc = { version = "0.25", features = ["use-rustls"] }
@@ -59,8 +59,7 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 uuid = { version = "1", features = ["v4"] }
 tauri-plugin-notification = "2"
 tauri-plugin-dialog = "~2.6.0"
-# 2.13 and later require tauri 2.12, so this stays on the tauri 2.11 line above. The zip feature only
-# unpacks Windows installers and pulls in zip 4, which carries advisories. macOS updates are .tar.gz.
+# The zip feature only unpacks Windows installers and pulls in zip 4, which carries advisories. macOS updates are .tar.gz.
 tauri-plugin-updater = { version = "~2.12.0", default-features = false, features = ["rustls-tls", "system-proxy"] }
 
 # fabrication
@@ -89,9 +88,16 @@ subtle = "2"
 jsonschema = { version = "0.33", default-features = false }
 rcgen = "0.14.10"
 rig = { version = "=0.42.0", features = ["test-utils"] }
-tauri = { version = "~2.11.6", features = ["test"] }
+tauri = { version = "~2.12.5", features = ["test"] }
 # Generates src/types/generated.ts from the Rust types the frontend reads; see tools::frontend_types.
 ts-rs = "12"
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+gtk = "0.18"
+socket2 = "0.6"
+# Also the floor for the wry that tauri runs: 0.57.1 gives each Linux download its own failure state
+# (#102), and tauri-runtime-wry 2.12 still accepts 0.57.0.
+wry = { version = "0.57.1", default-features = false }
 
 # OS-native credential store: Keychain (macOS), Credential Manager (Windows),
 # Secret Service (Linux).
