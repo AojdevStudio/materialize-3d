@@ -58,18 +58,66 @@ pub struct ImportResult {
 
 #[derive(Debug, Default)]
 struct PendingDownloads {
-    by_url: HashMap<String, PathBuf>,
+    by_url: HashMap<String, UrlDownloads>,
+}
+
+/// The transfers of one URL that have not all finished. Every start lands in the first start's folder.
+#[derive(Debug)]
+struct UrlDownloads {
+    folder: PathBuf,
+    reserved: Vec<PathBuf>,
+    in_flight: usize,
 }
 
 impl PendingDownloads {
+    /// Reserves a destination no file and no other transfer holds. WebKitGTK and WebKit refuse an existing one.
     fn start(&mut self, url: &str, folder: &Path, filename: &str) -> PathBuf {
-        let destination = folder.join(filename);
-        self.by_url.insert(url.into(), destination.clone());
+        let folder = self
+            .by_url
+            .get(url)
+            .map_or_else(|| folder.to_path_buf(), |downloads| downloads.folder.clone());
+        let name = Path::new(filename);
+        let stem = name.file_stem().unwrap_or(name.as_os_str()).to_string_lossy();
+        let extension = name.extension().map(|extension| format!(".{}", extension.to_string_lossy()));
+        let mut destination = folder.join(filename);
+        for copy in 1.. {
+            let taken = destination.exists()
+                || self.by_url.values().any(|downloads| downloads.reserved.contains(&destination));
+            if !taken {
+                break;
+            }
+            destination = folder.join(format!("{stem} ({copy}){}", extension.as_deref().unwrap_or_default()));
+        }
+
+        let downloads = self.by_url.entry(url.into()).or_insert_with(|| UrlDownloads {
+            folder,
+            reserved: Vec::new(),
+            in_flight: 0,
+        });
+        downloads.reserved.push(destination.clone());
+        downloads.in_flight += 1;
         destination
     }
 
-    fn finish(&mut self, url: &str, path: Option<PathBuf>, _success: bool) -> Option<PathBuf> {
-        path.or_else(|| self.by_url.remove(url))
+    /// Resolves where a finished transfer landed and frees the URL once all its transfers finished.
+    fn finish(&mut self, url: &str, path: Option<PathBuf>, success: bool) -> Option<PathBuf> {
+        let Some(downloads) = self.by_url.get_mut(url) else {
+            return path;
+        };
+        downloads.in_flight -= 1;
+        let landed = match path {
+            Some(path) => {
+                downloads.reserved.retain(|reserved| reserved != &path);
+                Some(path)
+            }
+            // A failed WebKitGTK finish and every macOS finish carry no path. Only a lone reservation names it.
+            None if success && downloads.reserved.len() == 1 => downloads.reserved.pop(),
+            None => None,
+        };
+        if downloads.in_flight == 0 {
+            self.by_url.remove(url);
+        }
+        landed
     }
 }
 
@@ -383,6 +431,8 @@ fn handle_download<R: Runtime>(
     match event {
         DownloadEvent::Requested { url, destination } => {
             let reserved = download_target(app, state, &url).and_then(|(folder, filename)| {
+                fs::create_dir_all(&folder)
+                    .map_err(|error| format!("failed to create MakerWorld import directory: {error}"))?;
                 let mut pending = service
                     .pending_downloads
                     .lock()
@@ -391,12 +441,6 @@ fn handle_download<R: Runtime>(
             });
             match reserved {
                 Ok(path) => {
-                    if let Some(parent) = path.parent() {
-                        if let Err(error) = fs::create_dir_all(parent) {
-                            log::warn!("failed to create MakerWorld import directory: {error}");
-                            return false;
-                        }
-                    }
                     *destination = path;
                     log::info!("makerworld download requested: {url}");
                 }
@@ -834,7 +878,7 @@ mod webkitgtk_downloads;
 
 #[cfg(test)]
 mod tests {
-    use super::{classify_page_kind, infer_download_filename, sanitize_model, slugify};
+    use super::{classify_page_kind, infer_download_filename, sanitize_model, slugify, PendingDownloads};
     use crate::state::{MakerWorldModel, MAKERWORLD_HOME_URL, MakerWorldPageKind};
     use url::Url;
 
@@ -867,6 +911,25 @@ mod tests {
         assert_eq!(sanitize_model(with_rating(4.9)).rating, Some(4.9));
         assert_eq!(sanitize_model(with_rating(233.0)).rating, None);
         assert_eq!(sanitize_model(with_rating(-1.0)).rating, None);
+    }
+
+    #[test]
+    fn a_pathless_finish_names_its_file_only_while_the_url_holds_one_reservation() {
+        let downloads = tempfile::tempdir().unwrap();
+        let first = downloads.path().join("first");
+        let mut pending = PendingDownloads::default();
+        let url = "https://makerworld.com/download/files/hook.3mf";
+
+        assert_eq!(pending.start(url, &first, "hook.3mf"), first.join("hook.3mf"));
+        assert_eq!(pending.finish(url, None, true), Some(first.join("hook.3mf")));
+        assert!(pending.by_url.is_empty());
+
+        pending.start(url, &first, "hook.3mf");
+        let second = pending.start(url, &downloads.path().join("second"), "hook.3mf");
+        assert_eq!(second, first.join("hook (1).3mf"), "a later start lands in the first start's folder");
+        assert_eq!(pending.finish(url, None, true), None, "two transfers, a pathless finish is not guessed");
+        assert_eq!(pending.finish(url, None, true), None);
+        assert!(pending.by_url.is_empty());
     }
 
     #[test]
