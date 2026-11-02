@@ -1290,53 +1290,156 @@ async fn a_gateway_redirect_is_not_followed() {
     }
 }
 
-const ECHOED_KEY: &str = "echoed-gateway-key";
+/// Every log record of the test binary and the thread that wrote it. Each test
+/// runs on its own thread, so a test finds its own records by thread.
+struct Logs(Mutex<Vec<(std::thread::ThreadId, String, log::Level, String)>>);
 
-struct EchoedKeyLogs(Mutex<Vec<(String, log::Level, String)>>);
-
-impl log::Log for EchoedKeyLogs {
+impl log::Log for Logs {
     fn enabled(&self, _: &log::Metadata<'_>) -> bool {
         true
     }
 
     fn log(&self, record: &log::Record<'_>) {
-        let line = record.args().to_string();
-        if line.contains(ECHOED_KEY) {
-            self.0.lock().expect("logs").push((record.target().to_owned(), record.level(), line));
-        }
+        let entry = (std::thread::current().id(), record.target().to_owned(), record.level(), record.args().to_string());
+        self.0.lock().expect("logs").push(entry);
     }
 
     fn flush(&self) {}
 }
 
-static ECHOED_KEY_LOGS: EchoedKeyLogs = EchoedKeyLogs(Mutex::new(Vec::new()));
+static LOGS: Logs = Logs(Mutex::new(Vec::new()));
+
+fn capture_logs() -> &'static Logs {
+    static INSTALL: std::sync::Once = std::sync::Once::new();
+    INSTALL.call_once(|| {
+        log::set_logger(&LOGS).expect("the only logger of the test binary");
+        log::set_max_level(log::LevelFilter::Trace);
+    });
+    &LOGS
+}
+
+fn kept_by_app_log(target: &str, level: log::Level) -> bool {
+    app_log_keeps(&log::Metadata::builder().target(target).level(level).build())
+}
+
+fn failed_turn_lines(logs: &Logs) -> Vec<String> {
+    let here = std::thread::current().id();
+    let logs = logs.0.lock().expect("logs");
+    logs.iter()
+        .filter(|(thread, target, level, line)| {
+            *thread == here && kept_by_app_log(target, *level) && line.starts_with("agent turn failed")
+        })
+        .map(|(.., line)| line.clone())
+        .collect()
+}
+
+/// Its percent-encoding differs from it, and its base64 holds a `+` or `/` at
+/// every byte offset, so the URL-safe forms differ from the standard ones. Its
+/// `%` comes before hex digits, so a `%` in a reply can start the key's `%`
+/// written as itself or as `%25`.
+const ECHOED_KEY: &str = "echoed+gateway/key=%41???";
+
+/// The key in each form a gateway's error reply might quote it in, by label.
+fn echoed_key_forms() -> Vec<(String, String)> {
+    let key = ECHOED_KEY.as_bytes();
+    let url_safe = |form: String| form.replace('+', "-").replace('/', "_");
+    let mut forms = vec![
+        ("plain".to_owned(), ECHOED_KEY.to_owned()),
+        ("percent".to_owned(), "echoed%2Bgateway%2Fkey%3D%2541%3F%3F%3F".to_owned()),
+        ("percent-partial-lowercase".to_owned(), "echoed%2bgateway/key=%41%3f??".to_owned()),
+        ("percent-sign-only".to_owned(), "echoed+gateway/key=%2541???".to_owned()),
+        ("base64".to_owned(), crate::tools::base64(key)),
+        ("base64-url-unpadded".to_owned(), url_safe(crate::tools::base64(key)).trim_end_matches('=').to_owned()),
+    ];
+    for offset in 0..3 {
+        let blob = crate::tools::base64(&[&b"ab"[..offset], key, b"!"].concat());
+        forms.push((format!("base64-in-blob-at-{offset}"), blob.clone()));
+        forms.push((format!("base64-url-in-blob-at-{offset}"), url_safe(blob)));
+    }
+    forms
+}
 
 #[tokio::test]
 async fn a_gateway_that_echoes_the_key_never_shows_it_in_chat_or_the_app_log() {
-    log::set_logger(&ECHOED_KEY_LOGS).expect("the only logger of the test binary");
-    log::set_max_level(log::LevelFilter::Trace);
+    let captured = capture_logs();
+    let forms = echoed_key_forms();
+    let quoted: String = forms.iter().map(|(label, form)| format!("<{label}>{form}</{label}> ")).collect();
     for (provider, typed_path) in [(Provider::Anthropic, ""), (Provider::Openai, "/v1")] {
-        let (gateway, server) = serve(axum::Router::new().fallback(|headers: axum::http::HeaderMap| async move {
-            let message = format!("headers: {headers:?}");
-            (axum::http::StatusCode::BAD_REQUEST, axum::Json(json!({ "error": { "type": "invalid_request_error", "message": message } })))
+        let quoted = quoted.clone();
+        let (gateway, server) = serve(axum::Router::new().fallback(move |headers: axum::http::HeaderMap| async move {
+            let message = format!("model gateway-model not found. {quoted}headers: {headers:?}");
+            (axum::http::StatusCode::NOT_FOUND, axum::Json(json!({ "error": { "type": "not_found_error", "message": message } })))
         }))
         .await;
         let h = harness();
         let model = choose_model(provider, "gateway-model".into(), Some(ECHOED_KEY.into()), Some(&format!("{gateway}{typed_path}")));
         let events = Turn::new(&h, "t1", Arc::new(FakeActions::default()), None).run("hi", model).await;
         server.abort();
+        assert_framed(&events);
         let Some(AgentEvent::Error { kind: AgentErrorKind::Provider, message }) = events.last() else {
             panic!("{provider:?} ends in a provider error: {events:?}");
         };
-        assert!(message.contains("400 Bad Request") && message.contains("headers:"), "{provider:?} keeps the reply: {message}");
-        assert!(!message.contains(ECHOED_KEY), "{provider:?} shows the key in chat: {message}");
+        println!("{provider:?} echo in chat: {message}");
+        assert!(message.contains("model gateway-model not found") && message.contains("headers:"), "{provider:?} keeps the reply: {message}");
+        for (label, form) in &forms {
+            assert!(!message.contains(form.as_str()), "{provider:?} shows the {label} key in chat: {message}");
+            let (open, close) = (format!("<{label}>"), format!("</{label}>"));
+            let start = message.find(&open).unwrap_or_else(|| panic!("{provider:?} keeps the {label} quote: {message}")) + open.len();
+            let quote = &message[start..start + message[start..].find(&close).expect("closing label")];
+            let around = quote.replacen("[API key]", "", 1);
+            assert!(quote.contains("[API key]") && around.len() < 8, "{provider:?} {label} quote keeps only its own bytes: {quote}");
+        }
     }
-    let logged = ECHOED_KEY_LOGS.0.lock().expect("logs");
-    assert!(!logged.is_empty(), "rig logs the gateway's reply");
-    for (target, level, line) in logged.iter() {
-        let record = log::Metadata::builder().target(target).level(*level).build();
-        assert!(!app_log_keeps(&record), "the app log keeps the key: {target} {line}");
+    let quoting: Vec<_> = captured.0.lock().expect("logs").iter()
+        .filter(|(.., line)| forms.iter().any(|(_, form)| line.contains(form.as_str())))
+        .cloned()
+        .collect();
+    assert!(!quoting.is_empty(), "rig logs the gateway's reply");
+    for (_, target, level, line) in quoting {
+        assert!(!kept_by_app_log(&target, level), "the app log keeps the key: {target} {line}");
     }
+    assert_eq!(
+        failed_turn_lines(captured),
+        ["agent turn failed: kind=Provider provider=anthropic http_status=404", "agent turn failed: kind=Provider provider=openai http_status=404"],
+        "one safe line per failed turn"
+    );
+}
+
+/// A gateway's stream that sends an event rig does not know, then a known
+/// event it cannot read, fails the turn once and leaves a safe line in the
+/// app log. The unknown event's name came from the gateway, so it stays out.
+#[tokio::test]
+async fn a_broken_stream_fails_the_turn_once_and_leaves_a_safe_app_log_line() {
+    let logs = capture_logs();
+    for (provider, typed_path, stream) in [
+        (
+            Provider::Anthropic,
+            "",
+            "event: gateway_mystery\ndata: {\"type\":\"gateway_mystery\"}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\"}\n\n",
+        ),
+        (Provider::Openai, "/v1", "data: {\"type\":\"response.gateway_mystery\"}\n\ndata: {\"type\":\"response.output_text.delta\"}\n\n"),
+    ] {
+        let (gateway, server) = serve(axum::Router::new().fallback(move || async move {
+            ([(axum::http::header::CONTENT_TYPE, "text/event-stream")], stream)
+        }))
+        .await;
+        let h = harness();
+        let model = choose_model(provider, "gateway-model".into(), Some("gateway-key".into()), Some(&format!("{gateway}{typed_path}")));
+        let events = Turn::new(&h, "t1", Arc::new(FakeActions::default()), None).run("hi", model).await;
+        server.abort();
+        assert_framed(&events);
+        assert!(matches!(events.last(), Some(AgentEvent::Error { kind: AgentErrorKind::Provider, .. })), "{events:?}");
+    }
+    let naming: Vec<_> = logs.0.lock().expect("logs").iter().filter(|(.., line)| line.contains("gateway_mystery")).cloned().collect();
+    assert!(!naming.is_empty(), "rig warns about the unknown event");
+    for (_, target, level, line) in naming {
+        assert!(!kept_by_app_log(&target, level), "the app log keeps the gateway's event name: {target} {line}");
+    }
+    assert_eq!(
+        failed_turn_lines(logs),
+        ["agent turn failed: kind=Provider provider=anthropic http_status=none", "agent turn failed: kind=Provider provider=openai http_status=none"],
+        "one safe line per failed turn"
+    );
 }
 
 /// Polls a provider stream until it ends; the request goes out on the first poll.

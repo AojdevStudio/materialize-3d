@@ -17,7 +17,7 @@ use rig::providers::{anthropic, openai};
 use rig::streaming::{StreamedAssistantContent, StreamingChat};
 use serde_json::json;
 
-use super::commands::BaseUrl;
+use super::commands::{provider_id, BaseUrl};
 use super::prompt::system_prompt;
 use super::protocol::{AgentErrorKind, AgentEvent, Provider, ToolCallStatus};
 use super::store::{self, StoreError, TextSegment};
@@ -36,6 +36,7 @@ const ANTHROPIC_MAX_TOKENS: u64 = 8_192;
 
 /// Whether the app log keeps a record. It leaves out rig's records, because rig
 /// logs provider replies and a gateway's reply can quote the request's API key.
+/// A failed turn logs its own line instead (see [`run_turn`]).
 pub fn app_log_keeps(record: &log::Metadata<'_>) -> bool {
     !matches!(record.target().split("::").next(), Some("rig" | "rig_core"))
 }
@@ -53,9 +54,9 @@ pub enum ModelChoice {
 }
 
 impl ModelChoice {
-    fn api_key(&self) -> Option<&str> {
+    fn provider_and_key(&self) -> Option<(Provider, &str)> {
         match self {
-            ModelChoice::Provider { api_key, .. } => Some(api_key),
+            ModelChoice::Provider { provider, api_key, .. } => Some((*provider, api_key)),
             #[cfg(test)]
             ModelChoice::Scripted(_) | ModelChoice::Responding(_) => None,
         }
@@ -67,32 +68,100 @@ impl ModelChoice {
 pub enum TurnEnd {
     Finished,
     Cancelled,
-    Failed { kind: AgentErrorKind, message: String },
+    Failed { kind: AgentErrorKind, message: String, http_status: Option<u16> },
 }
 
 impl TurnEnd {
     pub fn failed(kind: AgentErrorKind, message: impl Into<String>) -> Self {
-        TurnEnd::Failed { kind, message: message.into() }
+        TurnEnd::Failed { kind, message: message.into(), http_status: None }
     }
 
     fn event(&self) -> AgentEvent {
         match self {
             TurnEnd::Finished => AgentEvent::TurnFinished,
             TurnEnd::Cancelled => AgentEvent::TurnCancelled,
-            TurnEnd::Failed { kind, message } => AgentEvent::Error { kind: *kind, message: message.clone() },
+            TurnEnd::Failed { kind, message, .. } => AgentEvent::Error { kind: *kind, message: message.clone() },
         }
     }
 
     /// A gateway's error reply can quote the request's headers, so a failure
     /// never shows the key the turn was sent with.
-    fn without_api_key(self, api_key: Option<&str>) -> Self {
-        match (self, api_key) {
-            (TurnEnd::Failed { kind, message }, Some(api_key)) => {
-                TurnEnd::Failed { kind, message: message.replace(api_key, "[API key]") }
+    fn without_api_key(self, api_key: &str) -> Self {
+        match self {
+            TurnEnd::Failed { kind, message, http_status } => {
+                TurnEnd::Failed { kind, message: without_key(&message, api_key), http_status }
             }
-            (end, _) => end,
+            end => end,
         }
     }
+}
+
+/// `message` with `key` replaced by `[API key]` wherever it shows as written,
+/// percent-encoded in whole or in part, or base64-encoded (standard or
+/// URL-safe, padded or not, alone or inside a longer blob). Matching cannot
+/// find a key split into pieces or encoded any other way.
+fn without_key(message: &str, key: &str) -> String {
+    let mut message = without_percent_encoded_key(message, key.as_bytes());
+    for form in base64_forms(key.as_bytes()) {
+        message = message.replace(&form, "[API key]");
+    }
+    message
+}
+
+/// A key's `%` matches both as itself and as the start of `%25`, so a match
+/// keeps every place it can reach and ends at the farthest.
+fn without_percent_encoded_key(message: &str, key: &[u8]) -> String {
+    let bytes = message.as_bytes();
+    let hex = |digit: u8| char::from(digit).to_digit(16);
+    let after = |at: usize, byte: u8| {
+        let written = (bytes.get(at) == Some(&byte)).then_some(at + 1);
+        let encoded = match bytes.get(at..at + 3) {
+            Some([b'%', high, low]) if hex(*high).zip(hex(*low)).is_some_and(|(high, low)| high * 16 + low == u32::from(byte)) => {
+                Some(at + 3)
+            }
+            _ => None,
+        };
+        written.into_iter().chain(encoded)
+    };
+    let mut kept = String::with_capacity(message.len());
+    let mut copied = 0;
+    for (at, _) in message.char_indices() {
+        if at < copied {
+            continue;
+        }
+        let ends = key.iter().try_fold(vec![at], |ends, &byte| {
+            let mut next: Vec<usize> = ends.into_iter().flat_map(|end| after(end, byte)).collect();
+            next.sort_unstable();
+            next.dedup();
+            (!next.is_empty()).then_some(next)
+        });
+        if let Some(&end) = ends.as_ref().and_then(|ends| ends.last()) {
+            kept.push_str(&message[copied..at]);
+            kept.push_str("[API key]");
+            copied = end;
+        }
+    }
+    kept.push_str(&message[copied..]);
+    kept
+}
+
+/// The base64 text that `key` alone decides, longest first. Inside a longer
+/// blob the key can start at any of the 3 byte offsets of a base64 group, and
+/// the characters it shares with its neighbours change, so each offset adds
+/// the characters between those.
+fn base64_forms(key: &[u8]) -> Vec<String> {
+    let alone = crate::tools::base64(key);
+    let mut forms = vec![alone.trim_end_matches('=').to_owned(), alone];
+    for offset in 0..3 {
+        let shifted = crate::tools::base64(&[&[0; 2][..offset], key].concat());
+        forms.extend(shifted.get((8 * offset).div_ceil(6)..8 * (offset + key.len()) / 6).map(str::to_owned));
+    }
+    let url_safe: Vec<String> = forms.iter().map(|form| form.replace('+', "-").replace('/', "_")).collect();
+    forms.extend(url_safe);
+    // A shorter form turns up in ordinary text. Only a key under 7 bytes has one.
+    forms.retain(|form| form.len() >= 8);
+    forms.sort_by_key(|form| std::cmp::Reverse(form.len()));
+    forms
 }
 
 impl From<StoreError> for TurnEnd {
@@ -103,14 +172,14 @@ impl From<StoreError> for TurnEnd {
 
 impl From<StreamingError> for TurnEnd {
     fn from(err: StreamingError) -> Self {
-        let kind = match &err {
-            StreamingError::Completion(_) => AgentErrorKind::Provider,
+        let (kind, status) = match &err {
+            StreamingError::Completion(completion) => (AgentErrorKind::Provider, completion.provider_response_status()),
             StreamingError::Prompt(prompt) => match prompt.as_ref() {
-                PromptError::CompletionError(_) => AgentErrorKind::Provider,
-                _ => AgentErrorKind::Internal,
+                PromptError::CompletionError(completion) => (AgentErrorKind::Provider, completion.provider_response_status()),
+                _ => (AgentErrorKind::Internal, None),
             },
         };
-        TurnEnd::failed(kind, err.to_string())
+        TurnEnd::Failed { kind, message: err.to_string(), http_status: status.map(|status| status.as_u16()) }
     }
 }
 
@@ -163,20 +232,35 @@ fn build_agent(model: ModelChoice, scope: &Arc<TurnScope>, kinds: &[&'static dyn
 /// and tool events, then exactly one of `TurnFinished`, `TurnCancelled`, or
 /// `Error`. `model` is `Err` when the turn cannot start (for example, no API
 /// key); nothing is sent or stored then.
+///
+/// A failed turn also writes one app log line. It holds only what the app
+/// itself names (the error kind and provider) and the numeric HTTP status,
+/// because any text from a gateway can quote the key.
 pub async fn run_turn(scope: Arc<TurnScope>, text: String, model: Result<ModelChoice, TurnEnd>) {
     (scope.emit)(AgentEvent::TurnStarted {
         conversation_id: scope.conversation_id.clone(),
         turn_id: scope.turn_id.clone(),
     });
     let mut user_message = None;
-    let end = match model {
+    let (provider, end) = match model {
         Ok(model) => {
-            let api_key = model.api_key().map(str::to_owned);
-            drive(&scope, &text, model, &mut user_message).await.err().unwrap_or(TurnEnd::Finished).without_api_key(api_key.as_deref())
+            let sent_to = model.provider_and_key().map(|(provider, api_key)| (provider, api_key.to_owned()));
+            let end = drive(&scope, &text, model, &mut user_message).await.err().unwrap_or(TurnEnd::Finished);
+            match sent_to {
+                Some((provider, api_key)) => (Some(provider), end.without_api_key(&api_key)),
+                None => (None, end),
+            }
         }
-        Err(end) => end,
+        Err(end) => (None, end),
     };
     let end = settle(&scope, &text, user_message.as_deref(), end).await;
+    if let TurnEnd::Failed { kind, http_status, .. } = &end {
+        log::warn!(
+            "agent turn failed: kind={kind:?} provider={} http_status={}",
+            provider.map_or("none", provider_id),
+            http_status.map_or_else(|| "none".to_owned(), |status| status.to_string()),
+        );
+    }
     (scope.emit)(end.event());
 }
 
