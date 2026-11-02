@@ -632,7 +632,7 @@ fn prepare_download_destination<R: Runtime>(
 fn infer_download_filename(url: &Url, model: Option<&MakerWorldModel>) -> String {
     if let Some(segment) = url
         .path_segments()
-        .and_then(|segments| segments.last())
+        .and_then(|mut segments| segments.next_back())
         .filter(|segment| !segment.is_empty())
     {
         let cleaned = segment.split('?').next().unwrap_or(segment);

@@ -139,7 +139,7 @@ fn units_scale_to_the_um_grid_and_a_3mf_must_state_the_same_unit() {
     assert_eq!(bounds(&read(&inch, Units::In).expect("inch")), [[0, 0, 0], [1_016_000, 1_016_000, 330_200]]);
     assert_eq!(
         read(&inch, Units::Mm),
-        Err(MeshImportError::UnitMismatch { found: "inch".into(), given: "mm" }),
+        Err(MeshImportError::UnitMismatch { found: "inch", given: "mm" }),
         "a 3MF in inches read as millimeters is refused"
     );
     let unstated = three_mf(&model("", &mesh_object(1, &piece), "<item objectid=\"1\"/>"));

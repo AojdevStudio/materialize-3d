@@ -60,7 +60,7 @@ mod tests {
             .map(|corner| corner.as_str().expect("corner"))
             .collect();
         let [x, y] = [P2S_04.bed[0], P2S_04.bed[1]].map(|v| v / UM_PER_MM);
-        assert_eq!(area, [format!("0x0"), format!("{x}x0"), format!("{x}x{y}"), format!("0x{y}")]);
+        assert_eq!(area, ["0x0".to_string(), format!("{x}x0"), format!("{x}x{y}"), format!("0x{y}")]);
         assert_eq!(template["printable_height"], (P2S_04.bed[2] / UM_PER_MM).to_string());
         let filaments = template["filament_settings_id"].as_array().expect("filaments").len();
         assert_eq!(filaments, usize::from(P2S_04.slots));

@@ -412,7 +412,7 @@ fn restart_marks_interrupted_builds_failed_and_they_never_finish_later() {
     let dir = tempfile::tempdir().expect("tempdir");
     let mut conn = db();
     let revision = started(claim(&mut conn, &request("a", None, Actor::Agent)).expect("claim"));
-    assert_eq!(unfinished_builds(&conn).expect("unfinished"), [revision.build_id.clone()]);
+    assert_eq!(unfinished_builds(&conn).expect("unfinished"), std::slice::from_ref(&revision.build_id));
     assert_eq!(reconcile_interrupted(&conn).expect("reconcile"), 1);
     let reloaded = get(&conn, &revision.id).expect("get");
     assert!(matches!(reloaded.build, BuildState::Failed { ref reason, .. } if reason.starts_with("interrupted")));
@@ -442,7 +442,8 @@ mod legacy {
     use super::*;
 
     /// Inserts a schema-4 revision row; `artifacts` is its stored JSON.
-    fn insert(conn: &Connection, id: &str, lineage: &str, number: u32, build_key: &Sha256Hex, status: &str, approval: &str, artifacts: Option<String>) {
+    fn insert(conn: &Connection, lineage: &str, number: u32, build_key: &Sha256Hex, status: &str, approval: &str, artifacts: Option<String>) {
+        let id = format!("{lineage}-{number}");
         let parent = (number > 1).then(|| format!("{lineage}-{}", number - 1));
         conn.execute(
             "INSERT INTO sign_revisions (id, lineage_id, number, parent_id, title, spec_json, spec_sha256, build_key,
@@ -476,9 +477,9 @@ mod legacy {
         let key = sha("same spec");
         // The same build key in two designs with different package bytes: the
         // old index allowed it, and the new one must not refuse the migration.
-        insert(&conn, "a-1", "a", 1, &key, "verified", "approved", Some(artifacts_json(dir.path(), b"one")));
-        insert(&conn, "a-2", "a", 2, &sha("other"), "failed", "pending", None);
-        insert(&conn, "b-1", "b", 1, &key, "verified", "void", Some(artifacts_json(dir.path(), b"two")));
+        insert(&conn, "a", 1, &key, "verified", "approved", Some(artifacts_json(dir.path(), b"one")));
+        insert(&conn, "a", 2, &sha("other"), "failed", "pending", None);
+        insert(&conn, "b", 1, &key, "verified", "void", Some(artifacts_json(dir.path(), b"two")));
         migrate_to_6(&mut conn);
 
         let a2 = get(&conn, &RevisionId("a-2".into())).expect("a-2");
@@ -498,9 +499,9 @@ mod legacy {
         let dir = tempfile::tempdir().expect("tempdir");
         let mut conn = schema_4();
         let (intact, changed) = (sha("intact spec"), sha("changed spec"));
-        insert(&conn, "a-1", "a", 1, &intact, "verified", "approved", Some(artifacts_json(dir.path(), b"intact")));
+        insert(&conn, "a", 1, &intact, "verified", "approved", Some(artifacts_json(dir.path(), b"intact")));
         let tampered = artifacts_json(dir.path(), b"before");
-        insert(&conn, "b-1", "b", 1, &changed, "verified", "approved", Some(tampered.clone()));
+        insert(&conn, "b", 1, &changed, "verified", "approved", Some(tampered.clone()));
         let path: String = serde_json::from_str::<serde_json::Value>(&tampered).expect("json")["package_path"].as_str().expect("path").into();
         fs::write(path, b"after").expect("tamper");
         migrate_to_6(&mut conn);
@@ -535,10 +536,10 @@ mod legacy {
         let dir = tempfile::tempdir().expect("tempdir");
         let mut conn = schema_4();
         let key = sha("shared spec");
-        insert(&conn, "a-1", "a", 1, &key, "verified", "pending", Some(artifacts_json(dir.path(), b"older, intact")));
+        insert(&conn, "a", 1, &key, "verified", "pending", Some(artifacts_json(dir.path(), b"older, intact")));
         let tampered = artifacts_json(dir.path(), b"newer, before");
-        insert(&conn, "b-1", "b", 1, &key, "verified", "pending", Some(tampered.clone()));
-        insert(&conn, "c-1", "c", 1, &sha("another spec"), "verified", "pending", Some(artifacts_json(dir.path(), b"other")));
+        insert(&conn, "b", 1, &key, "verified", "pending", Some(tampered.clone()));
+        insert(&conn, "c", 1, &sha("another spec"), "verified", "pending", Some(artifacts_json(dir.path(), b"other")));
         let path: String = serde_json::from_str::<serde_json::Value>(&tampered).expect("json")["package_path"].as_str().expect("path").into();
         fs::write(path, b"newer, after").expect("tamper");
         migrate_to_6(&mut conn);

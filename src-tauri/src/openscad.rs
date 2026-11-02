@@ -167,10 +167,10 @@ impl OpenScadService {
 
         // Read and parse the param JSON
         let param_json = std::fs::read_to_string(&param_path).map_err(|e| {
-            OpenScadError::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("failed to read param file {}: {e}", param_path.display()),
-            ))
+            OpenScadError::Io(std::io::Error::other(format!(
+                "failed to read param file {}: {e}",
+                param_path.display()
+            )))
         })?;
 
         let result: ScadParamResult = serde_json::from_str(&param_json).map_err(|e| {
@@ -216,8 +216,7 @@ impl OpenScadService {
             None => {
                 let tmp = TempDir::new()?;
                 // Persist beyond this scope so the STL file survives
-                let p = tmp.keep().join("output.stl");
-                p
+                tmp.keep().join("output.stl")
             }
         };
 

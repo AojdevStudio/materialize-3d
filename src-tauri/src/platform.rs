@@ -146,10 +146,8 @@ pub fn detect_openscad() -> Option<PathBuf> {
 pub fn bambu_profile_base() -> Option<PathBuf> {
     let base = if cfg!(target_os = "macos") {
         dirs::home_dir()?.join("Library/Application Support")
-    } else if cfg!(windows) {
-        dirs::config_dir()? // %APPDATA%
     } else {
-        dirs::config_dir()? // ~/.config
+        dirs::config_dir()? // %APPDATA% on Windows, ~/.config elsewhere
     };
 
     for app in ["BambuStudio", "OrcaSlicer"] {

@@ -433,6 +433,7 @@ pub fn get_all_history(conn: &Connection) -> Result<Vec<PrintHistoryRecord>, Str
 }
 
 /// Get a single print history record by ID.
+#[cfg(test)]
 pub fn get_history_item(conn: &Connection, id: &str) -> Result<Option<PrintHistoryRecord>, String> {
     let mut stmt = conn
         .prepare(
@@ -1156,8 +1157,10 @@ mod tests {
         rows.unwrap().collect::<rusqlite::Result<_>>().unwrap()
     }
 
+    type BuildColumns = (String, String, String, Option<String>, Option<String>);
+
     /// Build state a migration must carry over unchanged, per revision id.
-    fn build_columns(conn: &Connection, sql: &str) -> Vec<(String, String, String, Option<String>, Option<String>)> {
+    fn build_columns(conn: &Connection, sql: &str) -> Vec<BuildColumns> {
         let mut stmt = conn.prepare(sql).unwrap();
         let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)));
         rows.unwrap().collect::<rusqlite::Result<_>>().unwrap()
