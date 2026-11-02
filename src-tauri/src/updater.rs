@@ -239,6 +239,9 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     use tauri::test::{mock_builder, mock_context, noop_assets, MockRuntime};
+    use tauri::Manager;
+
+    use crate::slicer::SlicerService;
 
     use super::*;
 
@@ -421,6 +424,78 @@ mod tests {
         let state = state_in(dir.path());
         let _installed = install_when_idle(&state, "0.2.1", "0.3.0", |_| {}, || Ok(())).await.expect("installed");
         assert!(state.builds.enter().is_none(), "the restart would kill a build that starts now");
+    }
+
+    /// An app whose OrcaSlicer is `/bin/sh`, so the STL it gets first is the slicer script. The
+    /// script touches `started`, waits for `release` or for the test's folder to go, then writes
+    /// the 3MF. A script written moments ago and run as its own executable races other test
+    /// threads' forks (ETXTBSY).
+    fn app_with_slow_slicer(dir: &Path) -> (tauri::App<MockRuntime>, PathBuf) {
+        let slicer = SlicerService { orca_cli_path: "/bin/sh".into(), profile_base_path: dir.join("profiles") };
+        let machine = slicer.resolve_profiles("0.20", "Bambu PLA Basic").expect("profiles").machine;
+        std::fs::create_dir_all(machine.parent().expect("machine dir")).expect("profile dir");
+        std::fs::write(&machine, "{}").expect("machine profile");
+        let stl = dir.join("model.stl");
+        let script = format!(
+            "for arg; do out=$arg; done\ntouch '{dir}/started'\nwhile [ ! -e '{dir}/release' ] && [ -d '{dir}' ]; do sleep 0.02; done\nprintf 3mf > \"$out\"\n",
+            dir = dir.display()
+        );
+        std::fs::write(&stl, script).expect("slicer script");
+        let app = mock_builder()
+            .manage(Arc::new(state_in(dir)))
+            .manage(slicer)
+            .build(mock_context(noop_assets()))
+            .expect("mock app");
+        (app, stl)
+    }
+
+    #[tokio::test]
+    async fn a_running_stl_slice_holds_the_install_and_restart_until_it_ends() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (app, stl) = app_with_slow_slicer(dir.path());
+        let state = app.state::<Arc<AppState>>();
+        let wait = std::time::Duration::from_millis(200);
+        let mut slice = std::pin::pin!(crate::commands::slice_model(
+            stl.display().to_string(),
+            None,
+            None,
+            app.state(),
+            app.state()
+        ));
+        assert!(tokio::time::timeout(wait, &mut slice).await.is_err(), "the slice waits for its release");
+        assert!(dir.path().join("started").exists(), "OrcaSlicer runs");
+
+        let installed = AtomicBool::new(false);
+        let mut update = std::pin::pin!(install_when_idle(&state, "0.2.1", "0.3.0", |_| {}, || {
+            installed.store(true, Ordering::SeqCst);
+            Ok(())
+        }));
+        assert!(tokio::time::timeout(wait, &mut update).await.is_err(), "the update waits while the slice runs");
+        assert!(!installed.load(Ordering::SeqCst), "nothing installs while a slice runs");
+
+        std::fs::write(dir.path().join("release"), "").expect("release");
+        let sliced = tokio::time::timeout(std::time::Duration::from_secs(10), &mut slice)
+            .await
+            .expect("the slice ends")
+            .expect("sliced");
+        assert!(sliced.output_file.exists(), "the 3MF is written before the update goes ahead");
+        let _installed =
+            tokio::time::timeout(wait, &mut update).await.expect("the update goes ahead once the slice ends").expect("installed");
+        assert!(installed.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn no_stl_slice_starts_while_an_update_installs() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (app, stl) = app_with_slow_slicer(dir.path());
+        let state = app.state::<Arc<AppState>>();
+        let _installed = install_when_idle(&state, "0.2.1", "0.3.0", |_| {}, || Ok(())).await.expect("installed");
+        std::fs::write(dir.path().join("release"), "").expect("release");
+        let error = crate::commands::slice_model(stl.display().to_string(), None, None, app.state(), app.state())
+            .await
+            .expect_err("the restart would kill a slice that starts now");
+        assert_eq!(error, "an update is installing and the app is about to restart. Slice again after it restarts.");
+        assert!(!dir.path().join("started").exists(), "OrcaSlicer never starts");
     }
 
     #[tokio::test]
