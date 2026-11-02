@@ -56,14 +56,26 @@ pub struct ImportResult {
     pub imported_files: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
-struct PendingDownload {
-    destination: PathBuf,
+#[derive(Debug, Default)]
+struct PendingDownloads {
+    by_url: HashMap<String, PathBuf>,
+}
+
+impl PendingDownloads {
+    fn start(&mut self, url: &str, folder: &Path, filename: &str) -> PathBuf {
+        let destination = folder.join(filename);
+        self.by_url.insert(url.into(), destination.clone());
+        destination
+    }
+
+    fn finish(&mut self, url: &str, path: Option<PathBuf>, _success: bool) -> Option<PathBuf> {
+        path.or_else(|| self.by_url.remove(url))
+    }
 }
 
 #[derive(Clone, Default)]
 pub struct MakerWorldService {
-    pending_downloads: Arc<Mutex<HashMap<String, PendingDownload>>>,
+    pending_downloads: Arc<Mutex<PendingDownloads>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -370,7 +382,14 @@ fn handle_download<R: Runtime>(
 ) -> bool {
     match event {
         DownloadEvent::Requested { url, destination } => {
-            match prepare_download_destination(app, state, &url) {
+            let reserved = download_target(app, state, &url).and_then(|(folder, filename)| {
+                let mut pending = service
+                    .pending_downloads
+                    .lock()
+                    .map_err(|error| format!("failed to lock pending downloads: {error}"))?;
+                Ok(pending.start(url.as_str(), &folder, &filename))
+            });
+            match reserved {
                 Ok(path) => {
                     if let Some(parent) = path.parent() {
                         if let Err(error) = fs::create_dir_all(parent) {
@@ -378,10 +397,7 @@ fn handle_download<R: Runtime>(
                             return false;
                         }
                     }
-                    *destination = path.clone();
-                    if let Ok(mut pending) = service.pending_downloads.lock() {
-                        pending.insert(url.to_string(), PendingDownload { destination: path });
-                    }
+                    *destination = path;
                     log::info!("makerworld download requested: {url}");
                 }
                 Err(error) => {
@@ -394,12 +410,9 @@ fn handle_download<R: Runtime>(
             }
         }
         DownloadEvent::Finished { url, path, success } => {
-            let final_path = if path.is_some() {
-                path
-            } else if let Ok(mut pending) = service.pending_downloads.lock() {
-                pending.remove(&url.to_string()).map(|pending| pending.destination)
-            } else {
-                None
+            let final_path = match service.pending_downloads.lock() {
+                Ok(mut pending) => pending.finish(url.as_str(), path, success),
+                Err(_) => path,
             };
 
             if success {
@@ -603,11 +616,11 @@ fn persist_import_metadata(
     Ok(model_dir)
 }
 
-fn prepare_download_destination<R: Runtime>(
+fn download_target<R: Runtime>(
     app: &AppHandle<R>,
     state: &Arc<AppState>,
     url: &Url,
-) -> Result<PathBuf, String> {
+) -> Result<(PathBuf, String), String> {
     let library_dir = library_root(app)?;
     fs::create_dir_all(&library_dir)
         .map_err(|error| format!("failed to create makerworld library root: {error}"))?;
@@ -626,7 +639,7 @@ fn prepare_download_destination<R: Runtime>(
         .unwrap_or_else(|| slugify("makerworld-import"));
     let filename = infer_download_filename(url, model.as_ref());
 
-    Ok(library_dir.join(folder_name).join(filename))
+    Ok((library_dir.join(folder_name), filename))
 }
 
 fn infer_download_filename(url: &Url, model: Option<&MakerWorldModel>) -> String {
