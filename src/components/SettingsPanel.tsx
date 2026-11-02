@@ -215,6 +215,10 @@ function AgentSection({ active }: { active: boolean }) {
   }, [status?.provider, savedAddress])
 
   useEffect(() => {
+    setApiKey('')
+  }, [status?.provider])
+
+  useEffect(() => {
     if (!active) return
     useAgentStore
       .getState()
