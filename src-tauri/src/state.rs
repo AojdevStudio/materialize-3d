@@ -125,18 +125,13 @@ pub struct LibraryModel {
 // ─── Print Queue Types ────────────────────────────────────────────────────────
 
 /// Status of a queued print job.
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[derive(Debug, Default, Serialize, Deserialize, Clone, PartialEq, Eq)]
 #[serde(rename_all = "snake_case", tag = "status")]
 pub enum QueueStatus {
+    #[default]
     Pending,
     Submitted,
     Failed { reason: String },
-}
-
-impl Default for QueueStatus {
-    fn default() -> Self {
-        Self::Pending
-    }
 }
 
 /// A job waiting in the print queue.
