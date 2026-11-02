@@ -56,14 +56,80 @@ pub struct ImportResult {
     pub imported_files: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
-struct PendingDownload {
-    destination: PathBuf,
+#[derive(Debug, Default)]
+struct PendingDownloads {
+    by_url: HashMap<String, UrlDownloads>,
+    refused: HashMap<String, usize>,
+}
+
+/// The transfers of one URL that have not all finished.
+#[derive(Debug, Default)]
+struct UrlDownloads {
+    reserved: Vec<PathBuf>,
+    in_flight: usize,
+}
+
+impl PendingDownloads {
+    /// Reserves a destination no file and no other transfer holds. WebKitGTK and WebKit refuse an existing one.
+    fn start(&mut self, url: &str, folder: &Path, filename: &str) -> PathBuf {
+        let name = Path::new(filename);
+        let stem = name.file_stem().unwrap_or(name.as_os_str()).to_string_lossy();
+        let extension = name.extension().map(|extension| format!(".{}", extension.to_string_lossy()));
+        let mut destination = folder.join(filename);
+        for copy in 1.. {
+            let taken = destination.exists()
+                || self.by_url.values().any(|downloads| downloads.reserved.contains(&destination));
+            if !taken {
+                break;
+            }
+            destination = folder.join(format!("{stem} ({copy}){}", extension.as_deref().unwrap_or_default()));
+        }
+
+        let downloads = self.by_url.entry(url.into()).or_default();
+        downloads.reserved.push(destination.clone());
+        downloads.in_flight += 1;
+        destination
+    }
+
+    /// WebKitGTK reports a refused start as a pathless failure, which must not count against an accepted transfer.
+    fn refuse(&mut self, url: &str) {
+        *self.refused.entry(url.into()).or_default() += 1;
+    }
+
+    /// Resolves where a finished transfer landed and frees the URL once all its transfers finished.
+    fn finish(&mut self, url: &str, path: Option<PathBuf>, success: bool) -> Option<PathBuf> {
+        if path.is_none() && !success {
+            if let Some(refused) = self.refused.get_mut(url) {
+                *refused -= 1;
+                if *refused == 0 {
+                    self.refused.remove(url);
+                }
+                return None;
+            }
+        }
+        let Some(downloads) = self.by_url.get_mut(url) else {
+            return path;
+        };
+        downloads.in_flight -= 1;
+        let landed = match path {
+            Some(path) => {
+                downloads.reserved.retain(|reserved| reserved != &path);
+                Some(path)
+            }
+            // A failed WebKitGTK finish and every macOS finish carry no path. Only a lone reservation names it.
+            None if success && downloads.reserved.len() == 1 => downloads.reserved.pop(),
+            None => None,
+        };
+        if downloads.in_flight == 0 {
+            self.by_url.remove(url);
+        }
+        landed
+    }
 }
 
 #[derive(Clone, Default)]
 pub struct MakerWorldService {
-    pending_downloads: Arc<Mutex<HashMap<String, PendingDownload>>>,
+    pending_downloads: Arc<Mutex<PendingDownloads>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -370,22 +436,25 @@ fn handle_download<R: Runtime>(
 ) -> bool {
     match event {
         DownloadEvent::Requested { url, destination } => {
-            match prepare_download_destination(app, state, &url) {
+            let reserved = download_target(app, state, &url).and_then(|(folder, filename)| {
+                fs::create_dir_all(&folder)
+                    .map_err(|error| format!("failed to create MakerWorld import directory: {error}"))?;
+                let mut pending = service
+                    .pending_downloads
+                    .lock()
+                    .map_err(|error| format!("failed to lock pending downloads: {error}"))?;
+                Ok(pending.start(url.as_str(), &folder, &filename))
+            });
+            match reserved {
                 Ok(path) => {
-                    if let Some(parent) = path.parent() {
-                        if let Err(error) = fs::create_dir_all(parent) {
-                            log::warn!("failed to create MakerWorld import directory: {error}");
-                            return false;
-                        }
-                    }
-                    *destination = path.clone();
-                    if let Ok(mut pending) = service.pending_downloads.lock() {
-                        pending.insert(url.to_string(), PendingDownload { destination: path });
-                    }
+                    *destination = path;
                     log::info!("makerworld download requested: {url}");
                 }
                 Err(error) => {
                     log::warn!("failed to prepare makerworld download destination: {error}");
+                    if let Ok(mut pending) = service.pending_downloads.lock() {
+                        pending.refuse(url.as_str());
+                    }
                     if let Err(update_error) = set_import_error(app, state, error) {
                         log::warn!("failed to persist makerworld import error: {update_error}");
                     }
@@ -394,12 +463,9 @@ fn handle_download<R: Runtime>(
             }
         }
         DownloadEvent::Finished { url, path, success } => {
-            let final_path = if path.is_some() {
-                path
-            } else if let Ok(mut pending) = service.pending_downloads.lock() {
-                pending.remove(&url.to_string()).map(|pending| pending.destination)
-            } else {
-                None
+            let final_path = match service.pending_downloads.lock() {
+                Ok(mut pending) => pending.finish(url.as_str(), path, success),
+                Err(_) => path,
             };
 
             if success {
@@ -603,11 +669,11 @@ fn persist_import_metadata(
     Ok(model_dir)
 }
 
-fn prepare_download_destination<R: Runtime>(
+fn download_target<R: Runtime>(
     app: &AppHandle<R>,
     state: &Arc<AppState>,
     url: &Url,
-) -> Result<PathBuf, String> {
+) -> Result<(PathBuf, String), String> {
     let library_dir = library_root(app)?;
     fs::create_dir_all(&library_dir)
         .map_err(|error| format!("failed to create makerworld library root: {error}"))?;
@@ -626,7 +692,7 @@ fn prepare_download_destination<R: Runtime>(
         .unwrap_or_else(|| slugify("makerworld-import"));
     let filename = infer_download_filename(url, model.as_ref());
 
-    Ok(library_dir.join(folder_name).join(filename))
+    Ok((library_dir.join(folder_name), filename))
 }
 
 fn infer_download_filename(url: &Url, model: Option<&MakerWorldModel>) -> String {
@@ -821,7 +887,7 @@ mod webkitgtk_downloads;
 
 #[cfg(test)]
 mod tests {
-    use super::{classify_page_kind, infer_download_filename, sanitize_model, slugify};
+    use super::{classify_page_kind, infer_download_filename, sanitize_model, slugify, PendingDownloads};
     use crate::state::{MakerWorldModel, MAKERWORLD_HOME_URL, MakerWorldPageKind};
     use url::Url;
 
@@ -854,6 +920,49 @@ mod tests {
         assert_eq!(sanitize_model(with_rating(4.9)).rating, Some(4.9));
         assert_eq!(sanitize_model(with_rating(233.0)).rating, None);
         assert_eq!(sanitize_model(with_rating(-1.0)).rating, None);
+    }
+
+    #[test]
+    fn a_pathless_finish_names_its_file_only_while_the_url_holds_one_reservation() {
+        let downloads = tempfile::tempdir().unwrap();
+        let first = downloads.path().join("first");
+        let mut pending = PendingDownloads::default();
+        let url = "https://makerworld.com/download/files/hook.3mf";
+
+        assert_eq!(pending.start(url, &first, "hook.3mf"), first.join("hook.3mf"));
+        assert_eq!(pending.finish(url, None, true), Some(first.join("hook.3mf")));
+        assert!(pending.by_url.is_empty());
+
+        pending.start(url, &first, "hook.3mf");
+        assert_eq!(pending.start(url, &first, "hook.3mf"), first.join("hook (1).3mf"));
+        assert_eq!(pending.finish(url, None, true), None, "two transfers, a pathless finish is not guessed");
+        assert_eq!(pending.finish(url, None, true), None);
+        assert!(pending.by_url.is_empty());
+    }
+
+    #[test]
+    fn a_refused_start_leaves_the_accepted_transfer_of_its_url_pending() {
+        let downloads = tempfile::tempdir().unwrap();
+        let mut pending = PendingDownloads::default();
+        let url = "https://makerworld.com/download/files/hook.3mf";
+
+        let accepted = pending.start(url, downloads.path(), "hook.3mf");
+        pending.refuse(url);
+        assert_eq!(pending.finish(url, None, false), None);
+        assert_eq!(pending.by_url[url].reserved, vec![accepted.clone()]);
+
+        let later = pending.start(url, downloads.path(), "hook.3mf");
+        assert_eq!(later, downloads.path().join("hook (1).3mf"), "the accepted transfer still holds its name");
+        assert_eq!(pending.finish(url, Some(accepted.clone()), true), Some(accepted));
+        assert_eq!(pending.finish(url, Some(later.clone()), true), Some(later));
+        assert!(pending.by_url.is_empty());
+
+        pending.refuse(url);
+        let retry = pending.start(url, downloads.path(), "fresh.3mf");
+        assert_eq!(pending.finish(url, None, false), None, "the refusal fails before the retry");
+        assert_eq!(pending.by_url[url].reserved, vec![retry.clone()], "a refused first start is not charged to a retry");
+        assert_eq!(pending.finish(url, Some(retry.clone()), true), Some(retry));
+        assert!(pending.by_url.is_empty() && pending.refused.is_empty());
     }
 
     #[test]
