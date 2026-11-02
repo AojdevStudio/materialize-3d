@@ -59,6 +59,7 @@ pub struct ImportResult {
 #[derive(Debug, Default)]
 struct PendingDownloads {
     by_url: HashMap<String, UrlDownloads>,
+    refused: HashMap<String, usize>,
 }
 
 /// The transfers of one URL that have not all finished. Every start lands in the first start's folder.
@@ -67,7 +68,6 @@ struct UrlDownloads {
     folder: PathBuf,
     reserved: Vec<PathBuf>,
     in_flight: usize,
-    refused: usize,
 }
 
 impl PendingDownloads {
@@ -94,7 +94,6 @@ impl PendingDownloads {
             folder,
             reserved: Vec::new(),
             in_flight: 0,
-            refused: 0,
         });
         downloads.reserved.push(destination.clone());
         downloads.in_flight += 1;
@@ -103,20 +102,23 @@ impl PendingDownloads {
 
     /// WebKitGTK reports a refused start as a pathless failure, which must not count against an accepted transfer.
     fn refuse(&mut self, url: &str) {
-        if let Some(downloads) = self.by_url.get_mut(url) {
-            downloads.refused += 1;
-        }
+        *self.refused.entry(url.into()).or_default() += 1;
     }
 
     /// Resolves where a finished transfer landed and frees the URL once all its transfers finished.
     fn finish(&mut self, url: &str, path: Option<PathBuf>, success: bool) -> Option<PathBuf> {
+        if path.is_none() && !success {
+            if let Some(refused) = self.refused.get_mut(url) {
+                *refused -= 1;
+                if *refused == 0 {
+                    self.refused.remove(url);
+                }
+                return None;
+            }
+        }
         let Some(downloads) = self.by_url.get_mut(url) else {
             return path;
         };
-        if path.is_none() && !success && downloads.refused > 0 {
-            downloads.refused -= 1;
-            return None;
-        }
         downloads.in_flight -= 1;
         let landed = match path {
             Some(path) => {
@@ -964,6 +966,13 @@ mod tests {
         assert_eq!(pending.finish(url, Some(accepted.clone()), true), Some(accepted));
         assert_eq!(pending.finish(url, Some(later.clone()), true), Some(later));
         assert!(pending.by_url.is_empty());
+
+        pending.refuse(url);
+        let retry = pending.start(url, downloads.path(), "fresh.3mf");
+        assert_eq!(pending.finish(url, None, false), None, "the refusal fails before the retry");
+        assert_eq!(pending.by_url[url].reserved, vec![retry.clone()], "a refused first start is not charged to a retry");
+        assert_eq!(pending.finish(url, Some(retry.clone()), true), Some(retry));
+        assert!(pending.by_url.is_empty() && pending.refused.is_empty());
     }
 
     #[test]
