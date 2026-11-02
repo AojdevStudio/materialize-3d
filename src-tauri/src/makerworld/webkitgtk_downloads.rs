@@ -72,10 +72,11 @@ fn respond(mut stream: TcpStream, overlap: &Overlap) {
     let head = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Disposition: attachment; filename=\"{file}\"\r\nContent-Length: {BODY_LEN}\r\nConnection: close\r\n\r\n"
     );
+    // Recorded before the headers, which trigger the start, so the first request is the first start.
+    let first = overlap.seen.lock().expect("seen paths").insert(path.clone());
     let _ = stream.write_all(head.as_bytes());
 
     if let (Some(both_started), true) = (&overlap.both_started, path.starts_with("/overlap/")) {
-        let first = overlap.seen.lock().expect("seen paths").insert(path.clone());
         let _ = stream.write_all(&body[..BODY_LEN / 2]);
         both_started.wait();
         if first && path.starts_with("/overlap/fails/") {

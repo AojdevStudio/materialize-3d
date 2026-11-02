@@ -67,6 +67,7 @@ struct UrlDownloads {
     folder: PathBuf,
     reserved: Vec<PathBuf>,
     in_flight: usize,
+    refused: usize,
 }
 
 impl PendingDownloads {
@@ -93,10 +94,18 @@ impl PendingDownloads {
             folder,
             reserved: Vec::new(),
             in_flight: 0,
+            refused: 0,
         });
         downloads.reserved.push(destination.clone());
         downloads.in_flight += 1;
         destination
+    }
+
+    /// WebKitGTK reports a refused start as a pathless failure, which must not count against an accepted transfer.
+    fn refuse(&mut self, url: &str) {
+        if let Some(downloads) = self.by_url.get_mut(url) {
+            downloads.refused += 1;
+        }
     }
 
     /// Resolves where a finished transfer landed and frees the URL once all its transfers finished.
@@ -104,6 +113,10 @@ impl PendingDownloads {
         let Some(downloads) = self.by_url.get_mut(url) else {
             return path;
         };
+        if path.is_none() && !success && downloads.refused > 0 {
+            downloads.refused -= 1;
+            return None;
+        }
         downloads.in_flight -= 1;
         let landed = match path {
             Some(path) => {
@@ -446,6 +459,9 @@ fn handle_download<R: Runtime>(
                 }
                 Err(error) => {
                     log::warn!("failed to prepare makerworld download destination: {error}");
+                    if let Ok(mut pending) = service.pending_downloads.lock() {
+                        pending.refuse(url.as_str());
+                    }
                     if let Err(update_error) = set_import_error(app, state, error) {
                         log::warn!("failed to persist makerworld import error: {update_error}");
                     }
@@ -929,6 +945,24 @@ mod tests {
         assert_eq!(second, first.join("hook (1).3mf"), "a later start lands in the first start's folder");
         assert_eq!(pending.finish(url, None, true), None, "two transfers, a pathless finish is not guessed");
         assert_eq!(pending.finish(url, None, true), None);
+        assert!(pending.by_url.is_empty());
+    }
+
+    #[test]
+    fn a_refused_start_leaves_the_accepted_transfer_of_its_url_pending() {
+        let downloads = tempfile::tempdir().unwrap();
+        let mut pending = PendingDownloads::default();
+        let url = "https://makerworld.com/download/files/hook.3mf";
+
+        let accepted = pending.start(url, downloads.path(), "hook.3mf");
+        pending.refuse(url);
+        assert_eq!(pending.finish(url, None, false), None);
+        assert_eq!(pending.by_url[url].reserved, vec![accepted.clone()]);
+
+        let later = pending.start(url, downloads.path(), "hook.3mf");
+        assert_eq!(later, downloads.path().join("hook (1).3mf"), "the accepted transfer still holds its name");
+        assert_eq!(pending.finish(url, Some(accepted.clone()), true), Some(accepted));
+        assert_eq!(pending.finish(url, Some(later.clone()), true), Some(later));
         assert!(pending.by_url.is_empty());
     }
 
