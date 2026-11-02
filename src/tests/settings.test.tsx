@@ -382,6 +382,56 @@ describe('SettingsPanel component', () => {
     expect((screen.getByTestId('agent-model-id-save') as HTMLButtonElement).disabled).toBe(true)
   })
 
+  it('an unsaved API key does not follow a switch to another provider', async () => {
+    agentKeys = new Set(['openai'])
+    invokeMock.mockResolvedValue(MOCK_PROFILES)
+    const { SettingsPanel } = await import('../components/SettingsPanel')
+    render(React.createElement(SettingsPanel, { isOpen: true, onClose: vi.fn() }))
+
+    const input = (await screen.findByTestId('agent-api-key')) as HTMLInputElement
+    const save = screen.getByTestId('agent-api-key-save') as HTMLButtonElement
+    const provider = screen.getByTestId('agent-provider') as HTMLSelectElement
+
+    fireEvent.change(input, { target: { value: 'sk-test-dummy-anthropic' } })
+    fireEvent.change(provider, { target: { value: 'openai' } })
+    await waitFor(() => expect(provider.value).toBe('openai'))
+    expect(input.value).toBe('')
+    expect(save.disabled).toBe(true)
+    fireEvent.submit(input.closest('form')!)
+
+    fireEvent.change(input, { target: { value: 'sk-test-dummy-openai' } })
+    fireEvent.change(provider, { target: { value: 'anthropic' } })
+    await waitFor(() => expect(provider.value).toBe('anthropic'))
+    expect(input.value).toBe('')
+    expect(save.disabled).toBe(true)
+
+    expect(agentInvokeMock).not.toHaveBeenCalledWith('agent_set_api_key', expect.anything())
+    expect(agentKeys).toEqual(new Set(['openai']))
+  })
+
+  it('an unsaved API key survives a model change and a status refresh', async () => {
+    invokeMock.mockResolvedValue(MOCK_PROFILES)
+    const { SettingsPanel } = await import('../components/SettingsPanel')
+    const { useAgentStore } = await import('../stores/agent')
+    render(React.createElement(SettingsPanel, { isOpen: true, onClose: vi.fn() }))
+
+    const input = (await screen.findByTestId('agent-api-key')) as HTMLInputElement
+    fireEvent.change(input, { target: { value: 'sk-test-dummy-0000' } })
+
+    fireEvent.change(screen.getByTestId('agent-model'), { target: { value: 'claude-fable-5-1' } })
+    await waitFor(() => expect((screen.getByTestId('agent-model') as HTMLSelectElement).value).toBe('claude-fable-5-1'))
+    await act(() => useAgentStore.getState().refresh())
+    expect(input.value).toBe('sk-test-dummy-0000')
+
+    fireEvent.click(screen.getByTestId('agent-api-key-save'))
+    await waitFor(() =>
+      expect(agentInvokeMock).toHaveBeenCalledWith('agent_set_api_key', {
+        provider: 'anthropic',
+        apiKey: 'sk-test-dummy-0000',
+      }),
+    )
+  })
+
   it('the model select lists exactly the models the agent status offers', async () => {
     invokeMock.mockResolvedValue(MOCK_PROFILES)
     const { SettingsPanel } = await import('../components/SettingsPanel')
