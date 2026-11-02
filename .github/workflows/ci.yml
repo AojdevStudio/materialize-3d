@@ -46,7 +46,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev
+            libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev xvfb
       - uses: actions/setup-node@v6.2.0
         with:
           node-version: "24"
@@ -80,6 +80,9 @@ jobs:
       - name: Rust doc tests (compile-time proofs)
         working-directory: src-tauri
         run: cargo test --doc --locked
+      - name: MakerWorld downloads on real WebKitGTK
+        working-directory: src-tauri
+        run: xvfb-run -a cargo test --lib --locked makerworld::webkitgtk_downloads -- --ignored
       - name: Install Bambu Studio 02.08.02.61
         run: |
           sudo apt-get install -y --no-install-recommends \
