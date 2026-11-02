@@ -925,13 +925,21 @@ pub fn list_profiles(service: State<'_, SlicerService>) -> Result<ProfileList, S
 /// - `filament`: Filament name (default: `"Bambu PLA Basic"`)
 ///
 /// Returns a `SliceResult` with the output 3MF path and print estimates.
+///
+/// The slice holds a build pass until it returns, so **Update now** waits for
+/// it, and it is refused while an update installs (issue #88).
 #[tauri::command]
 pub async fn slice_model(
     path: String,
     quality: Option<String>,
     filament: Option<String>,
     service: State<'_, SlicerService>,
+    state: State<'_, Arc<AppState>>,
 ) -> Result<SliceResult, String> {
+    let _running = state
+        .builds
+        .enter()
+        .ok_or("an update is installing and the app is about to restart. Slice again after it restarts.")?;
     let input_path = std::path::PathBuf::from(&path);
     let quality = quality.unwrap_or_else(|| "0.20".to_string());
     let filament = filament.unwrap_or_else(|| "Bambu PLA Basic".to_string());
