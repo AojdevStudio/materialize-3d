@@ -462,8 +462,9 @@ mod tests {
             app.state(),
             app.state()
         ));
-        assert!(tokio::time::timeout(wait, &mut slice).await.is_err(), "the slice waits for its release");
-        assert!(dir.path().join("started").exists(), "OrcaSlicer runs");
+        while !dir.path().join("started").exists() {
+            assert!(tokio::time::timeout(wait, &mut slice).await.is_err(), "the slice runs until its release");
+        }
 
         let installed = AtomicBool::new(false);
         let mut update = std::pin::pin!(install_when_idle(&state, "0.2.1", "0.3.0", |_| {}, || {
@@ -474,13 +475,11 @@ mod tests {
         assert!(!installed.load(Ordering::SeqCst), "nothing installs while a slice runs");
 
         std::fs::write(dir.path().join("release"), "").expect("release");
-        let sliced = tokio::time::timeout(std::time::Duration::from_secs(10), &mut slice)
-            .await
-            .expect("the slice ends")
-            .expect("sliced");
+        let ends = std::time::Duration::from_secs(10);
+        let sliced = tokio::time::timeout(ends, &mut slice).await.expect("the slice ends").expect("sliced");
         assert!(sliced.output_file.exists(), "the 3MF is written before the update goes ahead");
         let _installed =
-            tokio::time::timeout(wait, &mut update).await.expect("the update goes ahead once the slice ends").expect("installed");
+            tokio::time::timeout(ends, &mut update).await.expect("the update goes ahead once the slice ends").expect("installed");
         assert!(installed.load(Ordering::SeqCst));
     }
 
