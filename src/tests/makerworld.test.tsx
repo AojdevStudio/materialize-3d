@@ -1,22 +1,12 @@
 // @vitest-environment jsdom
 import React from 'react'
-import { JSDOM } from 'jsdom'
 import { act, cleanup, render } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-
-if (typeof document === 'undefined') {
-  const dom = new JSDOM('<!doctype html><html><body></body></html>')
-  Object.assign(globalThis, {
-    window: dom.window,
-    document: dom.window.document,
-    navigator: dom.window.navigator,
-    HTMLElement: dom.window.HTMLElement,
-  })
-}
+import { MainPanel } from '../components/MainPanel'
+import { useWorkspaceStore } from '../stores/workspace'
 
 describe('MakerWorld browser workspace', () => {
-  beforeEach(async () => {
-    const { useWorkspaceStore } = await import('../stores/workspace')
+  beforeEach(() => {
     useWorkspaceStore.setState({
       activeModel: null,
       activeView: 'browser',
@@ -36,9 +26,7 @@ describe('MakerWorld browser workspace', () => {
     document.body.innerHTML = ''
   })
 
-  it('tracks makerworld browser state in the workspace store', async () => {
-    const { useWorkspaceStore } = await import('../stores/workspace')
-
+  it('tracks makerworld browser state in the workspace store', () => {
     expect(useWorkspaceStore.getState()).toMatchObject({
       activeView: 'browser',
       makerworld: {
@@ -51,10 +39,7 @@ describe('MakerWorld browser workspace', () => {
     })
   })
 
-  it('renders MakerWorld controls and enables import when a model is detected', async () => {
-    const { useWorkspaceStore } = await import('../stores/workspace')
-    const { MainPanel } = await import('../components/MainPanel')
-
+  it('renders MakerWorld controls and enables import when a model is detected', () => {
     act(() => {
       useWorkspaceStore.setState({
         activeModel: null,
