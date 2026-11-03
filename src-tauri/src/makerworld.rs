@@ -3,7 +3,6 @@ use std::{
     fs,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
-    time::{Duration, Instant},
 };
 
 use chrono::Utc;
@@ -78,17 +77,13 @@ enum Overlap {
     Parallel,
     /// WKWebView names no file on any finish. A start of a URL that already has a transfer running is refused,
     /// and the running transfer serves it, so a pathless finish always belongs to the one reservation.
+    /// WKWebView reports each refused start at once as a pathless failure (seen on macOS 26.7.2, #116).
     OnePerUrl,
 }
 
 impl Overlap {
     const NATIVE: Self = if cfg!(target_os = "macos") { Self::OnePerUrl } else { Self::Parallel };
 }
-
-/// WKWebView reports a refused start within one round trip to its network process, if it reports it at all.
-/// So under one transfer per URL a pathless failure inside this window after a refusal is that refusal's report,
-/// and a refusal unreported for this long counts as never reported. The margin covers a busy main thread.
-const REFUSAL_REPORT_WINDOW: Duration = Duration::from_secs(10);
 
 /// What one finish event means for the import.
 #[derive(Debug)]
@@ -105,7 +100,7 @@ enum Finished {
 struct PendingDownloads {
     overlap: Overlap,
     by_url: HashMap<String, UrlDownloads>,
-    refused: HashMap<String, Vec<Instant>>,
+    refused: HashMap<String, usize>,
 }
 
 impl Default for PendingDownloads {
@@ -127,11 +122,10 @@ impl PendingDownloads {
     }
 
     /// Whether the overlap policy lets a start of the URL become a native transfer. It records a start it refuses.
-    fn admit(&mut self, url: &str, now: Instant) -> bool {
-        self.expire_refusals(now);
+    fn admit(&mut self, url: &str) -> bool {
         let admitted = self.overlap == Overlap::Parallel || !self.by_url.contains_key(url);
         if !admitted {
-            self.refuse(url, now);
+            self.refuse(url);
         }
         admitted
     }
@@ -162,39 +156,25 @@ impl PendingDownloads {
         destination
     }
 
-    /// WebKitGTK reports a refused start as a pathless failure, which must not count against an accepted transfer.
-    fn refuse(&mut self, url: &str, now: Instant) {
-        self.refused.entry(url.into()).or_default().push(now);
-    }
-
-    fn expire_refusals(&mut self, now: Instant) {
-        if self.overlap == Overlap::OnePerUrl {
-            self.refused.retain(|_, refusals| {
-                refusals.retain(|refused_at| now.duration_since(*refused_at) < REFUSAL_REPORT_WINDOW);
-                !refusals.is_empty()
-            });
-        }
-    }
-
-    /// Takes back the oldest refusal of the URL whose report may still arrive.
-    fn take_refusal(&mut self, url: &str) -> bool {
-        let Some(refusals) = self.refused.get_mut(url) else { return false };
-        refusals.remove(0);
-        if refusals.is_empty() {
-            self.refused.remove(url);
-        }
-        true
+    /// WebKitGTK and WKWebView report a refused start as a pathless failure, which must not count against an accepted transfer.
+    fn refuse(&mut self, url: &str) {
+        *self.refused.entry(url.into()).or_default() += 1;
     }
 
     /// Resolves which reservation a finished transfer used and frees the URL once all its transfers finished.
-    fn finish(&mut self, url: &str, path: Option<PathBuf>, success: bool, now: Instant) -> Finished {
-        self.expire_refusals(now);
-        if path.is_none() && !success && self.take_refusal(url) {
-            return match self.overlap {
-                // Linux reports a refused start as a failed download, as it did before macOS refused starts of its own.
-                Overlap::Parallel => Finished::Failed,
-                Overlap::OnePerUrl => Finished::Refused,
-            };
+    fn finish(&mut self, url: &str, path: Option<PathBuf>, success: bool) -> Finished {
+        if path.is_none() && !success {
+            if let Some(refused) = self.refused.get_mut(url) {
+                *refused -= 1;
+                if *refused == 0 {
+                    self.refused.remove(url);
+                }
+                return match self.overlap {
+                    // Linux reports a refused start as a failed download, as it did before macOS refused starts of its own.
+                    Overlap::Parallel => Finished::Failed,
+                    Overlap::OnePerUrl => Finished::Refused,
+                };
+            }
         }
         let Some(downloads) = self.by_url.get_mut(url) else {
             return if success { Finished::Unmatched } else { Finished::Failed };
@@ -544,7 +524,7 @@ fn handle_download<R: Runtime>(
                 .lock()
                 .map_err(|error| format!("failed to lock pending downloads: {error}"))
                 .and_then(|mut pending| {
-                    if !pending.admit(url.as_str(), Instant::now()) {
+                    if !pending.admit(url.as_str()) {
                         return Ok(None);
                     }
                     let (start, filename) = download_target(app, state, &url)?;
@@ -564,7 +544,7 @@ fn handle_download<R: Runtime>(
                 Err(error) => {
                     log::warn!("failed to prepare makerworld download destination: {error}");
                     if let Ok(mut pending) = service.pending_downloads.lock() {
-                        pending.refuse(url.as_str(), Instant::now());
+                        pending.refuse(url.as_str());
                     }
                     if let Err(update_error) = set_import_error(app, state, error) {
                         log::warn!("failed to persist makerworld import error: {update_error}");
@@ -578,7 +558,7 @@ fn handle_download<R: Runtime>(
                 .pending_downloads
                 .lock()
                 .map_err(|error| format!("failed to lock pending downloads: {error}"))
-                .and_then(|mut pending| match pending.finish(url.as_str(), path, success, Instant::now()) {
+                .and_then(|mut pending| match pending.finish(url.as_str(), path, success) {
                     Finished::Landed(reservation) => Ok(Some(*reservation)),
                     Finished::Refused => Ok(None),
                     Finished::Failed => Err(format!("MakerWorld download failed for {url}")),
@@ -970,14 +950,11 @@ mod webkitgtk_downloads;
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        path::{Path, PathBuf},
-        time::Instant,
-    };
+    use std::path::{Path, PathBuf};
 
     use super::{
         classify_page_kind, infer_download_filename, sanitize_model, slugify, DownloadStart, Finished, Overlap,
-        PendingDownloads, REFUSAL_REPORT_WINDOW,
+        PendingDownloads,
     };
     use crate::state::{MakerWorldModel, MAKERWORLD_HOME_URL, MakerWorldPageKind};
     use url::Url;
@@ -1034,16 +1011,15 @@ mod tests {
         let first = downloads.path().join("first");
         let mut pending = PendingDownloads::new(Overlap::Parallel);
         let url = "https://makerworld.com/download/files/hook.3mf";
-        let now = Instant::now();
 
         assert_eq!(pending.start(url, start_in(&first), "hook.3mf"), first.join("hook.3mf"));
-        assert_eq!(landed(pending.finish(url, None, true, now)), Some(first.join("hook.3mf")));
+        assert_eq!(landed(pending.finish(url, None, true)), Some(first.join("hook.3mf")));
         assert!(pending.by_url.is_empty());
 
         pending.start(url, start_in(&first), "hook.3mf");
         assert_eq!(pending.start(url, start_in(&first), "hook.3mf"), first.join("hook (1).3mf"));
-        assert_eq!(landed(pending.finish(url, None, true, now)), None, "two transfers, a pathless finish is not guessed");
-        assert_eq!(landed(pending.finish(url, None, true, now)), None);
+        assert_eq!(landed(pending.finish(url, None, true)), None, "two transfers, a pathless finish is not guessed");
+        assert_eq!(landed(pending.finish(url, None, true)), None);
         assert!(pending.by_url.is_empty());
     }
 
@@ -1052,125 +1028,88 @@ mod tests {
         let downloads = tempfile::tempdir().unwrap();
         let mut pending = PendingDownloads::new(Overlap::Parallel);
         let url = "https://makerworld.com/download/files/hook.3mf";
-        let now = Instant::now();
 
         let accepted = pending.start(url, start_in(downloads.path()), "hook.3mf");
-        pending.refuse(url, now);
-        assert_eq!(landed(pending.finish(url, None, false, now)), None);
+        pending.refuse(url);
+        assert_eq!(landed(pending.finish(url, None, false)), None);
         assert_eq!(reserved(&pending, url), vec![accepted.clone()]);
 
         let later = pending.start(url, start_in(downloads.path()), "hook.3mf");
         assert_eq!(later, downloads.path().join("hook (1).3mf"), "the accepted transfer still holds its name");
-        assert_eq!(landed(pending.finish(url, Some(accepted.clone()), true, now)), Some(accepted));
-        assert_eq!(landed(pending.finish(url, Some(later.clone()), true, now)), Some(later));
+        assert_eq!(landed(pending.finish(url, Some(accepted.clone()), true)), Some(accepted));
+        assert_eq!(landed(pending.finish(url, Some(later.clone()), true)), Some(later));
         assert!(pending.by_url.is_empty());
 
-        pending.refuse(url, now);
+        pending.refuse(url);
         let retry = pending.start(url, start_in(downloads.path()), "fresh.3mf");
-        assert_eq!(landed(pending.finish(url, None, false, now)), None, "the refusal fails before the retry");
+        assert_eq!(landed(pending.finish(url, None, false)), None, "the refusal fails before the retry");
         assert_eq!(reserved(&pending, url), vec![retry.clone()], "a refused first start is not charged to a retry");
-        assert_eq!(landed(pending.finish(url, Some(retry.clone()), true, now)), Some(retry));
+        assert_eq!(landed(pending.finish(url, Some(retry.clone()), true)), Some(retry));
         assert!(pending.by_url.is_empty() && pending.refused.is_empty());
     }
 
     const HOOK: &str = "https://makerworld.com/download/files/hook.3mf";
 
-    fn request(pending: &mut PendingDownloads, folder: &Path, now: Instant) -> Option<PathBuf> {
-        pending.admit(HOOK, now).then(|| pending.start(HOOK, start_in(folder), "hook.3mf"))
+    fn request(pending: &mut PendingDownloads, folder: &Path) -> Option<PathBuf> {
+        pending.admit(HOOK).then(|| pending.start(HOOK, start_in(folder), "hook.3mf"))
     }
 
     #[test]
     fn one_per_url_refuses_a_second_start_while_the_url_runs_and_lands_the_pathless_finish_in_the_first() {
         let downloads = tempfile::tempdir().unwrap();
         let mut pending = PendingDownloads::new(Overlap::OnePerUrl);
-        let now = Instant::now();
 
-        let running = request(&mut pending, downloads.path(), now);
+        let running = request(&mut pending, downloads.path());
         assert_eq!(running, Some(downloads.path().join("hook.3mf")));
-        assert_eq!(request(&mut pending, downloads.path(), now), None, "no second native download");
-        assert!(matches!(pending.finish(HOOK, None, false, now), Finished::Refused), "the refused start reports nothing");
-        assert_eq!(landed(pending.finish(HOOK, None, true, now)), running, "the pathless success is the running transfer");
+        assert_eq!(request(&mut pending, downloads.path()), None, "no second native download");
+        assert!(matches!(pending.finish(HOOK, None, false), Finished::Refused), "the refused start reports nothing");
+        assert_eq!(landed(pending.finish(HOOK, None, true)), running, "the pathless success is the running transfer");
         assert!(pending.by_url.is_empty() && pending.refused.is_empty());
 
-        assert!(request(&mut pending, downloads.path(), now).is_some(), "the URL takes a new start");
+        assert!(request(&mut pending, downloads.path()).is_some(), "the URL takes a new start");
     }
 
     #[test]
     fn one_per_url_charges_a_late_refusal_report_to_the_refusal_not_to_a_newer_transfer() {
         let downloads = tempfile::tempdir().unwrap();
         let mut pending = PendingDownloads::new(Overlap::OnePerUrl);
-        let now = Instant::now();
 
-        let running = request(&mut pending, downloads.path(), now);
-        assert_eq!(request(&mut pending, downloads.path(), now), None);
-        assert_eq!(landed(pending.finish(HOOK, None, true, now)), running);
-        let newer = request(&mut pending, downloads.path(), now);
+        let running = request(&mut pending, downloads.path());
+        assert_eq!(request(&mut pending, downloads.path()), None);
+        assert_eq!(landed(pending.finish(HOOK, None, true)), running);
+        let newer = request(&mut pending, downloads.path());
         assert!(newer.is_some());
 
-        assert!(matches!(pending.finish(HOOK, None, false, now), Finished::Refused), "the report of the refusal");
-        assert_eq!(landed(pending.finish(HOOK, None, true, now)), newer, "the newer transfer keeps its reservation");
+        assert!(matches!(pending.finish(HOOK, None, false), Finished::Refused), "the report of the refusal");
+        assert_eq!(landed(pending.finish(HOOK, None, true)), newer, "the newer transfer keeps its reservation");
         assert!(pending.by_url.is_empty() && pending.refused.is_empty());
     }
 
     #[test]
-    fn one_per_url_fails_the_running_transfer_and_its_refused_start_in_either_order() {
+    fn one_per_url_fails_the_running_transfer_and_takes_a_retry_after_its_refused_start_reported() {
         let downloads = tempfile::tempdir().unwrap();
         let mut pending = PendingDownloads::new(Overlap::OnePerUrl);
-        let now = Instant::now();
 
-        request(&mut pending, downloads.path(), now).unwrap();
-        assert_eq!(request(&mut pending, downloads.path(), now), None);
-        let finishes = [pending.finish(HOOK, None, false, now), pending.finish(HOOK, None, false, now)];
+        request(&mut pending, downloads.path()).unwrap();
+        assert_eq!(request(&mut pending, downloads.path()), None);
+        let finishes = [pending.finish(HOOK, None, false), pending.finish(HOOK, None, false)];
         assert_eq!(
             finishes.iter().filter(|finished| matches!(finished, Finished::Failed)).count(),
             1,
             "one failure for the transfer, nothing for the refusal: {finishes:?}",
         );
         assert!(pending.by_url.is_empty() && pending.refused.is_empty());
-    }
-
-    #[test]
-    fn one_per_url_reports_a_failure_once_an_unreported_refusal_is_past_its_window() {
-        let downloads = tempfile::tempdir().unwrap();
-        let mut pending = PendingDownloads::new(Overlap::OnePerUrl);
-        let refused_at = Instant::now();
-        let later = refused_at + REFUSAL_REPORT_WINDOW;
-
-        request(&mut pending, downloads.path(), refused_at).unwrap();
-        assert_eq!(request(&mut pending, downloads.path(), refused_at), None);
-        assert!(matches!(pending.finish(HOOK, None, false, later), Finished::Failed), "the running transfer failed");
-        assert!(request(&mut pending, downloads.path(), later).is_some(), "a retry starts");
-        assert!(matches!(pending.finish(HOOK, None, false, later), Finished::Failed));
-
-        pending.refuse(HOOK, refused_at);
-        request(&mut pending, downloads.path(), later).unwrap();
-        assert!(matches!(pending.finish(HOOK, None, false, later), Finished::Failed), "a refusal with nothing running");
-        assert!(matches!(pending.finish(HOOK, None, false, later), Finished::Failed), "a failure with nothing reserved");
-        assert!(pending.by_url.is_empty() && pending.refused.is_empty());
-    }
-
-    #[test]
-    fn one_per_url_keeps_no_unreported_refusal_past_its_window_when_every_transfer_lands() {
-        let downloads = tempfile::tempdir().unwrap();
-        let mut pending = PendingDownloads::new(Overlap::OnePerUrl);
-        let refused_at = Instant::now();
-
-        let running = request(&mut pending, downloads.path(), refused_at);
-        assert_eq!(request(&mut pending, downloads.path(), refused_at), None);
-        assert_eq!(landed(pending.finish(HOOK, None, true, refused_at)), running);
-        let later = request(&mut pending, downloads.path(), refused_at + REFUSAL_REPORT_WINDOW);
-        assert_eq!(landed(pending.finish(HOOK, None, true, refused_at + REFUSAL_REPORT_WINDOW)), later);
-        assert!(pending.by_url.is_empty() && pending.refused.is_empty(), "{:?}", pending.refused);
+        assert!(request(&mut pending, downloads.path()).is_some(), "a retry starts");
+        assert!(matches!(pending.finish(HOOK, None, false), Finished::Failed), "and its failure is reported");
     }
 
     #[test]
     fn only_macos_runs_one_native_transfer_per_url() {
         let downloads = tempfile::tempdir().unwrap();
         let mut pending = PendingDownloads::default();
-        let now = Instant::now();
 
-        request(&mut pending, downloads.path(), now).unwrap();
-        let second = request(&mut pending, downloads.path(), now);
+        request(&mut pending, downloads.path()).unwrap();
+        let second = request(&mut pending, downloads.path());
         assert_eq!(second.is_none(), cfg!(target_os = "macos"), "{second:?}");
     }
 

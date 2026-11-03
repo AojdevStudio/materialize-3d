@@ -201,7 +201,7 @@ fn two_overlapping_downloads_of_one_url_each_land_in_their_own_file() {
             true
         })
         .with_download_completed_handler(move |url, path, success| {
-            let path = match on_finish.lock().unwrap().finish(&url, path, success, Instant::now()) {
+            let path = match on_finish.lock().unwrap().finish(&url, path, success) {
                 Finished::Landed(reservation) => Some(reservation.destination),
                 _ => None,
             };
@@ -276,7 +276,7 @@ fn two_overlapping_downloads_of_one_url_started_on_two_models_each_finish_with_t
             true
         })
         .with_download_completed_handler(move |url, path, success| {
-            let model_dir = match on_finish.lock().unwrap().finish(&url, path.clone(), success, Instant::now()) {
+            let model_dir = match on_finish.lock().unwrap().finish(&url, path.clone(), success) {
                 Finished::Landed(reservation) => Some(reservation.start.model_dir),
                 _ => None,
             };
