@@ -11,7 +11,9 @@
 (*   Upload     read the 3MF, get credentials, upload_to_printer (FTPS)    *)
 (*   Send       service.send_command(ProjectFile)                          *)
 (*   Mark       update_job_status(Submitted)                               *)
-(* A failed upload or send marks the job Failed and ends the run.          *)
+(* A failed upload or send marks the job Failed and ends the run. A 3MF   *)
+(* that cannot be read, or missing credentials, ends the run with the job  *)
+(* still Pending.                                                          *)
 (***************************************************************************)
 EXTENDS Naturals
 
@@ -60,6 +62,10 @@ UploadOk(r) ==
 
 UploadFails(r) == pc[r] = "upload" /\ Fail(r)
 
+UploadAborts(r) ==
+  /\ pc[r] = "upload" /\ pc' = [pc EXCEPT ![r] = "done"]
+  /\ UNCHANGED <<printer, status, sent, job>>
+
 SendOk(r) ==
   /\ pc[r] = "send"
   /\ sent' = [sent EXCEPT ![job[r]] = @ + 1]
@@ -82,7 +88,7 @@ PrinterStarts ==
 
 Next ==
   \/ \E r \in Runs :
-       CheckIdle(r) \/ Pick(r) \/ UploadOk(r) \/ UploadFails(r)
+       CheckIdle(r) \/ Pick(r) \/ UploadOk(r) \/ UploadFails(r) \/ UploadAborts(r)
        \/ SendOk(r) \/ SendFails(r) \/ Mark(r)
   \/ PrinterStarts
 

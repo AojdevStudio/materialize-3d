@@ -28,7 +28,7 @@ Two TLA+ models describe code where a bad order of events harms a user and tests
 
 These are failures of the current code, not of the models. Do not weaken a property or a model to make one pass. When a code change fixes one, change its recorded verdict to `holds` in `CHECKS`, and remove it here.
 
-- **F1.** `persist_queue` (`src-tauri/src/print_queue.rs`) holds the queue lock across `std::fs::write`, which truncates the file and then writes it. The updater holds that lock only for the backup. Counterexample: the backup and the install finish. Then the printer's auto-send calls `update_job_status`, which truncates `print_queue.json`. Then `app.restart()` calls `process::exit`. At the next launch, `load_queue` cannot parse the file, logs a warning, and starts with an empty queue. The backup still holds the queue as it was at the backup.
+- **F1.** `persist_queue` (`src-tauri/src/print_queue.rs`) holds the queue lock across `std::fs::write`, which truncates the file and then writes it. The updater holds that lock only for the backup. Counterexample: the backup and the install finish. Then the printer's auto-send calls `update_job_status`, which truncates `print_queue.json`. Then `app.restart()` calls `process::exit`. A failed write leaves the same partial file and drops the lock, so the restart need not even race a write. At the next launch, `load_queue` cannot parse the file, logs a warning, and starts with an empty queue. The backup still holds the queue as it was at the backup.
 - **F2.** `BuildGate::close_when_idle` waits for `running == 0` but does not stop new builds while it waits. Counterexample: the updater reaches its idle check, a build enters first, the check sees it and sleeps, the build ends and wakes the updater, and another build enters before the next check. This repeats with no limit. Two builds that overlap in turn hold the update off the same way.
 - **F3.** `auto_send_pending_job` (`src-tauri/src/printer/mod.rs`) clones the first Pending job under the queue lock. It marks the job Submitted only after the upload and the MQTT `project_file` command. The IDLE transition and the connect handler each spawn a run, and nothing stops two runs overlapping. Counterexample: run A picks job 1, uploads it, and sends it. Run B still reads IDLE, picks job 1, which is still Pending, uploads it, and sends it again. The model does not say what the printer does with the second command.
 
@@ -71,8 +71,8 @@ Then read each covered function that changed. Also look for new code that reache
 | `Downloaded`, `Top`, `CheckAndClose`, `CheckBusy`, `Wake` | `BuildGate::close_when_idle`. Its `subscribe`, `borrow_and_update`, one `send_if_modified`, and `changed().await`. |
 | `Reopen` | `Drop for Closed`, on each error return of `install_when_idle`. |
 | `Click`, `DownloadFails`, `BackupOk`, `BackupFails`, `InstallOk`, `InstallFails`, `Exit` | `update_install` and `install_when_idle` in `updater.rs`, then Tauri's `AppHandle::restart`, which ends in `process::exit(0)`. |
-| `WriteBegin`, `WriteEnd` | `persist_queue` in `print_queue.rs`. |
-| `CheckIdle`, `Pick`, `Upload*`, `Send*`, `Mark` | `auto_send_pending_job` in `printer/mod.rs`. Its two `tokio::spawn` triggers are in the status handler and the connect handler. |
+| `WriteBegin`, `WriteEnd`, `WriteFails` | `persist_queue` in `print_queue.rs`. |
+| `CheckIdle`, `Pick`, `UploadOk`, `UploadFails`, `UploadAborts`, `SendOk`, `SendFails`, `Mark` | `auto_send_pending_job` in `printer/mod.rs`. Its two `tokio::spawn` triggers are in the status handler and the connect handler. |
 
 Last confirmed to describe the code at sync commit `ce33b74`. Move it forward only after you confirm that the models describe the code at the new commit.
 
@@ -91,6 +91,6 @@ Keep each model action one indivisible step in the code. When the code changes o
 
 ## Scope
 
-- Bounds: two build tasks (a pipeline build and an STL slice), each holding at most one pass. Two update runs. One print queue writer. For auto-send, two overlapping runs and two jobs. `update-wakes` limits each build task to two starts, so that builds stop. The other `UpdateRestart` checks have no limit on starts.
+- Bounds: two build tasks (a pipeline build and an STL slice), each holding at most one pass. Two update runs. One print queue writer. For auto-send, two overlapping runs and two jobs. `update-wakes` limits each build task to two starts, so that builds stop. It also assumes that each running build ends, that a started queue write ends or fails, and that the updater's wait loop keeps getting scheduled (the `Fairness` conjuncts in `UpdateRestart.tla`). The other `UpdateRestart` checks have no limit on starts.
 - Each run of `persist_queue` is lock, truncate, write, unlock. The model joins lock and truncate into one step. A truncated file and a half-written file are both `partial`.
 - Not covered: the download and its signature check, the backup's contents, SQLite writes after the backup (the database survives an exit), the UI in `src/stores/updates.ts`, and what the printer does with a second `project_file` command. Other long tasks that do not take a build pass, such as an OpenSCAD render or a MakerWorld download, are not in the model.

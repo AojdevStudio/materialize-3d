@@ -189,7 +189,8 @@ Exit ==
 (* persist_queue, called by add_job, remove_job, and update_job_status.    *)
 (* The printer's auto-send calls update_job_status at any time. It holds   *)
 (* the queue lock across fs::write, which truncates the file and then      *)
-(* writes it.                                                              *)
+(* writes it. A failed write returns through ? and drops the lock with    *)
+(* the file still partial.                                                 *)
 
 WriteBegin ==
   /\ Alive /\ ~qlock
@@ -201,6 +202,11 @@ WriteEnd ==
   /\ qlock' = FALSE /\ queueFile' = "whole"
   /\ UNCHANGED <<running, closed, unseen, build, starts, upd, updates>>
 
+WriteFails ==
+  /\ Alive /\ qlock
+  /\ qlock' = FALSE
+  /\ UNCHANGED <<running, closed, unseen, build, starts, upd, updates, queueFile>>
+
 ----------------------------------------------------------------------------
 
 Next ==
@@ -208,7 +214,7 @@ Next ==
   \/ Click \/ DownloadFails \/ Downloaded
   \/ Top \/ CheckAndClose \/ CheckOnly \/ CloseLate \/ CheckBusy \/ MarkSeen \/ Wake
   \/ BackupOk \/ BackupFails \/ InstallOk \/ InstallFails \/ Exit
-  \/ WriteBegin \/ WriteEnd
+  \/ WriteBegin \/ WriteEnd \/ WriteFails
 
 \* The updater's wait loop and every running build make progress. Nothing
 \* forces a build, a click, or a queue write to start.
