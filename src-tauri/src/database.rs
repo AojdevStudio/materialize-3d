@@ -489,21 +489,31 @@ pub fn delete_history(conn: &Connection, id: &str) -> Result<bool, String> {
 
 // ─── Library Model CRUD ───────────────────────────────────────────────────────
 
-/// Insert a library model record.
-pub fn insert_library_model(conn: &Connection, model: &LibraryModel) -> Result<(), String> {
+/// Insert a library model record. A folder already in the library keeps its
+/// row id and takes every other field from `model`.
+pub fn upsert_library_model(conn: &Connection, model: &LibraryModel) -> Result<(), String> {
     log::info!(
-        "database: inserting library model id={} name='{}' folder='{}'",
+        "database: upserting library model id={} name='{}' folder='{}'",
         model.id,
         model.model_name,
         model.folder_path
     );
 
     conn.execute(
-        "INSERT OR IGNORE INTO library_models (
+        "INSERT INTO library_models (
             id, model_name, author, source_url, imported_at,
             thumbnail_url, file_path, folder_path, rating,
             download_count, file_count
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+        ON CONFLICT(folder_path) DO UPDATE SET
+            model_name = excluded.model_name,
+            author = excluded.author,
+            source_url = excluded.source_url,
+            thumbnail_url = excluded.thumbnail_url,
+            file_path = excluded.file_path,
+            rating = excluded.rating,
+            download_count = excluded.download_count,
+            file_count = excluded.file_count",
         params![
             model.id,
             model.model_name,
@@ -519,8 +529,8 @@ pub fn insert_library_model(conn: &Connection, model: &LibraryModel) -> Result<(
         ],
     )
     .map_err(|e| {
-        log::error!("database: insert_library_model failed: {e}");
-        format!("failed to insert library model: {e}")
+        log::error!("database: upsert_library_model failed: {e}");
+        format!("failed to upsert library model: {e}")
     })?;
 
     Ok(())
@@ -647,11 +657,10 @@ pub fn delete_library_model(conn: &Connection, id: &str) -> Result<bool, String>
 
 /// Scan a library root directory for `metadata.json` files in subdirectories.
 ///
-/// Reads each `<library_root>/*/metadata.json`, deserializes it, and inserts
-/// a `LibraryModel` into the database. Skips entries that already exist
-/// (idempotent via `folder_path` UNIQUE constraint with INSERT OR IGNORE).
+/// Reads each `<library_root>/*/metadata.json` and indexes its folder with
+/// `index_library_folder`, so a row already in the library is refreshed.
 ///
-/// Returns the number of newly indexed models.
+/// Returns the number of folders indexed.
 pub fn scan_library_filesystem(conn: &Connection, library_root: &Path) -> Result<usize, String> {
     if !library_root.exists() {
         log::info!(
@@ -697,9 +706,9 @@ pub fn scan_library_filesystem(conn: &Connection, library_root: &Path) -> Result
 }
 
 /// Add one import folder to the library. A folder already in the library keeps
-/// its row (`folder_path` is UNIQUE and the insert is `INSERT OR IGNORE`).
+/// its row id, and the row takes the rest from the folder's `metadata.json`.
 pub fn index_library_folder(conn: &Connection, folder: &Path) -> Result<(), String> {
-    insert_library_model(conn, &library_model_from_folder(folder)?)
+    upsert_library_model(conn, &library_model_from_folder(folder)?)
 }
 
 /// Build the library row for one import folder from its `metadata.json`.
@@ -1553,7 +1562,7 @@ mod tests {
 
         // Verify table exists by inserting and querying
         let model = make_library_model("lm1", "Benchy", "/tmp/benchy", "2026-03-15T10:00:00Z");
-        insert_library_model(&conn, &model).unwrap();
+        upsert_library_model(&conn, &model).unwrap();
 
         let all = get_all_library_models(&conn).unwrap();
         assert_eq!(all.len(), 1);
@@ -1565,7 +1574,7 @@ mod tests {
         let conn = test_db();
 
         let model = make_library_model("lm1", "Benchy", "/tmp/benchy", "2026-03-15T10:00:00Z");
-        insert_library_model(&conn, &model).unwrap();
+        upsert_library_model(&conn, &model).unwrap();
 
         let all = get_all_library_models(&conn).unwrap();
         assert_eq!(all.len(), 1);
@@ -1585,17 +1594,17 @@ mod tests {
     fn library_get_all_returns_descending_order() {
         let conn = test_db();
 
-        insert_library_model(
+        upsert_library_model(
             &conn,
             &make_library_model("lm1", "First", "/tmp/first", "2026-03-15T09:00:00Z"),
         )
         .unwrap();
-        insert_library_model(
+        upsert_library_model(
             &conn,
             &make_library_model("lm2", "Second", "/tmp/second", "2026-03-15T10:00:00Z"),
         )
         .unwrap();
-        insert_library_model(
+        upsert_library_model(
             &conn,
             &make_library_model("lm3", "Third", "/tmp/third", "2026-03-15T11:00:00Z"),
         )
@@ -1612,17 +1621,17 @@ mod tests {
     fn library_search_matching_and_non_matching() {
         let conn = test_db();
 
-        insert_library_model(
+        upsert_library_model(
             &conn,
             &make_library_model("lm1", "Benchy Boat", "/tmp/benchy", "2026-03-15T10:00:00Z"),
         )
         .unwrap();
-        insert_library_model(
+        upsert_library_model(
             &conn,
             &make_library_model("lm2", "Phone Stand", "/tmp/phone", "2026-03-15T11:00:00Z"),
         )
         .unwrap();
-        insert_library_model(
+        upsert_library_model(
             &conn,
             &make_library_model("lm3", "Benchpress Clip", "/tmp/bench", "2026-03-15T12:00:00Z"),
         )
@@ -1647,7 +1656,7 @@ mod tests {
         let conn = test_db();
 
         let model = make_library_model("lm1", "Benchy", "/tmp/nonexistent_folder_xyz", "2026-03-15T10:00:00Z");
-        insert_library_model(&conn, &model).unwrap();
+        upsert_library_model(&conn, &model).unwrap();
 
         let deleted = delete_library_model(&conn, "lm1").unwrap();
         assert!(deleted);
@@ -1669,7 +1678,7 @@ mod tests {
         std::fs::write(folder.join("model.stl"), b"test").unwrap();
 
         let model = make_library_model("lm1", "Benchy", &folder.to_string_lossy(), "2026-03-15T10:00:00Z");
-        insert_library_model(&conn, &model).unwrap();
+        upsert_library_model(&conn, &model).unwrap();
 
         let deleted = delete_library_model(&conn, "lm1").unwrap();
         assert!(deleted);
@@ -1791,13 +1800,9 @@ mod tests {
         let count1 = scan_library_filesystem(&conn, library_root).unwrap();
         assert_eq!(count1, 1);
 
-        // Scan again — INSERT OR IGNORE should skip existing (folder_path UNIQUE)
-        let _count2 = scan_library_filesystem(&conn, library_root).unwrap();
-        // INSERT OR IGNORE succeeds without error but doesn't actually insert,
-        // so indexed count will be 1 again (the INSERT "succeeds" but is ignored).
-        // The important thing: total records is still 1.
-        let all = get_all_library_models(&conn).unwrap();
-        assert_eq!(all.len(), 1, "should not duplicate on rescan");
+        let first = get_all_library_models(&conn).unwrap();
+        scan_library_filesystem(&conn, library_root).unwrap();
+        assert_eq!(get_all_library_models(&conn).unwrap(), first, "a rescan changes nothing");
     }
 
     #[test]
@@ -1819,23 +1824,36 @@ mod tests {
         insert_history(&conn, &record).unwrap();
 
         let model = make_library_model("lm1", "Hook", "/tmp/hook", "2026-03-15T10:00:00Z");
-        insert_library_model(&conn, &model).unwrap();
+        upsert_library_model(&conn, &model).unwrap();
     }
 
     #[test]
-    fn library_insert_or_ignore_on_duplicate_folder() {
+    fn library_upsert_refreshes_a_known_folder_and_keeps_its_id() {
         let conn = test_db();
 
         let model1 = make_library_model("lm1", "Original", "/tmp/same_folder", "2026-03-15T10:00:00Z");
-        insert_library_model(&conn, &model1).unwrap();
+        upsert_library_model(&conn, &model1).unwrap();
 
-        // Same folder_path, different id — should be silently ignored
-        let model2 = make_library_model("lm2", "Duplicate", "/tmp/same_folder", "2026-03-15T11:00:00Z");
-        insert_library_model(&conn, &model2).unwrap();
+        let model2 = make_library_model("lm2", "Refreshed", "/tmp/same_folder", "2026-03-15T11:00:00Z");
+        upsert_library_model(&conn, &model2).unwrap();
 
         let all = get_all_library_models(&conn).unwrap();
-        assert_eq!(all.len(), 1);
-        assert_eq!(all[0].model_name, "Original");
+        assert_eq!(all, vec![LibraryModel { id: "lm1".into(), imported_at: model1.imported_at, ..model2 }]);
+    }
+
+    #[test]
+    fn a_rescan_keeps_the_first_date_of_a_folder_without_imported_at() {
+        let conn = test_db();
+        let dir = tempfile::tempdir().unwrap();
+        let model_dir = dir.path().join("benchy");
+        std::fs::create_dir_all(&model_dir).unwrap();
+        std::fs::write(model_dir.join("metadata.json"), r#"{"model": {"title": "Benchy"}, "files": ["b.stl"]}"#).unwrap();
+
+        scan_library_filesystem(&conn, dir.path()).unwrap();
+        let first = get_all_library_models(&conn).unwrap();
+        scan_library_filesystem(&conn, dir.path()).unwrap();
+
+        assert_eq!(get_all_library_models(&conn).unwrap(), first);
     }
 
     // ─── Printer Config Tests ─────────────────────────────────────────────

@@ -256,7 +256,7 @@ pub fn run() {
                 if let Some(conn) = db_guard.as_ref() {
                     match database::scan_library_filesystem(conn, &library_root) {
                         Ok(count) => {
-                            log::info!("setup: library scan complete — indexed {count} new models");
+                            log::info!("setup: library scan complete — indexed {count} models");
                         }
                         Err(e) => {
                             log::error!("setup: library scan failed: {e}");

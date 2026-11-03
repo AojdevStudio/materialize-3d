@@ -12,7 +12,7 @@ use std::{
 use gtk::prelude::*;
 use wry::{WebViewBuilder, WebViewBuilderExtUnix};
 
-use super::PendingDownloads;
+use super::{DownloadStart, PendingDownloads};
 
 const BODY_LEN: usize = 256 * 1024;
 
@@ -194,12 +194,13 @@ fn two_overlapping_downloads_of_one_url_each_land_in_their_own_file() {
     let webview = WebViewBuilder::new()
         .with_download_started_handler(move |url, destination| {
             let file = url.rsplit('/').next().unwrap_or_default().to_string();
-            *destination = on_start.lock().unwrap().start(&url, &folder, &file);
+            let start = DownloadStart { model_dir: folder.clone(), model: None, source_url: url.clone() };
+            *destination = on_start.lock().unwrap().start(&url, start, &file);
             let _ = started_sender.send(());
             true
         })
         .with_download_completed_handler(move |url, path, success| {
-            let path = on_finish.lock().unwrap().finish(&url, path, success);
+            let path = on_finish.lock().unwrap().finish(&url, path, success).map(|reservation| reservation.destination);
             let _ = finish_sender.send(Finish { url, path, success });
         })
         .build_gtk(&container)
