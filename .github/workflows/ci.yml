@@ -50,7 +50,11 @@ jobs:
       - uses: actions/setup-node@v6.2.0
         with:
           node-version: "24"
+      # A job-local bun. setup-bun would otherwise replace the bun in the runner user's ~/.bun/bin, which
+      # other jobs and agents on this host also run.
       - uses: oven-sh/setup-bun@v2
+        env:
+          HOME: ${{ runner.temp }}/bun-home
         with:
           bun-version: "1.4.4"
       - uses: dtolnay/rust-toolchain@stable
