@@ -190,7 +190,7 @@ jobs:
           bun-version: "1.4.4"
       - name: Install site dependencies (frozen lockfile)
         run: bun install --frozen-lockfile
-      - name: Install Chromium for Playwright
-        run: bunx playwright install --with-deps chromium
+      - name: Google Chrome is installed on the runner
+        run: google-chrome --version
       - name: Build and test layout, links, keyboard access, contrast, and claims
         run: bunx playwright test

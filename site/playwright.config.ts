@@ -12,6 +12,8 @@ export default defineConfig({
   use: {
     baseURL: `http://127.0.0.1:${port}${base}`,
     ...devices["Desktop Chrome"],
+    channel: "chrome",
+    launchOptions: { chromiumSandbox: true },
     viewport: { width: 1440, height: 900 },
   },
   webServer: {
