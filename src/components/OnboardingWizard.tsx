@@ -102,9 +102,11 @@ export default function OnboardingWizard({ onComplete }: OnboardingWizardProps) 
    * typed key and the address field when it differs from that provider's
    * saved address. With no key the app opens with chat refusing turns until
    * one is added in Settings. The field shows no saved address for a provider
-   * that was not active, so a blank field clears one. Until the agent status
-   * loads, the selection is the wizard's default, not a pick, so nothing typed
-   * saves nothing. Returns false on failure.
+   * that was not active, so a blank field sent with a new key clears one, and
+   * the key never reaches a hidden server. A switch with nothing typed only
+   * picks the provider, as Settings does, and keeps its address. Until the
+   * agent status loads, the selection is the wizard's default, not a pick, so
+   * nothing typed saves nothing. Returns false on failure.
    */
   const saveProvider = useCallback(async (): Promise<boolean> => {
     const apiKey = llm.apiKey.trim()
@@ -112,11 +114,12 @@ export default function OnboardingWizard({ onComplete }: OnboardingWizardProps) 
     const agent = useAgentStore.getState()
     const active = agent.status?.provider === llm.provider ? agent.status : null
     const switched = agent.status !== null && active === null
+    const pickOnly = !apiKey && !baseUrl && active === null
     if (!apiKey && !switched && baseUrl === (active?.baseUrl ?? '')) return true
     setLlm((prev) => ({ ...prev, saving: true, error: null }))
     try {
       const selected = active ?? (await agent.setModel(llm.provider, ''))
-      if (baseUrl !== (selected.baseUrl ?? '')) {
+      if (!pickOnly && baseUrl !== (selected.baseUrl ?? '')) {
         await agent.setBaseUrl(llm.provider, baseUrl)
       }
       if (apiKey) {

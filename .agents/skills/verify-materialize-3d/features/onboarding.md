@@ -5,7 +5,7 @@ On first launch, a four-step wizard welcomes the user, asks for an AI provider a
 ## Sub-features
 
 - `onboarding-welcome` shows the welcome card and `Get Started`.
-- `onboarding-llm` offers the provider radios `Anthropic` and `OpenAI`, an API key field, an optional `input-base-url` server address field, `Continue`, and `Skip for now`. A typed key is saved to the keyring under `api_key:<provider>`. The address field shows the active provider's saved address and is empty for the other provider. On `Continue`, a field that differs from the chosen provider's saved address replaces it in `agent.base_url:<provider>`, so a blank field clears an address saved earlier.
+- `onboarding-llm` offers the provider radios `Anthropic` and `OpenAI`, an API key field, an optional `input-base-url` server address field, `Continue`, and `Skip for now`. A typed key is saved to the keyring under `api_key:<provider>`. The address field shows the active provider's saved address and is empty for the other provider. On `Continue`, a field that differs from the chosen provider's saved address replaces it in `agent.base_url:<provider>`, so a blank field sent with a key clears an address saved earlier. A switch to another provider with both fields empty keeps that provider's saved address.
 - `onboarding-bambu` shows printer detection and a manual host, access code, and serial form with `Test Connection`.
 - `onboarding-complete` summarizes provider and printer status in two lines and offers `Launch App`.
 - `onboarding-persist` means a relaunch after completion skips the wizard.

@@ -244,7 +244,7 @@ describe('OnboardingWizard', () => {
     expect(invokeMock.mock.calls.filter(([cmd]) => cmd === 'agent_set_api_key')).toHaveLength(0)
   })
 
-  it('LLM step saves the blank address field for a provider picked with no key', async () => {
+  it('LLM step keeps the saved address of a provider picked with no key or address typed', async () => {
     setupDefaultMocks({ keys: ['openai'], baseUrls: { openai: 'https://old-gateway.example/v1' } })
     useOnboardingStore.getState().setStep(1)
     render(<OnboardingWizard onComplete={vi.fn()} />)
@@ -254,7 +254,8 @@ describe('OnboardingWizard', () => {
     fireEvent.click(screen.getByTestId('btn-llm-continue'))
 
     await waitFor(() => expect(screen.getByTestId('step-bambu')).toBeDefined())
-    expect(useAgentStore.getState().status).toMatchObject({ provider: 'openai', hasApiKey: true, baseUrl: null })
+    expect(useAgentStore.getState().status).toMatchObject({ provider: 'openai', hasApiKey: true, baseUrl: 'https://old-gateway.example/v1' })
+    expect(invokeMock.mock.calls.filter(([cmd]) => cmd === 'agent_set_base_url')).toHaveLength(0)
   })
 
   it('LLM step saves nothing on Continue with no key before the agent status loads', async () => {
