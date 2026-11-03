@@ -129,7 +129,7 @@ impl PendingDownloads {
     /// Whether the overlap policy lets a start of the URL become a native transfer. It records a start it refuses.
     fn admit(&mut self, url: &str, now: Instant) -> bool {
         self.expire_refusals(now);
-        let admitted = true;
+        let admitted = self.overlap == Overlap::Parallel || !self.by_url.contains_key(url);
         if !admitted {
             self.refuse(url, now);
         }
@@ -168,7 +168,12 @@ impl PendingDownloads {
     }
 
     fn expire_refusals(&mut self, now: Instant) {
-        let _ = (now, REFUSAL_REPORT_WINDOW);
+        if self.overlap == Overlap::OnePerUrl {
+            self.refused.retain(|_, refusals| {
+                refusals.retain(|refused_at| now.duration_since(*refused_at) < REFUSAL_REPORT_WINDOW);
+                !refusals.is_empty()
+            });
+        }
     }
 
     /// Takes back the oldest refusal of the URL whose report may still arrive.
@@ -188,7 +193,7 @@ impl PendingDownloads {
             return match self.overlap {
                 // Linux reports a refused start as a failed download, as it did before macOS refused starts of its own.
                 Overlap::Parallel => Finished::Failed,
-                Overlap::OnePerUrl => Finished::Failed,
+                Overlap::OnePerUrl => Finished::Refused,
             };
         }
         let Some(downloads) = self.by_url.get_mut(url) else {
