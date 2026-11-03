@@ -24,16 +24,17 @@ A part is a functional object generated as build123d code. A generation guest ru
 
 The ordinary Linux debug app cannot build parts. `CadRuntime::bundled()` supplies a runtime only on macOS, so the ordinary Linux app omits `part` from its available kinds. The `linux-cad-test` feature is a backend test route, not installed macOS GUI proof.
 
-For installed-release acceptance, follow [Verify the installed Mac app](../../../../docs/verify-on-mac.md). It specifies OpenAI prompts, the part detail, approval, native Save, full hash comparison, Bambu Studio P2S 0.4 mm slicing, and persistence. That run is pending for 0.2.0. The native Mac automation route is under audit. Record an unmet prerequisite instead of claiming a substitute path passed.
+For installed-release acceptance, follow [Verify the installed Mac app](../../../../docs/verify-on-mac.md). It specifies OpenAI prompts, the part detail, approval, native Save, full hash comparison, Bambu Studio P2S 0.4 mm slicing, and persistence. It names 0.2.2 and is a recipe, not a record of a passing run. The signed CuaDriver route has driven the installed candidate on the mini, with the permission, fresh-snapshot, and dialog limits listed there. Record an unmet prerequisite instead of claiming a substitute path passed.
 
 On an e2e debug Mac build with a verified runtime, these handles describe the GUI path from source. They have not been run for this documentation update.
 
 1. Complete onboarding, select the provider and model, and store the key through Settings.
-2. Send the part request through `chat-input` and `chat-send`. Wait for `part-detail`, then `part-render` and `part-requirements`.
+2. Send the part request through `chat-input` and `chat-send`. Wait for `part-detail`, then `part-render` and `part-requirements`. A spec with no requirements shows "No requirements in this spec." without `part-requirements`, and a build with no model shows `part-render-empty`.
 3. Read the measured requirements and revision buttons in `part-revisions`. Click **Show all checks** and read `sign-checks`. Capture `part-warnings` when present.
 4. Click `btn-approve` only after review. Confirm the approved revision and warning count. Click `btn-export` and answer the native Save dialog.
 5. Read `export-path`, hash the exported file, and compare it with the revision's approved package hash. Confirm the `revision_exports` row with format `print_package`.
-6. Relaunch on the same data. Confirm the revision, approval, and OpenAI settings persist. A failed build must show `part-blocked` and no approval control.
+6. Ask in chat for a change to the part. `revise` records the next revision, which needs its own approval. A patch that changes nothing is refused.
+7. Relaunch on the same data. Confirm the revision, approval, and OpenAI settings persist. A failed build must show `part-blocked` and no approval control.
 
 For backend tests on Linux, provide `/dev/kvm`, `/dev/vhost-vsock`, `qemu-system-x86_64`, the pinned amd64 CAD runtime, and Bambu Studio 02.08.02.61. `M3D_CAD_RUNTIME` must name one exact runtime directory. From `src-tauri`, run this existing suite.
 
@@ -49,4 +50,6 @@ The suite covers the proof parts, advisory support warnings, a failing fillet, a
 - A missing or rejected bundled runtime makes the part kind unavailable. Acceptance must not depend on a developer cache or Python environment.
 - Advisory warnings can coexist with a verified build. Approval acknowledges the exact warning list.
 - Only a person records a physical print result. Passing mesh, slice, or GUI checks leaves Print-tested unchanged.
-- Backend tests may leave probe output in the checkout. Compare Git status before and after, and preserve unrelated files.
+- The Bambu Studio probe runs in a temporary directory, so backend tests no longer leave `result.json` in the checkout. Still compare Git status before and after.
+- A running part build holds back an update install, and an installing update refuses new builds, see [updater](./updater.md).
+- macOS only: generating a part in the normal app (it needs the bundled signed CAD helper and arm64 runtime), every `mac.ts` step, the installed-release steps in `docs/verify-on-mac.md` (DMG install, first launch, test keychain, native Save, quit and relaunch, CuaDriver input). Linux runs only the backend suite above.

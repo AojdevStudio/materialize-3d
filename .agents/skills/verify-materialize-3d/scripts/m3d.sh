@@ -48,9 +48,10 @@ stop_group() {
   wait_for "! kill -0 $pid" 5 || kill -KILL -- "-$pid" 2>/dev/null || true
 }
 
-# Installs JS deps without touching tracked files. bun.lock on main lacks
-# @tauri-apps/plugin-dialog, so bun resolves the newest 2.x and `tauri` rejects the
-# mismatch with the Rust crate; pin the JS package to the version in Cargo.lock.
+# Installs JS deps without touching tracked files. `tauri` rejects a JS
+# @tauri-apps/plugin-dialog whose version differs from the Rust crate. bun.lock
+# pins the matching version now, so the `bun add` below is a guard that keeps
+# the two in step if they drift apart again.
 ensure_deps() {
   local want have
   want=$(awk '/^name = "tauri-plugin-dialog"/{getline; gsub(/[^0-9.]/, ""); print}' "$ROOT/src-tauri/Cargo.lock")
@@ -62,9 +63,11 @@ ensure_deps() {
 
 up() {
   [[ -e "$CURRENT" ]] && die "run already active at $(readlink -f "$CURRENT"); run 'm3d.sh down' first"
+  local missing=()
   for tool in Xvfb tauri-driver WebKitWebDriver xdotool ffmpeg bun cargo jq ss curl setsid keyctl dbus-run-session gnome-keyring-daemon; do
-    command -v "$tool" >/dev/null || die "missing $tool; this host cannot run verification (use the Linux host)"
+    command -v "$tool" >/dev/null || missing+=("$tool")
   done
+  ((${#missing[@]} == 0)) || die "missing ${missing[*]}; this host cannot run verification (use the Linux host)"
   for port in $VITE_PORT $DRIVER_PORT $NATIVE_PORT; do
     port_busy "$port" && die "port $port is in use by another instance; refusing to double-drive it"
   done
@@ -98,8 +101,8 @@ up() {
   # A private bus and Secret Service keep credentials out of the user's keyring.
   # The empty password unlocks only this disposable run's collection.
   # Keep a separate kernel session too, for before/after checks of older builds.
-  # Bambu Studio's --help probe writes result.json in the inherited working
-  # directory. Keep it with this run, without touching pre-existing checkout files.
+  # The app's Bambu Studio --help probe runs in its own temporary directory, but the
+  # run dir as working directory still keeps any other stray output out of the checkout.
   (cd "$RUN" && DISPLAY=$display XDG_DATA_HOME=$RUN/xdg/data XDG_CONFIG_HOME=$RUN/xdg/config XDG_CACHE_HOME=$RUN/xdg/cache \
     spawn driver dbus-run-session -- bash -euc '
       printf "\n" | gnome-keyring-daemon --unlock --components=secrets --control-directory="$XDG_DATA_HOME/keyring-control"

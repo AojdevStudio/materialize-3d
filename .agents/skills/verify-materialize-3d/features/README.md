@@ -27,10 +27,12 @@ For installed macOS release acceptance, use [Verify the installed Mac app](../..
 - Report an unreachable path with the attempted command and the unmet precondition: no `openscad`, no provider credential, no printer on the network.
 - Do not report a skipped entry point as verified through a different path.
 
-## Host facts (dev-substrate, 2026-10-05)
+## Host facts (dev-substrate, 2026-11-03)
 
-- The Linux host is dev-substrate (`ssh ossie@dev-substrate`, Ubuntu 24.04.5).
+- The Linux host is dev-substrate (`ssh ossie@dev-substrate`, Ubuntu 24.04.5). It has Bun 1.4.4, tauri-driver 2.1.0, WebKitGTK 2.52.6, and Google Chrome 156 at `/opt/google/chrome`. The app on `main` builds with Tauri 2.12.5 and wry 0.57.1.
+- aojdevlinux cannot run the app harness and cannot run the site tests as installed, see SKILL.md and [site](./site.md). Drive dev-substrate from it over ssh.
 - `openscad` is not installed. Design renders end in `Error`, see [design](./design-openscad.md).
+- makerworld.com loads in the embedded browser, but the embedded session is signed out. Import fails on a model page, see [makerworld](./makerworld.md).
 - Bambu Studio 02.08.02.61 is at `/home/ossie/actions-runner-materialize-3d/_work/_tool/bambu-studio/02.08.02.61/squashfs-root/AppRun`, the self-hosted runner's tool cache installed by `scripts/ci/install-bambu-linux.sh`. Export `BAMBU_STUDIO_CLI` to it before `up`, or choose it in Settings > Bambu Studio, see [signs](./signs.md).
 - The CAD runtime cache is `~/.cache/m3d-tool-cache/cad-runtime/amd64-<hash>/` with `vmlinux`, `rootfs.img`, and `job.img`, see [parts](./parts.md).
 - `/dev/kvm`, `/dev/vhost-vsock`, `qemu-system-x86_64`, and `keyctl` are present.
@@ -38,17 +40,19 @@ For installed macOS release acceptance, use [Verify the installed Mac app](../..
 
 ## Feature entry contract
 
-Each feature file has an H1 and one paragraph of user-visible behavior, followed by exactly four H2s in this order: `Sub-features`, `How to get to it (user POV)`, `Driving it with wd.ts`, and `Gotchas`. Lines marked **(observed 2026-11-01)** were driven live on `4205181`. Lines marked **(observed 2026-10-05)** were driven live on `f01f418`. Lines marked **(observed 2026-09-25)** were driven on `86ea7c8`, which is not an ancestor of `main`, and lines marked **(observed 2026-09-26)** in [signs](./signs.md) on `e258688`. Everything else comes from reading the code and should be confirmed on first use.
+Each feature file has an H1 and one paragraph of user-visible behavior, followed by exactly four H2s in this order: `Sub-features`, `How to get to it (user POV)`, `Driving it with wd.ts`, and `Gotchas`. Lines marked **(observed 2026-11-03)** were driven live on `ce33b74`. Lines marked **(observed 2026-11-01)** were driven live on `4205181`. Lines marked **(observed 2026-10-05)** were driven live on `f01f418`. Lines marked **(observed 2026-09-25)** were driven on `86ea7c8`, which is not an ancestor of `main`, and lines marked **(observed 2026-09-26)** in [signs](./signs.md) on `e258688`. Everything else comes from reading the code and should be confirmed on first use. [Site](./site.md) keeps the same four H2s, and its driving section uses Playwright instead of `wd.ts`.
 
 ## Features
 
 - [Onboarding](./onboarding.md) covers the four-step first-run wizard, its skip paths, and the persisted completion flag.
-- [Navigation](./navigation.md) covers the sidebar, the workspace tabs, and the Library and History views.
+- [Navigation](./navigation.md) covers the sidebar, the workspace tabs, the Library and History views, the status bar, and the launch refusal for a newer database.
+- [MakerWorld](./makerworld.md) covers the embedded MakerWorld browser, model detection, Import to Library, and how downloads land in the Library.
 - [Settings](./settings.md) covers the Bambu Studio location, print defaults, the agent provider, model, and API key, notifications, auto-connect, and the External agents (MCP) switch, and links the About section.
 - [Updater](./updater.md) covers the update banner at launch, Later, Settings > About with its manual check, the wait for running builds, and the failed check and failed install states.
 - [Design (OpenSCAD)](./design-openscad.md) covers opening a `.scad` file, rendering, and parameters.
 - [Signs](./signs.md) covers building a sign from a spec file, reviewing a revision, hash-bound approval, export, and recording a print result.
 - [Printers](./printers.md) covers adding, switching, and deleting printer configs, and connection states.
-- [Chat](./chat.md) covers the always-on AI assistant panel.
+- [Chat](./chat.md) covers the always-on AI assistant panel, including how provider errors hide the API key.
 - [Parts](./parts.md) covers agent-built functional parts, the part detail, measured requirements, warnings, approval, and 3MF export. Installed-release acceptance is separate from backend tests.
 - [MCP](./mcp.md) covers the local MCP server for external agents, including `import_part`.
+- [Site](./site.md) covers the landing site's Playwright tests on Google Chrome. They do not use `wd.ts`.
