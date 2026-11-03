@@ -7,10 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-11-03
+
+The in-app updater and bug fixes. Install 0.2.2 by hand once. Later releases arrive through the app. The full notes are in [docs/releases/v0.2.2.md](docs/releases/v0.2.2.md).
+
 ### Added
 
 - The Mac app checks for a newer release at launch and offers **Update now** or **Later**. Update now downloads the update, checks its signature, backs up the database and print queue, installs, and restarts. Later asks again at the next launch. **Settings > About** shows the installed version and checks on request (#72).
+- Update now waits for a running CAD build or STL slice before it restarts (#86, #101).
 - The release build signs an update archive of the notarized app and writes `latest.json`, the feed installed apps read from the latest GitHub release (#72).
+- Each AI provider can use a saved server address (#90).
+
+### Fixed
+
+- An older app refuses a database that a newer app wrote and changes nothing in it (#87).
+- MakerWorld downloads show in Model Library at once, keep their own model and every file, and overlapping downloads of one file no longer collide (#76, #84, #98, #115).
+- The MakerWorld panel shows the real rating, review count, downloads, and print files (#77).
+- A typed but unsaved API key no longer follows a provider switch in Settings or onboarding (#96, #114).
+- Chat hides an encoded API key in an error reply, and a failed turn writes a safe log line (#100).
+- Disabled button text meets WCAG AA contrast (#109).
+- On Linux source builds, one failed download no longer fails the rest. The app moves to Tauri 2.12 (#105).
 
 ## [0.2.1] - 2026-10-30
 
@@ -62,7 +78,8 @@ The first public release. The full notes are in [docs/releases/v0.1.0.md](docs/r
 - Tauri 2.11.6, which fixes an origin confusion that let remote pages invoke local-only IPC commands (GHSA-7gmj-67g7-phm9), and patched openssl, quinn-proto, rustls-webpki, serde_with, and rand.
 
 ## Links
-[Unreleased]: https://github.com/AojdevStudio/materialize-3d/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/AojdevStudio/materialize-3d/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/AojdevStudio/materialize-3d/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/AojdevStudio/materialize-3d/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/AojdevStudio/materialize-3d/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/AojdevStudio/materialize-3d/releases/tag/v0.1.0
