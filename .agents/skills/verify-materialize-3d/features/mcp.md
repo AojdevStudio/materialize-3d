@@ -7,7 +7,8 @@ External agents reach the app through a local MCP server. It is off by default. 
 - `mcp-enable` covers the External agents switch, stored as `mcp.enabled`. The token is 64 hex characters in the keyring, service `com.materialize3d`, entry `mcp:token`. See [settings](./settings.md) for the section's handles.
 - `mcp-auth` covers the bearer check. A request without the token gets HTTP 401.
 - `mcp-tools` covers `describe_kind`, `build`, `revise`, `import_part`, `get`, `list`, `show`, and `printer_status`. There is no approve, export, or print tool.
-- `mcp-import` covers `import_part {path, title, units}`. `path` is absolute, `title` is 1 to 80 characters, and `units` is `"mm"` or `"in"`. It takes 3MF, binary STL, and ASCII STL, and a 3MF must state the same unit. The file is stored read-only at `<app data>/inputs/<sha256>`. The caps are 64 MiB per file, 1 GiB total, and 10,000 files. The same file, title, and units return the same revision.
+- `mcp-import` covers `import_part {path, title, units}`. `path` is absolute, `title` is 1 to 80 characters after trimming with no control characters, and `units` is `"mm"` or `"in"`. It takes 3MF, binary STL, and ASCII STL with one body and one shell. A 3MF that states a unit must match `units`, and one with no unit counts as millimeters. A 3MF archive holds at most 64 entries and 256 MiB expanded. The file is stored read-only at `<app data>/inputs/<sha256>`. The caps are 64 MiB per file, 1 GiB total, and 10,000 files. The same file, title, and units return the same revision.
+- `mcp-build-gate` covers an update install: while it runs, `build` and `import_part` return `isError: true` with "an update is installing and the app is about to restart. Build again after it restarts." From source, not driven.
 - `mcp-get` covers `get {revision_id, wait_s}` with `wait_s` from 0 to 900. While approval is pending, it waits until approval, timeout, or cancel. It returns `exports`, each with `format`, `path`, `sha256`, and `exported_at`.
 
 ## How to get to it (user POV)
@@ -21,16 +22,16 @@ External agents reach the app through a local MCP server. It is off by default. 
 Preconditions:
 
 - Onboarding completed per the baseline in README.md.
-- The run was started with `m3d.sh up`, which gives the app its own session keyring. Without it, enabling MCP fails with a keyring error for `mcp:token`.
+- The run was started with `m3d.sh up`, which gives the app its own Secret Service. Without a working Secret Service, enabling MCP fails with a keyring error for `mcp:token`.
 - No other Materialize 3D instance holds port 45373 on the host.
 
 - **Enable (observed 2026-10-05).** Run `$S/wd.ts click "button[aria-label=Settings]"`, `$S/wd.ts click "[data-testid=mcp-enabled]"`, and `$S/wd.ts wait "[data-testid=mcp-url]"`. It reads `http://127.0.0.1:45373/mcp`.
-- **Read the token (observed 2026-10-05).** Run `T=$($S/wd.ts eval "return window.__TAURI_INTERNALS__.invoke('mcp_token')" | jq -r .)`. This is inspection, so it fits the eval rule. The token is 64 characters.
-- **Call the server (observed 2026-10-05).** Each response body is SSE: a leading empty `data:` event, then `data: {json}`. Parse the line that starts with `data: {`. Keep `mcp-session-id` from `initialize` and send it back as `Mcp-Session-Id`. A tool result is JSON text in `result.content[0].text`. A minimal bun client, run as `bun mcp.ts "$T"`:
+- **Read the token (observed 2026-11-03).** Run `export MCP_TOKEN=$($S/wd.ts eval-secret "return window.__TAURI_INTERNALS__.invoke('mcp_token')")`. This is inspection, so it fits the eval rule. The token is 64 characters, and `actions.log` records only `(64 chars, not logged)`. Plain `eval` would write the token into `actions.log`.
+- **Call the server (observed 2026-10-05).** Each response body is SSE: a leading empty `data:` event, then `data: {json}`. Parse the line that starts with `data: {`. Keep `mcp-session-id` from `initialize` and send it back as `Mcp-Session-Id`. A tool result is JSON text in `result.content[0].text`. A minimal bun client, run as `bun mcp.ts` with `MCP_TOKEN` exported:
 
   ```ts
   const url = 'http://127.0.0.1:45373/mcp'
-  const base = { Authorization: `Bearer ${Bun.argv[2]}`, Accept: 'application/json, text/event-stream', 'Content-Type': 'application/json' }
+  const base = { Authorization: `Bearer ${process.env.MCP_TOKEN}`, Accept: 'application/json, text/event-stream', 'Content-Type': 'application/json' }
   let sid = ''
   async function post(body: object) {
     const r = await fetch(url, { method: 'POST', headers: sid ? { ...base, 'Mcp-Session-Id': sid } : base, body: JSON.stringify(body) })
@@ -44,6 +45,7 @@ Preconditions:
   console.log(msg.result.content[0].text)
   ```
 
+- **Handshake, import, wait, no approve tool (observed 2026-11-03).** The steps below ran again with the same results: HTTP 401 without the token, the eight tool names, the cube import verified with 13 of 13 checks and `reused: true` on the second call, `get` with `wait_s 5` returning after 5005 ms, `wait_s 901` refused, `approve` not found, and the stored input `-r--------`.
 - **Handshake (observed 2026-10-05).** `initialize` returns an `mcp-session-id` header. `notifications/initialized` returns HTTP 202. `tools/list` returns the eight tool names. A request without the token returns HTTP 401.
 - **Import (observed 2026-10-05).** Write a 20 mm ASCII STL cube to `$R/fixtures/cube.stl` and call `import_part` with its absolute path, `title "Cube"`, and `units "mm"`. The result has `kind imported_part`, `build verified`, 13 of 13 checks, `requested_by external_mcp`, `approval pending`, `size_mm [20,20,20]`, and the views isometric, front, and top. A second identical call returns `reused: true`. The stored file `inputs/<sha256 of the STL>` in the app data dir has mode `-r--------`.
 - **Import in the GUI.** PR 34 replaced the placeholder with `part-detail`, rendered by `PartDetail.tsx`. It shows the render, checks, approval, and 3MF export. Follow [parts](./parts.md). The 2026-10-05 observation of `part-pending` predates that change and does not describe the current GUI. The current imported-part GUI path was not driven for this documentation update.
@@ -53,8 +55,9 @@ Preconditions:
 
 ## Gotchas
 
-- `wd.ts eval` prints JSON, so pipe the token through `jq -r .` to drop the quotes.
-- `m3d.sh up` gives each run its own session keyring, but the Linux keyring backend also links entries into the user's persistent keyring, so runs on one host may share the token. This was not tested. `up` isolates the app data, not the port.
+- `wd.ts eval-secret` prints a string without quotes, so no `jq` is needed.
+- "13 of 13 checks" counts the blocking checks. The full imported-part plan also has four advisory checks: three print checks and the support warning.
+- `m3d.sh up` gives each run its own Secret Service collection, so each run gets a fresh token, and `down` deletes it. `up` isolates the app data, not the port.
 - Port 45373 can clash with a real app on the same host.
 - The Settings hint still reads "External agents can build and read signs". That text is stale, because `import_part` exists.
 - On the Linux app, `describe_kind` lists only `["sign"]`. The agent never offers `part`, see [parts](./parts.md).

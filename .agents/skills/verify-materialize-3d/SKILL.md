@@ -11,7 +11,9 @@ For installed macOS release acceptance, follow [Verify the installed Mac app](..
 
 ## Where it runs
 
-Run on the Linux host, dev-substrate (`ssh ossie@dev-substrate`, Ubuntu 24.04.5). It needs Xvfb, `WebKitWebDriver`, `tauri-driver` (`~/.cargo/bin`), xdotool, ffmpeg, `keyctl`, `dbus-run-session`, and `gnome-keyring-daemon`. `m3d.sh up` refuses to start on a host that is missing any of them. An Arch/Hyprland desktop lacks Xvfb, WebKitWebDriver, and tauri-driver, and it has no passwordless sudo.
+Run on the Linux host, dev-substrate (`ssh ossie@dev-substrate`, Ubuntu 24.04.5). It needs Xvfb, `WebKitWebDriver`, `tauri-driver` (`~/.cargo/bin`), xdotool, ffmpeg, `keyctl`, `dbus-run-session`, and `gnome-keyring-daemon`. Use Bun 1.4.4, the version CI pins in `.github/workflows/ci.yml`. `m3d.sh up` refuses to start on a host that is missing any of them, names every missing tool in one line, and creates nothing.
+
+aojdevlinux, the Arch/Omarchy workstation, cannot run the app harness. Arch's `webkit2gtk-4.1` package ships no `WebKitWebDriver`, Xvfb (`xorg-server-xvfb`) is not installed and needs sudo, `tauri-driver` is not installed, and there is no passwordless sudo. There, `up` prints `m3d: missing Xvfb tauri-driver WebKitWebDriver; this host cannot run verification (use the Linux host)` and exits 1 **(observed 2026-11-03)**. From aojdevlinux, drive dev-substrate over ssh. Put each phase in a script, `scp` it to dev-substrate, and run it with `ssh ossie@dev-substrate 'bash -l <script>'`, because nested quotes in an ssh command line break.
 
 To verify work that lives on another machine, get the same tree onto the Linux host. Either push the branch and `git worktree add ~/m3d-<topic> <branch>`, or `rsync -a --exclude node_modules --exclude src-tauri/target <tree>/ ossie@dev-substrate:m3d-<topic>/`. Run every command below from that checkout's root.
 
@@ -33,7 +35,9 @@ $S/m3d.sh close-inspector    # debug builds dock devtools over the bottom 300px
 
 `up` isolates app state with `XDG_DATA_HOME`/`XDG_CONFIG_HOME`/`XDG_CACHE_HOME` under the run dir. A fresh run therefore starts at onboarding with an empty DB at `<run>/xdg/data/com.aojdevstudio.materialize3d/materialize.db`. `wd.ts end` followed by `wd.ts session` relaunches the app on the same data, which is how you prove persistence.
 
-The driver and app run with the run directory as their working directory. The app probes Bambu Studio with `--help` whenever it detects the Studio version, for example in Settings, and the probe writes `result.json` there. `down` keeps this file with the run and leaves all pre-existing checkout files untouched. Compare `git status --short` before `up` and after `down` to check for Git-visible changes. Ignored build and dependency outputs, including `src-tauri/target` and `node_modules`, stay in the checkout.
+The driver and app run with the run directory as their working directory, so stray output never lands in the checkout. The app's Bambu Studio `--help` probe runs in its own temporary directory (PR 42), so neither the run directory nor the checkout gets a `result.json` **(observed 2026-11-03)**. Compare `git status --short` before `up` and after `down` to check for Git-visible changes. Ignored build and dependency outputs, including `src-tauri/target` and `node_modules`, stay in the checkout.
+
+If the same verification needs to span several shell calls, hold the lock in a process you can stop as a unit. `flock ~/m3d-ui.lock sleep N &` started under `setsid` leaves the `sleep` holding the lock after you kill `flock`, so stop the `sleep` too and confirm with `flock -n ~/m3d-ui.lock true`.
 
 `up` launches tauri-driver and the app on a private D-Bus session with its own Secret Service. Its disposable collection lives under the run's `xdg/data`, uses an empty password, and is removed by `down`. The run directory is accessible only to its owner. Use test credentials for these runs. The operator's desktop keyring is not used. A separate kernel session remains for comparisons with older builds that used keyutils.
 
@@ -59,9 +63,12 @@ $S/wd.ts wait "[role=dialog][aria-label=Settings]"
 $S/wd.ts click 'xpath=//div[@role="dialog"]//label[contains(., "Quality")]//option[@value="0.16"]'   # choose a <select> option
 $S/wd.ts hover 'xpath=//li[.//button[@aria-label="Delete T1"]]'   # reveal a hover-only control in its own row
 $S/wd.ts type "[data-testid=input-host]" "10.0.0.5" --clear
+$S/wd.ts type "[data-testid=agent-base-url]" '' --clear   # clear only
+KEY=... $S/wd.ts type-secret "[data-testid=agent-api-key]" KEY --clear   # types $KEY; actions.log gets only its length
 $S/wd.ts text "[data-testid=render-status]"
 $S/wd.ts gone "[data-testid=onboarding-wizard]"
 $S/wd.ts eval "return innerHeight"          # inspection only, never to cause the behavior under test
+T=$($S/wd.ts eval-secret "return window.__TAURI_INTERNALS__.invoke('mcp_token')")   # prints a string bare; logs only its length
 $S/wd.ts shot settings-open                 # evidence/NN-settings-open.png, then a contrast sweep
 $S/wd.ts contrast                           # every displayed select, text input, textarea, button on screen; exit 1 on a new failure below 3.0
 $S/wd.ts end
@@ -76,6 +83,8 @@ Stable handles, in order of preference:
 - Role and label XPath for controls without testids, such as the Settings selects.
 
 The feature files list the exact handles.
+
+`actions.log` records the text of every `type` and the result of every `eval`. Never pass a key, access code, or token to `type` or read one with `eval`. Use `type-secret <sel> <ENV>` and `eval-secret <js>`, which log only the length **(observed 2026-11-03: a dummy key, an access code, and the MCP token each appeared 0 times in `actions.log`)**. Dummy strings such as `sk-test-dummy-0000` may go through `type`.
 
 Quote an `aria-label` value that contains a space: `button[aria-label="Print Queue"]`. Unquoted, the selector fails with "invalid selector".
 
@@ -120,13 +129,13 @@ A proof must meet these standards:
 $S/m3d.sh down
 ```
 
-`down` ends the WebDriver session, which closes the app. It stops ffmpeg, tauri-driver, Vite, and the Xvfb it started by killing each recorded process group. It never kills by process name. It deletes `xdg/` (app DB, WebKit storage), `pids/`, and `session`, then removes the `current` link. It keeps `evidence/`, `fixtures/`, `logs/`, `env.json`, and any `result.json` the probe wrote. Run `down` after a failed `up` too, because `up` leaves partial state for inspection.
+`down` ends the WebDriver session, which closes the app. It stops ffmpeg, tauri-driver, Vite, and the Xvfb it started by killing each recorded process group. It never kills by process name. It deletes `xdg/` (app DB, WebKit storage), `pids/`, and `session`, then removes the `current` link. It keeps `evidence/`, `fixtures/`, `logs/`, and `env.json`. Copy anything you need from `xdg/` first, such as the app log in `xdg/data/com.aojdevstudio.materialize3d/logs/`. Run `down` after a failed `up` too, because `up` leaves partial state for inspection.
 
-`up` runs `bun install --no-save` and pins `@tauri-apps/plugin-dialog` to the `Cargo.lock` version, also with `--no-save`. That leaves `package.json` and `bun.lock` untouched. Check `git status` before and after the run. Keep dependency and lockfile changes out of verification-only work.
+`up` runs `bun install --no-save` and pins `@tauri-apps/plugin-dialog` to the `Cargo.lock` version, also with `--no-save`. Since the Tauri 2.12 bump (PR 105), `bun.lock` already holds the matching 2.6.0, so the pin is only a guard. That leaves `package.json` and `bun.lock` untouched. Check `git status` before and after the run. Keep dependency and lockfile changes out of verification-only work.
 
 ## On macOS
 
-This section describes a development driver from source. It is not installed-release acceptance, and it was not driven for the 0.2.0 documentation update.
+This section describes a development driver from source. It is not installed-release acceptance. It was not driven for the 0.2.0 documentation update or for the 2026-11-03 update. Every step in this section runs only on macOS.
 
 WebDriver cannot drive WKWebView, so `scripts/mac.ts` drives the app through the `e2e` harness in `src-tauri/src/e2e.rs`. That harness exists only in builds made with `--features e2e`. The release omits the endpoint and scripted dialog override. `mac.ts` targets the checkout's debug app bundle, not the copy installed from the release DMG. Its build command alone does not assemble the CAD helper and pinned runtime needed for parts. Run it on the Mac itself, the Mac mini (`ssh macmini-ts`).
 
@@ -149,4 +158,4 @@ For installed-release automation, follow the [native verification tools](../../.
 
 ## Feature map
 
-`features/README.md` indexes one recipe per user-facing feature. A proof that drives one convenient entry point is incomplete when the map lists others. Update the map when a feature's handles or behavior change.
+`features/README.md` indexes one recipe per user-facing feature, including the landing site, which Playwright drives instead of `wd.ts`. A proof that drives one convenient entry point is incomplete when the map lists others. Update the map when a feature's handles or behavior change.

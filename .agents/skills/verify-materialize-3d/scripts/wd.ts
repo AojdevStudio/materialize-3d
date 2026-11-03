@@ -13,6 +13,7 @@
 //   bun wd.ts click <sel>
 //   bun wd.ts hover <sel>              move the pointer over <sel> (reveals hover-only controls)
 //   bun wd.ts type <sel> <text> [--clear]
+//   bun wd.ts type-secret <sel> <ENV> [--clear]  type the value of $ENV; the log records only its length
 //   bun wd.ts keys <text>              send keys to the focused element ( = Enter)
 //   bun wd.ts text <sel>               print visible text
 //   bun wd.ts attr <sel> <name>        print a DOM property of the first match (visible or not)
@@ -24,6 +25,7 @@
 //                                      lower than its ratio in contrast-baseline.txt
 //                                      (default: text-bearing controls; checkboxes and radios carry no text)
 //   bun wd.ts eval <js>                run a script (`return ...`), print JSON; inspection only
+//   bun wd.ts eval-secret <js>         like eval, but prints a string bare and logs only its length (tokens)
 //   bun wd.ts note <message>           append a free-form line to actions.log
 //   bun wd.ts end                      close the session (the app exits)
 
@@ -478,8 +480,19 @@ async function main(): Promise<void> {
       const [sel, text] = args
       const id = await waitFor(sel)
       if (args.includes('--clear')) await call('POST', `/session/${sid()}/element/${id}/clear`, {})
-      await call('POST', `/session/${sid()}/element/${id}/value`, { text })
+      // WebDriver rejects an empty value, so `type <sel> '' --clear` only clears.
+      if (text) await call('POST', `/session/${sid()}/element/${id}/value`, { text })
       log(`type ${sel} ${JSON.stringify(text)}`)
+      return
+    }
+    case 'type-secret': {
+      const [sel, name] = args
+      const text = process.env[name ?? '']
+      if (!text) throw new Error(`type-secret: environment variable ${name} is empty or unset`)
+      const id = await waitFor(sel)
+      if (args.includes('--clear')) await call('POST', `/session/${sid()}/element/${id}/clear`, {})
+      await call('POST', `/session/${sid()}/element/${id}/value`, { text })
+      log(`type-secret ${sel} $${name} (${text.length} chars)`)
       return
     }
     case 'keys': {
@@ -552,6 +565,13 @@ async function main(): Promise<void> {
       console.log(JSON.stringify(value, null, 2))
       return
     }
+    case 'eval-secret': {
+      const value = await call<unknown>('POST', `/session/${sid()}/execute/sync`, { script: args[0], args: [] })
+      const out = typeof value === 'string' ? value : JSON.stringify(value)
+      log(`eval-secret ${JSON.stringify(args[0])} => (${out.length} chars, not logged)`)
+      console.log(out)
+      return
+    }
     case 'note': {
       log(`note ${args.join(' ')}`)
       return
@@ -562,7 +582,7 @@ async function main(): Promise<void> {
       return
     }
     default:
-      console.error('usage: wd.ts session|wait|gone|click|hover|type|keys|text|attr|count|shot|contrast|eval|note|end (see header)')
+      console.error('usage: wd.ts session|wait|gone|click|hover|type|type-secret|keys|text|attr|count|shot|contrast|eval|eval-secret|note|end (see header)')
       process.exit(2)
   }
 }

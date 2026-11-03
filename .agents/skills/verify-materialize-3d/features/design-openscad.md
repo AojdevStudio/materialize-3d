@@ -21,15 +21,15 @@ Preconditions:
 
 - Onboarding completed per the baseline in README.md.
 - A fixture exists, for example `R=$(readlink -f ~/m3d-verify/current); mkdir -p $R/fixtures; printf '// cube\nsize = 20; // [5:50]\ncube([size, size, size / 2]);\n' > $R/fixtures/cube.scad`.
-- For `design-render`, an `openscad` binary is installed at `/usr/bin/openscad`, at `/usr/local/bin/openscad`, on `PATH`, or pointed to by `OPENSCAD_CLI` (export it before `up`). The Linux host has none.
+- For `design-render`, an `openscad` binary is installed at `/usr/bin/openscad`, at `/usr/local/bin/openscad`, on `PATH`, or pointed to by `OPENSCAD_CLI` (export it before `up`). The lookup tries `OPENSCAD_CLI` first and skips a path that does not exist. The binary must export parameter JSON with `-o <file>.param`, because opening a file extracts parameters before the first render. The Linux host has none.
 
 - **Empty state (observed 2026-09-25).** Run `$S/wd.ts click "button[aria-label=Design]"` and `$S/wd.ts text "[data-testid=design-tab-empty]"`. It reads "No file open … Open .scad File".
-- **Open file (observed 2026-10-05).** Run `$S/wd.ts click "[data-testid=open-file-button]"` and `$S/m3d.sh file-dialog $R/fixtures/cube.scad`, then `$S/wd.ts wait "[data-testid=design-toolbar]"`. The toolbar shows `cube.scad`, `$S/wd.ts attr "[data-testid=design-toolbar] span[title]" title` prints the absolute path, and the editor shows the fixture's three lines.
-- **Render without OpenSCAD (observed 2026-10-05).** Run `$S/wd.ts text "[data-testid=render-status]"`. It prints `Error`, and the page shows "Line 0: OpenSCAD CLI not found at /usr/bin/openscad. Install: ...". Report `design-render` as unreachable on this host and name the missing binary.
-- **Render with OpenSCAD.** Run `$S/wd.ts wait "xpath=//*[@data-testid='render-status'][contains(., 'Ready')]" 60000`. Then `[data-testid=chip-model]` and `[data-testid=chip-size]` appear in the viewer, with the size reading `20 × 20 × 10 mm` for the fixture.
+- **Open file (observed 2026-10-05, again 2026-11-03).** Run `$S/wd.ts click "[data-testid=open-file-button]"` and `$S/m3d.sh file-dialog $R/fixtures/cube.scad`, then `$S/wd.ts wait "[data-testid=design-toolbar]"`. The toolbar shows `cube.scad`, `$S/wd.ts attr "[data-testid=design-toolbar] span[title]" title` prints the absolute path, and the editor shows the fixture's three lines.
+- **Render without OpenSCAD (observed 2026-10-05, again 2026-11-03).** Run `$S/wd.ts text "[data-testid=render-status]"`. It prints `Error`, and the toolbar reads "Line 0: OpenSCAD CLI not found at /usr/bin/openscad. Install: install via your package manager, e.g. apt install openscad". Report `design-render` as unreachable on this host and name the missing binary.
+- **Render with OpenSCAD.** Run `$S/wd.ts wait "xpath=//*[@data-testid='render-status'][contains(., 'Ready')]" 60000`, then `$S/wd.ts wait "xpath=//*[@data-testid='chip-size'][contains(., '20.0 × 20.0 × 10.0 mm')]" 60000`. The viewer prints each size with one decimal place, and it loads the model after `Ready`, so wait on `chip-size`. `chip-model` shows the workspace's selected library model, not the `.scad` file, so a fresh run has none.
 - **Parameters without OpenSCAD (observed 2026-09-25).** The panel reads "No parameters", because parameter extraction also needs the binary.
 - **Parameters.** Run `$S/wd.ts count "[data-testid=parameter-panel] input"`. It is at least 1 for the fixture, labelled `size`. Changing it re-renders after about 300 ms, and `chip-size` changes.
-- **Edit and save (observed 2026-10-05).** Run `$S/wd.ts click ".monaco-editor .view-lines"`, then `$S/wd.ts keys "// edit"`, then save with Ctrl+S (`$S/wd.ts keys $'s'`, where `` is Control). The fixture file on disk then contains `// edit`, and the status re-renders.
+- **Edit and save (observed 2026-10-05, again 2026-11-03).** Run `$S/wd.ts click ".monaco-editor .view-lines"`, then `$S/wd.ts keys "// edit"`, then save with Ctrl+S (`$S/wd.ts keys $'s'`, where `` is Control). The fixture file on disk then contains `// edit`, and the status re-renders.
 
 ## Gotchas
 
