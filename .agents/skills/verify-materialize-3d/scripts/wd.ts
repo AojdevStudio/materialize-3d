@@ -25,7 +25,7 @@
 //                                      lower than its ratio in contrast-baseline.txt
 //                                      (default: text-bearing controls; checkboxes and radios carry no text)
 //   bun wd.ts eval <js>                run a script (`return ...`), print JSON; inspection only
-//   bun wd.ts eval-secret <js>         like eval, but prints a string bare and logs only its length (tokens)
+//   bun wd.ts eval-secret <js>         like eval, but prints a string bare; logs neither script nor value
 //   bun wd.ts note <message>           append a free-form line to actions.log
 //   bun wd.ts end                      close the session (the app exits)
 
@@ -491,7 +491,10 @@ async function main(): Promise<void> {
       if (!text) throw new Error(`type-secret: environment variable ${name} is empty or unset`)
       const id = await waitFor(sel)
       if (args.includes('--clear')) await call('POST', `/session/${sid()}/element/${id}/clear`, {})
-      await call('POST', `/session/${sid()}/element/${id}/value`, { text })
+      // A WebDriver error can echo the value it refused, so its text is withheld.
+      await call('POST', `/session/${sid()}/element/${id}/value`, { text }).catch(() => {
+        throw new Error(`type-secret ${sel}: WebDriver refused the value (details withheld)`)
+      })
       log(`type-secret ${sel} $${name} (${text.length} chars)`)
       return
     }
@@ -566,9 +569,12 @@ async function main(): Promise<void> {
       return
     }
     case 'eval-secret': {
-      const value = await call<unknown>('POST', `/session/${sid()}/execute/sync`, { script: args[0], args: [] })
+      // Neither the script nor a script error is logged: either can hold the secret.
+      const value = await call<unknown>('POST', `/session/${sid()}/execute/sync`, { script: args[0], args: [] }).catch(() => {
+        throw new Error('eval-secret: the script failed (details withheld)')
+      })
       const out = typeof value === 'string' ? value : JSON.stringify(value)
-      log(`eval-secret ${JSON.stringify(args[0])} => (${out.length} chars, not logged)`)
+      log(`eval-secret => (${out.length} chars, not logged)`)
       console.log(out)
       return
     }
@@ -589,7 +595,9 @@ async function main(): Promise<void> {
 
 main().catch((err: unknown) => {
   const message = err instanceof Error ? err.message : String(err)
-  log(`FAIL ${process.argv.slice(2).join(' ')} :: ${message}`)
+  const [cmd, ...rest] = process.argv.slice(2)
+  // eval-secret's script can hold a secret, so its failure line names the command alone.
+  log(`FAIL ${cmd === 'eval-secret' ? cmd : [cmd, ...rest].join(' ')} :: ${message}`)
   console.error(`wd: ${message}`)
   process.exit(1)
 })
