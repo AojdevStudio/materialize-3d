@@ -178,19 +178,23 @@ jobs:
       github.event_name == 'push' ||
       (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
       && github.event.pull_request.user.login != 'dependabot[bot]'))
-    runs-on: [self-hosted, Linux, X64, m3d-linux-kvm]
+    # The Playwright tests launch the installed Google Chrome. The Mac mini has it and dev-substrate does not.
+    runs-on: [self-hosted, macOS, ARM64, m3d-mac-vz]
     timeout-minutes: 20
     defaults:
       run:
         working-directory: site
     steps:
       - uses: actions/checkout@v4
+      # A job-local bun, for the same reason as the macos job's setup-bun above.
       - uses: oven-sh/setup-bun@v2
+        env:
+          HOME: ${{ runner.temp }}/bun-home
         with:
           bun-version: "1.4.4"
       - name: Install site dependencies (frozen lockfile)
         run: bun install --frozen-lockfile
-      - name: Install Chromium for Playwright
-        run: bunx playwright install --with-deps chromium
+      - name: Google Chrome is installed on the runner
+        run: '"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --version'
       - name: Build and test layout, links, keyboard access, contrast, and claims
         run: bunx playwright test
