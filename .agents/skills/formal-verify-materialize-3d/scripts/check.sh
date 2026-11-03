@@ -32,7 +32,9 @@ if [[ -z $jar || ! -f $jar ]]; then
   echo "TLC is not set up. Set TLA2TOOLS_JAR to tla2tools.jar from TLA+ v1.7.4 (sha256 $TLC_SHA256)." >&2
   exit 2
 fi
-if [[ $(sha256sum "$jar" | cut -d' ' -f1) != "$TLC_SHA256" ]]; then
+# shasum ships with macOS. sha256sum ships with GNU coreutils.
+if command -v sha256sum >/dev/null; then sum=$(sha256sum "$jar"); else sum=$(shasum -a 256 "$jar"); fi
+if [[ ${sum%% *} != "$TLC_SHA256" ]]; then
   echo "$jar is not tla2tools.jar v1.7.4 (sha256 $TLC_SHA256)." >&2
   exit 2
 fi
