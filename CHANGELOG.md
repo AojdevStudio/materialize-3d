@@ -16,17 +16,17 @@ The in-app updater and bug fixes. Install 0.2.2 by hand once. Later releases arr
 - The Mac app checks for a newer release at launch and offers **Update now** or **Later**. Update now downloads the update, checks its signature, backs up the database and print queue, installs, and restarts. Later asks again at the next launch. **Settings > About** shows the installed version and checks on request (#72).
 - Update now waits for a running CAD build or STL slice before it restarts (#86, #101).
 - The release build signs an update archive of the notarized app and writes `latest.json`, the feed installed apps read from the latest GitHub release (#72).
-- Each AI provider can use a saved server address (#90).
+- Each AI provider can use a saved server address, and any model ID while an address is saved (#90).
 
 ### Fixed
 
-- An older app refuses a database that a newer app wrote and changes nothing in it (#87).
-- MakerWorld downloads show in Model Library at once, keep their own model and every file, and overlapping downloads of one file no longer collide (#76, #84, #98, #115).
+- The app refuses a database with a newer schema than it supports and changes nothing in it (#87).
+- MakerWorld downloads show in Model Library at once and keep their own model and every file (#76, #84, #98). On macOS, two overlapping downloads of one file URL still do not reach the Library (#116).
 - The MakerWorld panel shows the real rating, review count, downloads, and print files (#77).
 - A typed but unsaved API key no longer follows a provider switch in Settings or onboarding (#96, #114).
 - Chat hides an encoded API key in an error reply, and a failed turn writes a safe log line (#100).
 - Disabled button text meets WCAG AA contrast (#109).
-- On Linux source builds, one failed download no longer fails the rest. The app moves to Tauri 2.12 (#105).
+- On Linux source builds, one failed download no longer fails the rest, and overlapping downloads of one file URL each land in their own file. The app moves to Tauri 2.12 (#105, #115).
 
 ## [0.2.1] - 2026-10-30
 
