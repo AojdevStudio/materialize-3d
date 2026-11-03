@@ -12,7 +12,7 @@ use std::{
 use gtk::prelude::*;
 use wry::{WebViewBuilder, WebViewBuilderExtUnix};
 
-use super::PendingDownloads;
+use super::{DownloadStart, PendingDownloads};
 
 const BODY_LEN: usize = 256 * 1024;
 
@@ -122,6 +122,7 @@ fn webkitgtk_downloads() {
     gtk::init().expect("GTK needs a display");
     a_refused_or_failed_download_leaves_later_downloads_successful();
     two_overlapping_downloads_of_one_url_each_land_in_their_own_file();
+    two_overlapping_downloads_of_one_url_started_on_two_models_each_finish_with_their_own_start();
 }
 
 fn a_refused_or_failed_download_leaves_later_downloads_successful() {
@@ -194,12 +195,13 @@ fn two_overlapping_downloads_of_one_url_each_land_in_their_own_file() {
     let webview = WebViewBuilder::new()
         .with_download_started_handler(move |url, destination| {
             let file = url.rsplit('/').next().unwrap_or_default().to_string();
-            *destination = on_start.lock().unwrap().start(&url, &folder, &file);
+            let start = DownloadStart { model_dir: folder.clone(), model: None, source_url: url.clone() };
+            *destination = on_start.lock().unwrap().start(&url, start, &file);
             let _ = started_sender.send(());
             true
         })
         .with_download_completed_handler(move |url, path, success| {
-            let path = on_finish.lock().unwrap().finish(&url, path, success);
+            let path = on_finish.lock().unwrap().finish(&url, path, success).map(|reservation| reservation.destination);
             let _ = finish_sender.send(Finish { url, path, success });
         })
         .build_gtk(&container)
@@ -238,5 +240,63 @@ fn two_overlapping_downloads_of_one_url_each_land_in_their_own_file() {
     let finish = wait_for_finish(&finished, &later);
     assert!(finish.success, "a later download still lands: {finish:?}");
     assert_landed(&downloads.path().join("later.3mf"));
+    assert!(pending.lock().unwrap().by_url.is_empty(), "every transfer released its reservation");
+}
+
+fn two_overlapping_downloads_of_one_url_started_on_two_models_each_finish_with_their_own_start() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind a local port");
+    let origin = format!("http://{}", listener.local_addr().expect("local address"));
+    let overlap = Arc::new(Overlap { both_started: Some(Barrier::new(3)), ..Overlap::default() });
+    let server = Arc::clone(&overlap);
+    thread::spawn(move || serve(listener, server));
+
+    let downloads = tempfile::tempdir().expect("temp download dir");
+    let dispenser = downloads.path().join("dispenser");
+    let hook = downloads.path().join("hook");
+    let model_dirs = Mutex::new(vec![hook.clone(), dispenser.clone()]);
+    let pending = Arc::new(Mutex::new(PendingDownloads::default()));
+    let (started_sender, started) = mpsc::channel();
+    let (finish_sender, finished) = mpsc::channel();
+
+    let window = gtk::Window::new(gtk::WindowType::Toplevel);
+    let container = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    window.add(&container);
+    let on_start = Arc::clone(&pending);
+    let on_finish = Arc::clone(&pending);
+    let webview = WebViewBuilder::new()
+        .with_download_started_handler(move |url, destination| {
+            let model_dir = model_dirs.lock().unwrap().pop().expect("one model folder per start");
+            fs::create_dir_all(&model_dir).expect("create the model folder");
+            let start = DownloadStart { model_dir, model: None, source_url: url.clone() };
+            *destination = on_start.lock().unwrap().start(&url, start, "same.3mf");
+            let _ = started_sender.send(());
+            true
+        })
+        .with_download_completed_handler(move |url, path, success| {
+            let reservation = on_finish.lock().unwrap().finish(&url, path.clone(), success);
+            let _ = finish_sender.send((path, reservation.map(|reservation| reservation.start.model_dir)));
+        })
+        .build_gtk(&container)
+        .expect("build the webview");
+    window.show_all();
+
+    let url = format!("{origin}/overlap/same.3mf");
+    webview.load_url(&url).expect("start the download on the dispenser");
+    pump_until(&started, "dispenser start");
+    webview.load_url(&url).expect("start the download on the hook");
+    pump_until(&started, "hook start");
+    overlap.both_started.as_ref().expect("an overlap barrier").wait();
+
+    let finishes = HashSet::from([pump_until(&finished, "first finish"), pump_until(&finished, "second finish")]);
+    assert_eq!(
+        finishes,
+        HashSet::from([
+            (Some(dispenser.join("same.3mf")), Some(dispenser.clone())),
+            (Some(hook.join("same.3mf")), Some(hook.clone())),
+        ]),
+        "each finish takes back the reservation of its own start",
+    );
+    assert_landed(&dispenser.join("same.3mf"));
+    assert_landed(&hook.join("same.3mf"));
     assert!(pending.lock().unwrap().by_url.is_empty(), "every transfer released its reservation");
 }

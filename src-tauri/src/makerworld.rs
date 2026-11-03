@@ -14,8 +14,8 @@ use tauri::{
 use url::Url;
 
 use crate::state::{
-    AppState, MAKERWORLD_HOME_URL, MakerWorldFile, MakerWorldModel, MakerWorldPageKind,
-    ModelImportStatus, ModelInfo,
+    AppState, MAKERWORLD_HOME_URL, MakerWorldBrowserState, MakerWorldFile, MakerWorldModel,
+    MakerWorldPageKind, ModelImportStatus, ModelInfo,
 };
 
 pub const MAKERWORLD_WEBVIEW_LABEL: &str = "makerworld";
@@ -56,6 +56,20 @@ pub struct ImportResult {
     pub imported_files: Vec<String>,
 }
 
+/// What a download is for, captured when it starts. The finish files it under this, because the browser may show another model by then.
+#[derive(Debug)]
+struct DownloadStart {
+    model_dir: PathBuf,
+    model: Option<MakerWorldModel>,
+    source_url: String,
+}
+
+#[derive(Debug)]
+struct Reservation {
+    destination: PathBuf,
+    start: DownloadStart,
+}
+
 #[derive(Debug, Default)]
 struct PendingDownloads {
     by_url: HashMap<String, UrlDownloads>,
@@ -65,28 +79,33 @@ struct PendingDownloads {
 /// The transfers of one URL that have not all finished.
 #[derive(Debug, Default)]
 struct UrlDownloads {
-    reserved: Vec<PathBuf>,
+    reserved: Vec<Reservation>,
     in_flight: usize,
 }
 
 impl PendingDownloads {
-    /// Reserves a destination no file and no other transfer holds. WebKitGTK and WebKit refuse an existing one.
-    fn start(&mut self, url: &str, folder: &Path, filename: &str) -> PathBuf {
+    /// Reserves a destination in the start's folder that no file and no other transfer holds. WebKitGTK and WebKit refuse an existing one.
+    fn start(&mut self, url: &str, start: DownloadStart, filename: &str) -> PathBuf {
         let name = Path::new(filename);
         let stem = name.file_stem().unwrap_or(name.as_os_str()).to_string_lossy();
         let extension = name.extension().map(|extension| format!(".{}", extension.to_string_lossy()));
-        let mut destination = folder.join(filename);
+        let mut destination = start.model_dir.join(filename);
         for copy in 1.. {
             let taken = destination.exists()
-                || self.by_url.values().any(|downloads| downloads.reserved.contains(&destination));
+                || self
+                    .by_url
+                    .values()
+                    .flat_map(|downloads| &downloads.reserved)
+                    .any(|reservation| reservation.destination == destination);
             if !taken {
                 break;
             }
-            destination = folder.join(format!("{stem} ({copy}){}", extension.as_deref().unwrap_or_default()));
+            destination =
+                start.model_dir.join(format!("{stem} ({copy}){}", extension.as_deref().unwrap_or_default()));
         }
 
         let downloads = self.by_url.entry(url.into()).or_default();
-        downloads.reserved.push(destination.clone());
+        downloads.reserved.push(Reservation { destination: destination.clone(), start });
         downloads.in_flight += 1;
         destination
     }
@@ -96,8 +115,8 @@ impl PendingDownloads {
         *self.refused.entry(url.into()).or_default() += 1;
     }
 
-    /// Resolves where a finished transfer landed and frees the URL once all its transfers finished.
-    fn finish(&mut self, url: &str, path: Option<PathBuf>, success: bool) -> Option<PathBuf> {
+    /// Resolves which reservation a finished transfer used and frees the URL once all its transfers finished.
+    fn finish(&mut self, url: &str, path: Option<PathBuf>, success: bool) -> Option<Reservation> {
         if path.is_none() && !success {
             if let Some(refused) = self.refused.get_mut(url) {
                 *refused -= 1;
@@ -107,15 +126,14 @@ impl PendingDownloads {
                 return None;
             }
         }
-        let Some(downloads) = self.by_url.get_mut(url) else {
-            return path;
-        };
+        let downloads = self.by_url.get_mut(url)?;
         downloads.in_flight -= 1;
         let landed = match path {
-            Some(path) => {
-                downloads.reserved.retain(|reserved| reserved != &path);
-                Some(path)
-            }
+            Some(path) => downloads
+                .reserved
+                .iter()
+                .position(|reservation| reservation.destination == path)
+                .map(|index| downloads.reserved.remove(index)),
             // A failed WebKitGTK finish and every macOS finish carry no path. Only a lone reservation names it.
             None if success && downloads.reserved.len() == 1 => downloads.reserved.pop(),
             None => None,
@@ -138,6 +156,15 @@ struct StoredImportMetadata {
     imported_at: String,
     source_url: String,
     model: Option<MakerWorldModel>,
+    files: Vec<String>,
+}
+
+/// The parts of an existing `metadata.json` that a later download keeps.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredImportHistory {
+    imported_at: Option<String>,
+    #[serde(default)]
     files: Vec<String>,
 }
 
@@ -436,14 +463,14 @@ fn handle_download<R: Runtime>(
 ) -> bool {
     match event {
         DownloadEvent::Requested { url, destination } => {
-            let reserved = download_target(app, state, &url).and_then(|(folder, filename)| {
-                fs::create_dir_all(&folder)
+            let reserved = download_target(app, state, &url).and_then(|(start, filename)| {
+                fs::create_dir_all(&start.model_dir)
                     .map_err(|error| format!("failed to create MakerWorld import directory: {error}"))?;
                 let mut pending = service
                     .pending_downloads
                     .lock()
                     .map_err(|error| format!("failed to lock pending downloads: {error}"))?;
-                Ok(pending.start(url.as_str(), &folder, &filename))
+                Ok(pending.start(url.as_str(), start, &filename))
             });
             match reserved {
                 Ok(path) => {
@@ -463,25 +490,20 @@ fn handle_download<R: Runtime>(
             }
         }
         DownloadEvent::Finished { url, path, success } => {
-            let final_path = match service.pending_downloads.lock() {
-                Ok(mut pending) => pending.finish(url.as_str(), path, success),
-                Err(_) => path,
-            };
-
-            if success {
-                if let Some(path) = final_path {
-                    if let Err(error) = finalize_import(app, state, &path) {
-                        log::warn!("failed to finalize MakerWorld import: {error}");
-                    }
-                } else if let Err(error) = set_import_error(
-                    app,
-                    state,
-                    "MakerWorld download finished without a destination path".into(),
-                ) {
-                    log::warn!("failed to record missing makerworld download path: {error}");
+            let outcome = service
+                .pending_downloads
+                .lock()
+                .map_err(|error| format!("failed to lock pending downloads: {error}"))
+                .and_then(|mut pending| match (success, pending.finish(url.as_str(), path, success)) {
+                    (false, _) => Err(format!("MakerWorld download failed for {url}")),
+                    (true, None) => Err("MakerWorld download finished without a recorded start".into()),
+                    (true, Some(reservation)) => Ok(reservation),
+                })
+                .and_then(|reservation| finalize_import(app, state, reservation));
+            if let Err(error) = outcome {
+                if let Err(update_error) = set_import_error(app, state, error) {
+                    log::warn!("failed to record MakerWorld import error: {update_error}");
                 }
-            } else if let Err(error) = set_import_error(app, state, format!("MakerWorld download failed for {url}")) {
-                log::warn!("failed to record MakerWorld download failure: {error}");
             }
         }
         _ => {}
@@ -540,22 +562,13 @@ fn set_browser_url(app: &AppHandle, state: &Arc<AppState>, url: &str) -> Result<
 fn finalize_import<R: Runtime>(
     app: &AppHandle<R>,
     state: &Arc<AppState>,
-    downloaded_path: &Path,
+    Reservation { destination, start }: Reservation,
 ) -> Result<(), String> {
-    finalize_import_into(app, state, &library_root(app)?, downloaded_path)
-}
+    let downloaded_path = destination.canonicalize().unwrap_or(destination);
 
-fn finalize_import_into<R: Runtime>(
-    app: &AppHandle<R>,
-    state: &Arc<AppState>,
-    library_dir: &Path,
-    downloaded_path: &Path,
-) -> Result<(), String> {
-    let downloaded_path = downloaded_path
-        .canonicalize()
-        .unwrap_or_else(|_| downloaded_path.to_path_buf());
+    persist_import_metadata(&start.model_dir, &start.source_url, start.model.clone(), &downloaded_path)?;
 
-    let (model_name, model_id, source_url, imported_files, detected_model) = {
+    {
         let mut workspace = state
             .workspace
             .lock()
@@ -567,45 +580,19 @@ fn finalize_import_into<R: Runtime>(
         }
         workspace.makerworld.import_status = ModelImportStatus::Imported;
         workspace.makerworld.last_extraction_error = None;
-
-        let model = workspace.makerworld.detected_model.clone();
-        let model_name = model
-            .as_ref()
-            .map(|model| model.title.clone())
-            .unwrap_or_else(|| file_stem_or_name(&downloaded_path));
-        let source_url = model
-            .as_ref()
-            .map(|model| model.source_url.clone())
-            .unwrap_or_else(|| workspace.makerworld.current_url.clone());
-        let model_id = model.as_ref().and_then(|model| model.id.clone());
-        let file_size = fs::metadata(&downloaded_path).ok().map(|meta| meta.len());
-
         workspace.active_model = Some(ModelInfo {
-            id: model_id.clone(),
-            name: model_name.clone(),
+            id: start.model.as_ref().and_then(|model| model.id.clone()),
+            name: start
+                .model
+                .map(|model| model.title)
+                .unwrap_or_else(|| file_stem_or_name(&downloaded_path)),
             path: Some(next_path),
-            source: Some(source_url.clone()),
-            size_bytes: file_size,
+            source: Some(start.source_url),
+            size_bytes: fs::metadata(&downloaded_path).ok().map(|meta| meta.len()),
         });
+    }
 
-        (
-            model_name,
-            model_id,
-            source_url,
-            workspace.makerworld.imported_files.clone(),
-            model,
-        )
-    };
-
-    let model_dir = persist_import_metadata(
-        library_dir,
-        &model_name,
-        model_id.as_deref(),
-        &source_url,
-        detected_model,
-        imported_files,
-    )?;
-    let added = add_import_to_library(app, state, &model_dir);
+    let added = add_import_to_library(app, state, &start.model_dir);
     state.emit_state_change(app, "workspace:changed")?;
     added
 }
@@ -627,62 +614,66 @@ fn add_import_to_library<R: Runtime>(
     Ok(())
 }
 
+/// The folder keeps the files an earlier download listed there, so a later app session adds to them.
 fn persist_import_metadata(
-    library_dir: &Path,
-    model_name: &str,
-    model_id: Option<&str>,
+    model_dir: &Path,
     source_url: &str,
-    detected_model: Option<MakerWorldModel>,
-    imported_files: Vec<String>,
-) -> Result<PathBuf, String> {
-    fs::create_dir_all(library_dir)
-        .map_err(|error| format!("failed to create makerworld library root: {error}"))?;
-
-    let folder_name = match model_id {
-        Some(id) if !id.is_empty() => format!("{}-{}", slugify(model_name), id),
-        _ => slugify(model_name),
-    };
-    let model_dir = library_dir.join(folder_name);
-    fs::create_dir_all(&model_dir)
-        .map_err(|error| format!("failed to create makerworld model directory: {error}"))?;
-    let canonical_model_dir = model_dir
+    model: Option<MakerWorldModel>,
+    downloaded_path: &Path,
+) -> Result<(), String> {
+    let model_dir = model_dir
         .canonicalize()
         .map_err(|error| format!("failed to resolve makerworld model directory: {error}"))?;
+    let metadata_path = model_dir.join("metadata.json");
 
-    let metadata = StoredImportMetadata {
-        imported_at: Utc::now().to_rfc3339(),
-        source_url: source_url.into(),
-        model: detected_model,
-        files: imported_files
-            .into_iter()
-            .filter(|file| Path::new(file).parent() == Some(canonical_model_dir.as_path()))
-            .collect(),
+    let history = match fs::read(&metadata_path) {
+        Ok(raw) => serde_json::from_slice::<StoredImportHistory>(&raw)
+            .map_err(|error| format!("failed to parse '{}': {error}", metadata_path.display()))?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => StoredImportHistory {
+            imported_at: None,
+            files: Vec::new(),
+        },
+        Err(error) => return Err(format!("failed to read '{}': {error}", metadata_path.display())),
     };
 
-    let metadata_path = model_dir.join("metadata.json");
+    let mut files = Vec::new();
+    for file in history.files.into_iter().map(PathBuf::from).chain([downloaded_path.to_path_buf()]) {
+        let file = model_dir.join(file);
+        let listed = file.to_string_lossy().to_string();
+        if file.parent() == Some(model_dir.as_path()) && !files.contains(&listed) {
+            files.push(listed);
+        }
+    }
+
+    let metadata = StoredImportMetadata {
+        imported_at: history.imported_at.unwrap_or_else(|| Utc::now().to_rfc3339()),
+        source_url: source_url.into(),
+        model,
+        files,
+    };
     fs::write(
         metadata_path,
         serde_json::to_vec_pretty(&metadata)
             .map_err(|error| format!("failed to serialize makerworld metadata: {error}"))?,
     )
-    .map_err(|error| format!("failed to write makerworld metadata: {error}"))?;
-    Ok(model_dir)
+    .map_err(|error| format!("failed to write makerworld metadata: {error}"))
 }
 
 fn download_target<R: Runtime>(
     app: &AppHandle<R>,
     state: &Arc<AppState>,
     url: &Url,
-) -> Result<(PathBuf, String), String> {
+) -> Result<(DownloadStart, String), String> {
     let library_dir = library_root(app)?;
-    fs::create_dir_all(&library_dir)
-        .map_err(|error| format!("failed to create makerworld library root: {error}"))?;
-
     let workspace = state
         .workspace
         .lock()
         .map_err(|error| format!("failed to lock workspace state: {error}"))?;
-    let model = workspace.makerworld.detected_model.clone();
+    Ok(download_start(&library_dir, &workspace.makerworld, url))
+}
+
+fn download_start(library_dir: &Path, makerworld: &MakerWorldBrowserState, url: &Url) -> (DownloadStart, String) {
+    let model = makerworld.detected_model.clone();
     let folder_name = model
         .as_ref()
         .map(|model| match model.id.as_deref() {
@@ -691,8 +682,15 @@ fn download_target<R: Runtime>(
         })
         .unwrap_or_else(|| slugify("makerworld-import"));
     let filename = infer_download_filename(url, model.as_ref());
-
-    Ok((library_dir.join(folder_name), filename))
+    let start = DownloadStart {
+        model_dir: library_dir.join(folder_name),
+        source_url: model
+            .as_ref()
+            .map(|model| model.source_url.clone())
+            .unwrap_or_else(|| makerworld.current_url.clone()),
+        model,
+    };
+    (start, filename)
 }
 
 fn infer_download_filename(url: &Url, model: Option<&MakerWorldModel>) -> String {
@@ -887,7 +885,12 @@ mod webkitgtk_downloads;
 
 #[cfg(test)]
 mod tests {
-    use super::{classify_page_kind, infer_download_filename, sanitize_model, slugify, PendingDownloads};
+    use std::path::{Path, PathBuf};
+
+    use super::{
+        classify_page_kind, infer_download_filename, sanitize_model, slugify, DownloadStart, PendingDownloads,
+        Reservation,
+    };
     use crate::state::{MakerWorldModel, MAKERWORLD_HOME_URL, MakerWorldPageKind};
     use url::Url;
 
@@ -922,6 +925,18 @@ mod tests {
         assert_eq!(sanitize_model(with_rating(-1.0)).rating, None);
     }
 
+    fn start_in(folder: &Path) -> DownloadStart {
+        DownloadStart { model_dir: folder.into(), model: None, source_url: String::new() }
+    }
+
+    fn landed(reservation: Option<Reservation>) -> Option<PathBuf> {
+        reservation.map(|reservation| reservation.destination)
+    }
+
+    fn reserved(pending: &PendingDownloads, url: &str) -> Vec<PathBuf> {
+        pending.by_url[url].reserved.iter().map(|reservation| reservation.destination.clone()).collect()
+    }
+
     #[test]
     fn a_pathless_finish_names_its_file_only_while_the_url_holds_one_reservation() {
         let downloads = tempfile::tempdir().unwrap();
@@ -929,14 +944,14 @@ mod tests {
         let mut pending = PendingDownloads::default();
         let url = "https://makerworld.com/download/files/hook.3mf";
 
-        assert_eq!(pending.start(url, &first, "hook.3mf"), first.join("hook.3mf"));
-        assert_eq!(pending.finish(url, None, true), Some(first.join("hook.3mf")));
+        assert_eq!(pending.start(url, start_in(&first), "hook.3mf"), first.join("hook.3mf"));
+        assert_eq!(landed(pending.finish(url, None, true)), Some(first.join("hook.3mf")));
         assert!(pending.by_url.is_empty());
 
-        pending.start(url, &first, "hook.3mf");
-        assert_eq!(pending.start(url, &first, "hook.3mf"), first.join("hook (1).3mf"));
-        assert_eq!(pending.finish(url, None, true), None, "two transfers, a pathless finish is not guessed");
-        assert_eq!(pending.finish(url, None, true), None);
+        pending.start(url, start_in(&first), "hook.3mf");
+        assert_eq!(pending.start(url, start_in(&first), "hook.3mf"), first.join("hook (1).3mf"));
+        assert_eq!(landed(pending.finish(url, None, true)), None, "two transfers, a pathless finish is not guessed");
+        assert_eq!(landed(pending.finish(url, None, true)), None);
         assert!(pending.by_url.is_empty());
     }
 
@@ -946,22 +961,22 @@ mod tests {
         let mut pending = PendingDownloads::default();
         let url = "https://makerworld.com/download/files/hook.3mf";
 
-        let accepted = pending.start(url, downloads.path(), "hook.3mf");
+        let accepted = pending.start(url, start_in(downloads.path()), "hook.3mf");
         pending.refuse(url);
-        assert_eq!(pending.finish(url, None, false), None);
-        assert_eq!(pending.by_url[url].reserved, vec![accepted.clone()]);
+        assert_eq!(landed(pending.finish(url, None, false)), None);
+        assert_eq!(reserved(&pending, url), vec![accepted.clone()]);
 
-        let later = pending.start(url, downloads.path(), "hook.3mf");
+        let later = pending.start(url, start_in(downloads.path()), "hook.3mf");
         assert_eq!(later, downloads.path().join("hook (1).3mf"), "the accepted transfer still holds its name");
-        assert_eq!(pending.finish(url, Some(accepted.clone()), true), Some(accepted));
-        assert_eq!(pending.finish(url, Some(later.clone()), true), Some(later));
+        assert_eq!(landed(pending.finish(url, Some(accepted.clone()), true)), Some(accepted));
+        assert_eq!(landed(pending.finish(url, Some(later.clone()), true)), Some(later));
         assert!(pending.by_url.is_empty());
 
         pending.refuse(url);
-        let retry = pending.start(url, downloads.path(), "fresh.3mf");
-        assert_eq!(pending.finish(url, None, false), None, "the refusal fails before the retry");
-        assert_eq!(pending.by_url[url].reserved, vec![retry.clone()], "a refused first start is not charged to a retry");
-        assert_eq!(pending.finish(url, Some(retry.clone()), true), Some(retry));
+        let retry = pending.start(url, start_in(downloads.path()), "fresh.3mf");
+        assert_eq!(landed(pending.finish(url, None, false)), None, "the refusal fails before the retry");
+        assert_eq!(reserved(&pending, url), vec![retry.clone()], "a refused first start is not charged to a retry");
+        assert_eq!(landed(pending.finish(url, Some(retry.clone()), true)), Some(retry));
         assert!(pending.by_url.is_empty() && pending.refused.is_empty());
     }
 
@@ -1000,33 +1015,54 @@ mod tests {
 
         use tauri::{
             test::{mock_builder, mock_context, noop_assets, MockRuntime},
-            App, Listener,
+            webview::DownloadEvent,
+            App, Listener, Webview, WebviewUrl, WebviewWindowBuilder,
         };
+        use url::Url;
 
-        use super::super::{finalize_import_into, slugify};
+        use super::super::{download_start, finalize_import, handle_download, MakerWorldService, Reservation};
         use crate::database;
-        use crate::state::{AppState, LibraryModel, MakerWorldModel};
+        use crate::state::{AppState, LibraryModel, MakerWorldBrowserState, MakerWorldModel, ModelImportStatus};
 
-        struct Download {
+        struct Session {
             app: App<MockRuntime>,
+            webview: Webview<MockRuntime>,
             state: Arc<AppState>,
+            service: MakerWorldService,
             library_events: Arc<Mutex<Vec<Vec<LibraryModel>>>>,
             library_dir: tempfile::TempDir,
-            file: PathBuf,
         }
 
-        fn download_of_a_detected_model() -> Download {
-            let app = mock_builder().build(mock_context(noop_assets())).expect("mock app");
-            let state = Arc::new(AppState::default());
-            *state.db.lock().unwrap() = Some(database::init_db(Path::new(":memory:")).unwrap());
-            state.workspace.lock().unwrap().makerworld.detected_model = Some(MakerWorldModel {
+        fn dispenser() -> MakerWorldModel {
+            MakerWorldModel {
                 id: Some("2311143".into()),
                 title: "Onion & Potato Dispenser".into(),
                 author: Some("Maker".into()),
                 source_url: "https://makerworld.com/en/models/2311143".into(),
                 images: vec!["https://example.com/dispenser.jpg".into()],
                 ..Default::default()
-            });
+            }
+        }
+
+        fn hook() -> MakerWorldModel {
+            MakerWorldModel {
+                id: Some("1073764".into()),
+                title: "Simple Headphone Hook".into(),
+                source_url: "https://makerworld.com/en/models/1073764".into(),
+                ..Default::default()
+            }
+        }
+
+        fn session_on_the_dispenser() -> Session {
+            let app = mock_builder().build(mock_context(noop_assets())).expect("mock app");
+            let webview = WebviewWindowBuilder::new(app.handle(), "makerworld", WebviewUrl::default())
+                .build()
+                .unwrap()
+                .as_ref()
+                .clone();
+            let state = Arc::new(AppState::default());
+            *state.db.lock().unwrap() = Some(database::init_db(Path::new(":memory:")).unwrap());
+            browse_to(&state, Some(dispenser()));
 
             let library_events = Arc::new(Mutex::new(Vec::new()));
             let sink = library_events.clone();
@@ -1034,40 +1070,70 @@ mod tests {
                 sink.lock().unwrap().push(serde_json::from_str(event.payload()).unwrap());
             });
 
-            let library_dir = tempfile::tempdir().unwrap();
-            let model_dir = library_dir.path().join("onion-potato-dispenser-2311143");
-            std::fs::create_dir_all(&model_dir).unwrap();
-            let file = model_dir.join("dispenser.zip");
-            std::fs::write(&file, b"zip").unwrap();
-
-            Download { app, state, library_events, library_dir, file }
+            Session {
+                app,
+                webview,
+                state,
+                service: MakerWorldService::default(),
+                library_events,
+                library_dir: tempfile::tempdir().unwrap(),
+            }
         }
 
-        fn finish(download: &Download) {
-            finish_file(download, &download.file);
+        fn restart(session: Session) -> Session {
+            let state = Arc::new(AppState::default());
+            *state.db.lock().unwrap() = session.state.db.lock().unwrap().take();
+            browse_to(&state, Some(dispenser()));
+            Session { state, service: MakerWorldService::default(), ..session }
         }
 
-        fn finish_file(download: &Download, file: &Path) {
-            finalize_import_into(download.app.handle(), &download.state, download.library_dir.path(), file).unwrap();
+        fn browse_to(state: &AppState, model: Option<MakerWorldModel>) {
+            state.workspace.lock().unwrap().makerworld.detected_model = model;
         }
 
-        fn download_file_of(download: &Download, id: &str, title: &str, file_name: &str) -> PathBuf {
-            download.state.workspace.lock().unwrap().makerworld.detected_model = Some(MakerWorldModel {
-                id: Some(id.into()),
-                title: title.into(),
-                source_url: format!("https://makerworld.com/en/models/{id}"),
-                ..Default::default()
-            });
-            let model_dir = download.library_dir.path().join(format!("{}-{id}", slugify(title)));
-            std::fs::create_dir_all(&model_dir).unwrap();
-            let file = model_dir.join(file_name);
-            std::fs::write(&file, b"zip").unwrap();
+        fn url_of(file_name: &str) -> Url {
+            Url::parse(&format!("https://makerworld.com/download/files/{file_name}")).unwrap()
+        }
+
+        fn makerworld(session: &Session) -> MakerWorldBrowserState {
+            session.state.workspace.lock().unwrap().makerworld.clone()
+        }
+
+        /// The `Requested` arm with the library in a temp folder, and the transferred file already written.
+        fn start(session: &Session, file_name: &str) -> PathBuf {
+            let url = url_of(file_name);
+            let (start, filename) = download_start(session.library_dir.path(), &makerworld(session), &url);
+            std::fs::create_dir_all(&start.model_dir).unwrap();
+            let destination = session.service.pending_downloads.lock().unwrap().start(url.as_str(), start, &filename);
+            std::fs::write(&destination, b"zip").unwrap();
+            destination
+        }
+
+        fn finish(session: &Session, file_name: &str, path: Option<PathBuf>) {
+            let event = DownloadEvent::Finished { url: url_of(file_name), path, success: true };
+            assert!(handle_download(session.webview.clone(), event, session.app.handle(), &session.state, &session.service));
+        }
+
+        fn download(session: &Session, file_name: &str) -> PathBuf {
+            let file = start(session, file_name);
+            finish(session, file_name, Some(file.clone()));
+            assert_eq!(makerworld(session).import_status, ModelImportStatus::Imported, "{:?}", makerworld(session));
             file
         }
 
-        fn metadata_files(file: &Path) -> Vec<String> {
+        fn finalize_again(session: &Session, file: &Path) {
+            let url = url_of(&file.file_name().unwrap().to_string_lossy());
+            let (start, _) = download_start(session.library_dir.path(), &makerworld(session), &url);
+            finalize_import(session.app.handle(), &session.state, Reservation { destination: file.into(), start }).unwrap();
+        }
+
+        fn metadata(file: &Path) -> serde_json::Value {
             let raw = std::fs::read_to_string(file.parent().unwrap().join("metadata.json")).unwrap();
-            serde_json::from_str::<serde_json::Value>(&raw).unwrap()["files"]
+            serde_json::from_str(&raw).unwrap()
+        }
+
+        fn metadata_files(file: &Path) -> Vec<String> {
+            metadata(file)["files"]
                 .as_array()
                 .unwrap()
                 .iter()
@@ -1085,7 +1151,7 @@ mod tests {
 
         #[test]
         fn a_finished_download_appears_in_the_library_once() {
-            let download = download_of_a_detected_model();
+            let session = session_on_the_dispenser();
             let earlier = LibraryModel {
                 id: "earlier".into(),
                 model_name: "Earlier Import".into(),
@@ -1099,34 +1165,34 @@ mod tests {
                 download_count: None,
                 file_count: None,
             };
-            database::insert_library_model(download.state.db.lock().unwrap().as_ref().unwrap(), &earlier).unwrap();
+            database::upsert_library_model(session.state.db.lock().unwrap().as_ref().unwrap(), &earlier).unwrap();
 
-            finish(&download);
+            let file = download(&session, "dispenser.zip");
 
-            let rows = library(&download.state);
+            let rows = library(&session.state);
             assert_eq!(rows.len(), 2);
             assert_eq!(rows[1], earlier);
             assert_eq!(rows[0].model_name, "Onion & Potato Dispenser");
             assert_eq!(rows[0].author.as_deref(), Some("Maker"));
             assert_eq!(rows[0].source_url.as_deref(), Some("https://makerworld.com/en/models/2311143"));
-            assert_eq!(*download.library_events.lock().unwrap(), vec![rows.clone()]);
+            assert_eq!(*session.library_events.lock().unwrap(), vec![rows.clone()]);
 
-            finish(&download);
+            finalize_again(&session, &file);
 
-            assert_eq!(library(&download.state), rows);
-            assert_eq!(download.library_events.lock().unwrap().len(), 2);
+            assert_eq!(library(&session.state), rows);
+            assert_eq!(session.library_events.lock().unwrap().len(), 2);
         }
 
         #[test]
         fn the_launch_scan_builds_the_same_row_as_the_download() {
-            let download = download_of_a_detected_model();
-            finish(&download);
+            let session = session_on_the_dispenser();
+            download(&session, "dispenser.zip");
             let launched = AppState::default();
             *launched.db.lock().unwrap() = Some(database::init_db(Path::new(":memory:")).unwrap());
 
             let scanned = database::scan_library_filesystem(
                 launched.db.lock().unwrap().as_ref().unwrap(),
-                download.library_dir.path(),
+                session.library_dir.path(),
             )
             .unwrap();
 
@@ -1134,42 +1200,153 @@ mod tests {
                 rows.into_iter().map(|row| LibraryModel { id: String::new(), ..row }).collect::<Vec<_>>()
             };
             assert_eq!(scanned, 1);
-            assert_eq!(without_id(library(&launched)), without_id(library(&download.state)));
+            assert_eq!(without_id(library(&launched)), without_id(library(&session.state)));
         }
 
         #[test]
         fn each_model_downloaded_in_a_session_lists_only_its_own_file() {
-            let download = download_of_a_detected_model();
-            finish(&download);
-            let hook = download_file_of(&download, "1073764", "Simple Headphone Hook", "hook.3mf");
-            finish_file(&download, &hook);
+            let session = session_on_the_dispenser();
+            let dispenser_file = download(&session, "dispenser.zip");
+            browse_to(&session.state, Some(hook()));
+            let hook_file = download(&session, "hook.3mf");
 
-            assert_eq!(metadata_files(&download.file), vec![path_of(&download.file)]);
-            assert_eq!(metadata_files(&hook), vec![path_of(&hook)]);
+            assert_eq!(metadata_files(&dispenser_file), vec![path_of(&dispenser_file)]);
+            assert_eq!(metadata_files(&hook_file), vec![path_of(&hook_file)]);
 
-            let rows = library(&download.state);
+            let rows = library(&session.state);
             let row_of = |name: &str| rows.iter().find(|row| row.model_name == name).unwrap();
             let dispenser_row = row_of("Onion & Potato Dispenser");
-            assert_eq!(dispenser_row.file_path, Some(path_of(&download.file)));
+            assert_eq!(dispenser_row.file_path, Some(path_of(&dispenser_file)));
             assert_eq!(dispenser_row.file_count, Some(1));
             let hook_row = row_of("Simple Headphone Hook");
-            assert_eq!(hook_row.file_path, Some(path_of(&hook)));
+            assert_eq!(hook_row.file_path, Some(path_of(&hook_file)));
             assert_eq!(hook_row.file_count, Some(1));
         }
 
         #[test]
         fn a_model_keeps_each_download_of_a_session_once() {
-            let download = download_of_a_detected_model();
-            finish(&download);
-            let hook = download_file_of(&download, "1073764", "Simple Headphone Hook", "hook.3mf");
-            finish_file(&download, &hook);
-            let second_plate =
-                download_file_of(&download, "2311143", "Onion & Potato Dispenser", "dispenser-plate-2.zip");
-            finish_file(&download, &second_plate);
-            finish_file(&download, &second_plate);
+            let session = session_on_the_dispenser();
+            let dispenser_file = download(&session, "dispenser.zip");
+            browse_to(&session.state, Some(hook()));
+            let hook_file = download(&session, "hook.3mf");
+            browse_to(&session.state, Some(dispenser()));
+            let second_plate = download(&session, "dispenser-plate-2.zip");
+            finalize_again(&session, &second_plate);
 
-            assert_eq!(metadata_files(&download.file), vec![path_of(&download.file), path_of(&second_plate)]);
-            assert_eq!(metadata_files(&hook), vec![path_of(&hook)]);
+            assert_eq!(metadata_files(&dispenser_file), vec![path_of(&dispenser_file), path_of(&second_plate)]);
+            assert_eq!(metadata_files(&hook_file), vec![path_of(&hook_file)]);
+        }
+
+        #[test]
+        fn a_download_lands_under_the_model_it_started_on() {
+            for later_page in [Some(hook()), None] {
+                for with_path in [true, false] {
+                    let session = session_on_the_dispenser();
+                    let file = start(&session, "dispenser.zip");
+                    browse_to(&session.state, later_page.clone());
+
+                    finish(&session, "dispenser.zip", with_path.then(|| file.clone()));
+
+                    let case = format!("later page {:?}, path {with_path}", later_page.as_ref().map(|model| &model.title));
+                    assert_eq!(makerworld(&session).import_status, ModelImportStatus::Imported, "{case}");
+                    assert_eq!(metadata(&file)["model"]["title"], "Onion & Potato Dispenser", "{case}");
+                    assert_eq!(metadata_files(&file), vec![path_of(&file)], "{case}");
+                    let rows = library(&session.state);
+                    assert_eq!(rows.len(), 1, "{case}");
+                    assert_eq!(rows[0].model_name, "Onion & Potato Dispenser", "{case}");
+                    assert_eq!(rows[0].file_count, Some(1), "{case}");
+                }
+            }
+        }
+
+        #[test]
+        fn overlapping_starts_of_one_url_on_two_models_each_land_under_their_own_model() {
+            let session = session_on_the_dispenser();
+            let on_dispenser = start(&session, "shared.3mf");
+            browse_to(&session.state, Some(hook()));
+            let on_hook = start(&session, "shared.3mf");
+
+            finish(&session, "shared.3mf", Some(on_hook.clone()));
+            finish(&session, "shared.3mf", Some(on_dispenser.clone()));
+
+            for (file, title) in [(&on_dispenser, "Onion & Potato Dispenser"), (&on_hook, "Simple Headphone Hook")] {
+                assert_eq!(metadata(file)["model"]["title"], title);
+                assert_eq!(metadata_files(file), vec![path_of(file)]);
+            }
+            let rows = library(&session.state);
+            assert_eq!(rows.len(), 2);
+            assert!(rows.iter().all(|row| row.file_count == Some(1)), "{rows:?}");
+            assert!(session.service.pending_downloads.lock().unwrap().by_url.is_empty());
+        }
+
+        #[test]
+        fn a_later_start_that_lands_while_the_first_fails_is_filed_under_its_own_model() {
+            let session = session_on_the_dispenser();
+            let on_dispenser = start(&session, "shared.3mf");
+            browse_to(&session.state, Some(hook()));
+            let on_hook = start(&session, "shared.3mf");
+            std::fs::remove_file(&on_dispenser).unwrap();
+
+            finish(&session, "shared.3mf", Some(on_hook.clone()));
+            let failed = DownloadEvent::Finished { url: url_of("shared.3mf"), path: None, success: false };
+            handle_download(session.webview.clone(), failed, session.app.handle(), &session.state, &session.service);
+
+            assert_eq!(metadata(&on_hook)["model"]["title"], "Simple Headphone Hook");
+            assert_eq!(metadata_files(&on_hook), vec![path_of(&on_hook)]);
+            assert!(!on_dispenser.with_file_name("metadata.json").exists());
+            let rows = library(&session.state);
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].model_name, "Simple Headphone Hook");
+            assert!(session.service.pending_downloads.lock().unwrap().by_url.is_empty());
+        }
+
+        #[test]
+        fn a_success_with_no_reservation_is_an_import_error() {
+            let session = session_on_the_dispenser();
+            let file = start(&session, "dispenser.zip");
+            let elsewhere = file.with_file_name("elsewhere.zip");
+            std::fs::write(&elsewhere, b"zip").unwrap();
+
+            finish(&session, "dispenser.zip", Some(elsewhere));
+
+            let makerworld = makerworld(&session);
+            assert_eq!(makerworld.import_status, ModelImportStatus::Error);
+            assert_eq!(makerworld.last_extraction_error.as_deref(), Some("MakerWorld download finished without a recorded start"));
+            assert!(library(&session.state).is_empty());
+        }
+
+        #[test]
+        fn a_later_session_adds_its_download_to_the_model_in_the_library() {
+            let session = session_on_the_dispenser();
+            let plate_1 = download(&session, "dispenser-plate-1.zip");
+            let row_id = library(&session.state)[0].id.clone();
+
+            let session = restart(session);
+            let plate_2 = download(&session, "dispenser-plate-2.zip");
+
+            assert_eq!(metadata_files(&plate_2), vec![path_of(&plate_1), path_of(&plate_2)]);
+            let rows = library(&session.state);
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].id, row_id);
+            assert_eq!(rows[0].file_count, Some(2));
+            assert_eq!(session.library_events.lock().unwrap().last(), Some(&rows));
+        }
+
+        #[test]
+        fn a_download_into_a_folder_with_malformed_metadata_shows_the_error_and_leaves_it_untouched() {
+            let session = session_on_the_dispenser();
+            let file = start(&session, "dispenser.zip");
+            let metadata_path = file.with_file_name("metadata.json");
+            std::fs::write(&metadata_path, "not json").unwrap();
+
+            finish(&session, "dispenser.zip", Some(file));
+
+            let makerworld = makerworld(&session);
+            assert_eq!(makerworld.import_status, ModelImportStatus::Error);
+            let error = makerworld.last_extraction_error.unwrap();
+            assert!(error.contains("failed to parse"), "{error}");
+            assert_eq!(std::fs::read_to_string(&metadata_path).unwrap(), "not json");
+            assert!(library(&session.state).is_empty());
         }
     }
 }
