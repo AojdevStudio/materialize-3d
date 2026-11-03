@@ -9,9 +9,10 @@ bun install
 bun run dev                               # local dev server
 bun run build                             # type-check, then build to dist/
 SITE_BASE=/materialize-3d/ bun run build  # build for a host that serves under a subpath
-bunx playwright install chromium          # once per machine
 bunx playwright test                      # builds with SITE_BASE=/materialize-3d/ and tests the preview
 ```
+
+The tests launch the installed Google Chrome with its sandbox on, not Playwright's bundled Chromium. Google Chrome must be in its standard location: `/Applications/Google Chrome.app` on macOS, `/opt/google/chrome` on Linux.
 
 `SITE_BASE` sets the public path. Unset means the site is served from `/`.
 
