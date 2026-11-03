@@ -12,7 +12,7 @@ use std::{
 use gtk::prelude::*;
 use wry::{WebViewBuilder, WebViewBuilderExtUnix};
 
-use super::{DownloadStart, PendingDownloads};
+use super::{DownloadStart, Finished, PendingDownloads};
 
 const BODY_LEN: usize = 256 * 1024;
 
@@ -201,7 +201,10 @@ fn two_overlapping_downloads_of_one_url_each_land_in_their_own_file() {
             true
         })
         .with_download_completed_handler(move |url, path, success| {
-            let path = on_finish.lock().unwrap().finish(&url, path, success).map(|reservation| reservation.destination);
+            let path = match on_finish.lock().unwrap().finish(&url, path, success) {
+                Finished::Landed(reservation) => Some(reservation.destination),
+                _ => None,
+            };
             let _ = finish_sender.send(Finish { url, path, success });
         })
         .build_gtk(&container)
@@ -273,8 +276,11 @@ fn two_overlapping_downloads_of_one_url_started_on_two_models_each_finish_with_t
             true
         })
         .with_download_completed_handler(move |url, path, success| {
-            let reservation = on_finish.lock().unwrap().finish(&url, path.clone(), success);
-            let _ = finish_sender.send((path, reservation.map(|reservation| reservation.start.model_dir)));
+            let model_dir = match on_finish.lock().unwrap().finish(&url, path.clone(), success) {
+                Finished::Landed(reservation) => Some(reservation.start.model_dir),
+                _ => None,
+            };
+            let _ = finish_sender.send((path, model_dir));
         })
         .build_gtk(&container)
         .expect("build the webview");

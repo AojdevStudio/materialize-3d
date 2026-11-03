@@ -70,10 +70,43 @@ struct Reservation {
     start: DownloadStart,
 }
 
-#[derive(Debug, Default)]
+/// How many native transfers of one URL may run at once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Overlap {
+    /// WebKitGTK names the file on each successful finish, so transfers of one URL run side by side.
+    Parallel,
+    /// WKWebView names no file on any finish. A start of a URL that already has a transfer running is refused,
+    /// and the running transfer serves it, so a pathless finish always belongs to the one reservation.
+    /// WKWebView reports each refused start at once as a pathless failure (seen on macOS 26.7.2, #116).
+    OnePerUrl,
+}
+
+impl Overlap {
+    const NATIVE: Self = if cfg!(target_os = "macos") { Self::OnePerUrl } else { Self::Parallel };
+}
+
+/// What one finish event means for the import.
+#[derive(Debug)]
+enum Finished {
+    Landed(Box<Reservation>),
+    Failed,
+    /// A success that names no single reservation.
+    Unmatched,
+    /// The finish of a start the app refused, which has nothing to report.
+    Refused,
+}
+
+#[derive(Debug)]
 struct PendingDownloads {
+    overlap: Overlap,
     by_url: HashMap<String, UrlDownloads>,
     refused: HashMap<String, usize>,
+}
+
+impl Default for PendingDownloads {
+    fn default() -> Self {
+        Self::new(Overlap::NATIVE)
+    }
 }
 
 /// The transfers of one URL that have not all finished.
@@ -84,6 +117,19 @@ struct UrlDownloads {
 }
 
 impl PendingDownloads {
+    fn new(overlap: Overlap) -> Self {
+        Self { overlap, by_url: HashMap::new(), refused: HashMap::new() }
+    }
+
+    /// Whether the overlap policy lets a start of the URL become a native transfer. It records a start it refuses.
+    fn admit(&mut self, url: &str) -> bool {
+        let admitted = self.overlap == Overlap::Parallel || !self.by_url.contains_key(url);
+        if !admitted {
+            self.refuse(url);
+        }
+        admitted
+    }
+
     /// Reserves a destination in the start's folder that no file and no other transfer holds. WebKitGTK and WebKit refuse an existing one.
     fn start(&mut self, url: &str, start: DownloadStart, filename: &str) -> PathBuf {
         let name = Path::new(filename);
@@ -110,23 +156,29 @@ impl PendingDownloads {
         destination
     }
 
-    /// WebKitGTK reports a refused start as a pathless failure, which must not count against an accepted transfer.
+    /// WebKitGTK and WKWebView report a refused start as a pathless failure, which must not count against an accepted transfer.
     fn refuse(&mut self, url: &str) {
         *self.refused.entry(url.into()).or_default() += 1;
     }
 
     /// Resolves which reservation a finished transfer used and frees the URL once all its transfers finished.
-    fn finish(&mut self, url: &str, path: Option<PathBuf>, success: bool) -> Option<Reservation> {
+    fn finish(&mut self, url: &str, path: Option<PathBuf>, success: bool) -> Finished {
         if path.is_none() && !success {
             if let Some(refused) = self.refused.get_mut(url) {
                 *refused -= 1;
                 if *refused == 0 {
                     self.refused.remove(url);
                 }
-                return None;
+                return match self.overlap {
+                    // Linux reports a refused start as a failed download, as it did before macOS refused starts of its own.
+                    Overlap::Parallel => Finished::Failed,
+                    Overlap::OnePerUrl => Finished::Refused,
+                };
             }
         }
-        let downloads = self.by_url.get_mut(url)?;
+        let Some(downloads) = self.by_url.get_mut(url) else {
+            return if success { Finished::Unmatched } else { Finished::Failed };
+        };
         downloads.in_flight -= 1;
         let landed = match path {
             Some(path) => downloads
@@ -141,7 +193,11 @@ impl PendingDownloads {
         if downloads.in_flight == 0 {
             self.by_url.remove(url);
         }
-        landed
+        match (success, landed) {
+            (true, Some(reservation)) => Finished::Landed(Box::new(reservation)),
+            (true, None) => Finished::Unmatched,
+            (false, _) => Finished::Failed,
+        }
     }
 }
 
@@ -463,19 +519,27 @@ fn handle_download<R: Runtime>(
 ) -> bool {
     match event {
         DownloadEvent::Requested { url, destination } => {
-            let reserved = download_target(app, state, &url).and_then(|(start, filename)| {
-                fs::create_dir_all(&start.model_dir)
-                    .map_err(|error| format!("failed to create MakerWorld import directory: {error}"))?;
-                let mut pending = service
-                    .pending_downloads
-                    .lock()
-                    .map_err(|error| format!("failed to lock pending downloads: {error}"))?;
-                Ok(pending.start(url.as_str(), start, &filename))
-            });
+            let reserved = service
+                .pending_downloads
+                .lock()
+                .map_err(|error| format!("failed to lock pending downloads: {error}"))
+                .and_then(|mut pending| {
+                    if !pending.admit(url.as_str()) {
+                        return Ok(None);
+                    }
+                    let (start, filename) = download_target(app, state, &url)?;
+                    fs::create_dir_all(&start.model_dir)
+                        .map_err(|error| format!("failed to create MakerWorld import directory: {error}"))?;
+                    Ok(Some(pending.start(url.as_str(), start, &filename)))
+                });
             match reserved {
-                Ok(path) => {
+                Ok(Some(path)) => {
                     *destination = path;
                     log::info!("makerworld download requested: {url}");
+                }
+                Ok(None) => {
+                    log::info!("makerworld download of {url} is already running, so this start is refused");
+                    return false;
                 }
                 Err(error) => {
                     log::warn!("failed to prepare makerworld download destination: {error}");
@@ -494,12 +558,13 @@ fn handle_download<R: Runtime>(
                 .pending_downloads
                 .lock()
                 .map_err(|error| format!("failed to lock pending downloads: {error}"))
-                .and_then(|mut pending| match (success, pending.finish(url.as_str(), path, success)) {
-                    (false, _) => Err(format!("MakerWorld download failed for {url}")),
-                    (true, None) => Err("MakerWorld download finished without a recorded start".into()),
-                    (true, Some(reservation)) => Ok(reservation),
+                .and_then(|mut pending| match pending.finish(url.as_str(), path, success) {
+                    Finished::Landed(reservation) => Ok(Some(*reservation)),
+                    Finished::Refused => Ok(None),
+                    Finished::Failed => Err(format!("MakerWorld download failed for {url}")),
+                    Finished::Unmatched => Err("MakerWorld download finished without a recorded start".into()),
                 })
-                .and_then(|reservation| finalize_import(app, state, reservation));
+                .and_then(|landed| landed.map_or(Ok(()), |reservation| finalize_import(app, state, reservation)));
             if let Err(error) = outcome {
                 if let Err(update_error) = set_import_error(app, state, error) {
                     log::warn!("failed to record MakerWorld import error: {update_error}");
@@ -888,8 +953,8 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{
-        classify_page_kind, infer_download_filename, sanitize_model, slugify, DownloadStart, PendingDownloads,
-        Reservation,
+        classify_page_kind, infer_download_filename, sanitize_model, slugify, DownloadStart, Finished, Overlap,
+        PendingDownloads,
     };
     use crate::state::{MakerWorldModel, MAKERWORLD_HOME_URL, MakerWorldPageKind};
     use url::Url;
@@ -929,8 +994,11 @@ mod tests {
         DownloadStart { model_dir: folder.into(), model: None, source_url: String::new() }
     }
 
-    fn landed(reservation: Option<Reservation>) -> Option<PathBuf> {
-        reservation.map(|reservation| reservation.destination)
+    fn landed(finished: Finished) -> Option<PathBuf> {
+        match finished {
+            Finished::Landed(reservation) => Some(reservation.destination),
+            _ => None,
+        }
     }
 
     fn reserved(pending: &PendingDownloads, url: &str) -> Vec<PathBuf> {
@@ -941,7 +1009,7 @@ mod tests {
     fn a_pathless_finish_names_its_file_only_while_the_url_holds_one_reservation() {
         let downloads = tempfile::tempdir().unwrap();
         let first = downloads.path().join("first");
-        let mut pending = PendingDownloads::default();
+        let mut pending = PendingDownloads::new(Overlap::Parallel);
         let url = "https://makerworld.com/download/files/hook.3mf";
 
         assert_eq!(pending.start(url, start_in(&first), "hook.3mf"), first.join("hook.3mf"));
@@ -958,7 +1026,7 @@ mod tests {
     #[test]
     fn a_refused_start_leaves_the_accepted_transfer_of_its_url_pending() {
         let downloads = tempfile::tempdir().unwrap();
-        let mut pending = PendingDownloads::default();
+        let mut pending = PendingDownloads::new(Overlap::Parallel);
         let url = "https://makerworld.com/download/files/hook.3mf";
 
         let accepted = pending.start(url, start_in(downloads.path()), "hook.3mf");
@@ -978,6 +1046,71 @@ mod tests {
         assert_eq!(reserved(&pending, url), vec![retry.clone()], "a refused first start is not charged to a retry");
         assert_eq!(landed(pending.finish(url, Some(retry.clone()), true)), Some(retry));
         assert!(pending.by_url.is_empty() && pending.refused.is_empty());
+    }
+
+    const HOOK: &str = "https://makerworld.com/download/files/hook.3mf";
+
+    fn request(pending: &mut PendingDownloads, folder: &Path) -> Option<PathBuf> {
+        pending.admit(HOOK).then(|| pending.start(HOOK, start_in(folder), "hook.3mf"))
+    }
+
+    #[test]
+    fn one_per_url_refuses_a_second_start_while_the_url_runs_and_lands_the_pathless_finish_in_the_first() {
+        let downloads = tempfile::tempdir().unwrap();
+        let mut pending = PendingDownloads::new(Overlap::OnePerUrl);
+
+        let running = request(&mut pending, downloads.path());
+        assert_eq!(running, Some(downloads.path().join("hook.3mf")));
+        assert_eq!(request(&mut pending, downloads.path()), None, "no second native download");
+        assert!(matches!(pending.finish(HOOK, None, false), Finished::Refused), "the refused start reports nothing");
+        assert_eq!(landed(pending.finish(HOOK, None, true)), running, "the pathless success is the running transfer");
+        assert!(pending.by_url.is_empty() && pending.refused.is_empty());
+
+        assert!(request(&mut pending, downloads.path()).is_some(), "the URL takes a new start");
+    }
+
+    #[test]
+    fn one_per_url_charges_a_late_refusal_report_to_the_refusal_not_to_a_newer_transfer() {
+        let downloads = tempfile::tempdir().unwrap();
+        let mut pending = PendingDownloads::new(Overlap::OnePerUrl);
+
+        let running = request(&mut pending, downloads.path());
+        assert_eq!(request(&mut pending, downloads.path()), None);
+        assert_eq!(landed(pending.finish(HOOK, None, true)), running);
+        let newer = request(&mut pending, downloads.path());
+        assert!(newer.is_some());
+
+        assert!(matches!(pending.finish(HOOK, None, false), Finished::Refused), "the report of the refusal");
+        assert_eq!(landed(pending.finish(HOOK, None, true)), newer, "the newer transfer keeps its reservation");
+        assert!(pending.by_url.is_empty() && pending.refused.is_empty());
+    }
+
+    #[test]
+    fn one_per_url_fails_the_running_transfer_and_takes_a_retry_after_its_refused_start_reported() {
+        let downloads = tempfile::tempdir().unwrap();
+        let mut pending = PendingDownloads::new(Overlap::OnePerUrl);
+
+        request(&mut pending, downloads.path()).unwrap();
+        assert_eq!(request(&mut pending, downloads.path()), None);
+        let finishes = [pending.finish(HOOK, None, false), pending.finish(HOOK, None, false)];
+        assert_eq!(
+            finishes.iter().filter(|finished| matches!(finished, Finished::Failed)).count(),
+            1,
+            "one failure for the transfer, nothing for the refusal: {finishes:?}",
+        );
+        assert!(pending.by_url.is_empty() && pending.refused.is_empty());
+        assert!(request(&mut pending, downloads.path()).is_some(), "a retry starts");
+        assert!(matches!(pending.finish(HOOK, None, false), Finished::Failed), "and its failure is reported");
+    }
+
+    #[test]
+    fn only_macos_runs_one_native_transfer_per_url() {
+        let downloads = tempfile::tempdir().unwrap();
+        let mut pending = PendingDownloads::default();
+
+        request(&mut pending, downloads.path()).unwrap();
+        let second = request(&mut pending, downloads.path());
+        assert_eq!(second.is_none(), cfg!(target_os = "macos"), "{second:?}");
     }
 
     #[test]
@@ -1020,7 +1153,9 @@ mod tests {
         };
         use url::Url;
 
-        use super::super::{download_start, finalize_import, handle_download, MakerWorldService, Reservation};
+        use super::super::{
+            download_start, finalize_import, handle_download, MakerWorldService, Overlap, PendingDownloads, Reservation,
+        };
         use crate::database;
         use crate::state::{AppState, LibraryModel, MakerWorldBrowserState, MakerWorldModel, ModelImportStatus};
 
@@ -1074,7 +1209,7 @@ mod tests {
                 app,
                 webview,
                 state,
-                service: MakerWorldService::default(),
+                service: service(Overlap::Parallel),
                 library_events,
                 library_dir: tempfile::tempdir().unwrap(),
             }
@@ -1084,7 +1219,11 @@ mod tests {
             let state = Arc::new(AppState::default());
             *state.db.lock().unwrap() = session.state.db.lock().unwrap().take();
             browse_to(&state, Some(dispenser()));
-            Session { state, service: MakerWorldService::default(), ..session }
+            Session { state, service: service(Overlap::Parallel), ..session }
+        }
+
+        fn service(overlap: Overlap) -> MakerWorldService {
+            MakerWorldService { pending_downloads: Arc::new(Mutex::new(PendingDownloads::new(overlap))) }
         }
 
         fn browse_to(state: &AppState, model: Option<MakerWorldModel>) {
@@ -1297,6 +1436,30 @@ mod tests {
             let rows = library(&session.state);
             assert_eq!(rows.len(), 1);
             assert_eq!(rows[0].model_name, "Simple Headphone Hook");
+            assert!(session.service.pending_downloads.lock().unwrap().by_url.is_empty());
+        }
+
+        #[test]
+        fn on_one_transfer_per_url_a_refused_duplicate_shows_no_error_and_the_running_download_lands() {
+            let session = Session { service: service(Overlap::OnePerUrl), ..session_on_the_dispenser() };
+            let file = start(&session, "dispenser.zip");
+            let mut destination = PathBuf::from("untouched");
+            let requested = DownloadEvent::Requested { url: url_of("dispenser.zip"), destination: &mut destination };
+            assert!(
+                !handle_download(session.webview.clone(), requested, session.app.handle(), &session.state, &session.service),
+                "WebKit is told to refuse the second native download",
+            );
+            assert_eq!(destination, PathBuf::from("untouched"));
+
+            let refused = DownloadEvent::Finished { url: url_of("dispenser.zip"), path: None, success: false };
+            handle_download(session.webview.clone(), refused, session.app.handle(), &session.state, &session.service);
+            assert_eq!(makerworld(&session).last_extraction_error, None);
+            finish(&session, "dispenser.zip", None);
+
+            let makerworld = makerworld(&session);
+            assert_eq!(makerworld.import_status, ModelImportStatus::Imported, "{makerworld:?}");
+            assert_eq!(metadata_files(&file), vec![path_of(&file)]);
+            assert_eq!(library(&session.state).len(), 1);
             assert!(session.service.pending_downloads.lock().unwrap().by_url.is_empty());
         }
 
