@@ -16,6 +16,7 @@ update-wakes            UpdateRestart UpdateRestartBuildsStop  PROPERTY  UpdateG
 queue-file-at-restart   UpdateRestart UpdateRestart            INVARIANT QueueFileWholeAtRestart fails
 update-not-starved      UpdateRestart UpdateRestart            PROPERTY  UpdateGoesAhead         fails
 job-sent-once           AutoSend      AutoSend                 INVARIANT SentAtMostOnce          fails
+one-send-per-connection AutoSend      AutoSend                 INVARIANT SentOncePerConnection   holds
 '
 
 # mutant | check it must fail
@@ -25,6 +26,7 @@ late-subscribe update-wakes
 ungated-slice  no-build-cut-off
 guard-dropped  no-build-cut-off
 guard-leaked   failed-update-reopens
+unguarded      one-send-per-connection
 '
 
 jar=${TLA2TOOLS_JAR:-}
