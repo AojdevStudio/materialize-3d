@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rumqttc::{AsyncClient, Event, Incoming};
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter, Manager, Runtime};
 use tokio::sync::Mutex as TokioMutex;
 
 use crate::state::{AppState, ConnectionState, ConnectionType, PrintHistoryRecord, QueueStatus};
@@ -45,6 +45,7 @@ struct PrinterServiceInner {
     reconnect_count: u32,
     local_failure_count: u32,
     shutdown: bool,
+    connection_task: Option<tokio::task::JoinHandle<()>>,
 }
 
 /// The core service that owns the printer connection lifecycle.
@@ -71,35 +72,58 @@ impl PrinterService {
                 reconnect_count: 0,
                 local_failure_count: 0,
                 shutdown: false,
+                connection_task: None,
             })),
         }
     }
 
     /// Start the printer connection with the given credentials.
     /// Spawns a background tokio task for the connection lifecycle.
-    pub async fn start(
+    ///
+    /// Starting again for the same printer is a retry. A live connection is
+    /// kept, and an attempt that has not connected yet is replaced with a
+    /// fresh one. Another printer needs a disconnect first.
+    pub async fn start<R: Runtime>(
         &self,
         creds: BambuCredentials,
-        app_handle: AppHandle,
+        app_handle: AppHandle<R>,
         app_state: Arc<AppState>,
     ) -> Result<(), PrinterError> {
-        {
-            let mut inner = self.inner.lock().await;
-            if inner.connection_state != ConnectionState::Disconnected
-                && inner.connection_state != ConnectionState::Offline
-            {
+        use ConnectionState::*;
+
+        let mut inner = self.inner.lock().await;
+        // Only the printer part: the optional cloud login is read from disk
+        // on each connect and can expire between two clicks.
+        let same_printer = inner.credentials.as_ref().map(|c| &c.printer) == Some(&creds.printer);
+        match (&inner.connection_state, same_printer) {
+            (Disconnected | Offline, _) | (Discovering | Reconnecting, true) => {}
+            (ConnectedMqtt | ConnectedCloud, true) => return Ok(()),
+            (Discovering | Reconnecting | ConnectedMqtt | ConnectedCloud, false) => {
                 return Err(PrinterError::AlreadyRunning);
             }
-            inner.credentials = Some(creds);
-            inner.shutdown = false;
-            inner.reconnect_count = 0;
-            inner.local_failure_count = 0;
         }
 
+        // A loop left asleep in backoff after a disconnect would otherwise
+        // wake and run beside the new one.
+        if let Some(task) = inner.connection_task.take() {
+            task.abort();
+            match task.await {
+                Ok(()) => {}
+                Err(e) if e.is_cancelled() => {}
+                Err(e) => std::panic::resume_unwind(e.into_panic()),
+            }
+        }
+        inner.mqtt_client = None;
+        inner.credentials = Some(creds);
+        inner.connection_state = Discovering;
+        inner.shutdown = false;
+        inner.reconnect_count = 0;
+        inner.local_failure_count = 0;
+
         let service = self.clone();
-        tokio::spawn(async move {
+        inner.connection_task = Some(tokio::spawn(async move {
             service.connection_loop(app_handle, app_state).await;
-        });
+        }));
 
         Ok(())
     }
@@ -168,7 +192,7 @@ impl PrinterService {
 
     /// The main connection lifecycle loop.  Tries local MQTT first,
     /// falls back to Cloud after `LOCAL_FAILURE_THRESHOLD` local failures.
-    async fn connection_loop(&self, app_handle: AppHandle, app_state: Arc<AppState>) {
+    async fn connection_loop<R: Runtime>(&self, app_handle: AppHandle<R>, app_state: Arc<AppState>) {
         loop {
             // Check for shutdown
             {
@@ -281,9 +305,9 @@ impl PrinterService {
     }
 
     /// Attempt a local MQTT connection and run the event loop.
-    async fn try_local_connection(
+    async fn try_local_connection<R: Runtime>(
         &self,
-        app_handle: &AppHandle,
+        app_handle: &AppHandle<R>,
         app_state: &AppState,
     ) -> Result<(), PrinterError> {
         let config = {
@@ -316,9 +340,9 @@ impl PrinterService {
     }
 
     /// Attempt a Cloud MQTT connection and run the event loop.
-    async fn try_cloud_connection(
+    async fn try_cloud_connection<R: Runtime>(
         &self,
-        app_handle: &AppHandle,
+        app_handle: &AppHandle<R>,
         app_state: &AppState,
     ) -> Result<(), PrinterError> {
         let config = {
@@ -352,13 +376,13 @@ impl PrinterService {
     /// Run the MQTT event loop.  On first successful connect, sends `pushall`
     /// and transitions to the given connected state.  Processes incoming
     /// messages and merges them into `PrinterState`.
-    async fn run_event_loop(
+    async fn run_event_loop<R: Runtime>(
         &self,
         client: AsyncClient,
         mut eventloop: rumqttc::EventLoop,
         connected_state: ConnectionState,
         conn_type: ConnectionType,
-        app_handle: &AppHandle,
+        app_handle: &AppHandle<R>,
         app_state: &AppState,
     ) -> Result<(), PrinterError> {
         let (report_topic, request_topic) = {
@@ -436,7 +460,7 @@ impl PrinterService {
     /// Detects gcode_state transitions and dispatches side effects:
     /// - RUNNING→FINISH/FAILED: record print history + send notification
     /// - Any→IDLE: advance the print queue
-    fn handle_publish(&self, payload: &[u8], app_handle: &AppHandle, app_state: &AppState) {
+    fn handle_publish<R: Runtime>(&self, payload: &[u8], app_handle: &AppHandle<R>, app_state: &AppState) {
         let payload_str = match std::str::from_utf8(payload) {
             Ok(s) => s,
             Err(e) => {
@@ -516,10 +540,10 @@ impl PrinterService {
     }
 
     /// Update the connection state and emit a change event.
-    async fn set_state(
+    async fn set_state<R: Runtime>(
         &self,
         new_state: ConnectionState,
-        app_handle: &AppHandle,
+        app_handle: &AppHandle<R>,
         app_state: &AppState,
         reason: &str,
     ) {
@@ -553,11 +577,11 @@ impl PrinterService {
     /// Transition to a connected state with the appropriate connection type.
     /// After transitioning, spawns a background task to auto-send any pending
     /// queue jobs if the printer is IDLE.
-    async fn set_connected(
+    async fn set_connected<R: Runtime>(
         &self,
         state: ConnectionState,
         conn_type: ConnectionType,
-        app_handle: &AppHandle,
+        app_handle: &AppHandle<R>,
         app_state: &AppState,
     ) {
         let (printer_host, printer_name) = {
@@ -611,10 +635,10 @@ impl PrinterService {
 ///
 /// - RUNNING→FINISH: Record a "success" history entry, fire notification
 /// - RUNNING→FAILED: Record a "failed" history entry with fail_reason, fire notification
-fn handle_gcode_transition(
+fn handle_gcode_transition<R: Runtime>(
     prev: Option<String>,
     curr: String,
-    app_handle: &AppHandle,
+    app_handle: &AppHandle<R>,
     app_state: &AppState,
 ) {
     let prev_str = prev.as_deref().unwrap_or("(none)");
@@ -816,7 +840,7 @@ fn record_print_completion(
 }
 
 /// Emit the `history:changed` event with the full history list.
-fn emit_history_changed(app_handle: &AppHandle, app_state: &AppState) {
+fn emit_history_changed<R: Runtime>(app_handle: &AppHandle<R>, app_state: &AppState) {
     let history = {
         let db_guard = match app_state.db.lock() {
             Ok(g) => g,
@@ -843,8 +867,8 @@ fn emit_history_changed(app_handle: &AppHandle, app_state: &AppState) {
 }
 
 /// Send an OS notification for print completion or failure.
-fn send_print_notification(
-    app_handle: &AppHandle,
+fn send_print_notification<R: Runtime>(
+    app_handle: &AppHandle<R>,
     model_name: &str,
     status: &str,
     fail_reason: Option<&str>,
@@ -895,8 +919,8 @@ struct ProactiveNotificationPayload {
 /// enabled in the settings table.
 ///
 /// `event_type` must be `"print_complete"` or `"print_failed"`.
-fn emit_proactive_notification(
-    app_handle: &AppHandle,
+fn emit_proactive_notification<R: Runtime>(
+    app_handle: &AppHandle<R>,
     app_state: &AppState,
     model_name: &str,
     event_type: &str,
@@ -980,9 +1004,9 @@ fn is_notification_suppressed(app_state: &AppState, setting_key: &str) -> bool {
 
 /// Check if the printer is IDLE and there are pending queue jobs.
 /// If so, submit the first pending job (upload + MQTT command).
-async fn auto_send_pending_job(
+async fn auto_send_pending_job<R: Runtime>(
     service: &PrinterService,
-    app_handle: &AppHandle,
+    app_handle: &AppHandle<R>,
 ) -> Result<(), String> {
     // We need AppState from the Tauri managed state
     let app_state: tauri::State<'_, std::sync::Arc<crate::state::AppState>> = app_handle
@@ -1679,5 +1703,104 @@ mod tests {
             &state,
             "notifications.print_complete"
         ));
+    }
+
+    fn loopback_printer(serial: &str) -> BambuCredentials {
+        BambuCredentials {
+            access_token: String::new(),
+            user_id: String::new(),
+            user_name: None,
+            printer: credentials::PrinterInfo {
+                name: "127.0.0.1".into(),
+                device_id: serial.into(),
+                model: "P2S".into(),
+                access_code: "12345678".into(),
+                host: "127.0.0.1".into(),
+            },
+            expires_at: None,
+            created_at: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn retry_after_failed_connect_to_the_same_printer_starts_again() {
+        use tauri::test::{mock_builder, mock_context, noop_assets};
+
+        let app = mock_builder().build(mock_context(noop_assets())).expect("mock app");
+        let app_state = Arc::new(AppState::default());
+        let service = PrinterService::new();
+        let printer = loopback_printer("01P00A000000000");
+
+        service
+            .start(printer.clone(), app.handle().clone(), Arc::clone(&app_state))
+            .await
+            .expect("first connect starts");
+
+        let next_failure = |within: Duration| {
+            let app_state = Arc::clone(&app_state);
+            async move {
+                app_state.printer.lock().unwrap().last_error = None;
+                tokio::time::timeout(within, async {
+                    while app_state.printer.lock().unwrap().last_error.is_none() {
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                    }
+                })
+                .await
+            }
+        };
+
+        next_failure(Duration::from_secs(10))
+            .await
+            .expect("connect to a loopback host with no printer fails");
+
+        let retried = next_failure(Duration::from_secs(1));
+        service
+            .start(printer, app.handle().clone(), Arc::clone(&app_state))
+            .await
+            .expect("retry with the same printer starts a new attempt");
+        retried
+            .await
+            .expect("the retry attempts at once instead of waiting out the 2 s backoff");
+
+        let other = service
+            .start(
+                loopback_printer("01P00B000000000"),
+                app.handle().clone(),
+                Arc::clone(&app_state),
+            )
+            .await;
+        assert!(
+            matches!(other, Err(PrinterError::AlreadyRunning)),
+            "a different printer still waits for a disconnect, got {other:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn another_printer_started_right_after_the_first_waits_for_a_disconnect() {
+        use tauri::test::{mock_builder, mock_context, noop_assets};
+
+        let app = mock_builder().build(mock_context(noop_assets())).expect("mock app");
+        let app_state = Arc::new(AppState::default());
+        let service = PrinterService::new();
+
+        service
+            .start(
+                loopback_printer("01P00A000000000"),
+                app.handle().clone(),
+                Arc::clone(&app_state),
+            )
+            .await
+            .expect("first printer starts");
+        let other = service
+            .start(
+                loopback_printer("01P00B000000000"),
+                app.handle().clone(),
+                Arc::clone(&app_state),
+            )
+            .await;
+        assert!(
+            matches!(other, Err(PrinterError::AlreadyRunning)),
+            "the first start already owns the service, got {other:?}"
+        );
     }
 }

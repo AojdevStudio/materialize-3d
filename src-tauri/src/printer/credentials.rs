@@ -20,7 +20,7 @@ pub enum CredentialError {
 // ─── Credential types ─────────────────────────────────────────────────────────
 
 /// Bambu Lab printer info from credentials file.
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct PrinterInfo {
     pub name: String,
