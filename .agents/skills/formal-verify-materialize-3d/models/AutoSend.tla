@@ -37,7 +37,7 @@ VARIABLES
   conn,       \* the current ConnectionId
   live,       \* connection_state is ConnectedMqtt or ConnectedCloud
   readiness,  \* "WaitingForIdle", "Idle", or "JobSent"
-  held,       \* queue_run is Held or HeldAndAsked
+  held,       \* queue_run is Held
   status,     \* job -> "Pending", "Submitted", or "Failed"
   sent,       \* job -> connection -> project_file commands sent for it
   pc,         \* run -> where it is

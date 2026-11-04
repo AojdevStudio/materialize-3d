@@ -63,11 +63,11 @@ enum Readiness {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum QueueRun {
     Free,
-    /// A run holds the queue from its claim until it ends.
-    Held,
-    /// A trigger came while the queue was held. The holder starts a fresh run
-    /// for the current connection when it ends.
-    HeldAndAsked,
+    /// A run holds the queue from its claim until it ends. Each trigger that
+    /// came meanwhile is owed a run. The holder starts one for the current
+    /// connection when it ends and hands it the rest, so each trigger gets
+    /// its own try, one at a time.
+    Held { owed_runs: u32 },
 }
 
 /// Inner state of the printer service, protected by an async mutex.
@@ -246,14 +246,14 @@ impl PrinterService {
     /// run holds the queue.
     pub async fn advance_queue<R: Runtime>(&self, app_handle: &AppHandle<R>) {
         let id = self.inner.lock().await.connection;
-        self.spawn_auto_send(id, app_handle);
+        self.spawn_auto_send(id, 0, app_handle);
     }
 
-    fn spawn_auto_send<R: Runtime>(&self, id: ConnectionId, app_handle: &AppHandle<R>) {
+    fn spawn_auto_send<R: Runtime>(&self, id: ConnectionId, owed_runs: u32, app_handle: &AppHandle<R>) {
         let service = self.clone();
         let app_handle = app_handle.clone();
         tokio::spawn(async move {
-            if let Err(e) = auto_send_pending_job(&service, id, &app_handle).await {
+            if let Err(e) = auto_send_pending_job(&service, id, owed_runs, &app_handle).await {
                 log::error!("auto-send failed: {e}");
             }
         });
@@ -640,7 +640,7 @@ impl PrinterService {
 
             if became_idle {
                 log::info!("queue: advancing to the next job, printer is IDLE");
-                self.spawn_auto_send(id, app_handle);
+                self.spawn_auto_send(id, 0, app_handle);
             }
         }
     }
@@ -1098,9 +1098,11 @@ fn is_notification_suppressed(app_state: &AppState, setting_key: &str) -> bool {
 /// Sends the first Pending job to the printer on connection `id`: an FTPS
 /// upload, then the MQTT `project_file` command. It runs only while that
 /// connection's printer reported IDLE and no other run holds the queue.
+/// `owed_runs` counts the refused triggers this run still owes a try.
 async fn auto_send_pending_job<R: Runtime>(
     service: &PrinterService,
     id: ConnectionId,
+    owed_runs: u32,
     app_handle: &AppHandle<R>,
 ) -> Result<(), String> {
     let app_state: tauri::State<'_, std::sync::Arc<crate::state::AppState>> = app_handle
@@ -1122,9 +1124,9 @@ async fn auto_send_pending_job<R: Runtime>(
             log::debug!("auto-send: the printer has not reported IDLE, skipping");
             return Ok(());
         }
-        if inner.queue_run != QueueRun::Free {
+        if let QueueRun::Held { owed_runs: owed } = &mut inner.queue_run {
             log::debug!("auto-send: another run holds the queue, it runs again when done");
-            inner.queue_run = QueueRun::HeldAndAsked;
+            *owed += 1 + owed_runs;
             return Ok(());
         }
         let first_pending = app_state
@@ -1142,19 +1144,21 @@ async fn auto_send_pending_job<R: Runtime>(
             .credentials
             .clone()
             .ok_or_else(|| "no credentials available for auto-send".to_string())?;
-        inner.queue_run = QueueRun::Held;
+        inner.queue_run = QueueRun::Held { owed_runs };
         (creds, job)
     };
 
     let submitted = submit_job(service, id, &app_state, &creds, &job).await;
-    let run_again = {
+    let (current, owed) = {
         let mut inner = service.inner.lock().await;
-        let asked = inner.queue_run == QueueRun::HeldAndAsked;
-        inner.queue_run = QueueRun::Free;
-        asked.then_some(inner.connection)
+        let owed = match std::mem::replace(&mut inner.queue_run, QueueRun::Free) {
+            QueueRun::Held { owed_runs } => owed_runs,
+            QueueRun::Free => 0,
+        };
+        (inner.connection, owed)
     };
-    if let Some(current) = run_again {
-        service.spawn_auto_send(current, app_handle);
+    if owed > 0 {
+        service.spawn_auto_send(current, owed - 1, app_handle);
     }
     submitted
 }
@@ -2207,7 +2211,8 @@ mod tests {
         use tauri::ipc::{CallbackFn, InvokeBody};
         use tauri::webview::InvokeRequest;
 
-        let webview = tauri::WebviewWindowBuilder::new(app, "main", Default::default())
+        let label = format!("window-{}", uuid::Uuid::new_v4());
+        let webview = tauri::WebviewWindowBuilder::new(app, label, Default::default())
             .build()
             .expect("webview");
         let body = serde_json::json!({ "modelPath": "", "threemfPath": queued_3mf(), "modelName": "cube" });
@@ -2275,7 +2280,7 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn a_job_added_during_an_upload_that_fails_goes_next() {
+    async fn jobs_added_during_an_upload_that_fails_each_go_next() {
         let (app, app_state, service, a) = connect_printer_a(0).await;
         let job_1 = held_3mf();
         app_state.print_queue.lock().unwrap().push(crate::state::QueuedJob {
@@ -2295,6 +2300,7 @@ mod tests {
             .await;
         tokio::time::sleep(Duration::from_millis(300)).await;
         tokio::task::block_in_place(|| add_to_queue_from_the_window(&app));
+        tokio::task::block_in_place(|| add_to_queue_from_the_window(&app));
         tokio::time::sleep(Duration::from_millis(300)).await;
 
         // Job 1 is read for its md5, then again by the upload, which fails.
@@ -2303,6 +2309,7 @@ mod tests {
         tokio::time::sleep(Duration::from_secs(3)).await;
 
         let queue = app_state.print_queue.lock().unwrap().clone();
+        assert_eq!(queue.len(), 3);
         for job in &queue {
             assert!(
                 matches!(&job.status, QueueStatus::Failed { reason } if reason.contains("localhost:990")),
