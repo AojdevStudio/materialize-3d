@@ -59,5 +59,5 @@ Preconditions:
 - "13 of 13 checks" counts the blocking checks. The full imported-part plan also has four advisory checks: three print checks and the support warning.
 - `m3d.sh up` gives each run its own Secret Service collection, so each run gets a fresh token, and `down` deletes it. `up` isolates the app data, not the port.
 - Port 45373 can clash with a real app on the same host.
-- The Settings hint still reads "External agents can build and read signs". That text is stale, because `import_part` exists (issue #124).
+- The Settings hint reads "External agents can build and revise signs, import parts, and read designs and printer status. Only you can approve, export, or print." **(observed 2026-11-04)**. Update it when the tool list changes.
 - On the Linux app, `describe_kind` lists only `["sign"]`. The agent never offers `part`, see [parts](./parts.md).

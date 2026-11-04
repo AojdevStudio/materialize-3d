@@ -51,6 +51,6 @@ Preconditions:
 - Prove select values with `attr ... value` and the DB, not pixels.
 - The stored default filament `PLA Basic` is not one of the options, so a fresh run displays `Bambu PETG Basic`, the first option, without writing it.
 - On Linux the app keeps keys in the Secret Service (`keyring` with `sync-secret-service` in `src-tauri/Cargo.toml`, since PR 55). `m3d.sh up` gives each run a private D-Bus session with its own unlocked collection, so a stored key survives a relaunch inside the run, and `down` deletes it. A missing key reads "No key stored".
-- The External agents hint still reads "External agents can build and read signs". That text is stale, because MCP also imports parts (issue #124).
+- The External agents hint names what MCP tools can do, import parts included, and what stays with the person **(observed 2026-11-04)**. See [mcp](./mcp.md) for the exact text.
 - About sits below External agents. Run `$S/wd.ts hover "[data-testid=about-section]"` to scroll it into view before a screenshot.
 - Settings has no printer section. Printers live in the toolbar popover, see [printers](./printers.md).
