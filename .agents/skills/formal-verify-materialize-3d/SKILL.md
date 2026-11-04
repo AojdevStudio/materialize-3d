@@ -56,8 +56,8 @@ Exit 0 means every verdict matches the recorded one. Exit 1 means at least one d
 | `ungated-slice` | `slice_model` no longer calls `builds.enter()`. | `no-build-cut-off` |
 | `guard-dropped` | `update_install` binds the `Closed` guard to `_`, which drops it before the restart. | `no-build-cut-off` |
 | `guard-leaked` | An error path keeps the `Closed` guard alive. | `failed-update-reopens` |
-| `unguarded` | The claim in `auto_send_pending_job` no longer checks `queue_run`. | `one-run-at-a-time` |
-| `released-on-switch` | `end_connection` frees `queue_run`, so a new connection's run can start beside an old one still uploading. | `job-sent-once` |
+| `unguarded` | The claim in `auto_send_pending_job` no longer checks `queue_held`. | `one-run-at-a-time` |
+| `released-on-switch` | `end_connection` frees `queue_held`, so a new connection's run can start beside an old one still uploading. | `job-sent-once` |
 
 ## Does my change touch the models?
 

@@ -61,16 +61,13 @@ enum Readiness {
     JobSent,
 }
 
-/// Which auto-send run works on the print queue. One run at a time, across
-/// connections, so two runs never pick the same Pending job.
+/// Why an auto-send run started.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum QueueRun {
-    Free,
-    /// A run holds the queue from its claim until it ends. Each trigger that
-    /// came meanwhile is owed a run. The holder starts one for the current
-    /// connection when it ends and hands it the rest, so each trigger gets
-    /// its own try, one at a time.
-    Held { owed_runs: u32 },
+enum RunCause {
+    /// An IDLE report or an added job.
+    Trigger,
+    /// The run that held the queue ended while tries were owed.
+    OwedTry,
 }
 
 /// Inner state of the printer service, protected by an async mutex.
@@ -82,9 +79,13 @@ struct PrinterServiceInner {
     local_failure_count: u32,
     connection: ConnectionId,
     readiness: Readiness,
-    /// Outlives the connection that took it. Only the run that holds it frees
-    /// it, after its upload ends.
-    queue_run: QueueRun,
+    /// One auto-send run at a time holds the print queue, across connections,
+    /// so two runs never pick the same Pending job. Only the holder frees it.
+    queue_held: bool,
+    /// Triggers refused while the queue was held. Each is owed one try, one at
+    /// a time. The count stays across a reconnect, so a try the printer was
+    /// not ready for waits for its next IDLE report.
+    owed_runs: u32,
     connection_task: Option<tokio::task::JoinHandle<()>>,
 }
 
@@ -145,7 +146,8 @@ impl PrinterService {
                 local_failure_count: 0,
                 connection: ConnectionId::default(),
                 readiness: Readiness::WaitingForIdle,
-                queue_run: QueueRun::Free,
+                queue_held: false,
+                owed_runs: 0,
                 connection_task: None,
             })),
         }
@@ -249,14 +251,14 @@ impl PrinterService {
     /// run holds the queue.
     pub async fn advance_queue<R: Runtime>(&self, app_handle: &AppHandle<R>) {
         let id = self.inner.lock().await.connection;
-        self.spawn_auto_send(id, 0, app_handle);
+        self.spawn_auto_send(id, RunCause::Trigger, app_handle);
     }
 
-    fn spawn_auto_send<R: Runtime>(&self, id: ConnectionId, owed_runs: u32, app_handle: &AppHandle<R>) {
+    fn spawn_auto_send<R: Runtime>(&self, id: ConnectionId, cause: RunCause, app_handle: &AppHandle<R>) {
         let service = self.clone();
         let app_handle = app_handle.clone();
         tokio::spawn(async move {
-            if let Err(e) = auto_send_pending_job(&service, id, owed_runs, &app_handle).await {
+            if let Err(e) = auto_send_pending_job(&service, id, cause, &app_handle).await {
                 log::error!("auto-send failed: {e}");
             }
         });
@@ -643,7 +645,7 @@ impl PrinterService {
 
             if became_idle {
                 log::info!("queue: advancing to the next job, printer is IDLE");
-                self.spawn_auto_send(id, 0, app_handle);
+                self.spawn_auto_send(id, RunCause::Trigger, app_handle);
             }
         }
     }
@@ -1101,11 +1103,10 @@ fn is_notification_suppressed(app_state: &AppState, setting_key: &str) -> bool {
 /// Sends the first Pending job to the printer on connection `id`: an FTPS
 /// upload, then the MQTT `project_file` command. It runs only while that
 /// connection's printer reported IDLE and no other run holds the queue.
-/// `owed_runs` counts the refused triggers this run still owes a try.
 async fn auto_send_pending_job<R: Runtime>(
     service: &PrinterService,
     id: ConnectionId,
-    owed_runs: u32,
+    cause: RunCause,
     app_handle: &AppHandle<R>,
 ) -> Result<(), String> {
     let app_state: tauri::State<'_, std::sync::Arc<crate::state::AppState>> = app_handle
@@ -1127,9 +1128,11 @@ async fn auto_send_pending_job<R: Runtime>(
             log::debug!("auto-send: the printer has not reported IDLE, skipping");
             return Ok(());
         }
-        if let QueueRun::Held { owed_runs: owed } = &mut inner.queue_run {
+        if inner.queue_held {
             log::debug!("auto-send: another run holds the queue, it runs again when done");
-            *owed += 1 + owed_runs;
+            if cause == RunCause::Trigger {
+                inner.owed_runs += 1;
+            }
             return Ok(());
         }
         let first_pending = app_state
@@ -1141,27 +1144,28 @@ async fn auto_send_pending_job<R: Runtime>(
             .cloned();
         let Some(job) = first_pending else {
             log::debug!("auto-send: no pending jobs in queue");
+            inner.owed_runs = 0;
             return Ok(());
         };
         let creds = inner
             .credentials
             .clone()
             .ok_or_else(|| "no credentials available for auto-send".to_string())?;
-        inner.queue_run = QueueRun::Held { owed_runs };
+        inner.queue_held = true;
+        if cause == RunCause::OwedTry {
+            inner.owed_runs = inner.owed_runs.saturating_sub(1);
+        }
         (creds, job)
     };
 
     let submitted = submit_job(service, id, &app_state, &creds, &job).await;
     let (current, owed) = {
         let mut inner = service.inner.lock().await;
-        let owed = match std::mem::replace(&mut inner.queue_run, QueueRun::Free) {
-            QueueRun::Held { owed_runs } => owed_runs,
-            QueueRun::Free => 0,
-        };
-        (inner.connection, owed)
+        inner.queue_held = false;
+        (inner.connection, inner.owed_runs > 0)
     };
-    if owed > 0 {
-        service.spawn_auto_send(current, owed - 1, app_handle);
+    if owed {
+        service.spawn_auto_send(current, RunCause::OwedTry, app_handle);
     }
     submitted
 }

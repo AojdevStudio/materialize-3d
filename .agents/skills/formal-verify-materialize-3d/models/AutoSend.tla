@@ -8,8 +8,8 @@
 (*                                                                         *)
 (* Each action is one indivisible step of one run:                         *)
 (*   Claim    lock the service for the run's connection. The connection is *)
-(*            live, its readiness is Idle, and queue_run is Free. Lock the *)
-(*            print queue, clone the first Pending job, and hold the       *)
+(*            live, its readiness is Idle, and queue_held is false. Lock   *)
+(*            the print queue, clone the first Pending job, and hold the   *)
 (*            queue. Otherwise the run ends. A run refused because the     *)
 (*            queue is held asks the holder for a fresh run, which the     *)
 (*            model covers by letting any run spawn at any time.           *)
@@ -37,7 +37,7 @@ VARIABLES
   conn,       \* the current ConnectionId
   live,       \* connection_state is ConnectedMqtt or ConnectedCloud
   readiness,  \* "WaitingForIdle", "Idle", or "JobSent"
-  held,       \* queue_run is Held
+  held,       \* queue_held
   status,     \* job -> "Pending", "Submitted", or "Failed"
   sent,       \* job -> connection -> project_file commands sent for it
   pc,         \* run -> where it is
