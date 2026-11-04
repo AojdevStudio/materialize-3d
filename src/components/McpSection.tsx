@@ -80,7 +80,7 @@ export function McpSection({ active }: { active: boolean }) {
           </div>
         </>
       )}
-      <div className="settings-hint">External agents can build and read signs. Only you can approve them here.</div>
+      <div className="settings-hint">External agents can build and revise signs, import parts, and read designs and printer status. Only you can approve, export, or print.</div>
       {message && <div className="settings-hint" data-testid="mcp-message">{message}</div>}
     </div>
   )
