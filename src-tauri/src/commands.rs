@@ -174,6 +174,7 @@ pub async fn connect_printer(
         None => BambuCredentials::load_default().map_err(|e| e.to_string())?,
     };
 
+    let _held = service.hold_transitions().await;
     service
         .start(creds, app, Arc::clone(&*state))
         .await
@@ -187,6 +188,7 @@ pub async fn disconnect_printer(
     state: State<'_, Arc<AppState>>,
     service: State<'_, PrinterService>,
 ) -> Result<(), String> {
+    let _held = service.hold_transitions().await;
     service.disconnect(&app, &state).await;
     Ok(())
 }
@@ -1226,58 +1228,7 @@ pub async fn connect_printer_by_config(
     state: State<'_, Arc<AppState>>,
     service: State<'_, PrinterService>,
 ) -> Result<(), String> {
-    log::info!("printer-config:connecting id={config_id}");
-
-    // 1. Load PrinterConfig from SQLite
-    let config = {
-        let db_guard = state
-            .db
-            .lock()
-            .map_err(|e| format!("failed to lock db: {e}"))?;
-        let conn = db_guard
-            .as_ref()
-            .ok_or_else(|| "database not initialized".to_string())?;
-        database::get_printer_config(conn, &config_id)?
-            .ok_or_else(|| format!("printer config {config_id} not found"))?
-    };
-
-    // 2. Retrieve access code from Keychain
-    let access_code = credentials::get_credential(&config.access_code_keychain_id)
-        .await?
-        .ok_or_else(|| {
-            format!(
-                "access code not found in Keychain for key {}",
-                config.access_code_keychain_id
-            )
-        })?;
-
-    // 3. Load Cloud credentials (optional — local-only is fine)
-    let cloud_creds = BambuCredentials::load_default().ok();
-
-    // 4. Build BambuCredentials from the merge
-    let creds = config.to_bambu_credentials(&access_code, cloud_creds.as_ref());
-
-    // 5. Update selected_printer_id
-    {
-        let mut selected = state
-            .selected_printer_id
-            .lock()
-            .map_err(|e| format!("failed to lock selected_printer_id: {e}"))?;
-        *selected = Some(config_id.clone());
-    }
-
-    // 6. Start the printer service. It shows the printer's name.
-    service
-        .start(creds, app.clone(), Arc::clone(&*state))
-        .await
-        .map_err(|e| e.to_string())?;
-
-    // 7. Emit events
-    emit_printer_configs_changed(&app, &state);
-    let _ = state.emit_state_change(&app, "printer:changed");
-
-    log::info!("printer-config:connected id={config_id} name='{}'", config.name);
-    Ok(())
+    connect_printer_by_config_inner(&config_id, &app, &state, &service).await
 }
 
 /// Switch to a different saved printer configuration.
@@ -1291,6 +1242,7 @@ pub async fn switch_printer<R: Runtime>(
     state: State<'_, Arc<AppState>>,
     service: State<'_, PrinterService>,
 ) -> Result<(), String> {
+    let _held = service.hold_transitions().await;
     let old_id = {
         let selected = state
             .selected_printer_id
@@ -1313,10 +1265,7 @@ pub async fn switch_printer<R: Runtime>(
     // `is_connected` is false for it.
     service.disconnect(&app, &state).await;
 
-    connect_printer_by_config_inner(
-        &config_id, &app, &state, &service,
-    )
-    .await?;
+    start_printer_config(&config_id, &app, &state, &service).await?;
 
     log::info!(
         "printer-config:switched from={} to={}",
@@ -1327,9 +1276,21 @@ pub async fn switch_printer<R: Runtime>(
     Ok(())
 }
 
-/// Inner implementation of connect_printer_by_config, callable without Tauri
-/// `State` wrappers (used by `switch_printer`).
+/// Connects to a saved printer configuration without Tauri `State` wrappers,
+/// for the `connect_printer_by_config` command and the startup auto-connect.
 pub async fn connect_printer_by_config_inner<R: Runtime>(
+    config_id: &str,
+    app: &AppHandle<R>,
+    state: &Arc<AppState>,
+    service: &PrinterService,
+) -> Result<(), String> {
+    let _held = service.hold_transitions().await;
+    start_printer_config(config_id, app, state, service).await
+}
+
+/// Starts the printer in saved config `config_id`, then selects it. The
+/// caller holds `PrinterService::hold_transitions`.
+async fn start_printer_config<R: Runtime>(
     config_id: &str,
     app: &AppHandle<R>,
     state: &Arc<AppState>,
@@ -1366,7 +1327,13 @@ pub async fn connect_printer_by_config_inner<R: Runtime>(
     // 4. Build BambuCredentials
     let creds = config.to_bambu_credentials(&access_code, cloud_creds.as_ref());
 
-    // 5. Update selected_printer_id
+    // 5. Start the printer service. It shows the printer's name.
+    service
+        .start(creds, app.clone(), Arc::clone(state))
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // 6. Select it only once the service runs it.
     {
         let mut selected = state
             .selected_printer_id
@@ -1374,12 +1341,6 @@ pub async fn connect_printer_by_config_inner<R: Runtime>(
             .map_err(|e| format!("failed to lock selected_printer_id: {e}"))?;
         *selected = Some(config_id.to_string());
     }
-
-    // 6. Start the printer service. It shows the printer's name.
-    service
-        .start(creds, app.clone(), Arc::clone(state))
-        .await
-        .map_err(|e| e.to_string())?;
 
     // 7. Emit events
     emit_printer_configs_changed(app, state);

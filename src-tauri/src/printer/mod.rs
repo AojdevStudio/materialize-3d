@@ -6,6 +6,7 @@ pub mod protocol;
 pub use credentials::BambuCredentials;
 pub use protocol::{BambuCommand, BambuReport};
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -86,6 +87,11 @@ struct PrinterServiceInner {
     /// a time. The count stays across a reconnect, so a try the printer was
     /// not ready for waits for its next IDLE report.
     owed_runs: u32,
+    /// The print each printer was last seen RUNNING, by serial, with its
+    /// `gcode_start_time`, until its end is recorded. It outlives connections,
+    /// so a print that ends while the app is disconnected still gets its
+    /// history row from the printer's first report on its next connection.
+    unrecorded_prints: HashMap<String, Option<String>>,
     connection_task: Option<tokio::task::JoinHandle<()>>,
 }
 
@@ -133,6 +139,8 @@ impl PrinterServiceInner {
 #[derive(Clone)]
 pub struct PrinterService {
     inner: Arc<TokioMutex<PrinterServiceInner>>,
+    /// Held for a whole connect, switch, or disconnect command.
+    transitions: Arc<TokioMutex<()>>,
 }
 
 impl Default for PrinterService {
@@ -154,9 +162,19 @@ impl PrinterService {
                 readiness: Readiness::WaitingForIdle,
                 queue_held: false,
                 owed_runs: 0,
+                unrecorded_prints: HashMap::new(),
                 connection_task: None,
             })),
+            transitions: Arc::default(),
         }
+    }
+
+    /// Waits for any other connect, switch, or disconnect to end, then holds
+    /// off the next one until the guard drops. A command that changes which
+    /// printer runs holds it from its first step to its last, so the selection
+    /// it writes names the printer the service runs.
+    pub async fn hold_transitions(&self) -> MutexGuard<'_, ()> {
+        self.transitions.lock().await
     }
 
     /// Start the printer connection with the given credentials.
@@ -196,9 +214,8 @@ impl PrinterService {
             }
         }
         let id = inner.end_connection();
-        // A retry for the same printer, even at a new host, keeps its state, so
-        // a print that finished while it was offline still reads as RUNNING to
-        // FINISH.
+        // A retry for the same printer, even at a new host, keeps showing the
+        // print it last reported while the retry connects.
         let same_serial = inner.credentials.as_ref().map(|c| &c.printer.device_id)
             == Some(&creds.printer.device_id);
         if !same_serial {
@@ -560,8 +577,9 @@ impl PrinterService {
     }
 
     /// Parse and merge an incoming MQTT publish message.
-    /// Detects gcode_state transitions and dispatches side effects:
-    /// - RUNNING→FINISH/FAILED: record print history + send notification
+    /// Dispatches side effects:
+    /// - FINISH/FAILED for the print this printer was last seen RUNNING:
+    ///   record print history + send notification
     /// - A report that shows the printer became IDLE: send it the next queued job
     ///
     /// A report that arrives after connection `id` ended is dropped whole.
@@ -604,15 +622,7 @@ impl PrinterService {
                 }
             };
 
-            // ── Read previous gcode_state before merge ──
-            let prev_gcode_state = app_state
-                .printer
-                .lock()
-                .ok()
-                .and_then(|p| p.gcode_state.clone());
-
-            // ── Merge delta into PrinterState ──
-            if let Ok(mut printer) = app_state.printer.lock() {
+            let merged = app_state.printer.lock().ok().map(|mut printer| {
                 status.merge_into(&mut printer);
                 log::debug!(
                     "push_status merged: nozzle={:?}°C bed={:?}°C state={:?} progress={:?}%",
@@ -621,31 +631,28 @@ impl PrinterService {
                     printer.gcode_state,
                     printer.print_progress,
                 );
-            }
+                (printer.gcode_state.clone(), printer.gcode_start_time.clone())
+            });
 
             let _ = app_state.emit_state_change(app_handle, "printer:changed");
 
-            // ── Read current gcode_state after merge ──
-            let curr_gcode_state = app_state
-                .printer
-                .lock()
-                .ok()
-                .and_then(|p| p.gcode_state.clone());
-
-            // ── Dispatch transition if state actually changed ──
-            if let Some(ref curr) = curr_gcode_state {
-                if prev_gcode_state.as_deref() != Some(curr.as_str()) {
-                    log::info!(
-                        "gcode_state transition: {:?} → {:?}",
-                        prev_gcode_state,
-                        curr
-                    );
-                    handle_gcode_transition(
-                        prev_gcode_state,
-                        curr.clone(),
-                        app_handle,
-                        app_state,
-                    );
+            let connection = &mut *connection;
+            if let (Some((Some(gcode_state), start_time)), Some(creds)) =
+                (merged, &connection.credentials)
+            {
+                let serial = &creds.printer.device_id;
+                match gcode_state.as_str() {
+                    "RUNNING" => {
+                        connection.unrecorded_prints.insert(serial.clone(), start_time);
+                    }
+                    "FINISH" | "FAILED"
+                        if connection.unrecorded_prints.get(serial) == Some(&start_time) =>
+                    {
+                        connection.unrecorded_prints.remove(serial);
+                        log::info!("print ended: {gcode_state} (started {start_time:?})");
+                        handle_print_end(&gcode_state, app_handle, app_state);
+                    }
+                    _ => {}
                 }
             }
 
@@ -733,34 +740,18 @@ impl PrinterService {
     }
 }
 
-// ─── Gcode State Transition Handler ───────────────────────────────────────────
+// ─── Print End Handler ────────────────────────────────────────────────────────
 
-/// Handle a gcode_state transition. Called when prev != curr.
+/// Handle the end of a print the app saw running.
 ///
-/// - RUNNING→FINISH: Record a "success" history entry, fire notification
-/// - RUNNING→FAILED: Record a "failed" history entry with fail_reason, fire notification
-fn handle_gcode_transition<R: Runtime>(
-    prev: Option<String>,
-    curr: String,
-    app_handle: &AppHandle<R>,
-    app_state: &AppState,
-) {
-    let prev_str = prev.as_deref().unwrap_or("(none)");
-    let is_from_running = prev_str == "RUNNING";
-
-    if !is_from_running {
-        return;
-    }
-
-    let (status, should_record) = match curr.as_str() {
-        "FINISH" => ("success", true),
-        "FAILED" => ("failed", true),
+/// - FINISH: Record a "success" history entry, fire notification
+/// - FAILED: Record a "failed" history entry with fail_reason, fire notification
+fn handle_print_end<R: Runtime>(gcode_state: &str, app_handle: &AppHandle<R>, app_state: &AppState) {
+    let status = match gcode_state {
+        "FINISH" => "success",
+        "FAILED" => "failed",
         _ => return,
     };
-
-    if !should_record {
-        return;
-    }
 
     match record_print_completion(app_state, status) {
         Some((model_name, fail_reason)) => {
@@ -798,7 +789,7 @@ fn handle_gcode_transition<R: Runtime>(
 /// Returns `Some((model_name, fail_reason))` if a record was inserted,
 /// `None` if skipped (dedup) or if an error occurred.
 ///
-/// Separated from `handle_gcode_transition` so it can be unit-tested
+/// Separated from `handle_print_end` so it can be unit-tested
 /// without a Tauri `AppHandle`.
 fn record_print_completion(
     app_state: &AppState,
@@ -1625,23 +1616,6 @@ mod tests {
     }
 
     #[test]
-    fn non_transition_running_to_running_no_record() {
-        // handle_gcode_transition only fires when prev != curr,
-        // but record_print_completion doesn't check that — it's the caller's job.
-        // We test that the handle_publish logic only dispatches on actual changes
-        // by verifying the transition guard in handle_gcode_transition:
-        // prev=RUNNING, curr=RUNNING would never reach record_print_completion
-        // because curr must be FINISH or FAILED.
-        let state = test_app_state();
-        set_printer_running(&state, "Benchy", "1710500000");
-
-        // Calling with "running" status (not "success" or "failed") should not insert
-        // (handle_gcode_transition wouldn't call record_print_completion for this case)
-        // This tests the guard at the call site level.
-        assert_eq!(get_test_history(&state).len(), 0);
-    }
-
-    #[test]
     fn idle_transition_with_no_pending_jobs_is_noop() {
         // The IDLE transition triggers auto_send_pending_job which checks for
         // pending jobs. With an empty queue, it's a no-op. We verify the queue
@@ -1817,7 +1791,7 @@ mod tests {
     fn proactive_event_type_mapping() {
         // "success" status → "print_complete" event type
         // "failed" status → "print_failed" event type
-        // This tests the mapping logic used in handle_gcode_transition's call site
+        // This tests the mapping logic used in handle_print_end
         let cases = vec![
             ("success", "print_complete"),
             ("failed", "print_failed"),
@@ -2583,7 +2557,7 @@ mod tests {
         assert_eq!(
             app_state.printer.lock().unwrap().gcode_state.as_deref(),
             Some("RUNNING"),
-            "a print that finishes during the outage still reads as RUNNING to FINISH"
+            "a retry keeps showing the print the printer last reported"
         );
     }
 
