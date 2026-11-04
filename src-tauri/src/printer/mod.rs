@@ -129,7 +129,7 @@ impl PrinterService {
     }
 
     /// Disconnect cleanly.
-    pub async fn disconnect(&self, app_handle: &AppHandle, app_state: &AppState) {
+    pub async fn disconnect<R: Runtime>(&self, app_handle: &AppHandle<R>, app_state: &AppState) {
         let mut inner = self.inner.lock().await;
         inner.shutdown = true;
 
@@ -194,23 +194,18 @@ impl PrinterService {
     /// falls back to Cloud after `LOCAL_FAILURE_THRESHOLD` local failures.
     async fn connection_loop<R: Runtime>(&self, app_handle: AppHandle<R>, app_state: Arc<AppState>) {
         loop {
-            // Check for shutdown
+            if !self
+                .set_state(
+                    ConnectionState::Discovering,
+                    &app_handle,
+                    &app_state,
+                    "starting connection attempt",
+                )
+                .await
             {
-                let inner = self.inner.lock().await;
-                if inner.shutdown {
-                    log::info!("printer service shutdown requested, exiting loop");
-                    return;
-                }
+                log::info!("printer service shutdown requested, exiting loop");
+                return;
             }
-
-            // Transition to Discovering
-            self.set_state(
-                ConnectionState::Discovering,
-                &app_handle,
-                &app_state,
-                "starting connection attempt",
-            )
-            .await;
 
             let use_cloud = {
                 let inner = self.inner.lock().await;
@@ -225,21 +220,18 @@ impl PrinterService {
 
             match result {
                 Ok(()) => {
-                    // Event loop exited — check if this was a clean shutdown
-                    let inner = self.inner.lock().await;
-                    if inner.shutdown {
+                    // The event loop exits on a disconnect or a lost connection.
+                    if !self
+                        .set_state(
+                            ConnectionState::Reconnecting,
+                            &app_handle,
+                            &app_state,
+                            "connection lost",
+                        )
+                        .await
+                    {
                         return;
                     }
-                    drop(inner);
-
-                    // Connection lost — transition to Reconnecting
-                    self.set_state(
-                        ConnectionState::Reconnecting,
-                        &app_handle,
-                        &app_state,
-                        "connection lost",
-                    )
-                    .await;
                 }
                 Err(e) => {
                     let err_msg = e.to_string();
@@ -283,13 +275,17 @@ impl PrinterService {
                         return;
                     }
 
-                    self.set_state(
-                        ConnectionState::Reconnecting,
-                        &app_handle,
-                        &app_state,
-                        "retrying after failure",
-                    )
-                    .await;
+                    if !self
+                        .set_state(
+                            ConnectionState::Reconnecting,
+                            &app_handle,
+                            &app_state,
+                            "retrying after failure",
+                        )
+                        .await
+                    {
+                        return;
+                    }
                 }
             }
 
@@ -539,44 +535,50 @@ impl PrinterService {
         }
     }
 
-    /// Update the connection state and emit a change event.
+    /// Update the connection state and emit a change event. Writes nothing and
+    /// returns false once a disconnect asked the loop to stop. The check and
+    /// both writes hold the service lock, so a disconnect cannot land between
+    /// them.
     async fn set_state<R: Runtime>(
         &self,
         new_state: ConnectionState,
         app_handle: &AppHandle<R>,
         app_state: &AppState,
         reason: &str,
-    ) {
-        let old_state = {
-            let mut inner = self.inner.lock().await;
-            let old = inner.connection_state.clone();
-            inner.connection_state = new_state.clone();
-            old
-        };
-
+    ) -> bool {
         let is_connected = matches!(
             new_state,
             ConnectionState::ConnectedMqtt | ConnectionState::ConnectedCloud
         );
 
-        if let Ok(mut printer) = app_state.printer.lock() {
-            printer.connection_state = new_state.clone();
-            printer.is_connected = is_connected;
-            if !is_connected {
-                printer.connection_type = None;
+        let old_state = {
+            let mut inner = self.inner.lock().await;
+            if inner.shutdown {
+                return false;
             }
-        }
+            let old = std::mem::replace(&mut inner.connection_state, new_state.clone());
+            if let Ok(mut printer) = app_state.printer.lock() {
+                printer.connection_state = new_state.clone();
+                printer.is_connected = is_connected;
+                if !is_connected {
+                    printer.connection_type = None;
+                }
+            }
+            old
+        };
 
         log::info!(
             "connection state: {old_state:?} → {new_state:?} ({reason})"
         );
 
         let _ = app_state.emit_state_change(app_handle, "printer:changed");
+        true
     }
 
     /// Transition to a connected state with the appropriate connection type.
     /// After transitioning, spawns a background task to auto-send any pending
-    /// queue jobs if the printer is IDLE.
+    /// queue jobs if the printer is IDLE. Does nothing after a disconnect, and
+    /// holds the service lock until the trigger is spawned, like `set_state`.
     async fn set_connected<R: Runtime>(
         &self,
         state: ConnectionState,
@@ -584,14 +586,14 @@ impl PrinterService {
         app_handle: &AppHandle<R>,
         app_state: &AppState,
     ) {
-        let (printer_host, printer_name) = {
-            let mut inner = self.inner.lock().await;
-            inner.connection_state = state.clone();
-            inner.reconnect_count = 0;
-            let host = inner.credentials.as_ref().map(|c| c.printer.host.clone());
-            let name = inner.credentials.as_ref().map(|c| c.printer.name.clone());
-            (host, name)
-        };
+        let mut inner = self.inner.lock().await;
+        if inner.shutdown {
+            return;
+        }
+        inner.connection_state = state.clone();
+        inner.reconnect_count = 0;
+        let printer_host = inner.credentials.as_ref().map(|c| c.printer.host.clone());
+        let printer_name = inner.credentials.as_ref().map(|c| c.printer.name.clone());
 
         if let Ok(mut printer) = app_state.printer.lock() {
             printer.connection_state = state.clone();
@@ -612,9 +614,6 @@ impl PrinterService {
             }
         }
 
-        log::info!("connected via {conn_type:?}");
-        let _ = app_state.emit_state_change(app_handle, "printer:changed");
-
         // Fire-and-forget: auto-send first pending queue job if printer is IDLE
         let service = self.clone();
         let app_handle_clone = app_handle.clone();
@@ -626,6 +625,10 @@ impl PrinterService {
                 log::error!("auto-send failed: {e}");
             }
         });
+        drop(inner);
+
+        log::info!("connected via {conn_type:?}");
+        let _ = app_state.emit_state_change(app_handle, "printer:changed");
     }
 }
 
@@ -1773,6 +1776,51 @@ mod tests {
             matches!(other, Err(PrinterError::AlreadyRunning)),
             "a different printer still waits for a disconnect, got {other:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_disconnect_holds_against_a_late_write_from_the_old_loop() {
+        use tauri::test::{mock_builder, mock_context, noop_assets};
+
+        let app = mock_builder().build(mock_context(noop_assets())).expect("mock app");
+        let app_state = Arc::new(AppState::default());
+        let service = PrinterService::new();
+        service
+            .start(
+                loopback_printer("01P00A000000000"),
+                app.handle().clone(),
+                Arc::clone(&app_state),
+            )
+            .await
+            .expect("printer A starts");
+        service.disconnect(app.handle(), &app_state).await;
+
+        // The old loop passed its shutdown check just before the disconnect.
+        service
+            .set_state(ConnectionState::Discovering, app.handle(), &app_state, "late write")
+            .await;
+        service
+            .set_connected(
+                ConnectionState::ConnectedMqtt,
+                ConnectionType::Mqtt,
+                app.handle(),
+                &app_state,
+            )
+            .await;
+
+        {
+            let printer = app_state.printer.lock().unwrap();
+            assert_eq!(printer.connection_state, ConnectionState::Disconnected);
+            assert!(!printer.is_connected, "a late connect does not undo the disconnect");
+        }
+        service
+            .start(
+                loopback_printer("01P00B000000000"),
+                app.handle().clone(),
+                Arc::clone(&app_state),
+            )
+            .await
+            .expect("printer B starts after A was disconnected");
     }
 
     #[tokio::test]

@@ -322,6 +322,44 @@ async function emitWorkspace() {
   await emit('workspace:changed', structuredClone(mockState.workspace))
 }
 
+let pendingMockConnect: ReturnType<typeof setTimeout> | undefined
+
+// Like the real service, a connect reports success later, and a disconnect cancels it.
+function connectMockPrinterAfter(ms: number, connected: Partial<PrinterSnapshot> = {}) {
+  clearTimeout(pendingMockConnect)
+  pendingMockConnect = setTimeout(async () => {
+    mockState.printer = {
+      ...mockState.printer,
+      isConnected: true,
+      connectionState: 'connected_mqtt',
+      connectionType: 'mqtt',
+      nozzleTemp: 25.3,
+      nozzleTargetTemp: 0,
+      bedTemp: 23.1,
+      bedTargetTemp: 0,
+      chamberTemp: 22.5,
+      gcodeState: 'IDLE',
+      printProgress: null,
+      remainingTime: null,
+      lastError: null,
+      ...connected,
+    }
+    await emit('printer:changed', structuredClone(mockState.printer))
+  }, ms)
+}
+
+async function disconnectMockPrinter() {
+  clearTimeout(pendingMockConnect)
+  mockState.printer = {
+    ...mockState.printer,
+    isConnected: false,
+    connectionState: 'disconnected',
+    connectionType: null,
+    gcodeState: null,
+  }
+  await emit('printer:changed', structuredClone(mockState.printer))
+}
+
 export function installTauriBrowserMock() {
   if (typeof window === 'undefined' || '__TAURI_INTERNALS__' in window) {
     return
@@ -427,38 +465,13 @@ export function installTauriBrowserMock() {
       }
       await emit('printer:changed', structuredClone(mockState.printer))
 
-      setTimeout(async () => {
-        mockState.printer = {
-          ...mockState.printer,
-          isConnected: true,
-          connectionState: 'connected_mqtt',
-          connectionType: 'mqtt',
-          name: 'AOJDevStudio',
-          nozzleTemp: 25.3,
-          nozzleTargetTemp: 0,
-          bedTemp: 23.1,
-          bedTargetTemp: 0,
-          chamberTemp: 22.5,
-          gcodeState: 'IDLE',
-          printProgress: null,
-          remainingTime: null,
-          lastError: null,
-        }
-        await emit('printer:changed', structuredClone(mockState.printer))
-      }, 1500)
+      connectMockPrinterAfter(1500, { name: 'AOJDevStudio' })
 
       return {}
     }
 
     if (cmd === 'disconnect_printer') {
-      mockState.printer = {
-        ...mockState.printer,
-        isConnected: false,
-        connectionState: 'disconnected',
-        connectionType: null,
-        gcodeState: null,
-      }
-      await emit('printer:changed', structuredClone(mockState.printer))
+      await disconnectMockPrinter()
       return {}
     }
 
@@ -615,46 +628,17 @@ export function installTauriBrowserMock() {
       }
       await emit('printer:changed', structuredClone(mockState.printer))
 
-      setTimeout(async () => {
-        mockState.printer = {
-          ...mockState.printer,
-          isConnected: true,
-          connectionState: 'connected_mqtt',
-          connectionType: 'mqtt',
-          nozzleTemp: 25.3,
-          nozzleTargetTemp: 0,
-          bedTemp: 23.1,
-          bedTargetTemp: 0,
-          chamberTemp: 22.5,
-          gcodeState: 'IDLE',
-          printProgress: null,
-          remainingTime: null,
-          lastError: null,
-        }
-        await emit('printer:changed', structuredClone(mockState.printer))
-      }, 1000)
+      connectMockPrinterAfter(1000)
 
       return {}
     }
 
     if (cmd === 'switch_printer') {
       const args = payload as { configId: string }
+      await disconnectMockPrinter()
       const config = mockPrinterConfigs.find((c) => c.id === args.configId)
       if (!config) throw new Error(`printer config ${args.configId} not found`)
 
-      // Disconnect current
-      if (mockState.printer.isConnected) {
-        mockState.printer = {
-          ...mockState.printer,
-          isConnected: false,
-          connectionState: 'disconnected',
-          connectionType: null,
-          gcodeState: null,
-        }
-        await emit('printer:changed', structuredClone(mockState.printer))
-      }
-
-      // Connect new
       mockSelectedPrinterId = args.configId
       mockState.selectedPrinterId = args.configId
       mockState.printer = {
@@ -664,24 +648,7 @@ export function installTauriBrowserMock() {
       }
       await emit('printer:changed', structuredClone(mockState.printer))
 
-      setTimeout(async () => {
-        mockState.printer = {
-          ...mockState.printer,
-          isConnected: true,
-          connectionState: 'connected_mqtt',
-          connectionType: 'mqtt',
-          nozzleTemp: 25.3,
-          nozzleTargetTemp: 0,
-          bedTemp: 23.1,
-          bedTargetTemp: 0,
-          chamberTemp: 22.5,
-          gcodeState: 'IDLE',
-          printProgress: null,
-          remainingTime: null,
-          lastError: null,
-        }
-        await emit('printer:changed', structuredClone(mockState.printer))
-      }, 1000)
+      connectMockPrinterAfter(1000)
 
       return {}
     }

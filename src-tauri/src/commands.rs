@@ -1027,7 +1027,7 @@ pub async fn has_credential(key: String) -> Result<bool, String> {
 // ─── Printer Config Commands ──────────────────────────────────────────────────
 
 /// Helper to emit `printer-configs:changed` with the full config list.
-fn emit_printer_configs_changed(app: &AppHandle, state: &Arc<AppState>) {
+fn emit_printer_configs_changed<R: Runtime>(app: &AppHandle<R>, state: &Arc<AppState>) {
     let configs = {
         let db_guard = match state.db.lock() {
             Ok(g) => g,
@@ -1287,12 +1287,12 @@ pub async fn connect_printer_by_config(
 
 /// Switch to a different saved printer configuration.
 ///
-/// Disconnects the current printer (if connected), updates the selected ID,
-/// and connects to the new printer.
+/// Stops the current printer, connected or still connecting, then connects to
+/// the new one. An unknown config ID leaves the old printer disconnected.
 #[tauri::command]
-pub async fn switch_printer(
+pub async fn switch_printer<R: Runtime>(
     config_id: String,
-    app: AppHandle,
+    app: AppHandle<R>,
     state: State<'_, Arc<AppState>>,
     service: State<'_, PrinterService>,
 ) -> Result<(), String> {
@@ -1314,20 +1314,10 @@ pub async fn switch_printer(
         config_id
     );
 
-    // Disconnect current printer if connected
-    let is_connected = {
-        let printer = state
-            .printer
-            .lock()
-            .map_err(|e| format!("failed to lock printer state: {e}"))?;
-        printer.is_connected
-    };
+    // A printer still trying to connect holds the service too, and
+    // `is_connected` is false for it.
+    service.disconnect(&app, &state).await;
 
-    if is_connected {
-        service.disconnect(&app, &state).await;
-    }
-
-    // Connect to the new printer via config
     connect_printer_by_config_inner(
         &config_id, &app, &state, &service,
     )
@@ -1344,9 +1334,9 @@ pub async fn switch_printer(
 
 /// Inner implementation of connect_printer_by_config, callable without Tauri
 /// `State` wrappers (used by `switch_printer`).
-pub async fn connect_printer_by_config_inner(
+pub async fn connect_printer_by_config_inner<R: Runtime>(
     config_id: &str,
-    app: &AppHandle,
+    app: &AppHandle<R>,
     state: &Arc<AppState>,
     service: &PrinterService,
 ) -> Result<(), String> {
@@ -1628,5 +1618,129 @@ mod tests {
         let json = serde_json::to_value(&fail_result).unwrap();
         assert_eq!(json["success"], false);
         assert_eq!(json["error"], "FTPS connect failed");
+    }
+
+    /// Process-wide in-memory keychain, so a test can read back what it stored
+    /// without the OS credential store.
+    fn use_memory_keychain() {
+        use keyring::credential::{Credential, CredentialApi, CredentialBuilder, CredentialBuilderApi};
+        use std::any::Any;
+        use std::collections::HashMap;
+        use std::sync::Mutex;
+
+        type Store = Arc<Mutex<HashMap<(String, String), Vec<u8>>>>;
+        struct MemoryEntry {
+            key: (String, String),
+            store: Store,
+        }
+        impl CredentialApi for MemoryEntry {
+            fn set_secret(&self, secret: &[u8]) -> keyring::Result<()> {
+                self.store.lock().unwrap().insert(self.key.clone(), secret.to_vec());
+                Ok(())
+            }
+            fn get_secret(&self) -> keyring::Result<Vec<u8>> {
+                self.store.lock().unwrap().get(&self.key).cloned().ok_or(keyring::Error::NoEntry)
+            }
+            fn delete_credential(&self) -> keyring::Result<()> {
+                self.store.lock().unwrap().remove(&self.key).map(drop).ok_or(keyring::Error::NoEntry)
+            }
+            fn as_any(&self) -> &dyn Any {
+                self
+            }
+        }
+        struct MemoryKeychain(Store);
+        impl CredentialBuilderApi for MemoryKeychain {
+            fn build(&self, _: Option<&str>, service: &str, user: &str) -> keyring::Result<Box<Credential>> {
+                Ok(Box::new(MemoryEntry {
+                    key: (service.to_owned(), user.to_owned()),
+                    store: Arc::clone(&self.0),
+                }))
+            }
+            fn as_any(&self) -> &dyn Any {
+                self
+            }
+        }
+
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| {
+            let builder: Box<CredentialBuilder> = Box::new(MemoryKeychain(Store::default()));
+            keyring::set_default_credential_builder(builder);
+        });
+    }
+
+    #[tokio::test]
+    async fn switching_away_from_a_printer_that_never_connected_connects_the_new_one() {
+        use crate::printer::PrinterService;
+        use crate::state::PrinterConfig;
+        use std::time::Duration;
+        use tauri::Manager;
+        use tauri::test::{mock_builder, mock_context, noop_assets};
+
+        use_memory_keychain();
+        let dir = tempfile::tempdir().expect("temp dir");
+        let conn = crate::database::init_db(&dir.path().join("switch.db")).expect("init db");
+        for (id, serial) in [("switch-a", "01P00A000000000"), ("switch-b", "01P00B000000000")] {
+            let keychain_id = format!("printer:{id}:access_code");
+            crate::credentials::store_credential(&keychain_id, "12345678")
+                .await
+                .expect("store access code");
+            crate::database::insert_printer_config(
+                &conn,
+                &PrinterConfig {
+                    id: id.into(),
+                    name: id.into(),
+                    host: "127.0.0.1".into(),
+                    serial: serial.into(),
+                    access_code_keychain_id: keychain_id,
+                    is_default: false,
+                    created_at: String::new(),
+                    updated_at: String::new(),
+                },
+            )
+            .expect("insert printer config");
+        }
+
+        let app_state = Arc::new(AppState::default());
+        *app_state.db.lock().unwrap() = Some(conn);
+        let app = mock_builder().build(mock_context(noop_assets())).expect("mock app");
+        app.manage(Arc::clone(&app_state));
+        app.manage(PrinterService::new());
+
+        super::connect_printer_by_config_inner(
+            "switch-a",
+            app.handle(),
+            &app_state,
+            &app.state::<PrinterService>(),
+        )
+        .await
+        .expect("printer A starts connecting");
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while app_state.printer.lock().unwrap().last_error.is_none() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("connect to a loopback host with no printer fails");
+        assert!(!app_state.printer.lock().unwrap().is_connected);
+
+        super::switch_printer(
+            "switch-b".into(),
+            app.handle().clone(),
+            app.state(),
+            app.state(),
+        )
+        .await
+        .expect("switching to printer B starts it");
+
+        let running = app.state::<PrinterService>().get_credentials().await;
+        assert_eq!(
+            running.map(|c| c.printer.device_id).as_deref(),
+            Some("01P00B000000000"),
+            "the service now runs printer B"
+        );
+        assert_eq!(
+            app_state.selected_printer_id.lock().unwrap().as_deref(),
+            Some("switch-b")
+        );
     }
 }
