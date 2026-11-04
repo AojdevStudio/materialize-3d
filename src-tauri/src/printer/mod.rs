@@ -1808,11 +1808,28 @@ mod tests {
             )
             .await;
 
+        service.handle_publish(
+            br#"{"print":{"gcode_state":"IDLE","nozzle_temper":210.0}}"#,
+            app.handle(),
+            &app_state,
+        );
+        service
+            .try_local_connection(app.handle(), &app_state)
+            .await
+            .expect("a late connect attempt after a disconnect is not an error");
+
         {
             let printer = app_state.printer.lock().unwrap();
             assert_eq!(printer.connection_state, ConnectionState::Disconnected);
             assert!(!printer.is_connected, "a late connect does not undo the disconnect");
+            assert_eq!(printer.gcode_state, None, "a late report is not merged");
+            assert_eq!(printer.nozzle_temp, None, "a late report is not merged");
         }
+        let sent = service.send_command(BambuCommand::PushAll).await;
+        assert!(
+            matches!(sent, Err(PrinterError::NotConnected)),
+            "a late connect stores no client, got {sent:?}"
+        );
         service
             .start(
                 loopback_printer("01P00B000000000"),
@@ -1849,6 +1866,92 @@ mod tests {
         assert!(
             matches!(other, Err(PrinterError::AlreadyRunning)),
             "the first start already owns the service, got {other:?}"
+        );
+    }
+
+    /// Printer A at 127.0.0.2 connects and reports IDLE with one job queued,
+    /// then the user switches to printer B at 127.0.0.1 before A's 2 s
+    /// auto-send wakes.
+    async fn switch_while_auto_send_waits() -> (tauri::App<tauri::test::MockRuntime>, Arc<AppState>) {
+        use tauri::test::{mock_builder, mock_context, noop_assets};
+
+        let app = mock_builder().build(mock_context(noop_assets())).expect("mock app");
+        let app_state = Arc::new(AppState::default());
+        app.manage(Arc::clone(&app_state));
+        let threemf = std::env::temp_dir().join(format!("m3d-auto-send-{}.3mf", uuid::Uuid::new_v4()));
+        std::fs::write(&threemf, b"3mf").expect("write the queued 3MF");
+        app_state.print_queue.lock().unwrap().push(crate::state::QueuedJob {
+            id: "job-1".into(),
+            model_path: String::new(),
+            threemf_path: threemf.to_string_lossy().into_owned(),
+            model_name: "cube".into(),
+            created_at: chrono::Utc::now(),
+            status: QueueStatus::Pending,
+            filament_grams: None,
+            filament_meters: None,
+            quality_profile: None,
+            thumbnail_path: None,
+        });
+
+        let service = PrinterService::new();
+        let mut printer_a = loopback_printer("01P00A000000000");
+        printer_a.printer.host = "127.0.0.2".into();
+        service
+            .start(printer_a, app.handle().clone(), Arc::clone(&app_state))
+            .await
+            .expect("printer A starts");
+        app_state.printer.lock().unwrap().gcode_state = Some("IDLE".into());
+        service
+            .set_connected(
+                ConnectionState::ConnectedMqtt,
+                ConnectionType::Mqtt,
+                app.handle(),
+                &app_state,
+            )
+            .await;
+
+        service.disconnect(app.handle(), &app_state).await;
+        service
+            .start(
+                loopback_printer("01P00B000000000"),
+                app.handle().clone(),
+                Arc::clone(&app_state),
+            )
+            .await
+            .expect("printer B starts");
+        (app, app_state)
+    }
+
+    async fn first_job_after_auto_send(app_state: &AppState) -> QueueStatus {
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        app_state.print_queue.lock().unwrap()[0].status.clone()
+    }
+
+    #[tokio::test]
+    async fn a_switch_keeps_the_old_printers_idle_state_from_sending_a_job() {
+        let (_app, app_state) = switch_while_auto_send_waits().await;
+
+        assert_eq!(
+            first_job_after_auto_send(&app_state).await,
+            QueueStatus::Pending,
+            "A's auto-send read A's IDLE and sent the job to B"
+        );
+        assert_eq!(
+            app_state.printer.lock().unwrap().gcode_state,
+            None,
+            "B starts without A's print state"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_old_printers_auto_send_does_not_act_once_the_new_printer_is_idle() {
+        let (_app, app_state) = switch_while_auto_send_waits().await;
+        app_state.printer.lock().unwrap().gcode_state = Some("IDLE".into());
+
+        assert_eq!(
+            first_job_after_auto_send(&app_state).await,
+            QueueStatus::Pending,
+            "only B's own trigger may send to B"
         );
     }
 }
