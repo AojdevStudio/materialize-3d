@@ -1314,15 +1314,9 @@ pub async fn upload_to_printer(
         // For implicit FTPS, connect normally then wrap with into_secure
         let addr = format!("{host}:990");
         let connect_failed = |e: &dyn std::fmt::Display| PrinterError::Ftps(format!("FTPS connect to {addr} failed: {e}"));
-        let socket_addr = std::net::ToSocketAddrs::to_socket_addrs(addr.as_str())
+        let control = timed_connect(&addr).map_err(|e| connect_failed(&e))?;
+        let ftp_stream = suppaftp::NativeTlsFtpStream::connect_with_stream(control)
             .map_err(|e| connect_failed(&e))?
-            .next()
-            .ok_or_else(|| connect_failed(&"no address"))?;
-        let ftp_stream = timed_stream(socket_addr)
-            .map_err(|e| connect_failed(&e))
-            .and_then(|control| {
-                suppaftp::NativeTlsFtpStream::connect_with_stream(control).map_err(|e| connect_failed(&e))
-            })?
             .passive_stream_builder(|data| timed_stream(data).map_err(suppaftp::FtpError::ConnectionError));
 
         let mut ftp_stream = ftp_stream
@@ -1360,6 +1354,19 @@ pub async fn upload_to_printer(
     })
     .await
     .map_err(|e| PrinterError::Ftps(format!("FTPS upload task panicked: {e}")))?
+}
+
+/// Like `TcpStream::connect`, it tries each address `addr` resolves to in
+/// turn, but through `timed_stream`.
+fn timed_connect(addr: &str) -> std::io::Result<std::net::TcpStream> {
+    let mut last_error = std::io::Error::new(std::io::ErrorKind::NotFound, "no address");
+    for socket_addr in std::net::ToSocketAddrs::to_socket_addrs(addr)? {
+        match timed_stream(socket_addr) {
+            Ok(stream) => return Ok(stream),
+            Err(e) => last_error = e,
+        }
+    }
+    Err(last_error)
 }
 
 /// A TCP stream whose connect, reads, and writes each end within `FTPS_TIMEOUT`.
