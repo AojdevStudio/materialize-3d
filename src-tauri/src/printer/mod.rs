@@ -2347,6 +2347,57 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn jobs_added_during_an_upload_still_go_after_a_reconnect() {
+        let (app, app_state, service, a) = connect_printer_a(0).await;
+        let job_1 = held_3mf();
+        app_state.print_queue.lock().unwrap().push(crate::state::QueuedJob {
+            id: "job-1".into(),
+            model_path: String::new(),
+            threemf_path: job_1.to_string_lossy().into_owned(),
+            model_name: "cube".into(),
+            created_at: chrono::Utc::now(),
+            status: QueueStatus::Pending,
+            filament_grams: None,
+            filament_meters: None,
+            quality_profile: None,
+            thumbnail_path: None,
+        });
+        service
+            .handle_publish(a, br#"{"print":{"gcode_state":"IDLE"}}"#, app.handle(), &app_state)
+            .await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        tokio::task::block_in_place(|| add_to_queue_from_the_window(&app));
+        tokio::task::block_in_place(|| add_to_queue_from_the_window(&app));
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        service
+            .set_state(a, ConnectionState::Reconnecting, app.handle(), &app_state, "connection lost")
+            .await;
+        service
+            .set_connected(a, ConnectionState::ConnectedMqtt, ConnectionType::Mqtt, app.handle(), &app_state)
+            .await;
+
+        feed(&job_1).await;
+        feed(&job_1).await;
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        service
+            .handle_publish(a, br#"{"print":{"gcode_state":"IDLE"}}"#, app.handle(), &app_state)
+            .await;
+        tokio::time::sleep(Duration::from_secs(3)).await;
+
+        let queue = app_state.print_queue.lock().unwrap().clone();
+        assert_eq!(queue.len(), 3);
+        for job in &queue {
+            assert!(
+                matches!(&job.status, QueueStatus::Failed { reason } if reason.contains("localhost:990")),
+                "job {} went to printer A, got {:?}",
+                job.id,
+                job.status
+            );
+        }
+    }
+
     #[tokio::test]
     async fn a_job_added_before_the_first_report_waits_for_it() {
         let (app, app_state, _service, _a) = connect_printer_a(0).await;
