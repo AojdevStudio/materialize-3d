@@ -20,7 +20,7 @@ pub enum CredentialError {
 // ─── Credential types ─────────────────────────────────────────────────────────
 
 /// Bambu Lab printer info from credentials file.
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct PrinterInfo {
     pub name: String,
@@ -31,7 +31,7 @@ pub struct PrinterInfo {
 }
 
 /// Bambu Cloud credentials loaded from `~/.bambu-mcp/credentials.json`.
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct BambuCredentials {
     pub access_token: String,

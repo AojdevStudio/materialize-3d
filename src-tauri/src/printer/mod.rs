@@ -45,6 +45,7 @@ struct PrinterServiceInner {
     reconnect_count: u32,
     local_failure_count: u32,
     shutdown: bool,
+    connection_task: Option<tokio::task::JoinHandle<()>>,
 }
 
 /// The core service that owns the printer connection lifecycle.
@@ -71,35 +72,55 @@ impl PrinterService {
                 reconnect_count: 0,
                 local_failure_count: 0,
                 shutdown: false,
+                connection_task: None,
             })),
         }
     }
 
     /// Start the printer connection with the given credentials.
     /// Spawns a background tokio task for the connection lifecycle.
+    ///
+    /// Starting again with the same credentials is a retry. A live
+    /// connection is kept, and an attempt that has not connected yet is
+    /// replaced with a fresh one. Other credentials need a disconnect first.
     pub async fn start<R: Runtime>(
         &self,
         creds: BambuCredentials,
         app_handle: AppHandle<R>,
         app_state: Arc<AppState>,
     ) -> Result<(), PrinterError> {
-        {
-            let mut inner = self.inner.lock().await;
-            if inner.connection_state != ConnectionState::Disconnected
-                && inner.connection_state != ConnectionState::Offline
-            {
+        use ConnectionState::*;
+
+        let mut inner = self.inner.lock().await;
+        let same_printer = inner.credentials.as_ref() == Some(&creds);
+        match (&inner.connection_state, same_printer) {
+            (Disconnected | Offline, _) | (Discovering | Reconnecting, true) => {}
+            (ConnectedMqtt | ConnectedCloud, true) => return Ok(()),
+            (Discovering | Reconnecting | ConnectedMqtt | ConnectedCloud, false) => {
                 return Err(PrinterError::AlreadyRunning);
             }
-            inner.credentials = Some(creds);
-            inner.shutdown = false;
-            inner.reconnect_count = 0;
-            inner.local_failure_count = 0;
         }
 
+        // A loop left asleep in backoff after a disconnect would otherwise
+        // wake and run beside the new one.
+        if let Some(task) = inner.connection_task.take() {
+            task.abort();
+            match task.await {
+                Ok(()) => {}
+                Err(e) if e.is_cancelled() => {}
+                Err(e) => std::panic::resume_unwind(e.into_panic()),
+            }
+        }
+        inner.mqtt_client = None;
+        inner.credentials = Some(creds);
+        inner.shutdown = false;
+        inner.reconnect_count = 0;
+        inner.local_failure_count = 0;
+
         let service = self.clone();
-        tokio::spawn(async move {
+        inner.connection_task = Some(tokio::spawn(async move {
             service.connection_loop(app_handle, app_state).await;
-        });
+        }));
 
         Ok(())
     }
