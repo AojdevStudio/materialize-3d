@@ -2818,4 +2818,93 @@ mod tests {
 
         assert_eq!(history_rows(&app_state).len(), 1, "one print, one row");
     }
+
+    #[derive(Debug, Clone, Copy)]
+    enum Return {
+        /// The loop reconnects on its own after the connection is lost.
+        Reconnect,
+        /// The printer went Offline and the user starts it again.
+        Retry,
+    }
+
+    /// Printer A's connection `a` drops, then a new session comes back `how`.
+    async fn return_to_printer_a(
+        how: Return,
+        service: &PrinterService,
+        a: ConnectionId,
+        app: &tauri::App<tauri::test::MockRuntime>,
+        app_state: &Arc<AppState>,
+    ) -> ConnectionId {
+        match how {
+            Return::Reconnect => {
+                service
+                    .set_state(a, ConnectionState::Reconnecting, app.handle(), app_state, "connection lost")
+                    .await;
+                service
+                    .set_connected(a, ConnectionState::ConnectedMqtt, ConnectionType::Mqtt, app.handle(), app_state)
+                    .await;
+                a
+            }
+            Return::Retry => {
+                service
+                    .set_state(a, ConnectionState::Offline, app.handle(), app_state, "both paths exhausted")
+                    .await;
+                connect_without_loop(service, printer_a(), app, app_state).await
+            }
+        }
+    }
+
+    /// Printer A sends `before`, its connection drops and comes back `how`,
+    /// then it sends `after`. Returns the history rows.
+    async fn history_across_a_return(how: Return, before: &[&[u8]], after: &[&[u8]]) -> Vec<(String, String)> {
+        let (app, app_state, service) = history_app();
+        let a = connect_without_loop(&service, printer_a(), &app, &app_state).await;
+        for report in before {
+            service.handle_publish(a, report, app.handle(), &app_state).await;
+        }
+        let a = return_to_printer_a(how, &service, a, &app, &app_state).await;
+        for report in after {
+            service.handle_publish(a, report, app.handle(), &app_state).await;
+        }
+        history_rows(&app_state)
+    }
+
+    const BENCHY_RUNNING: &[u8] =
+        br#"{"print":{"gcode_state":"RUNNING","gcode_start_time":"1710500000","subtask_name":"Benchy"}}"#;
+    const BENCHY_FINISHED: &[u8] =
+        br#"{"print":{"gcode_state":"FINISH","gcode_start_time":"1710500000","subtask_name":"Benchy"}}"#;
+
+    #[tokio::test]
+    async fn a_print_the_app_never_saw_gets_no_row_when_the_printer_comes_back() {
+        for how in [Return::Reconnect, Return::Retry] {
+            let rows = history_across_a_return(
+                how,
+                &[BENCHY_RUNNING],
+                &[br#"{"print":{"gcode_state":"FINISH","gcode_start_time":"1710600000","subtask_name":"Unseen"}}"#],
+            )
+            .await;
+            assert_eq!(rows, [], "{how:?}: Benchy ended and Unseen ran while the printer was away");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_print_paused_when_the_printer_drops_gets_a_row_when_it_finishes() {
+        for how in [Return::Reconnect, Return::Retry] {
+            let rows = history_across_a_return(
+                how,
+                &[BENCHY_RUNNING, br#"{"print":{"gcode_state":"PAUSE"}}"#],
+                &[BENCHY_FINISHED],
+            )
+            .await;
+            assert_eq!(rows, [("Benchy".into(), "success".into())], "{how:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_print_that_finishes_while_the_printer_is_away_gets_one_row() {
+        for how in [Return::Reconnect, Return::Retry] {
+            let rows = history_across_a_return(how, &[BENCHY_RUNNING], &[BENCHY_FINISHED, BENCHY_FINISHED]).await;
+            assert_eq!(rows, [("Benchy".into(), "success".into())], "{how:?}");
+        }
+    }
 }
