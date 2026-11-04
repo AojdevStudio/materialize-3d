@@ -2071,6 +2071,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_report_without_gcode_state_does_not_send_from_the_idle_the_app_holds() {
+        let (app, app_state, service, a) = connect_printer_a(2).await;
+        app_state.printer.lock().unwrap().gcode_state = Some("IDLE".into());
+        service
+            .set_state(a, ConnectionState::Reconnecting, app.handle(), &app_state, "connection lost")
+            .await;
+        service
+            .set_connected(a, ConnectionState::ConnectedMqtt, ConnectionType::Mqtt, app.handle(), &app_state)
+            .await;
+        service
+            .handle_publish(a, br#"{"print":{"nozzle_temper":210.0}}"#, app.handle(), &app_state)
+            .await;
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        service
+            .handle_publish(a, br#"{"print":{"gcode_state":"RUNNING"}}"#, app.handle(), &app_state)
+            .await;
+        tokio::time::sleep(Duration::from_millis(2500)).await;
+
+        let queue = app_state.print_queue.lock().unwrap();
+        assert_eq!(queue[0].status, QueueStatus::Pending, "no report from the printer said IDLE");
+        assert_eq!(queue[1].status, QueueStatus::Pending, "no report from the printer said IDLE");
+    }
+
+    #[tokio::test]
     async fn a_retry_for_the_same_printer_sends_one_queued_job() {
         let (app, app_state, service, a) = connect_printer_a(2).await;
         app_state.printer.lock().unwrap().gcode_state = Some("RUNNING".into());
@@ -2124,7 +2148,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_retry_for_the_same_printer_keeps_its_print_state() {
+    async fn a_retry_for_the_same_printer_at_a_new_host_keeps_its_print_state() {
         use tauri::test::{mock_builder, mock_context, noop_assets};
 
         let app = mock_builder().build(mock_context(noop_assets())).expect("mock app");
@@ -2136,9 +2160,15 @@ mod tests {
             .await
             .expect("printer A starts");
         app_state.printer.lock().unwrap().gcode_state = Some("RUNNING".into());
-
+        let a = service.inner.lock().await.connection;
         service
-            .start(printer, app.handle().clone(), Arc::clone(&app_state))
+            .set_state(a, ConnectionState::Offline, app.handle(), &app_state, "both paths exhausted")
+            .await;
+
+        let mut moved = printer;
+        moved.printer.host = "127.0.0.3".into();
+        service
+            .start(moved, app.handle().clone(), Arc::clone(&app_state))
             .await
             .expect("the retry starts");
 
