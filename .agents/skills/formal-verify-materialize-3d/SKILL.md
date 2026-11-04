@@ -43,6 +43,8 @@ TLA2TOOLS_JAR=/path/to/tla2tools.jar .agents/skills/formal-verify-materialize-3d
 
 On a machine where installing is allowed, the jar is the `tla2tools.jar` asset of the v1.7.4 release at `https://github.com/tlaplus/tlaplus/releases/tag/v1.7.4`. The script refuses any other jar by its SHA-256. Without TLC, say plainly that the models were not checked. Do not treat that as a pass.
 
+CI runs both commands in `.github/workflows/formal-verification.yml` on each pull request and push to `main` that changes a file in the `git diff` list below or this skill. Keep that workflow's `paths` list the same as the `git diff` list.
+
 Exit 0 means every verdict matches the recorded one. Exit 1 means at least one differs. Exit 2 means TLC could not run. The whole run takes about a minute and a half. The last line names the folder that holds each check's TLC output, `<check>.out`.
 
 `--mutants` runs each broken variant of the code, named by `Mutant` in `UpdateRestart.tla`. Each one must fail its check. This shows that the passing checks can fail.

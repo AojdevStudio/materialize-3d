@@ -1,0 +1,76 @@
+# TLC model check of the update restart and the print queue's auto-send. The
+# models, the checks, and the code they describe live in
+# .agents/skills/formal-verify-materialize-3d/SKILL.md.
+#
+# It runs only when a covered source file, the skill, or this file changes. The
+# source list is the one in the skill's "Does my change touch the models?"
+# section. Keep the two lists the same.
+#
+# check.sh exits 0 when every verdict matches the one recorded in its CHECKS
+# table, so the known findings F1 to F3, recorded as `fails`, pass. A finding
+# that a code change fixes, or a passing check that starts to fail, fails the job.
+#
+# The job runs on the Linux runner and carries ci.yml's guard against forks and
+# Dependabot (docs/ci-runners.md).
+name: Formal verification
+
+on:
+  pull_request:
+    paths: &covered
+      - src-tauri/src/fabrication/build_gate.rs
+      - src-tauri/src/updater.rs
+      - src-tauri/src/print_queue.rs
+      - src-tauri/src/printer/mod.rs
+      - src-tauri/src/commands.rs
+      - src-tauri/src/fabrication/pipeline.rs
+      - .agents/skills/formal-verify-materialize-3d/**
+      - .github/workflows/formal-verification.yml
+  push:
+    branches: [main]
+    paths: *covered
+
+concurrency:
+  group: formal-verification-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  tlc:
+    name: TLA+ models match the code
+    if: >-
+      github.actor != 'dependabot[bot]' && (
+      github.event_name == 'push' ||
+      (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+      && github.event.pull_request.user.login != 'dependabot[bot]'))
+    runs-on: [self-hosted, Linux, X64, m3d-linux-kvm]
+    # Both runs take about 20 seconds once Java and the jar sit in the runner's tool cache.
+    timeout-minutes: 10
+    env:
+      CHECK: .agents/skills/formal-verify-materialize-3d/scripts/check.sh
+    steps:
+      - uses: actions/checkout@v4
+      # The runner host has no Java. setup-java keeps the JDK in the runner's tool cache and reuses it.
+      - uses: actions/setup-java@v6.1.0
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Install TLC 2.19 (tla2tools.jar v1.7.4)
+        run: |
+          sha=$(sed -n 's/^TLC_SHA256=//p' "$CHECK")
+          dir="$RUNNER_TOOL_CACHE/tla2tools/1.7.4"
+          jar="$dir/tla2tools.jar"
+          if ! echo "$sha  $jar" | sha256sum --check --status; then
+            mkdir -p "$dir"
+            tmp=$(mktemp "$dir/download.XXXXXX")
+            curl -fsSL --retry 3 -o "$tmp" https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar
+            echo "$sha  $tmp" | sha256sum --check
+            mv "$tmp" "$jar"
+          fi
+          echo "TLA2TOOLS_JAR=$jar" >>"$GITHUB_ENV"
+      # check.sh writes TLC's output and state under TMPDIR. The runner empties RUNNER_TEMP after each job.
+      - name: Each check's verdict matches the recorded one
+        run: TMPDIR="$RUNNER_TEMP" $CHECK
+      - name: Each broken variant fails its check
+        run: TMPDIR="$RUNNER_TEMP" $CHECK --mutants
