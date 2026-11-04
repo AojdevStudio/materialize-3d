@@ -536,8 +536,9 @@ impl PrinterService {
     }
 
     /// Update the connection state and emit a change event. Writes nothing and
-    /// returns false once a disconnect asked the loop to stop. The check and the
-    /// write share one lock, so a disconnect cannot land between them.
+    /// returns false once a disconnect asked the loop to stop. The check and
+    /// both writes hold the service lock, so a disconnect cannot land between
+    /// them.
     async fn set_state<R: Runtime>(
         &self,
         new_state: ConnectionState,
@@ -545,28 +546,26 @@ impl PrinterService {
         app_state: &AppState,
         reason: &str,
     ) -> bool {
-        let old_state = {
-            let mut inner = self.inner.lock().await;
-            if inner.shutdown {
-                return false;
-            }
-            let old = inner.connection_state.clone();
-            inner.connection_state = new_state.clone();
-            old
-        };
-
         let is_connected = matches!(
             new_state,
             ConnectionState::ConnectedMqtt | ConnectionState::ConnectedCloud
         );
 
-        if let Ok(mut printer) = app_state.printer.lock() {
-            printer.connection_state = new_state.clone();
-            printer.is_connected = is_connected;
-            if !is_connected {
-                printer.connection_type = None;
+        let old_state = {
+            let mut inner = self.inner.lock().await;
+            if inner.shutdown {
+                return false;
             }
-        }
+            let old = std::mem::replace(&mut inner.connection_state, new_state.clone());
+            if let Ok(mut printer) = app_state.printer.lock() {
+                printer.connection_state = new_state.clone();
+                printer.is_connected = is_connected;
+                if !is_connected {
+                    printer.connection_type = None;
+                }
+            }
+            old
+        };
 
         log::info!(
             "connection state: {old_state:?} → {new_state:?} ({reason})"
@@ -578,7 +577,8 @@ impl PrinterService {
 
     /// Transition to a connected state with the appropriate connection type.
     /// After transitioning, spawns a background task to auto-send any pending
-    /// queue jobs if the printer is IDLE. Does nothing after a disconnect.
+    /// queue jobs if the printer is IDLE. Does nothing after a disconnect, and
+    /// holds the service lock until the trigger is spawned, like `set_state`.
     async fn set_connected<R: Runtime>(
         &self,
         state: ConnectionState,
@@ -586,17 +586,14 @@ impl PrinterService {
         app_handle: &AppHandle<R>,
         app_state: &AppState,
     ) {
-        let (printer_host, printer_name) = {
-            let mut inner = self.inner.lock().await;
-            if inner.shutdown {
-                return;
-            }
-            inner.connection_state = state.clone();
-            inner.reconnect_count = 0;
-            let host = inner.credentials.as_ref().map(|c| c.printer.host.clone());
-            let name = inner.credentials.as_ref().map(|c| c.printer.name.clone());
-            (host, name)
-        };
+        let mut inner = self.inner.lock().await;
+        if inner.shutdown {
+            return;
+        }
+        inner.connection_state = state.clone();
+        inner.reconnect_count = 0;
+        let printer_host = inner.credentials.as_ref().map(|c| c.printer.host.clone());
+        let printer_name = inner.credentials.as_ref().map(|c| c.printer.name.clone());
 
         if let Ok(mut printer) = app_state.printer.lock() {
             printer.connection_state = state.clone();
@@ -617,9 +614,6 @@ impl PrinterService {
             }
         }
 
-        log::info!("connected via {conn_type:?}");
-        let _ = app_state.emit_state_change(app_handle, "printer:changed");
-
         // Fire-and-forget: auto-send first pending queue job if printer is IDLE
         let service = self.clone();
         let app_handle_clone = app_handle.clone();
@@ -631,6 +625,10 @@ impl PrinterService {
                 log::error!("auto-send failed: {e}");
             }
         });
+        drop(inner);
+
+        log::info!("connected via {conn_type:?}");
+        let _ = app_state.emit_state_change(app_handle, "printer:changed");
     }
 }
 
