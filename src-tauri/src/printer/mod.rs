@@ -52,6 +52,9 @@ struct PrinterServiceInner {
     reconnect_count: u32,
     local_failure_count: u32,
     connection: ConnectionId,
+    /// Set on each connect. The next status report advances the print queue
+    /// even when it repeats the IDLE the app already holds.
+    awaiting_first_report: bool,
     connection_task: Option<tokio::task::JoinHandle<()>>,
 }
 
@@ -111,6 +114,7 @@ impl PrinterService {
                 reconnect_count: 0,
                 local_failure_count: 0,
                 connection: ConnectionId::default(),
+                awaiting_first_report: false,
                 connection_task: None,
             })),
         }
@@ -531,9 +535,10 @@ impl PrinterService {
         };
 
         if let Some(ref status) = report.print {
-            let Some(_connection) = self.lock_for(id).await else {
+            let Some(mut connection) = self.lock_for(id).await else {
                 return;
             };
+            let first_report = std::mem::take(&mut connection.awaiting_first_report);
 
             // ── Read previous gcode_state before merge ──
             let prev_gcode_state = app_state
@@ -563,6 +568,10 @@ impl PrinterService {
                 .ok()
                 .and_then(|p| p.gcode_state.clone());
 
+            // ── Each connect, and each change to IDLE, advances the queue once ──
+            let advance_queue = curr_gcode_state.as_deref() == Some("IDLE")
+                && (first_report || prev_gcode_state.as_deref() != Some("IDLE"));
+
             // ── Dispatch transition if state actually changed ──
             if let Some(ref curr) = curr_gcode_state {
                 if prev_gcode_state.as_deref() != Some(curr.as_str()) {
@@ -571,31 +580,24 @@ impl PrinterService {
                         prev_gcode_state,
                         curr
                     );
-                    let first_report = prev_gcode_state.is_none();
                     handle_gcode_transition(
                         prev_gcode_state,
                         curr.clone(),
                         app_handle,
                         app_state,
                     );
-
-                    // ── IDLE transition: advance the print queue ──
-                    // A connection's first report is not a transition. The
-                    // connect handler's trigger owns it, and a second run here
-                    // would upload the job twice.
-                    if curr == "IDLE" && !first_report {
-                        log::info!("queue: advancing to next job after IDLE transition");
-                        let service = self.clone();
-                        let app_handle_clone = app_handle.clone();
-                        tokio::spawn(async move {
-                            if let Err(e) =
-                                auto_send_pending_job(&service, id, &app_handle_clone).await
-                            {
-                                log::error!("auto-send on IDLE transition failed: {e}");
-                            }
-                        });
-                    }
                 }
+            }
+
+            if advance_queue {
+                log::info!("queue: advancing to the next job, printer is IDLE");
+                let service = self.clone();
+                let app_handle_clone = app_handle.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = auto_send_pending_job(&service, id, &app_handle_clone).await {
+                        log::error!("auto-send failed: {e}");
+                    }
+                });
             }
         }
     }
@@ -640,10 +642,8 @@ impl PrinterService {
     }
 
     /// Transition to a connected state with the appropriate connection type.
-    /// After transitioning, spawns a background task to auto-send any pending
-    /// queue jobs if the printer is IDLE. Does nothing once connection `id`
-    /// ended, and holds the service lock until the trigger is spawned, like
-    /// `set_state`.
+    /// The first status report after it advances the print queue. Does nothing
+    /// once connection `id` ended, and holds the service lock, like `set_state`.
     async fn set_connected<R: Runtime>(
         &self,
         id: ConnectionId,
@@ -657,6 +657,7 @@ impl PrinterService {
         };
         inner.connection_state = state.clone();
         inner.reconnect_count = 0;
+        inner.awaiting_first_report = true;
         let printer_host = inner.credentials.as_ref().map(|c| c.printer.host.clone());
         let printer_name = inner.credentials.as_ref().map(|c| c.printer.name.clone());
 
@@ -679,17 +680,6 @@ impl PrinterService {
             }
         }
 
-        // Fire-and-forget: auto-send first pending queue job if printer is IDLE
-        let service = self.clone();
-        let app_handle_clone = app_handle.clone();
-        tokio::spawn(async move {
-            // Wait 2s for pushall state to arrive
-            tokio::time::sleep(Duration::from_secs(2)).await;
-
-            if let Err(e) = auto_send_pending_job(&service, id, &app_handle_clone).await {
-                log::error!("auto-send failed: {e}");
-            }
-        });
         drop(inner);
 
         log::info!("connected via {conn_type:?}");
@@ -1938,8 +1928,13 @@ mod tests {
         );
     }
 
-    /// Printer A at 127.0.0.2 starts with `jobs` queued and reaches ConnAck,
-    /// which schedules its 2 s auto-send.
+    fn printer_a() -> BambuCredentials {
+        let mut printer = loopback_printer("01P00A000000000");
+        printer.printer.host = "127.0.0.2".into();
+        printer
+    }
+
+    /// Printer A at 127.0.0.2 starts with `jobs` queued and reaches ConnAck.
     async fn connect_printer_a(
         jobs: usize,
     ) -> (tauri::App<tauri::test::MockRuntime>, Arc<AppState>, PrinterService, ConnectionId) {
@@ -1966,10 +1961,8 @@ mod tests {
         }
 
         let service = PrinterService::new();
-        let mut printer_a = loopback_printer("01P00A000000000");
-        printer_a.printer.host = "127.0.0.2".into();
         service
-            .start(printer_a, app.handle().clone(), Arc::clone(&app_state))
+            .start(printer_a(), app.handle().clone(), Arc::clone(&app_state))
             .await
             .expect("printer A starts");
         let a = service.inner.lock().await.connection;
@@ -1985,11 +1978,13 @@ mod tests {
         (app, app_state, service, a)
     }
 
-    /// Printer A reports IDLE with one job queued, then the user switches to
-    /// printer B at 127.0.0.1 before A's 2 s auto-send wakes.
+    /// Printer A reports IDLE with one job queued, which spawns its auto-send,
+    /// then the user switches to printer B at 127.0.0.1 before that run starts.
     async fn switch_while_auto_send_waits() -> (tauri::App<tauri::test::MockRuntime>, Arc<AppState>) {
-        let (app, app_state, service, _) = connect_printer_a(1).await;
-        app_state.printer.lock().unwrap().gcode_state = Some("IDLE".into());
+        let (app, app_state, service, a) = connect_printer_a(1).await;
+        service
+            .handle_publish(a, br#"{"print":{"gcode_state":"IDLE"}}"#, app.handle(), &app_state)
+            .await;
 
         service.disconnect(app.handle(), &app_state).await;
         service
@@ -2036,14 +2031,8 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn a_connect_to_an_idle_printer_sends_one_queued_job() {
-        let (app, app_state, service, a) = connect_printer_a(2).await;
-        service
-            .handle_publish(a, br#"{"print":{"gcode_state":"IDLE"}}"#, app.handle(), &app_state)
-            .await;
+    async fn assert_one_run_sent_job_1_to_printer_a(app_state: &AppState) {
         tokio::time::sleep(Duration::from_secs(3)).await;
-
         let queue = app_state.print_queue.lock().unwrap();
         assert!(
             matches!(&queue[0].status, QueueStatus::Failed { reason } if reason.contains("127.0.0.2:990")),
@@ -2051,6 +2040,62 @@ mod tests {
             queue[0].status
         );
         assert_eq!(queue[1].status, QueueStatus::Pending, "a second run sent job 2 as well");
+    }
+
+    #[tokio::test]
+    async fn a_connect_sends_one_queued_job_when_a_slow_first_report_arrives() {
+        let (app, app_state, service, a) = connect_printer_a(2).await;
+        tokio::time::sleep(Duration::from_millis(2500)).await;
+        service
+            .handle_publish(a, br#"{"print":{"gcode_state":"IDLE"}}"#, app.handle(), &app_state)
+            .await;
+
+        assert_one_run_sent_job_1_to_printer_a(&app_state).await;
+    }
+
+    #[tokio::test]
+    async fn a_reconnect_to_a_printer_still_idle_sends_one_queued_job() {
+        let (app, app_state, service, a) = connect_printer_a(2).await;
+        app_state.printer.lock().unwrap().gcode_state = Some("IDLE".into());
+        service
+            .set_state(a, ConnectionState::Reconnecting, app.handle(), &app_state, "connection lost")
+            .await;
+        service
+            .set_connected(a, ConnectionState::ConnectedMqtt, ConnectionType::Mqtt, app.handle(), &app_state)
+            .await;
+        service
+            .handle_publish(a, br#"{"print":{"gcode_state":"IDLE"}}"#, app.handle(), &app_state)
+            .await;
+
+        assert_one_run_sent_job_1_to_printer_a(&app_state).await;
+    }
+
+    #[tokio::test]
+    async fn a_retry_for_the_same_printer_sends_one_queued_job() {
+        let (app, app_state, service, a) = connect_printer_a(2).await;
+        app_state.printer.lock().unwrap().gcode_state = Some("RUNNING".into());
+        service
+            .set_state(a, ConnectionState::Offline, app.handle(), &app_state, "went offline")
+            .await;
+        service
+            .start(printer_a(), app.handle().clone(), Arc::clone(&app_state))
+            .await
+            .expect("the retry starts");
+        let retry = service.inner.lock().await.connection;
+        service
+            .set_connected(
+                retry,
+                ConnectionState::ConnectedMqtt,
+                ConnectionType::Mqtt,
+                app.handle(),
+                &app_state,
+            )
+            .await;
+        service
+            .handle_publish(retry, br#"{"print":{"gcode_state":"IDLE"}}"#, app.handle(), &app_state)
+            .await;
+
+        assert_one_run_sent_job_1_to_printer_a(&app_state).await;
     }
 
     #[tokio::test]

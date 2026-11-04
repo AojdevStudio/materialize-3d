@@ -30,7 +30,7 @@ These are failures of the current code, not of the models. Do not weaken a prope
 
 - **F1.** `persist_queue` (`src-tauri/src/print_queue.rs`) holds the queue lock across `std::fs::write`, which truncates the file and then writes it. The updater holds that lock only for the backup. Counterexample: the backup and the install finish. Then the printer's auto-send calls `update_job_status`, which truncates `print_queue.json`. Then `app.restart()` calls `process::exit`. A failed write leaves the same partial file and drops the lock, so the restart need not even race a write. At the next launch, `load_queue` cannot parse the file, logs a warning, and starts with an empty queue. The backup still holds the queue as it was at the backup.
 - **F2.** `BuildGate::close_when_idle` waits for `running == 0` but does not stop new builds while it waits. Counterexample: the updater reaches its idle check, a build enters first, the check sees it and sleeps, the build ends and wakes the updater, and another build enters before the next check. This repeats with no limit. Two builds that overlap in turn hold the update off the same way.
-- **F3.** `auto_send_pending_job` (`src-tauri/src/printer/mod.rs`) clones the first Pending job under the queue lock. It marks the job Submitted only after the upload and the MQTT `project_file` command. The IDLE transition and the connect handler each spawn a run, and nothing stops two runs overlapping. Counterexample: run A picks job 1, uploads it, and sends it. Run B still reads IDLE, picks job 1, which is still Pending, uploads it, and sends it again. The model does not say what the printer does with the second command.
+- **F3.** `auto_send_pending_job` (`src-tauri/src/printer/mod.rs`) clones the first Pending job under the queue lock. It marks the job Submitted only after the upload and the MQTT `project_file` command. The status handler spawns a run on the first report after each connect and on each change to IDLE, and nothing stops two runs overlapping, for example after a reconnect while an earlier run is still uploading. Counterexample: run A picks job 1, uploads it, and sends it. Run B still reads IDLE, picks job 1, which is still Pending, uploads it, and sends it again. The model does not say what the printer does with the second command.
 
 ## Run
 
@@ -75,7 +75,7 @@ Then read each covered function that changed. Also look for new code that reache
 | `Reopen` | `Drop for Closed`, on each error return of `install_when_idle`. |
 | `Click`, `DownloadFails`, `BackupOk`, `BackupFails`, `InstallOk`, `InstallFails`, `Exit` | `update_install` and `install_when_idle` in `updater.rs`, then Tauri's `AppHandle::restart`, which ends in `process::exit(0)`. |
 | `WriteBegin`, `WriteEnd`, `WriteFails` | `persist_queue` in `print_queue.rs`. |
-| `CheckIdle`, `Pick`, `UploadOk`, `UploadFails`, `UploadAborts`, `SendOk`, `SendFails`, `SendAborts`, `Mark` | `auto_send_pending_job` in `printer/mod.rs`. Its two `tokio::spawn` triggers are in the status handler and the connect handler. |
+| `CheckIdle`, `Pick`, `UploadOk`, `UploadFails`, `UploadAborts`, `SendOk`, `SendFails`, `SendAborts`, `Mark` | `auto_send_pending_job` in `printer/mod.rs`. Its one `tokio::spawn` trigger is in the status handler, `handle_publish`. |
 
 Record new hashes only after you confirm that the models describe the code at HEAD:
 

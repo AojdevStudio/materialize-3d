@@ -1,9 +1,10 @@
 ----------------------------- MODULE AutoSend -----------------------------
 (***************************************************************************)
 (* The print queue's auto-send: src-tauri/src/printer/mod.rs               *)
-(* auto_send_pending_job. Two triggers spawn it as its own tokio task:     *)
-(* the IDLE gcode_state transition in the status handler, and the connect  *)
-(* handler 2 s after it connects. Nothing stops two runs overlapping.      *)
+(* auto_send_pending_job. The status handler spawns each run as its own    *)
+(* tokio task, on the first report after each connect and on each change   *)
+(* to IDLE. Nothing stops two runs overlapping, for example a reconnect    *)
+(* while an earlier run is still uploading.                                *)
 (*                                                                         *)
 (* Each action is one indivisible step of one run:                         *)
 (*   CheckIdle  lock the service for the run's connection, read            *)
