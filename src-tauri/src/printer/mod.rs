@@ -1943,22 +1943,29 @@ mod tests {
         printer
     }
 
+    fn queued_3mf() -> String {
+        let threemf = std::env::temp_dir().join(format!("m3d-auto-send-{}.3mf", uuid::Uuid::new_v4()));
+        std::fs::write(&threemf, b"3mf").expect("write the queued 3MF");
+        threemf.to_string_lossy().into_owned()
+    }
+
     /// Printer A at localhost starts with `jobs` queued and reaches ConnAck.
     async fn connect_printer_a(
         jobs: usize,
     ) -> (tauri::App<tauri::test::MockRuntime>, Arc<AppState>, PrinterService, ConnectionId) {
         use tauri::test::{mock_builder, mock_context, noop_assets};
 
-        let app = mock_builder().build(mock_context(noop_assets())).expect("mock app");
+        let app = mock_builder()
+            .invoke_handler(tauri::generate_handler![crate::commands::add_to_queue])
+            .build(mock_context(noop_assets()))
+            .expect("mock app");
         let app_state = Arc::new(AppState::default());
         app.manage(Arc::clone(&app_state));
         for n in 1..=jobs {
-            let threemf = std::env::temp_dir().join(format!("m3d-auto-send-{}.3mf", uuid::Uuid::new_v4()));
-            std::fs::write(&threemf, b"3mf").expect("write the queued 3MF");
             app_state.print_queue.lock().unwrap().push(crate::state::QueuedJob {
                 id: format!("job-{n}"),
                 model_path: String::new(),
-                threemf_path: threemf.to_string_lossy().into_owned(),
+                threemf_path: queued_3mf(),
                 model_name: "cube".into(),
                 created_at: chrono::Utc::now(),
                 status: QueueStatus::Pending,
@@ -1970,6 +1977,7 @@ mod tests {
         }
 
         let service = PrinterService::new();
+        app.manage(service.clone());
         service
             .start(printer_a(), app.handle().clone(), Arc::clone(&app_state))
             .await
@@ -2132,6 +2140,73 @@ mod tests {
             .await;
 
         assert_one_run_sent_job_1_to_printer_a(&app_state).await;
+    }
+
+    /// Adds one job the way the window does, through `add_to_queue`.
+    fn add_to_queue_from_the_window(app: &tauri::App<tauri::test::MockRuntime>) {
+        use tauri::ipc::{CallbackFn, InvokeBody};
+        use tauri::webview::InvokeRequest;
+
+        let webview = tauri::WebviewWindowBuilder::new(app, "main", Default::default())
+            .build()
+            .expect("webview");
+        let body = serde_json::json!({ "modelPath": "", "threemfPath": queued_3mf(), "modelName": "cube" });
+        tauri::test::get_ipc_response(
+            &webview,
+            InvokeRequest {
+                cmd: "add_to_queue".into(),
+                callback: CallbackFn(0),
+                error: CallbackFn(1),
+                url: "tauri://localhost".parse().expect("url"),
+                body: InvokeBody::Json(body),
+                headers: Default::default(),
+                invoke_key: tauri::test::INVOKE_KEY.to_string(),
+            },
+        )
+        .expect("add_to_queue");
+    }
+
+    #[tokio::test]
+    async fn a_job_added_while_the_printer_is_idle_goes_at_once() {
+        let (app, app_state, service, a) = connect_printer_a(0).await;
+        service
+            .handle_publish(a, br#"{"print":{"gcode_state":"IDLE"}}"#, app.handle(), &app_state)
+            .await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        add_to_queue_from_the_window(&app);
+
+        let status = first_job_after_auto_send(&app_state).await;
+        assert!(
+            matches!(&status, QueueStatus::Failed { reason } if reason.contains("localhost:990")),
+            "the job went to printer A without waiting for another IDLE, got {status:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_job_added_before_the_first_report_waits_for_it() {
+        let (app, app_state, _service, _a) = connect_printer_a(0).await;
+        app_state.printer.lock().unwrap().gcode_state = Some("IDLE".into());
+        add_to_queue_from_the_window(&app);
+
+        assert_eq!(
+            first_job_after_auto_send(&app_state).await,
+            QueueStatus::Pending,
+            "no report from this connection said IDLE"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_name_shown_belongs_to_the_printer_the_service_runs() {
+        let (app, app_state, service, _a) = connect_printer_a(0).await;
+        service.disconnect(app.handle(), &app_state).await;
+        let mut b = loopback_printer("01P00B000000000");
+        b.printer.name = "Printer B".into();
+        service
+            .start(b, app.handle().clone(), Arc::clone(&app_state))
+            .await
+            .expect("printer B starts");
+
+        assert_eq!(app_state.printer.lock().unwrap().name.as_deref(), Some("Printer B"));
     }
 
     #[tokio::test]
