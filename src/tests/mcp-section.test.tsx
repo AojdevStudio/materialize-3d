@@ -1,5 +1,5 @@
-import { describe, expect, it, vi, beforeEach } from 'vitest'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi, beforeEach } from 'vitest'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 
 const invokeMock = vi.fn()
 vi.mock('@tauri-apps/api/core', () => ({ invoke: (...args: unknown[]) => invokeMock(...args) }))
@@ -7,6 +7,8 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke: (...args: unknown[]) => invokeM
 import { McpSection, claudeMcpAddCommand } from '../components/McpSection'
 
 describe('McpSection', () => {
+  afterEach(cleanup)
+
   beforeEach(() => {
     invokeMock.mockReset()
   })
@@ -24,6 +26,16 @@ describe('McpSection', () => {
     fireEvent.click(toggle)
     await waitFor(() => expect(screen.getByTestId('mcp-url').textContent).toBe('http://127.0.0.1:45373/mcp'))
     expect(invokeMock).toHaveBeenCalledWith('mcp_set_enabled', { enabled: true })
+  })
+
+  it('tells the person what external agents can do and what stays with them', async () => {
+    invokeMock.mockResolvedValue({ running: false, url: null })
+    render(<McpSection active />)
+    expect(
+      await screen.findByText(
+        'External agents can build and revise signs, import parts, and read designs and printer status. Only you can approve, export, or print.',
+      ),
+    ).toBeDefined()
   })
 
   it('copies a Claude Code command carrying the token only on request', async () => {
