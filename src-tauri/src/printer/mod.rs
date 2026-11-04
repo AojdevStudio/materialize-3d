@@ -1135,6 +1135,10 @@ async fn auto_send_pending_job<R: Runtime>(
             }
             return Ok(());
         }
+        if cause == RunCause::OwedTry && inner.owed_runs == 0 {
+            log::debug!("auto-send: no try is owed any more, skipping");
+            return Ok(());
+        }
         let first_pending = app_state
             .print_queue
             .lock()
@@ -1153,7 +1157,7 @@ async fn auto_send_pending_job<R: Runtime>(
             .ok_or_else(|| "no credentials available for auto-send".to_string())?;
         inner.queue_held = true;
         if cause == RunCause::OwedTry {
-            inner.owed_runs = inner.owed_runs.saturating_sub(1);
+            inner.owed_runs -= 1;
         }
         (creds, job)
     };
