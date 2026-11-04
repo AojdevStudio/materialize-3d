@@ -52,8 +52,9 @@ struct PrinterServiceInner {
     reconnect_count: u32,
     local_failure_count: u32,
     connection: ConnectionId,
-    /// Set on each connect. The next status report advances the print queue
-    /// even when it repeats the IDLE the app already holds.
+    /// Set on each connect. The next report that states `gcode_state`
+    /// advances the print queue when it says IDLE, even if the app already
+    /// holds IDLE.
     awaiting_first_report: bool,
     connection_task: Option<tokio::task::JoinHandle<()>>,
 }
@@ -157,9 +158,12 @@ impl PrinterService {
             }
         }
         let id = inner.end_connection();
-        // A retry for the same printer keeps its state, so a print that
-        // finished while it was offline still reads as RUNNING to FINISH.
-        if !same_printer {
+        // A retry for the same printer, even at a new host, keeps its state, so
+        // a print that finished while it was offline still reads as RUNNING to
+        // FINISH.
+        let same_serial = inner.credentials.as_ref().map(|c| &c.printer.device_id)
+            == Some(&creds.printer.device_id);
+        if !same_serial {
             drop_print_state(&app_state);
         }
         inner.mqtt_client = None;
@@ -538,7 +542,8 @@ impl PrinterService {
             let Some(mut connection) = self.lock_for(id).await else {
                 return;
             };
-            let first_report = std::mem::take(&mut connection.awaiting_first_report);
+            let first_report = status.gcode_state.is_some()
+                && std::mem::take(&mut connection.awaiting_first_report);
 
             // ── Read previous gcode_state before merge ──
             let prev_gcode_state = app_state
@@ -568,8 +573,10 @@ impl PrinterService {
                 .ok()
                 .and_then(|p| p.gcode_state.clone());
 
-            // ── Each connect, and each change to IDLE, advances the queue once ──
-            let advance_queue = curr_gcode_state.as_deref() == Some("IDLE")
+            // ── A report that itself says IDLE advances the queue, once per
+            // connect and once per change to IDLE. The IDLE the app holds may
+            // be older than this connection's reports. ──
+            let advance_queue = status.gcode_state.as_deref() == Some("IDLE")
                 && (first_report || prev_gcode_state.as_deref() != Some("IDLE"));
 
             // ── Dispatch transition if state actually changed ──
@@ -2062,6 +2069,9 @@ mod tests {
             .await;
         service
             .set_connected(a, ConnectionState::ConnectedMqtt, ConnectionType::Mqtt, app.handle(), &app_state)
+            .await;
+        service
+            .handle_publish(a, br#"{"print":{"nozzle_temper":210.0}}"#, app.handle(), &app_state)
             .await;
         service
             .handle_publish(a, br#"{"print":{"gcode_state":"IDLE"}}"#, app.handle(), &app_state)
