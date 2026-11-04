@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { create } from 'zustand'
 import { PROVIDERS, PROVIDER_LABELS, useAgentStore } from '../stores/agent'
@@ -48,6 +48,11 @@ interface PrinterFormData {
   deviceId: string
 }
 
+interface SavedPrinterConfig {
+  id: string
+  name: string
+}
+
 // ── Constants ──
 
 const STEPS = ['Welcome', 'LLM Provider', 'Bambu Printer', 'Complete'] as const
@@ -86,6 +91,9 @@ export default function OnboardingWizard({ onComplete }: OnboardingWizardProps) 
     host: '',
     deviceId: '',
   })
+
+  /** The config the last Test Connection saved, so a retry of the same form reuses it. */
+  const savedPrinter = useRef<{ form: PrinterFormData; config: SavedPrinterConfig } | null>(null)
 
   // ── Step navigation ──
 
@@ -188,17 +196,24 @@ export default function OnboardingWizard({ onComplete }: OnboardingWizardProps) 
 
     try {
       // Save printer form data as a PrinterConfig (persists to SQLite + Keychain)
-      const config = await invoke<{
-        id: string
-        name: string
-        host: string
-        serial: string
-      }>('add_printer_config', {
-        name: printerForm.host || 'My Printer',
-        host: printerForm.host,
-        serial: printerForm.deviceId,
-        accessCode: printerForm.accessCode,
-      })
+      const saved = savedPrinter.current
+      let config: SavedPrinterConfig
+      if (
+        saved &&
+        saved.form.host === printerForm.host &&
+        saved.form.deviceId === printerForm.deviceId &&
+        saved.form.accessCode === printerForm.accessCode
+      ) {
+        config = saved.config
+      } else {
+        config = await invoke<SavedPrinterConfig>('add_printer_config', {
+          name: printerForm.host || 'My Printer',
+          host: printerForm.host,
+          serial: printerForm.deviceId,
+          accessCode: printerForm.accessCode,
+        })
+        savedPrinter.current = { form: printerForm, config }
+      }
 
       // Set as default printer for auto-connect
       await invoke('set_default_printer', { id: config.id })
@@ -232,7 +247,7 @@ export default function OnboardingWizard({ onComplete }: OnboardingWizardProps) 
         }))
       }
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Connection failed'
+      const msg = typeof err === 'string' ? err : err instanceof Error ? err.message : 'Connection failed'
       setPrinter((prev) => ({
         ...prev,
         loading: false,

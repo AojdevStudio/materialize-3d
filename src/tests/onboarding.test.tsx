@@ -377,6 +377,44 @@ describe('OnboardingWizard', () => {
     expect(invokeMock.mock.calls.filter(([cmd]) => cmd === 'add_printer_config')).toHaveLength(1)
   })
 
+  it('a second Test Connection on the same setup reuses the saved printer and shows the backend error', async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      switch (cmd) {
+        case 'add_printer_config':
+          return { id: 'printer-test', name: 'Test printer', host: '192.0.2.10', serial: 'TEST-SERIAL' }
+        case 'set_default_printer':
+          return undefined
+        case 'connect_printer_by_config':
+          throw 'printer-config:connect failed: host unreachable'
+        default:
+          throw new Error(`Unknown command: ${cmd}`)
+      }
+    })
+    useOnboardingStore.getState().setStep(2)
+    await act(async () => {
+      render(<OnboardingWizard onComplete={vi.fn()} />)
+    })
+    fireEvent.change(screen.getByTestId('input-host'), { target: { value: '192.0.2.10' } })
+    fireEvent.change(screen.getByTestId('input-access-code'), { target: { value: '12345678' } })
+    fireEvent.change(screen.getByTestId('input-device-id'), { target: { value: 'TEST-SERIAL' } })
+
+    for (let click = 0; click < 2; click++) {
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('btn-test-connection'))
+      })
+    }
+
+    const calls = (name: string) => invokeMock.mock.calls.filter(([cmd]) => cmd === name)
+    expect(calls('add_printer_config')).toHaveLength(1)
+    expect(calls('connect_printer_by_config')).toEqual([
+      ['connect_printer_by_config', { configId: 'printer-test' }],
+      ['connect_printer_by_config', { configId: 'printer-test' }],
+    ])
+    expect(screen.getByTestId('connection-result').textContent).toBe(
+      'printer-config:connect failed: host unreachable',
+    )
+  })
+
   it('"Launch App" on Complete step calls onComplete', async () => {
     const onComplete = vi.fn()
     useOnboardingStore.getState().setStep(3)
