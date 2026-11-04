@@ -433,13 +433,16 @@ pub async fn start_print(
 
 // ─── Print Queue Commands ─────────────────────────────────────────────────────
 
-/// Add a job to the print queue. Returns the created job.
+/// Add a job to the print queue. It goes to the printer at once when the
+/// printer already reported IDLE. Returns the created job.
 #[tauri::command]
-pub fn add_to_queue(
+pub async fn add_to_queue<R: Runtime>(
     model_path: String,
     threemf_path: String,
     model_name: String,
+    app: AppHandle<R>,
     state: State<'_, Arc<AppState>>,
+    service: State<'_, PrinterService>,
 ) -> Result<QueuedJob, String> {
     let job = QueuedJob {
         id: uuid_v4(),
@@ -455,6 +458,7 @@ pub fn add_to_queue(
     };
 
     print_queue::add_job(&state, job.clone())?;
+    service.advance_queue(&app).await;
     Ok(job)
 }
 
@@ -1262,22 +1266,13 @@ pub async fn connect_printer_by_config(
         *selected = Some(config_id.clone());
     }
 
-    // 6. Set printer name from config before connection starts
-    {
-        let mut printer = state
-            .printer
-            .lock()
-            .map_err(|e| format!("failed to lock printer state: {e}"))?;
-        printer.name = Some(config.name.clone());
-    }
-
-    // 7. Start the printer service
+    // 6. Start the printer service. It shows the printer's name.
     service
         .start(creds, app.clone(), Arc::clone(&*state))
         .await
         .map_err(|e| e.to_string())?;
 
-    // 8. Emit events
+    // 7. Emit events
     emit_printer_configs_changed(&app, &state);
     let _ = state.emit_state_change(&app, "printer:changed");
 
@@ -1380,22 +1375,13 @@ pub async fn connect_printer_by_config_inner<R: Runtime>(
         *selected = Some(config_id.to_string());
     }
 
-    // 6. Set printer name from config
-    {
-        let mut printer = state
-            .printer
-            .lock()
-            .map_err(|e| format!("failed to lock printer state: {e}"))?;
-        printer.name = Some(config.name.clone());
-    }
-
-    // 7. Start the printer service
+    // 6. Start the printer service. It shows the printer's name.
     service
         .start(creds, app.clone(), Arc::clone(state))
         .await
         .map_err(|e| e.to_string())?;
 
-    // 8. Emit events
+    // 7. Emit events
     emit_printer_configs_changed(app, state);
     let _ = state.emit_state_change(app, "printer:changed");
 

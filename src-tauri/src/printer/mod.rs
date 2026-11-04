@@ -21,6 +21,9 @@ use crate::state::{
 const LOCAL_FAILURE_THRESHOLD: u32 = 3;
 /// Maximum reconnect backoff in seconds.
 const MAX_BACKOFF_SECS: u64 = 30;
+/// Bounds each FTPS connect, read, and write. An upload holds the print queue,
+/// so a printer that accepts and then goes silent must not hold it for good.
+const FTPS_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Errors from the PrinterService.
 #[derive(Debug, thiserror::Error)]
@@ -44,6 +47,29 @@ pub enum PrinterError {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct ConnectionId(u64);
 
+/// Whether the printer on the current connection can take the next queued
+/// job. Only this connection's reports and sends move it, never the state the
+/// app held before.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Readiness {
+    /// Set on each connect, and by a report of any state but IDLE.
+    WaitingForIdle,
+    /// The printer reported IDLE.
+    Idle,
+    /// The app sent a job while the printer was IDLE. An IDLE it reports
+    /// before it starts that job sends nothing more.
+    JobSent,
+}
+
+/// Why an auto-send run started.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RunCause {
+    /// An IDLE report or an added job.
+    Trigger,
+    /// The run that held the queue ended while tries were owed.
+    OwedTry,
+}
+
 /// Inner state of the printer service, protected by an async mutex.
 struct PrinterServiceInner {
     credentials: Option<BambuCredentials>,
@@ -52,15 +78,19 @@ struct PrinterServiceInner {
     reconnect_count: u32,
     local_failure_count: u32,
     connection: ConnectionId,
-    /// Set on each connect. The next report that states `gcode_state`
-    /// advances the print queue when it says IDLE, even if the app already
-    /// holds IDLE.
-    awaiting_first_report: bool,
+    readiness: Readiness,
+    /// One auto-send run at a time holds the print queue, across connections,
+    /// so two runs never pick the same Pending job. Only the holder frees it.
+    queue_held: bool,
+    /// Triggers refused while the queue was held. Each is owed one try, one at
+    /// a time. The count stays across a reconnect, so a try the printer was
+    /// not ready for waits for its next IDLE report.
+    owed_runs: u32,
     connection_task: Option<tokio::task::JoinHandle<()>>,
 }
 
 /// Drops the print state a printer reported, so another printer does not
-/// start with it. The name comes from the saved config and stays.
+/// start with it. The name stays until `start` names the next printer.
 fn drop_print_state(app_state: &AppState) {
     if let Ok(mut printer) = app_state.printer.lock() {
         *printer = PrinterState {
@@ -77,7 +107,9 @@ impl PrinterServiceInner {
         self.connection
     }
 
-    async fn publish(&self, cmd: BambuCommand) -> Result<(), PrinterError> {
+    /// Publishes `cmd`. A `project_file` sent while the printer is IDLE, by
+    /// the queue or by a manual start, moves readiness to JobSent.
+    async fn publish(&mut self, cmd: BambuCommand) -> Result<(), PrinterError> {
         let client = self.mqtt_client.as_ref().ok_or(PrinterError::NotConnected)?;
         let creds = self.credentials.as_ref().ok_or(PrinterError::NotConnected)?;
 
@@ -87,7 +119,11 @@ impl PrinterServiceInner {
 
         mqtt::publish(client, &topic, &payload)
             .await
-            .map_err(PrinterError::Mqtt)
+            .map_err(PrinterError::Mqtt)?;
+        if matches!(cmd, BambuCommand::ProjectFile { .. }) && self.readiness == Readiness::Idle {
+            self.readiness = Readiness::JobSent;
+        }
+        Ok(())
     }
 }
 
@@ -115,7 +151,9 @@ impl PrinterService {
                 reconnect_count: 0,
                 local_failure_count: 0,
                 connection: ConnectionId::default(),
-                awaiting_first_report: false,
+                readiness: Readiness::WaitingForIdle,
+                queue_held: false,
+                owed_runs: 0,
                 connection_task: None,
             })),
         }
@@ -166,6 +204,9 @@ impl PrinterService {
         if !same_serial {
             drop_print_state(&app_state);
         }
+        if let Ok(mut printer) = app_state.printer.lock() {
+            printer.name = Some(creds.printer.name.clone());
+        }
         inner.mqtt_client = None;
         inner.credentials = Some(creds);
         inner.connection_state = Discovering;
@@ -211,13 +252,22 @@ impl PrinterService {
         self.inner.lock().await.publish(cmd).await
     }
 
-    /// Like `send_command`, but only while connection `id` is current.
-    async fn send_command_for(&self, id: ConnectionId, cmd: BambuCommand) -> Result<(), PrinterError> {
-        self.lock_for(id)
-            .await
-            .ok_or(PrinterError::NotConnected)?
-            .publish(cmd)
-            .await
+    /// Offers a job just added to the queue to the printer on the current
+    /// connection. It goes once that printer has reported IDLE and no other
+    /// run holds the queue.
+    pub async fn advance_queue<R: Runtime>(&self, app_handle: &AppHandle<R>) {
+        let id = self.inner.lock().await.connection;
+        self.spawn_auto_send(id, RunCause::Trigger, app_handle);
+    }
+
+    fn spawn_auto_send<R: Runtime>(&self, id: ConnectionId, cause: RunCause, app_handle: &AppHandle<R>) {
+        let service = self.clone();
+        let app_handle = app_handle.clone();
+        tokio::spawn(async move {
+            if let Err(e) = auto_send_pending_job(&service, id, cause, &app_handle).await {
+                log::error!("auto-send failed: {e}");
+            }
+        });
     }
 
     /// Locks the service for work that connection `id` spawned. `None` once
@@ -512,7 +562,7 @@ impl PrinterService {
     /// Parse and merge an incoming MQTT publish message.
     /// Detects gcode_state transitions and dispatches side effects:
     /// - RUNNING→FINISH/FAILED: record print history + send notification
-    /// - Any→IDLE: advance the print queue
+    /// - A report that shows the printer became IDLE: send it the next queued job
     ///
     /// A report that arrives after connection `id` ended is dropped whole.
     async fn handle_publish<R: Runtime>(
@@ -542,8 +592,17 @@ impl PrinterService {
             let Some(mut connection) = self.lock_for(id).await else {
                 return;
             };
-            let first_report = status.gcode_state.is_some()
-                && std::mem::take(&mut connection.awaiting_first_report);
+            let became_idle = match status.gcode_state.as_deref() {
+                Some("IDLE") if connection.readiness == Readiness::WaitingForIdle => {
+                    connection.readiness = Readiness::Idle;
+                    true
+                }
+                Some("IDLE") | None => false,
+                Some(_) => {
+                    connection.readiness = Readiness::WaitingForIdle;
+                    false
+                }
+            };
 
             // ── Read previous gcode_state before merge ──
             let prev_gcode_state = app_state
@@ -573,12 +632,6 @@ impl PrinterService {
                 .ok()
                 .and_then(|p| p.gcode_state.clone());
 
-            // ── A report that itself says IDLE advances the queue, once per
-            // connect and once per change to IDLE. The IDLE the app holds may
-            // be older than this connection's reports. ──
-            let advance_queue = status.gcode_state.as_deref() == Some("IDLE")
-                && (first_report || prev_gcode_state.as_deref() != Some("IDLE"));
-
             // ── Dispatch transition if state actually changed ──
             if let Some(ref curr) = curr_gcode_state {
                 if prev_gcode_state.as_deref() != Some(curr.as_str()) {
@@ -596,15 +649,9 @@ impl PrinterService {
                 }
             }
 
-            if advance_queue {
+            if became_idle {
                 log::info!("queue: advancing to the next job, printer is IDLE");
-                let service = self.clone();
-                let app_handle_clone = app_handle.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = auto_send_pending_job(&service, id, &app_handle_clone).await {
-                        log::error!("auto-send failed: {e}");
-                    }
-                });
+                self.spawn_auto_send(id, RunCause::Trigger, app_handle);
             }
         }
     }
@@ -664,9 +711,8 @@ impl PrinterService {
         };
         inner.connection_state = state.clone();
         inner.reconnect_count = 0;
-        inner.awaiting_first_report = true;
+        inner.readiness = Readiness::WaitingForIdle;
         let printer_host = inner.credentials.as_ref().map(|c| c.printer.host.clone());
-        let printer_name = inner.credentials.as_ref().map(|c| c.printer.name.clone());
 
         if let Ok(mut printer) = app_state.printer.lock() {
             printer.connection_state = state.clone();
@@ -677,13 +723,6 @@ impl PrinterService {
             // Store the printer IP for camera URL construction
             if let Some(ref ip) = printer_host {
                 printer.printer_ip = Some(ip.clone());
-            }
-
-            // Set printer name from credentials if not already set by config
-            if printer.name.is_none() {
-                if let Some(ref name) = printer_name {
-                    printer.name = Some(name.clone());
-                }
             }
         }
 
@@ -1067,65 +1106,87 @@ fn is_notification_suppressed(app_state: &AppState, setting_key: &str) -> bool {
 
 // ─── Auto-Send Queue Logic ────────────────────────────────────────────────────
 
-/// Check if the printer is IDLE and there are pending queue jobs.
-/// If so, submit the first pending job (upload + MQTT command).
-/// Acts only for connection `id`, the one that scheduled it.
+/// Sends the first Pending job to the printer on connection `id`: an FTPS
+/// upload, then the MQTT `project_file` command. It runs only while that
+/// connection's printer reported IDLE and no other run holds the queue.
 async fn auto_send_pending_job<R: Runtime>(
     service: &PrinterService,
     id: ConnectionId,
+    cause: RunCause,
     app_handle: &AppHandle<R>,
 ) -> Result<(), String> {
-    // We need AppState from the Tauri managed state
     let app_state: tauri::State<'_, std::sync::Arc<crate::state::AppState>> = app_handle
         .try_state()
         .ok_or_else(|| "AppState not managed".to_string())?;
 
-    let creds = {
-        let Some(inner) = service.lock_for(id).await else {
+    // The queue is read under the service lock. A job added after this read
+    // either finds the queue free, or asks the run that holds it to run again.
+    let (creds, job) = {
+        let Some(mut inner) = service.lock_for(id).await else {
             log::debug!("auto-send: the connection that scheduled it ended, skipping");
             return Ok(());
         };
-        let is_idle = {
-            let printer = app_state
-                .printer
-                .lock()
-                .map_err(|e| format!("failed to lock printer state: {e}"))?;
-            printer
-                .gcode_state
-                .as_deref()
-                .map(|s| s == "IDLE")
-                .unwrap_or(false)
-        };
-        if !is_idle {
-            log::debug!("auto-send: printer not IDLE, skipping queue check");
+        let live = matches!(
+            inner.connection_state,
+            ConnectionState::ConnectedMqtt | ConnectionState::ConnectedCloud
+        );
+        if !live || inner.readiness != Readiness::Idle {
+            log::debug!("auto-send: the printer has not reported IDLE, skipping");
             return Ok(());
         }
-        inner
-            .credentials
-            .clone()
-            .ok_or_else(|| "no credentials available for auto-send".to_string())?
-    };
-
-    // Get first pending job
-    let first_pending = {
-        let queue = app_state
+        if inner.queue_held {
+            log::debug!("auto-send: another run holds the queue, it runs again when done");
+            if cause == RunCause::Trigger {
+                inner.owed_runs += 1;
+            }
+            return Ok(());
+        }
+        if cause == RunCause::OwedTry && inner.owed_runs == 0 {
+            log::debug!("auto-send: no try is owed any more, skipping");
+            return Ok(());
+        }
+        let first_pending = app_state
             .print_queue
             .lock()
-            .map_err(|e| format!("failed to lock print queue: {e}"))?;
-        queue
+            .map_err(|e| format!("failed to lock print queue: {e}"))?
             .iter()
-            .find(|j| j.status == crate::state::QueueStatus::Pending)
-            .cloned()
-    };
-
-    let job = match first_pending {
-        Some(j) => j,
-        None => {
+            .find(|j| j.status == QueueStatus::Pending)
+            .cloned();
+        let Some(job) = first_pending else {
             log::debug!("auto-send: no pending jobs in queue");
+            inner.owed_runs = 0;
             return Ok(());
+        };
+        let creds = inner
+            .credentials
+            .clone()
+            .ok_or_else(|| "no credentials available for auto-send".to_string())?;
+        inner.queue_held = true;
+        if cause == RunCause::OwedTry {
+            inner.owed_runs -= 1;
         }
+        (creds, job)
     };
 
+    let submitted = submit_job(service, id, &app_state, &creds, &job).await;
+    let (current, owed) = {
+        let mut inner = service.inner.lock().await;
+        inner.queue_held = false;
+        (inner.connection, inner.owed_runs > 0)
+    };
+    if owed {
+        service.spawn_auto_send(current, RunCause::OwedTry, app_handle);
+    }
+    submitted
+}
+
+async fn submit_job(
+    service: &PrinterService,
+    id: ConnectionId,
+    app_state: &AppState,
+    creds: &BambuCredentials,
+    job: &crate::state::QueuedJob,
+) -> Result<(), String> {
     log::info!(
         "auto-send: submitting queued job '{}' ({})",
         job.model_name,
@@ -1135,7 +1196,7 @@ async fn auto_send_pending_job<R: Runtime>(
     let file_path = std::path::PathBuf::from(&job.threemf_path);
     if !file_path.exists() {
         let err = format!("3MF file not found: {}", job.threemf_path);
-        return fail_job(service, id, &app_state, &job.id, err).await;
+        return fail_job(service, id, app_state, &job.id, err).await;
     }
 
     let file_bytes = std::fs::read(&file_path)
@@ -1154,7 +1215,7 @@ async fn auto_send_pending_job<R: Runtime>(
     // Upload via FTPS
     if let Err(e) = upload_to_printer(&host, &access_code, &file_path).await {
         let err_msg = format!("FTPS upload failed: {e}");
-        return fail_job(service, id, &app_state, &job.id, err_msg).await;
+        return fail_job(service, id, app_state, &job.id, err_msg).await;
     }
 
     // Send MQTT project_file command
@@ -1168,14 +1229,18 @@ async fn auto_send_pending_job<R: Runtime>(
         ams_mapping: String::new(),
     };
 
-    if let Err(e) = service.send_command_for(id, cmd).await {
+    let sent = match service.lock_for(id).await {
+        None => Err(PrinterError::NotConnected),
+        Some(mut inner) => inner.publish(cmd).await,
+    };
+    if let Err(e) = sent {
         let err_msg = format!("MQTT command failed: {e}");
-        return fail_job(service, id, &app_state, &job.id, err_msg).await;
+        return fail_job(service, id, app_state, &job.id, err_msg).await;
     }
 
     // Mark as submitted
     crate::print_queue::update_job_status(
-        &app_state,
+        app_state,
         &job.id,
         crate::state::QueueStatus::Submitted,
     )?;
@@ -1256,8 +1321,11 @@ pub async fn upload_to_printer(
         // Connect to the FTPS server (implicit TLS on port 990)
         // For implicit FTPS, connect normally then wrap with into_secure
         let addr = format!("{host}:990");
-        let ftp_stream = suppaftp::NativeTlsFtpStream::connect(&addr)
-            .map_err(|e| PrinterError::Ftps(format!("FTPS connect to {addr} failed: {e}")))?;
+        let connect_failed = |e: &dyn std::fmt::Display| PrinterError::Ftps(format!("FTPS connect to {addr} failed: {e}"));
+        let control = timed_connect(&addr).map_err(|e| connect_failed(&e))?;
+        let ftp_stream = suppaftp::NativeTlsFtpStream::connect_with_stream(control)
+            .map_err(|e| connect_failed(&e))?
+            .passive_stream_builder(|data| timed_stream(data).map_err(suppaftp::FtpError::ConnectionError));
 
         let mut ftp_stream = ftp_stream
             .into_secure(connector, &host)
@@ -1294,6 +1362,27 @@ pub async fn upload_to_printer(
     })
     .await
     .map_err(|e| PrinterError::Ftps(format!("FTPS upload task panicked: {e}")))?
+}
+
+/// Like `TcpStream::connect`, it tries each address `addr` resolves to in
+/// turn, but through `timed_stream`.
+fn timed_connect(addr: &str) -> std::io::Result<std::net::TcpStream> {
+    let mut last_error = std::io::Error::new(std::io::ErrorKind::NotFound, "no address");
+    for socket_addr in std::net::ToSocketAddrs::to_socket_addrs(addr)? {
+        match timed_stream(socket_addr) {
+            Ok(stream) => return Ok(stream),
+            Err(e) => last_error = e,
+        }
+    }
+    Err(last_error)
+}
+
+/// A TCP stream whose connect, reads, and writes each end within `FTPS_TIMEOUT`.
+fn timed_stream(addr: std::net::SocketAddr) -> std::io::Result<std::net::TcpStream> {
+    let stream = std::net::TcpStream::connect_timeout(&addr, FTPS_TIMEOUT)?;
+    stream.set_read_timeout(Some(FTPS_TIMEOUT))?;
+    stream.set_write_timeout(Some(FTPS_TIMEOUT))?;
+    Ok(stream)
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -1943,22 +2032,37 @@ mod tests {
         printer
     }
 
+    fn queued_3mf() -> String {
+        let threemf = std::env::temp_dir().join(format!("m3d-auto-send-{}.3mf", uuid::Uuid::new_v4()));
+        std::fs::write(&threemf, b"3mf").expect("write the queued 3MF");
+        threemf.to_string_lossy().into_owned()
+    }
+
+    /// Stops the real connection loop, which fails against a host with no
+    /// printer, so the connects and reports a test fakes are the only ones.
+    async fn stop_connection_loop(service: &PrinterService) {
+        if let Some(task) = service.inner.lock().await.connection_task.take() {
+            task.abort();
+        }
+    }
+
     /// Printer A at localhost starts with `jobs` queued and reaches ConnAck.
     async fn connect_printer_a(
         jobs: usize,
     ) -> (tauri::App<tauri::test::MockRuntime>, Arc<AppState>, PrinterService, ConnectionId) {
         use tauri::test::{mock_builder, mock_context, noop_assets};
 
-        let app = mock_builder().build(mock_context(noop_assets())).expect("mock app");
+        let app = mock_builder()
+            .invoke_handler(tauri::generate_handler![crate::commands::add_to_queue])
+            .build(mock_context(noop_assets()))
+            .expect("mock app");
         let app_state = Arc::new(AppState::default());
         app.manage(Arc::clone(&app_state));
         for n in 1..=jobs {
-            let threemf = std::env::temp_dir().join(format!("m3d-auto-send-{}.3mf", uuid::Uuid::new_v4()));
-            std::fs::write(&threemf, b"3mf").expect("write the queued 3MF");
             app_state.print_queue.lock().unwrap().push(crate::state::QueuedJob {
                 id: format!("job-{n}"),
                 model_path: String::new(),
-                threemf_path: threemf.to_string_lossy().into_owned(),
+                threemf_path: queued_3mf(),
                 model_name: "cube".into(),
                 created_at: chrono::Utc::now(),
                 status: QueueStatus::Pending,
@@ -1970,10 +2074,12 @@ mod tests {
         }
 
         let service = PrinterService::new();
+        app.manage(service.clone());
         service
             .start(printer_a(), app.handle().clone(), Arc::clone(&app_state))
             .await
             .expect("printer A starts");
+        stop_connection_loop(&service).await;
         let a = service.inner.lock().await.connection;
         service
             .set_connected(
@@ -2117,6 +2223,7 @@ mod tests {
             .start(printer_a(), app.handle().clone(), Arc::clone(&app_state))
             .await
             .expect("the retry starts");
+        stop_connection_loop(&service).await;
         let retry = service.inner.lock().await.connection;
         service
             .set_connected(
@@ -2134,17 +2241,304 @@ mod tests {
         assert_one_run_sent_job_1_to_printer_a(&app_state).await;
     }
 
+    /// Adds one job the way the window does, through `add_to_queue`.
+    fn add_to_queue_from_the_window(app: &tauri::App<tauri::test::MockRuntime>) {
+        use tauri::ipc::{CallbackFn, InvokeBody};
+        use tauri::webview::InvokeRequest;
+
+        let label = format!("window-{}", uuid::Uuid::new_v4());
+        let webview = tauri::WebviewWindowBuilder::new(app, label, Default::default())
+            .build()
+            .expect("webview");
+        let body = serde_json::json!({ "modelPath": "", "threemfPath": queued_3mf(), "modelName": "cube" });
+        tauri::test::get_ipc_response(
+            &webview,
+            InvokeRequest {
+                cmd: "add_to_queue".into(),
+                callback: CallbackFn(0),
+                error: CallbackFn(1),
+                url: "tauri://localhost".parse().expect("url"),
+                body: InvokeBody::Json(body),
+                headers: Default::default(),
+                invoke_key: tauri::test::INVOKE_KEY.to_string(),
+            },
+        )
+        .expect("add_to_queue");
+    }
+
+    #[tokio::test]
+    async fn a_job_added_while_the_printer_is_idle_goes_at_once() {
+        let (app, app_state, service, a) = connect_printer_a(0).await;
+        service
+            .handle_publish(a, br#"{"print":{"gcode_state":"IDLE"}}"#, app.handle(), &app_state)
+            .await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        add_to_queue_from_the_window(&app);
+
+        let status = first_job_after_auto_send(&app_state).await;
+        assert!(
+            matches!(&status, QueueStatus::Failed { reason } if reason.contains("localhost:990")),
+            "the job went to printer A without waiting for another IDLE, got {status:?}"
+        );
+    }
+
+    /// A named pipe as a job's 3MF. A run that reads it waits until `feed`.
+    #[cfg(unix)]
+    fn held_3mf() -> std::path::PathBuf {
+        let fifo = std::env::temp_dir().join(format!("m3d-auto-send-{}.3mf", uuid::Uuid::new_v4()));
+        let made = std::process::Command::new("mkfifo").arg(&fifo).status().expect("mkfifo");
+        assert!(made.success(), "mkfifo {}", fifo.display());
+        fifo
+    }
+
+    /// Lets the run waiting on `fifo` read it once.
+    #[cfg(unix)]
+    async fn feed(fifo: &std::path::Path) {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+
+        let fifo = fifo.to_path_buf();
+        tokio::task::spawn_blocking(move || {
+            for _ in 0..150 {
+                match std::fs::OpenOptions::new().write(true).custom_flags(libc::O_NONBLOCK).open(&fifo) {
+                    Ok(mut reader_waiting) => return reader_waiting.write_all(b"3mf").expect("feed the 3MF"),
+                    Err(e) if e.raw_os_error() == Some(libc::ENXIO) => std::thread::sleep(Duration::from_millis(20)),
+                    Err(e) => panic!("feed {}: {e}", fifo.display()),
+                }
+            }
+            panic!("no run reads {}", fifo.display());
+        })
+        .await
+        .expect("feed task");
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn jobs_added_during_an_upload_that_fails_each_go_next() {
+        let (app, app_state, service, a) = connect_printer_a(0).await;
+        let job_1 = held_3mf();
+        app_state.print_queue.lock().unwrap().push(crate::state::QueuedJob {
+            id: "job-1".into(),
+            model_path: String::new(),
+            threemf_path: job_1.to_string_lossy().into_owned(),
+            model_name: "cube".into(),
+            created_at: chrono::Utc::now(),
+            status: QueueStatus::Pending,
+            filament_grams: None,
+            filament_meters: None,
+            quality_profile: None,
+            thumbnail_path: None,
+        });
+        service
+            .handle_publish(a, br#"{"print":{"gcode_state":"IDLE"}}"#, app.handle(), &app_state)
+            .await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        tokio::task::block_in_place(|| add_to_queue_from_the_window(&app));
+        tokio::task::block_in_place(|| add_to_queue_from_the_window(&app));
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        // Job 1 is read for its md5, then again by the upload, which fails.
+        feed(&job_1).await;
+        feed(&job_1).await;
+        tokio::time::sleep(Duration::from_secs(3)).await;
+
+        let queue = app_state.print_queue.lock().unwrap().clone();
+        assert_eq!(queue.len(), 3);
+        for job in &queue {
+            assert!(
+                matches!(&job.status, QueueStatus::Failed { reason } if reason.contains("localhost:990")),
+                "job {} went to printer A, got {:?}",
+                job.id,
+                job.status
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn jobs_added_during_an_upload_still_go_after_a_reconnect() {
+        let (app, app_state, service, a) = connect_printer_a(0).await;
+        let job_1 = held_3mf();
+        app_state.print_queue.lock().unwrap().push(crate::state::QueuedJob {
+            id: "job-1".into(),
+            model_path: String::new(),
+            threemf_path: job_1.to_string_lossy().into_owned(),
+            model_name: "cube".into(),
+            created_at: chrono::Utc::now(),
+            status: QueueStatus::Pending,
+            filament_grams: None,
+            filament_meters: None,
+            quality_profile: None,
+            thumbnail_path: None,
+        });
+        service
+            .handle_publish(a, br#"{"print":{"gcode_state":"IDLE"}}"#, app.handle(), &app_state)
+            .await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        tokio::task::block_in_place(|| add_to_queue_from_the_window(&app));
+        tokio::task::block_in_place(|| add_to_queue_from_the_window(&app));
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        service
+            .set_state(a, ConnectionState::Reconnecting, app.handle(), &app_state, "connection lost")
+            .await;
+        service
+            .set_connected(a, ConnectionState::ConnectedMqtt, ConnectionType::Mqtt, app.handle(), &app_state)
+            .await;
+
+        feed(&job_1).await;
+        feed(&job_1).await;
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        service
+            .handle_publish(a, br#"{"print":{"gcode_state":"IDLE"}}"#, app.handle(), &app_state)
+            .await;
+        tokio::time::sleep(Duration::from_secs(3)).await;
+
+        let queue = app_state.print_queue.lock().unwrap().clone();
+        assert_eq!(queue.len(), 3);
+        for job in &queue {
+            assert!(
+                matches!(&job.status, QueueStatus::Failed { reason } if reason.contains("localhost:990")),
+                "job {} went to printer A, got {:?}",
+                job.id,
+                job.status
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn three_triggers_get_three_tries_when_a_fresh_trigger_runs_before_an_owed_one() {
+        use std::future::Future;
+
+        let (app, app_state, service, a) = connect_printer_a(0).await;
+        service
+            .handle_publish(a, br#"{"print":{"gcode_state":"IDLE"}}"#, app.handle(), &app_state)
+            .await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        for n in 1..=4 {
+            let threemf_path = if n == 1 {
+                queued_3mf()
+            } else {
+                format!("/tmp/m3d-auto-send-absent-{}.3mf", uuid::Uuid::new_v4())
+            };
+            app_state.print_queue.lock().unwrap().push(crate::state::QueuedJob {
+                id: format!("job-{n}"),
+                model_path: String::new(),
+                threemf_path,
+                model_name: "cube".into(),
+                created_at: chrono::Utc::now(),
+                status: QueueStatus::Pending,
+                filament_grams: None,
+                filament_meters: None,
+                quality_profile: None,
+                thumbnail_path: None,
+            });
+        }
+
+        let mut first = Box::pin(auto_send_pending_job(&service, a, RunCause::Trigger, app.handle()));
+        let holding = std::future::poll_fn(|cx| std::task::Poll::Ready(first.as_mut().poll(cx).is_pending())).await;
+        assert!(holding, "trigger 1 holds the queue while job 1 uploads");
+        auto_send_pending_job(&service, a, RunCause::Trigger, app.handle()).await.unwrap();
+        first.await.unwrap();
+        // Trigger 3 runs before the owed try that trigger 1 just started.
+        auto_send_pending_job(&service, a, RunCause::Trigger, app.handle()).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        let pending: Vec<_> = app_state
+            .print_queue
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|j| j.status == QueueStatus::Pending)
+            .map(|j| j.id.clone())
+            .collect();
+        assert_eq!(pending, ["job-4"], "three triggers got three tries");
+    }
+
+    #[tokio::test]
+    async fn a_job_added_right_after_a_manual_start_waits_for_the_printer() {
+        let (app, app_state, service, a) = connect_printer_a(0).await;
+        service
+            .handle_publish(a, br#"{"print":{"gcode_state":"IDLE"}}"#, app.handle(), &app_state)
+            .await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        // An event loop nobody polls buffers the publish, as a live broker would accept it.
+        let (client, _event_loop) = mqtt::connect(&cloud::local_mqtt_config(&printer_a())).expect("mqtt client");
+        service.inner.lock().await.mqtt_client = Some(client);
+
+        service
+            .send_command(BambuCommand::ProjectFile {
+                param: "Metadata/plate_1.gcode".into(),
+                subtask_name: "manual.3mf".into(),
+                url: "ftp:///cache/manual.3mf".into(),
+                md5: String::new(),
+                use_ams: false,
+                ams_mapping: String::new(),
+            })
+            .await
+            .expect("start_print's project_file is published");
+        add_to_queue_from_the_window(&app);
+
+        assert_eq!(
+            first_job_after_auto_send(&app_state).await,
+            QueueStatus::Pending,
+            "the printer has not reported its manual print yet"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_job_added_before_the_first_report_waits_for_it() {
+        let (app, app_state, _service, _a) = connect_printer_a(0).await;
+        app_state.printer.lock().unwrap().gcode_state = Some("IDLE".into());
+        add_to_queue_from_the_window(&app);
+
+        assert_eq!(
+            first_job_after_auto_send(&app_state).await,
+            QueueStatus::Pending,
+            "no report from this connection said IDLE"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_job_added_while_the_connection_is_lost_waits_for_it() {
+        let (app, app_state, service, a) = connect_printer_a(0).await;
+        service
+            .handle_publish(a, br#"{"print":{"gcode_state":"IDLE"}}"#, app.handle(), &app_state)
+            .await;
+        service
+            .set_state(a, ConnectionState::Reconnecting, app.handle(), &app_state, "connection lost")
+            .await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        add_to_queue_from_the_window(&app);
+
+        assert_eq!(
+            first_job_after_auto_send(&app_state).await,
+            QueueStatus::Pending,
+            "the IDLE came from before the connection was lost"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_name_shown_belongs_to_the_printer_the_service_runs() {
+        let (app, app_state, service, _a) = connect_printer_a(0).await;
+        service.disconnect(app.handle(), &app_state).await;
+        let mut b = loopback_printer("01P00B000000000");
+        b.printer.name = "Printer B".into();
+        service
+            .start(b, app.handle().clone(), Arc::clone(&app_state))
+            .await
+            .expect("printer B starts");
+
+        assert_eq!(app_state.printer.lock().unwrap().name.as_deref(), Some("Printer B"));
+    }
+
     #[tokio::test]
     async fn start_drops_the_print_state_the_last_printer_reported() {
         use tauri::test::{mock_builder, mock_context, noop_assets};
 
         let app = mock_builder().build(mock_context(noop_assets())).expect("mock app");
         let app_state = Arc::new(AppState::default());
-        {
-            let mut printer = app_state.printer.lock().unwrap();
-            printer.name = Some("T2".into());
-            printer.gcode_state = Some("RUNNING".into());
-        }
+        app_state.printer.lock().unwrap().gcode_state = Some("RUNNING".into());
         PrinterService::new()
             .start(
                 loopback_printer("01P00B000000000"),
@@ -2154,9 +2548,11 @@ mod tests {
             .await
             .expect("printer B starts");
 
-        let printer = app_state.printer.lock().unwrap();
-        assert_eq!(printer.gcode_state, None, "B starts without the last printer's print state");
-        assert_eq!(printer.name.as_deref(), Some("T2"), "the name the config set is kept");
+        assert_eq!(
+            app_state.printer.lock().unwrap().gcode_state,
+            None,
+            "B starts without the last printer's print state"
+        );
     }
 
     #[tokio::test]

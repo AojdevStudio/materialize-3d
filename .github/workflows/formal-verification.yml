@@ -12,7 +12,7 @@
 # the models?" section says how to confirm them and record new hashes.
 #
 # check.sh exits 0 when every verdict matches the one recorded in its CHECKS
-# table, so the known findings F1 to F3, recorded as `fails`, pass. A finding
+# table, so the known findings F1 and F2, recorded as `fails`, pass. A finding
 # that a code change fixes, or a passing check that starts to fail, fails the job.
 #
 # The job runs on the Linux runner and carries ci.yml's guard against forks and
