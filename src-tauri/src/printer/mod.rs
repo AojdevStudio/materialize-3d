@@ -2456,6 +2456,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_job_added_right_after_a_manual_start_waits_for_the_printer() {
+        let (app, app_state, service, a) = connect_printer_a(0).await;
+        service
+            .handle_publish(a, br#"{"print":{"gcode_state":"IDLE"}}"#, app.handle(), &app_state)
+            .await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        // An event loop nobody polls buffers the publish, as a live broker would accept it.
+        let (client, _event_loop) = mqtt::connect(&cloud::local_mqtt_config(&printer_a())).expect("mqtt client");
+        service.inner.lock().await.mqtt_client = Some(client);
+
+        service
+            .send_command(BambuCommand::ProjectFile {
+                param: "Metadata/plate_1.gcode".into(),
+                subtask_name: "manual.3mf".into(),
+                url: "ftp:///cache/manual.3mf".into(),
+                md5: String::new(),
+                use_ams: false,
+                ams_mapping: String::new(),
+            })
+            .await
+            .expect("start_print's project_file is published");
+        add_to_queue_from_the_window(&app);
+
+        assert_eq!(
+            first_job_after_auto_send(&app_state).await,
+            QueueStatus::Pending,
+            "the printer has not reported its manual print yet"
+        );
+    }
+
+    #[tokio::test]
     async fn a_job_added_before_the_first_report_waits_for_it() {
         let (app, app_state, _service, _a) = connect_printer_a(0).await;
         app_state.printer.lock().unwrap().gcode_state = Some("IDLE".into());
