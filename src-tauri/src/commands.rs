@@ -1287,8 +1287,8 @@ pub async fn connect_printer_by_config(
 
 /// Switch to a different saved printer configuration.
 ///
-/// Disconnects the current printer (if connected), updates the selected ID,
-/// and connects to the new printer.
+/// Stops the current printer, connected or still connecting, then connects to
+/// the new one. An unknown config ID leaves the old printer disconnected.
 #[tauri::command]
 pub async fn switch_printer<R: Runtime>(
     config_id: String,
@@ -1314,20 +1314,10 @@ pub async fn switch_printer<R: Runtime>(
         config_id
     );
 
-    // Disconnect current printer if connected
-    let is_connected = {
-        let printer = state
-            .printer
-            .lock()
-            .map_err(|e| format!("failed to lock printer state: {e}"))?;
-        printer.is_connected
-    };
+    // A printer still trying to connect holds the service too, and
+    // `is_connected` is false for it.
+    service.disconnect(&app, &state).await;
 
-    if is_connected {
-        service.disconnect(&app, &state).await;
-    }
-
-    // Connect to the new printer via config
     connect_printer_by_config_inner(
         &config_id, &app, &state, &service,
     )
