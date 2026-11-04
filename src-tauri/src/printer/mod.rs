@@ -1776,6 +1776,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_disconnect_holds_against_a_late_write_from_the_old_loop() {
+        use tauri::test::{mock_builder, mock_context, noop_assets};
+
+        let app = mock_builder().build(mock_context(noop_assets())).expect("mock app");
+        let app_state = Arc::new(AppState::default());
+        let service = PrinterService::new();
+        service
+            .start(
+                loopback_printer("01P00A000000000"),
+                app.handle().clone(),
+                Arc::clone(&app_state),
+            )
+            .await
+            .expect("printer A starts");
+        service.disconnect(app.handle(), &app_state).await;
+
+        // The old loop passed its shutdown check just before the disconnect.
+        service
+            .set_state(ConnectionState::Discovering, app.handle(), &app_state, "late write")
+            .await;
+        service
+            .set_connected(
+                ConnectionState::ConnectedMqtt,
+                ConnectionType::Mqtt,
+                app.handle(),
+                &app_state,
+            )
+            .await;
+
+        {
+            let printer = app_state.printer.lock().unwrap();
+            assert_eq!(printer.connection_state, ConnectionState::Disconnected);
+            assert!(!printer.is_connected, "a late connect does not undo the disconnect");
+        }
+        service
+            .start(
+                loopback_printer("01P00B000000000"),
+                app.handle().clone(),
+                Arc::clone(&app_state),
+            )
+            .await
+            .expect("printer B starts after A was disconnected");
+    }
+
+    #[tokio::test]
     async fn another_printer_started_right_after_the_first_waits_for_a_disconnect() {
         use tauri::test::{mock_builder, mock_context, noop_assets};
 
