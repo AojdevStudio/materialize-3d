@@ -1654,11 +1654,15 @@ mod tests {
         });
     }
 
-    #[tokio::test]
-    async fn switching_away_from_a_printer_that_never_connected_connects_the_new_one() {
+    /// A mock app with a saved config for printer A (`switch-a`) and printer B
+    /// (`switch-b`), both on loopback hosts with no printer.
+    async fn app_with_two_printer_configs() -> (
+        tempfile::TempDir,
+        tauri::App<tauri::test::MockRuntime>,
+        Arc<AppState>,
+    ) {
         use crate::printer::PrinterService;
         use crate::state::PrinterConfig;
-        use std::time::Duration;
         use tauri::Manager;
         use tauri::test::{mock_builder, mock_context, noop_assets};
 
@@ -1691,6 +1695,72 @@ mod tests {
         let app = mock_builder().build(mock_context(noop_assets())).expect("mock app");
         app.manage(Arc::clone(&app_state));
         app.manage(PrinterService::new());
+        (dir, app, app_state)
+    }
+
+    /// The config the selection names, and the serial of the printer the
+    /// service runs.
+    async fn selected_and_running(
+        app: &tauri::App<tauri::test::MockRuntime>,
+        app_state: &AppState,
+    ) -> (Option<String>, Option<String>) {
+        use tauri::Manager;
+        let running = app.state::<crate::printer::PrinterService>().get_credentials().await;
+        (
+            app_state.selected_printer_id.lock().unwrap().clone(),
+            running.map(|c| c.printer.device_id),
+        )
+    }
+
+    #[tokio::test]
+    async fn two_overlapping_switches_leave_the_selection_naming_the_printer_the_service_runs() {
+        use tauri::Manager;
+
+        let (_dir, app, app_state) = app_with_two_printer_configs().await;
+
+        let (to_a, to_b) = tokio::join!(
+            super::switch_printer("switch-a".into(), app.handle().clone(), app.state(), app.state()),
+            super::switch_printer("switch-b".into(), app.handle().clone(), app.state(), app.state()),
+        );
+
+        assert_eq!(
+            selected_and_running(&app, &app_state).await,
+            (Some("switch-b".into()), Some("01P00B000000000".into())),
+            "the later switch wins, and the selection names the printer the service runs"
+        );
+        to_a.expect("the first switch connects printer A");
+        to_b.expect("the second switch waits for the first, then connects printer B");
+    }
+
+    #[tokio::test]
+    async fn a_connect_the_service_refuses_keeps_the_selection_on_the_running_printer() {
+        use crate::printer::PrinterService;
+        use tauri::Manager;
+
+        let (_dir, app, app_state) = app_with_two_printer_configs().await;
+        let service = app.state::<PrinterService>();
+        super::connect_printer_by_config_inner("switch-a", app.handle(), &app_state, &service)
+            .await
+            .expect("printer A starts connecting");
+
+        let refused =
+            super::connect_printer_by_config_inner("switch-b", app.handle(), &app_state, &service)
+                .await;
+
+        assert!(refused.is_err(), "printer B needs a switch while A runs, got {refused:?}");
+        assert_eq!(
+            selected_and_running(&app, &app_state).await,
+            (Some("switch-a".into()), Some("01P00A000000000".into())),
+        );
+    }
+
+    #[tokio::test]
+    async fn switching_away_from_a_printer_that_never_connected_connects_the_new_one() {
+        use crate::printer::PrinterService;
+        use std::time::Duration;
+        use tauri::Manager;
+
+        let (_dir, app, app_state) = app_with_two_printer_configs().await;
 
         super::connect_printer_by_config_inner(
             "switch-a",

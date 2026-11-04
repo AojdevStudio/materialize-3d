@@ -2586,4 +2586,65 @@ mod tests {
             "a print that finishes during the outage still reads as RUNNING to FINISH"
         );
     }
+
+    /// Starts `printer` with its real loop stopped and fakes its ConnAck.
+    async fn connect_without_loop(
+        service: &PrinterService,
+        printer: BambuCredentials,
+        app: &tauri::App<tauri::test::MockRuntime>,
+        app_state: &Arc<AppState>,
+    ) -> ConnectionId {
+        service
+            .start(printer, app.handle().clone(), Arc::clone(app_state))
+            .await
+            .expect("the printer starts");
+        stop_connection_loop(service).await;
+        let id = service.inner.lock().await.connection;
+        service
+            .set_connected(id, ConnectionState::ConnectedMqtt, ConnectionType::Mqtt, app.handle(), app_state)
+            .await;
+        id
+    }
+
+    #[tokio::test]
+    async fn a_print_that_finishes_while_switched_away_gets_one_history_row_on_return() {
+        use tauri::test::{mock_builder, mock_context, noop_assets};
+
+        let app = mock_builder()
+            .plugin(tauri_plugin_notification::init())
+            .build(mock_context(noop_assets()))
+            .expect("mock app");
+        let app_state = Arc::new(test_app_state());
+        let service = PrinterService::new();
+
+        let a = connect_without_loop(&service, printer_a(), &app, &app_state).await;
+        service
+            .handle_publish(
+                a,
+                br#"{"print":{"gcode_state":"RUNNING","gcode_start_time":"1710500000","subtask_name":"Benchy"}}"#,
+                app.handle(),
+                &app_state,
+            )
+            .await;
+        service.disconnect(app.handle(), &app_state).await;
+
+        let b = connect_without_loop(&service, loopback_printer("01P00B000000000"), &app, &app_state).await;
+        service
+            .handle_publish(b, br#"{"print":{"gcode_state":"IDLE"}}"#, app.handle(), &app_state)
+            .await;
+        service.disconnect(app.handle(), &app_state).await;
+
+        let a = connect_without_loop(&service, printer_a(), &app, &app_state).await;
+        let finished =
+            br#"{"print":{"gcode_state":"FINISH","gcode_start_time":"1710500000","subtask_name":"Benchy"}}"#;
+        service.handle_publish(a, finished, app.handle(), &app_state).await;
+        service.handle_publish(a, finished, app.handle(), &app_state).await;
+
+        let history = get_test_history(&app_state);
+        assert_eq!(
+            history.iter().map(|r| (r.model_name.as_str(), r.status.as_str())).collect::<Vec<_>>(),
+            [("Benchy", "success")],
+            "the print A ran while the app was on B gets one row"
+        );
+    }
 }
