@@ -129,7 +129,7 @@ impl PrinterService {
     }
 
     /// Disconnect cleanly.
-    pub async fn disconnect(&self, app_handle: &AppHandle, app_state: &AppState) {
+    pub async fn disconnect<R: Runtime>(&self, app_handle: &AppHandle<R>, app_state: &AppState) {
         let mut inner = self.inner.lock().await;
         inner.shutdown = true;
 
