@@ -1,19 +1,23 @@
 ----------------------------- MODULE AutoSend -----------------------------
 (***************************************************************************)
 (* The print queue's auto-send: src-tauri/src/printer/mod.rs               *)
-(* auto_send_pending_job. Two triggers spawn it as its own tokio task:     *)
-(* the IDLE gcode_state transition in the status handler, and the connect  *)
-(* handler 2 s after it connects. Nothing stops two runs overlapping.      *)
+(* auto_send_pending_job. The status handler spawns each run as its own    *)
+(* tokio task, on the first report after each connect and on each change   *)
+(* to IDLE. Nothing stops two runs overlapping, for example a reconnect    *)
+(* while an earlier run is still uploading.                                *)
 (*                                                                         *)
 (* Each action is one indivisible step of one run:                         *)
-(*   CheckIdle  lock AppState.printer, read gcode_state == "IDLE"          *)
+(*   CheckIdle  lock the service for the run's connection, read            *)
+(*              gcode_state == "IDLE" and the credentials. A run whose     *)
+(*              connection ended reads as not IDLE.                        *)
 (*   Pick       lock AppState.print_queue, clone the first Pending job     *)
-(*   Upload     read the 3MF, get credentials, upload_to_printer (FTPS)    *)
-(*   Send       service.send_command(ProjectFile)                          *)
+(*   Upload     read the 3MF, upload_to_printer (FTPS)                     *)
+(*   Send       service.send_command_for(id, ProjectFile)                  *)
 (*   Mark       update_job_status(Submitted)                               *)
 (* A failed upload or send marks the job Failed and ends the run. A 3MF   *)
 (* that cannot be read, or missing credentials, ends the run with the job  *)
-(* still Pending.                                                          *)
+(* still Pending. So does a failure after the run's connection ended.      *)
+(* fail_job then writes nothing (UploadAborts, SendAborts).                *)
 (***************************************************************************)
 EXTENDS Naturals
 
@@ -74,6 +78,10 @@ SendOk(r) ==
 
 SendFails(r) == pc[r] = "send" /\ Fail(r)
 
+SendAborts(r) ==
+  /\ pc[r] = "send" /\ pc' = [pc EXCEPT ![r] = "done"]
+  /\ UNCHANGED <<printer, status, sent, job>>
+
 Mark(r) ==
   /\ pc[r] = "mark"
   /\ status' = [status EXCEPT ![job[r]] = "Submitted"]
@@ -89,7 +97,7 @@ PrinterStarts ==
 Next ==
   \/ \E r \in Runs :
        CheckIdle(r) \/ Pick(r) \/ UploadOk(r) \/ UploadFails(r) \/ UploadAborts(r)
-       \/ SendOk(r) \/ SendFails(r) \/ Mark(r)
+       \/ SendOk(r) \/ SendFails(r) \/ SendAborts(r) \/ Mark(r)
   \/ PrinterStarts
 
 Spec == Init /\ [][Next]_vars
