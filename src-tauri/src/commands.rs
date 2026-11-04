@@ -174,6 +174,7 @@ pub async fn connect_printer(
         None => BambuCredentials::load_default().map_err(|e| e.to_string())?,
     };
 
+    let _held = service.hold_transitions().await;
     service
         .start(creds, app, Arc::clone(&*state))
         .await
@@ -187,6 +188,7 @@ pub async fn disconnect_printer(
     state: State<'_, Arc<AppState>>,
     service: State<'_, PrinterService>,
 ) -> Result<(), String> {
+    let _held = service.hold_transitions().await;
     service.disconnect(&app, &state).await;
     Ok(())
 }
@@ -1226,58 +1228,7 @@ pub async fn connect_printer_by_config(
     state: State<'_, Arc<AppState>>,
     service: State<'_, PrinterService>,
 ) -> Result<(), String> {
-    log::info!("printer-config:connecting id={config_id}");
-
-    // 1. Load PrinterConfig from SQLite
-    let config = {
-        let db_guard = state
-            .db
-            .lock()
-            .map_err(|e| format!("failed to lock db: {e}"))?;
-        let conn = db_guard
-            .as_ref()
-            .ok_or_else(|| "database not initialized".to_string())?;
-        database::get_printer_config(conn, &config_id)?
-            .ok_or_else(|| format!("printer config {config_id} not found"))?
-    };
-
-    // 2. Retrieve access code from Keychain
-    let access_code = credentials::get_credential(&config.access_code_keychain_id)
-        .await?
-        .ok_or_else(|| {
-            format!(
-                "access code not found in Keychain for key {}",
-                config.access_code_keychain_id
-            )
-        })?;
-
-    // 3. Load Cloud credentials (optional — local-only is fine)
-    let cloud_creds = BambuCredentials::load_default().ok();
-
-    // 4. Build BambuCredentials from the merge
-    let creds = config.to_bambu_credentials(&access_code, cloud_creds.as_ref());
-
-    // 5. Update selected_printer_id
-    {
-        let mut selected = state
-            .selected_printer_id
-            .lock()
-            .map_err(|e| format!("failed to lock selected_printer_id: {e}"))?;
-        *selected = Some(config_id.clone());
-    }
-
-    // 6. Start the printer service. It shows the printer's name.
-    service
-        .start(creds, app.clone(), Arc::clone(&*state))
-        .await
-        .map_err(|e| e.to_string())?;
-
-    // 7. Emit events
-    emit_printer_configs_changed(&app, &state);
-    let _ = state.emit_state_change(&app, "printer:changed");
-
-    log::info!("printer-config:connected id={config_id} name='{}'", config.name);
-    Ok(())
+    connect_printer_by_config_inner(&config_id, &app, &state, &service).await
 }
 
 /// Switch to a different saved printer configuration.
@@ -1291,6 +1242,7 @@ pub async fn switch_printer<R: Runtime>(
     state: State<'_, Arc<AppState>>,
     service: State<'_, PrinterService>,
 ) -> Result<(), String> {
+    let _held = service.hold_transitions().await;
     let old_id = {
         let selected = state
             .selected_printer_id
@@ -1313,10 +1265,7 @@ pub async fn switch_printer<R: Runtime>(
     // `is_connected` is false for it.
     service.disconnect(&app, &state).await;
 
-    connect_printer_by_config_inner(
-        &config_id, &app, &state, &service,
-    )
-    .await?;
+    start_printer_config(&config_id, &app, &state, &service).await?;
 
     log::info!(
         "printer-config:switched from={} to={}",
@@ -1327,9 +1276,21 @@ pub async fn switch_printer<R: Runtime>(
     Ok(())
 }
 
-/// Inner implementation of connect_printer_by_config, callable without Tauri
-/// `State` wrappers (used by `switch_printer`).
+/// Connects to a saved printer configuration without Tauri `State` wrappers,
+/// for the `connect_printer_by_config` command and the startup auto-connect.
 pub async fn connect_printer_by_config_inner<R: Runtime>(
+    config_id: &str,
+    app: &AppHandle<R>,
+    state: &Arc<AppState>,
+    service: &PrinterService,
+) -> Result<(), String> {
+    let _held = service.hold_transitions().await;
+    start_printer_config(config_id, app, state, service).await
+}
+
+/// Starts the printer in saved config `config_id`, then selects it. The
+/// caller holds `PrinterService::hold_transitions`.
+async fn start_printer_config<R: Runtime>(
     config_id: &str,
     app: &AppHandle<R>,
     state: &Arc<AppState>,
@@ -1366,7 +1327,13 @@ pub async fn connect_printer_by_config_inner<R: Runtime>(
     // 4. Build BambuCredentials
     let creds = config.to_bambu_credentials(&access_code, cloud_creds.as_ref());
 
-    // 5. Update selected_printer_id
+    // 5. Start the printer service. It shows the printer's name.
+    service
+        .start(creds, app.clone(), Arc::clone(state))
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // 6. Select it only once the service runs it.
     {
         let mut selected = state
             .selected_printer_id
@@ -1374,12 +1341,6 @@ pub async fn connect_printer_by_config_inner<R: Runtime>(
             .map_err(|e| format!("failed to lock selected_printer_id: {e}"))?;
         *selected = Some(config_id.to_string());
     }
-
-    // 6. Start the printer service. It shows the printer's name.
-    service
-        .start(creds, app.clone(), Arc::clone(state))
-        .await
-        .map_err(|e| e.to_string())?;
 
     // 7. Emit events
     emit_printer_configs_changed(app, state);
@@ -1654,11 +1615,15 @@ mod tests {
         });
     }
 
-    #[tokio::test]
-    async fn switching_away_from_a_printer_that_never_connected_connects_the_new_one() {
+    /// A mock app with a saved config for printer A (`switch-a`) and printer B
+    /// (`switch-b`), both on loopback hosts with no printer.
+    async fn app_with_two_printer_configs() -> (
+        tempfile::TempDir,
+        tauri::App<tauri::test::MockRuntime>,
+        Arc<AppState>,
+    ) {
         use crate::printer::PrinterService;
         use crate::state::PrinterConfig;
-        use std::time::Duration;
         use tauri::Manager;
         use tauri::test::{mock_builder, mock_context, noop_assets};
 
@@ -1691,6 +1656,72 @@ mod tests {
         let app = mock_builder().build(mock_context(noop_assets())).expect("mock app");
         app.manage(Arc::clone(&app_state));
         app.manage(PrinterService::new());
+        (dir, app, app_state)
+    }
+
+    /// The config the selection names, and the serial of the printer the
+    /// service runs.
+    async fn selected_and_running(
+        app: &tauri::App<tauri::test::MockRuntime>,
+        app_state: &AppState,
+    ) -> (Option<String>, Option<String>) {
+        use tauri::Manager;
+        let running = app.state::<crate::printer::PrinterService>().get_credentials().await;
+        (
+            app_state.selected_printer_id.lock().unwrap().clone(),
+            running.map(|c| c.printer.device_id),
+        )
+    }
+
+    #[tokio::test]
+    async fn two_overlapping_switches_leave_the_selection_naming_the_printer_the_service_runs() {
+        use tauri::Manager;
+
+        let (_dir, app, app_state) = app_with_two_printer_configs().await;
+
+        let (to_a, to_b) = tokio::join!(
+            super::switch_printer("switch-a".into(), app.handle().clone(), app.state(), app.state()),
+            super::switch_printer("switch-b".into(), app.handle().clone(), app.state(), app.state()),
+        );
+
+        assert_eq!(
+            selected_and_running(&app, &app_state).await,
+            (Some("switch-b".into()), Some("01P00B000000000".into())),
+            "the later switch wins, and the selection names the printer the service runs"
+        );
+        to_a.expect("the first switch connects printer A");
+        to_b.expect("the second switch waits for the first, then connects printer B");
+    }
+
+    #[tokio::test]
+    async fn a_connect_the_service_refuses_keeps_the_selection_on_the_running_printer() {
+        use crate::printer::PrinterService;
+        use tauri::Manager;
+
+        let (_dir, app, app_state) = app_with_two_printer_configs().await;
+        let service = app.state::<PrinterService>();
+        super::connect_printer_by_config_inner("switch-a", app.handle(), &app_state, &service)
+            .await
+            .expect("printer A starts connecting");
+
+        let refused =
+            super::connect_printer_by_config_inner("switch-b", app.handle(), &app_state, &service)
+                .await;
+
+        assert!(refused.is_err(), "printer B needs a switch while A runs, got {refused:?}");
+        assert_eq!(
+            selected_and_running(&app, &app_state).await,
+            (Some("switch-a".into()), Some("01P00A000000000".into())),
+        );
+    }
+
+    #[tokio::test]
+    async fn switching_away_from_a_printer_that_never_connected_connects_the_new_one() {
+        use crate::printer::PrinterService;
+        use std::time::Duration;
+        use tauri::Manager;
+
+        let (_dir, app, app_state) = app_with_two_printer_configs().await;
 
         super::connect_printer_by_config_inner(
             "switch-a",

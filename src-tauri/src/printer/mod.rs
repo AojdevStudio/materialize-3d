@@ -6,6 +6,7 @@ pub mod protocol;
 pub use credentials::BambuCredentials;
 pub use protocol::{BambuCommand, BambuReport};
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -86,21 +87,34 @@ struct PrinterServiceInner {
     /// a time. The count stays across a reconnect, so a try the printer was
     /// not ready for waits for its next IDLE report.
     owed_runs: u32,
+    /// The `gcode_start_time` of the print each printer, by serial, showed
+    /// RUNNING or PAUSE when the app dropped its print state. The printer's
+    /// first report that names a start time settles it: a FINISH or FAILED for
+    /// the same start time reads as that print's end, and anything else drops
+    /// it. A print with no known start time is not kept, because no later
+    /// report could tell it from another print.
+    ended_mid_print: HashMap<String, String>,
     connection_task: Option<tokio::task::JoinHandle<()>>,
 }
 
-/// Drops the print state a printer reported, so another printer does not
-/// start with it. The name stays until `start` names the next printer.
-fn drop_print_state(app_state: &AppState) {
-    if let Ok(mut printer) = app_state.printer.lock() {
-        *printer = PrinterState {
-            name: printer.name.take(),
-            ..PrinterState::default()
-        };
-    }
-}
-
 impl PrinterServiceInner {
+    /// Drops the print state a printer reported, so another printer does not
+    /// start with it. The name stays until `start` names the next printer. A
+    /// print in progress is kept in `ended_mid_print`.
+    fn drop_print_state(&mut self, app_state: &AppState) {
+        if let Ok(mut printer) = app_state.printer.lock() {
+            if let (Some("RUNNING" | "PAUSE"), Some(start), Some(creds)) =
+                (printer.gcode_state.as_deref(), &printer.gcode_start_time, &self.credentials)
+            {
+                self.ended_mid_print.insert(creds.printer.device_id.clone(), start.clone());
+            }
+            *printer = PrinterState {
+                name: printer.name.take(),
+                ..PrinterState::default()
+            };
+        }
+    }
+
     /// Ends the current connection. Work it spawned writes nothing from here on.
     fn end_connection(&mut self) -> ConnectionId {
         self.connection = ConnectionId(self.connection.0 + 1);
@@ -133,6 +147,8 @@ impl PrinterServiceInner {
 #[derive(Clone)]
 pub struct PrinterService {
     inner: Arc<TokioMutex<PrinterServiceInner>>,
+    /// Held for a whole connect, switch, or disconnect command.
+    transitions: Arc<TokioMutex<()>>,
 }
 
 impl Default for PrinterService {
@@ -154,9 +170,19 @@ impl PrinterService {
                 readiness: Readiness::WaitingForIdle,
                 queue_held: false,
                 owed_runs: 0,
+                ended_mid_print: HashMap::new(),
                 connection_task: None,
             })),
+            transitions: Arc::default(),
         }
+    }
+
+    /// Waits for any other connect, switch, or disconnect to end, then holds
+    /// off the next one until the guard drops. A command that changes which
+    /// printer runs holds it from its first step to its last, so the selection
+    /// it writes names the printer the service runs.
+    pub async fn hold_transitions(&self) -> MutexGuard<'_, ()> {
+        self.transitions.lock().await
     }
 
     /// Start the printer connection with the given credentials.
@@ -202,7 +228,7 @@ impl PrinterService {
         let same_serial = inner.credentials.as_ref().map(|c| &c.printer.device_id)
             == Some(&creds.printer.device_id);
         if !same_serial {
-            drop_print_state(&app_state);
+            inner.drop_print_state(&app_state);
         }
         if let Ok(mut printer) = app_state.printer.lock() {
             printer.name = Some(creds.printer.name.clone());
@@ -225,7 +251,7 @@ impl PrinterService {
     pub async fn disconnect<R: Runtime>(&self, app_handle: &AppHandle<R>, app_state: &AppState) {
         let mut inner = self.inner.lock().await;
         inner.end_connection();
-        drop_print_state(app_state);
+        inner.drop_print_state(app_state);
 
         if let Some(client) = inner.mqtt_client.take() {
             if let Err(e) = client.disconnect().await {
@@ -626,11 +652,34 @@ impl PrinterService {
             let _ = app_state.emit_state_change(app_handle, "printer:changed");
 
             // ── Read current gcode_state after merge ──
-            let curr_gcode_state = app_state
+            let (curr_gcode_state, start_time) = app_state
                 .printer
                 .lock()
-                .ok()
-                .and_then(|p| p.gcode_state.clone());
+                .map(|p| (p.gcode_state.clone(), p.gcode_start_time.clone()))
+                .unwrap_or_default();
+
+            // A print in progress when this printer's print state was dropped
+            // last read RUNNING, though this connection never saw it.
+            let connection = &mut *connection;
+            let serial = connection.credentials.as_ref().map(|c| c.printer.device_id.as_str());
+            let ended = matches!(curr_gcode_state.as_deref(), Some("FINISH" | "FAILED"));
+            let carried_print_ended = match (serial, &start_time) {
+                (Some(serial), Some(start)) => connection
+                    .ended_mid_print
+                    .remove(serial)
+                    .is_some_and(|carried| ended && carried == *start),
+                _ => false,
+            };
+            let prev_gcode_state = if carried_print_ended {
+                Some("RUNNING".to_string())
+            } else {
+                prev_gcode_state
+            };
+            if ended && prev_gcode_state.as_deref() == Some("RUNNING") {
+                if let Some(serial) = serial {
+                    connection.ended_mid_print.remove(serial);
+                }
+            }
 
             // ── Dispatch transition if state actually changed ──
             if let Some(ref curr) = curr_gcode_state {
@@ -2585,5 +2634,188 @@ mod tests {
             Some("RUNNING"),
             "a print that finishes during the outage still reads as RUNNING to FINISH"
         );
+    }
+
+    /// Starts `printer` with its real loop stopped and fakes its ConnAck.
+    async fn connect_without_loop(
+        service: &PrinterService,
+        printer: BambuCredentials,
+        app: &tauri::App<tauri::test::MockRuntime>,
+        app_state: &Arc<AppState>,
+    ) -> ConnectionId {
+        service
+            .start(printer, app.handle().clone(), Arc::clone(app_state))
+            .await
+            .expect("the printer starts");
+        stop_connection_loop(service).await;
+        let id = service.inner.lock().await.connection;
+        service
+            .set_connected(id, ConnectionState::ConnectedMqtt, ConnectionType::Mqtt, app.handle(), app_state)
+            .await;
+        id
+    }
+
+    /// A mock app that can show notifications, with a history database.
+    fn history_app() -> (tauri::App<tauri::test::MockRuntime>, Arc<AppState>, PrinterService) {
+        use tauri::test::{mock_builder, mock_context, noop_assets};
+
+        let app = mock_builder()
+            .plugin(tauri_plugin_notification::init())
+            .build(mock_context(noop_assets()))
+            .expect("mock app");
+        (app, Arc::new(test_app_state()), PrinterService::new())
+    }
+
+    fn history_rows(app_state: &AppState) -> Vec<(String, String)> {
+        get_test_history(app_state).into_iter().map(|r| (r.model_name, r.status)).collect()
+    }
+
+    #[tokio::test]
+    async fn a_print_that_finishes_while_switched_away_gets_one_history_row_on_return() {
+        let (app, app_state, service) = history_app();
+
+        let a = connect_without_loop(&service, printer_a(), &app, &app_state).await;
+        service
+            .handle_publish(
+                a,
+                br#"{"print":{"gcode_state":"RUNNING","gcode_start_time":"1710500000","subtask_name":"Benchy"}}"#,
+                app.handle(),
+                &app_state,
+            )
+            .await;
+        service.disconnect(app.handle(), &app_state).await;
+
+        let b = connect_without_loop(&service, loopback_printer("01P00B000000000"), &app, &app_state).await;
+        service
+            .handle_publish(b, br#"{"print":{"gcode_state":"IDLE"}}"#, app.handle(), &app_state)
+            .await;
+        service.disconnect(app.handle(), &app_state).await;
+
+        let a = connect_without_loop(&service, printer_a(), &app, &app_state).await;
+        let finished =
+            br#"{"print":{"gcode_state":"FINISH","gcode_start_time":"1710500000","subtask_name":"Benchy"}}"#;
+        service.handle_publish(a, finished, app.handle(), &app_state).await;
+        service.handle_publish(a, finished, app.handle(), &app_state).await;
+
+        assert_eq!(
+            history_rows(&app_state),
+            [("Benchy".into(), "success".into())],
+            "the print A ran while the app was on B gets one row"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_print_whose_start_time_first_shows_in_its_last_report_gets_a_history_row() {
+        let (app, app_state, service) = history_app();
+        let a = connect_without_loop(&service, printer_a(), &app, &app_state).await;
+
+        for report in [
+            br#"{"print":{"gcode_state":"RUNNING","subtask_name":"Benchy"}}"#.as_slice(),
+            br#"{"print":{"gcode_state":"FINISH","gcode_start_time":"1710500000"}}"#,
+        ] {
+            service.handle_publish(a, report, app.handle(), &app_state).await;
+        }
+
+        assert_eq!(history_rows(&app_state), [("Benchy".into(), "success".into())]);
+    }
+
+    #[tokio::test]
+    async fn a_running_report_without_a_start_time_keeps_the_print_already_seen() {
+        let (app, app_state, service) = history_app();
+        for report in [
+            br#"{"print":{"gcode_state":"RUNNING","gcode_start_time":"1710500000","subtask_name":"Benchy"}}"#.as_slice(),
+            br#"{"print":{"gcode_state":"RUNNING"}}"#,
+        ] {
+            let a = connect_without_loop(&service, printer_a(), &app, &app_state).await;
+            service.handle_publish(a, report, app.handle(), &app_state).await;
+            service.disconnect(app.handle(), &app_state).await;
+        }
+
+        let a = connect_without_loop(&service, printer_a(), &app, &app_state).await;
+        service
+            .handle_publish(
+                a,
+                br#"{"print":{"gcode_state":"FINISH","gcode_start_time":"1710500000","subtask_name":"Benchy"}}"#,
+                app.handle(),
+                &app_state,
+            )
+            .await;
+
+        assert_eq!(history_rows(&app_state), [("Benchy".into(), "success".into())]);
+    }
+
+    #[tokio::test]
+    async fn a_print_the_app_never_saw_start_gets_no_row_after_a_reconnect() {
+        let (app, app_state, service) = history_app();
+        let a = connect_without_loop(&service, printer_a(), &app, &app_state).await;
+        service
+            .handle_publish(a, br#"{"print":{"gcode_state":"RUNNING","subtask_name":"Seen"}}"#, app.handle(), &app_state)
+            .await;
+        service.disconnect(app.handle(), &app_state).await;
+
+        let a = connect_without_loop(&service, printer_a(), &app, &app_state).await;
+        service
+            .handle_publish(
+                a,
+                br#"{"print":{"gcode_state":"FINISH","gcode_start_time":"1710600000","subtask_name":"Unseen"}}"#,
+                app.handle(),
+                &app_state,
+            )
+            .await;
+
+        assert_eq!(history_rows(&app_state), [], "nothing tells the finished print apart from another one");
+    }
+
+    #[tokio::test]
+    async fn a_print_paused_when_the_app_switches_away_gets_a_row_when_it_finishes() {
+        let (app, app_state, service) = history_app();
+        let a = connect_without_loop(&service, printer_a(), &app, &app_state).await;
+        for report in [
+            br#"{"print":{"gcode_state":"RUNNING","gcode_start_time":"1710500000","subtask_name":"Benchy"}}"#.as_slice(),
+            br#"{"print":{"gcode_state":"PAUSE"}}"#,
+        ] {
+            service.handle_publish(a, report, app.handle(), &app_state).await;
+        }
+        service.disconnect(app.handle(), &app_state).await;
+        connect_without_loop(&service, loopback_printer("01P00B000000000"), &app, &app_state).await;
+        service.disconnect(app.handle(), &app_state).await;
+
+        let a = connect_without_loop(&service, printer_a(), &app, &app_state).await;
+        service
+            .handle_publish(
+                a,
+                br#"{"print":{"gcode_state":"FINISH","gcode_start_time":"1710500000","subtask_name":"Benchy"}}"#,
+                app.handle(),
+                &app_state,
+            )
+            .await;
+
+        assert_eq!(history_rows(&app_state), [("Benchy".into(), "success".into())]);
+    }
+
+    #[tokio::test]
+    async fn a_print_whose_end_this_connection_recorded_is_not_recorded_again() {
+        let (app, app_state, service) = history_app();
+        let a = connect_without_loop(&service, printer_a(), &app, &app_state).await;
+        service
+            .handle_publish(
+                a,
+                br#"{"print":{"gcode_state":"RUNNING","gcode_start_time":"1710500000","subtask_name":"Benchy"}}"#,
+                app.handle(),
+                &app_state,
+            )
+            .await;
+        service.disconnect(app.handle(), &app_state).await;
+
+        let a = connect_without_loop(&service, printer_a(), &app, &app_state).await;
+        for report in [
+            br#"{"print":{"gcode_state":"RUNNING","subtask_name":"Benchy"}}"#.as_slice(),
+            br#"{"print":{"gcode_state":"FINISH"}}"#,
+            br#"{"print":{"gcode_state":"FINISH","gcode_start_time":"1710500000"}}"#,
+        ] {
+            service.handle_publish(a, report, app.handle(), &app_state).await;
+        }
+
+        assert_eq!(history_rows(&app_state).len(), 1, "one print, one row");
     }
 }
