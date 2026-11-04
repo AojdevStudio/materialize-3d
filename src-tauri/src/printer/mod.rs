@@ -58,6 +58,18 @@ enum Readiness {
     JobSent,
 }
 
+/// Which auto-send run works on the print queue. One run at a time, across
+/// connections, so two runs never pick the same Pending job.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum QueueRun {
+    Free,
+    /// A run holds the queue from its claim until it ends.
+    Held,
+    /// A trigger came while the queue was held. The holder starts a fresh run
+    /// for the current connection when it ends.
+    HeldAndAsked,
+}
+
 /// Inner state of the printer service, protected by an async mutex.
 struct PrinterServiceInner {
     credentials: Option<BambuCredentials>,
@@ -67,9 +79,9 @@ struct PrinterServiceInner {
     local_failure_count: u32,
     connection: ConnectionId,
     readiness: Readiness,
-    /// An auto-send run of this connection holds the printer. It outlives a
-    /// reconnect, and a new connection starts without it.
-    auto_send_running: bool,
+    /// Outlives the connection that took it. Only the run that holds it frees
+    /// it, after its upload ends.
+    queue_run: QueueRun,
     connection_task: Option<tokio::task::JoinHandle<()>>,
 }
 
@@ -88,7 +100,6 @@ impl PrinterServiceInner {
     /// Ends the current connection. Work it spawned writes nothing from here on.
     fn end_connection(&mut self) -> ConnectionId {
         self.connection = ConnectionId(self.connection.0 + 1);
-        self.auto_send_running = false;
         self.connection
     }
 
@@ -131,7 +142,7 @@ impl PrinterService {
                 local_failure_count: 0,
                 connection: ConnectionId::default(),
                 readiness: Readiness::WaitingForIdle,
-                auto_send_running: false,
+                queue_run: QueueRun::Free,
                 connection_task: None,
             })),
         }
@@ -231,8 +242,8 @@ impl PrinterService {
     }
 
     /// Offers a job just added to the queue to the printer on the current
-    /// connection. It goes at once only when that printer already reported
-    /// IDLE and no other run holds it.
+    /// connection. It goes once that printer has reported IDLE and no other
+    /// run holds the queue.
     pub async fn advance_queue<R: Runtime>(&self, app_handle: &AppHandle<R>) {
         let id = self.inner.lock().await.connection;
         self.spawn_auto_send(id, app_handle);
@@ -1086,7 +1097,7 @@ fn is_notification_suppressed(app_state: &AppState, setting_key: &str) -> bool {
 
 /// Sends the first Pending job to the printer on connection `id`: an FTPS
 /// upload, then the MQTT `project_file` command. It runs only while that
-/// connection's printer reported IDLE and no other run holds it.
+/// connection's printer reported IDLE and no other run holds the queue.
 async fn auto_send_pending_job<R: Runtime>(
     service: &PrinterService,
     id: ConnectionId,
@@ -1096,8 +1107,8 @@ async fn auto_send_pending_job<R: Runtime>(
         .try_state()
         .ok_or_else(|| "AppState not managed".to_string())?;
 
-    // The queue is read under the service lock, so a job added after this read
-    // finds the printer free when its own run claims it.
+    // The queue is read under the service lock. A job added after this read
+    // either finds the queue free, or asks the run that holds it to run again.
     let (creds, job) = {
         let Some(mut inner) = service.lock_for(id).await else {
             log::debug!("auto-send: the connection that scheduled it ended, skipping");
@@ -1107,8 +1118,13 @@ async fn auto_send_pending_job<R: Runtime>(
             inner.connection_state,
             ConnectionState::ConnectedMqtt | ConnectionState::ConnectedCloud
         );
-        if !live || inner.readiness != Readiness::Idle || inner.auto_send_running {
-            log::debug!("auto-send: the printer is not free for a job, skipping");
+        if !live || inner.readiness != Readiness::Idle {
+            log::debug!("auto-send: the printer has not reported IDLE, skipping");
+            return Ok(());
+        }
+        if inner.queue_run != QueueRun::Free {
+            log::debug!("auto-send: another run holds the queue, it runs again when done");
+            inner.queue_run = QueueRun::HeldAndAsked;
             return Ok(());
         }
         let first_pending = app_state
@@ -1126,13 +1142,19 @@ async fn auto_send_pending_job<R: Runtime>(
             .credentials
             .clone()
             .ok_or_else(|| "no credentials available for auto-send".to_string())?;
-        inner.auto_send_running = true;
+        inner.queue_run = QueueRun::Held;
         (creds, job)
     };
 
     let submitted = submit_job(service, id, &app_state, &creds, &job).await;
-    if let Some(mut inner) = service.lock_for(id).await {
-        inner.auto_send_running = false;
+    let run_again = {
+        let mut inner = service.inner.lock().await;
+        let asked = inner.queue_run == QueueRun::HeldAndAsked;
+        inner.queue_run = QueueRun::Free;
+        asked.then_some(inner.connection)
+    };
+    if let Some(current) = run_again {
+        service.spawn_auto_send(current, app_handle);
     }
     submitted
 }
@@ -2218,6 +2240,77 @@ mod tests {
             matches!(&status, QueueStatus::Failed { reason } if reason.contains("localhost:990")),
             "the job went to printer A without waiting for another IDLE, got {status:?}"
         );
+    }
+
+    /// A named pipe as a job's 3MF. A run that reads it waits until `feed`.
+    #[cfg(unix)]
+    fn held_3mf() -> std::path::PathBuf {
+        let fifo = std::env::temp_dir().join(format!("m3d-auto-send-{}.3mf", uuid::Uuid::new_v4()));
+        let made = std::process::Command::new("mkfifo").arg(&fifo).status().expect("mkfifo");
+        assert!(made.success(), "mkfifo {}", fifo.display());
+        fifo
+    }
+
+    /// Lets the run waiting on `fifo` read it once.
+    #[cfg(unix)]
+    async fn feed(fifo: &std::path::Path) {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+
+        let fifo = fifo.to_path_buf();
+        tokio::task::spawn_blocking(move || {
+            for _ in 0..150 {
+                match std::fs::OpenOptions::new().write(true).custom_flags(libc::O_NONBLOCK).open(&fifo) {
+                    Ok(mut reader_waiting) => return reader_waiting.write_all(b"3mf").expect("feed the 3MF"),
+                    Err(e) if e.raw_os_error() == Some(libc::ENXIO) => std::thread::sleep(Duration::from_millis(20)),
+                    Err(e) => panic!("feed {}: {e}", fifo.display()),
+                }
+            }
+            panic!("no run reads {}", fifo.display());
+        })
+        .await
+        .expect("feed task");
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_job_added_during_an_upload_that_fails_goes_next() {
+        let (app, app_state, service, a) = connect_printer_a(0).await;
+        let job_1 = held_3mf();
+        app_state.print_queue.lock().unwrap().push(crate::state::QueuedJob {
+            id: "job-1".into(),
+            model_path: String::new(),
+            threemf_path: job_1.to_string_lossy().into_owned(),
+            model_name: "cube".into(),
+            created_at: chrono::Utc::now(),
+            status: QueueStatus::Pending,
+            filament_grams: None,
+            filament_meters: None,
+            quality_profile: None,
+            thumbnail_path: None,
+        });
+        service
+            .handle_publish(a, br#"{"print":{"gcode_state":"IDLE"}}"#, app.handle(), &app_state)
+            .await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        tokio::task::block_in_place(|| add_to_queue_from_the_window(&app));
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        // Job 1 is read for its md5, then again by the upload, which fails.
+        feed(&job_1).await;
+        feed(&job_1).await;
+        tokio::time::sleep(Duration::from_secs(3)).await;
+
+        let queue = app_state.print_queue.lock().unwrap().clone();
+        for job in &queue {
+            assert!(
+                matches!(&job.status, QueueStatus::Failed { reason } if reason.contains("localhost:990")),
+                "job {} went to printer A, got {:?}",
+                job.id,
+                job.status
+            );
+        }
     }
 
     #[tokio::test]

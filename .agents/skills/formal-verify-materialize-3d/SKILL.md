@@ -22,8 +22,8 @@ Two TLA+ models describe code where a bad order of events harms a user and tests
 | `update-wakes` | When builds stop starting, a waiting update goes ahead. | **Update now** hangs with no build running. | holds |
 | `queue-file-at-restart` | The restart never leaves `print_queue.json` half written. | The queue is empty after the restart. | fails (F1) |
 | `update-not-starved` | A waiting update goes ahead even while builds keep starting. | **Update now** waits with no limit. | fails (F2) |
-| `job-sent-once` | The app sends each queued job to the printer at most once. | The printer gets one job twice. | fails (F3) |
-| `one-send-per-connection` | On one printer connection, the app sends each queued job at most once. | The printer gets one job twice. | holds |
+| `job-sent-once` | The app sends each queued job to the printer at most once, across reconnects and a printer switch. | The printer gets one job twice. | holds |
+| `one-run-at-a-time` | At most one auto-send run works on the queue, across reconnects and a printer switch. | Two uploads of one job write the same file on the printer. | holds |
 
 ## Findings
 
@@ -31,7 +31,6 @@ These are failures of the current code, not of the models. Do not weaken a prope
 
 - **F1.** `persist_queue` (`src-tauri/src/print_queue.rs`) holds the queue lock across `std::fs::write`, which truncates the file and then writes it. The updater holds that lock only for the backup. Counterexample: the backup and the install finish. Then the printer's auto-send calls `update_job_status`, which truncates `print_queue.json`. Then `app.restart()` calls `process::exit`. A failed write leaves the same partial file and drops the lock, so the restart need not even race a write. At the next launch, `load_queue` cannot parse the file, logs a warning, and starts with an empty queue. The backup still holds the queue as it was at the backup.
 - **F2.** `BuildGate::close_when_idle` waits for `running == 0` but does not stop new builds while it waits. Counterexample: the updater reaches its idle check, a build enters first, the check sees it and sleeps, the build ends and wakes the updater, and another build enters before the next check. This repeats with no limit. Two builds that overlap in turn hold the update off the same way.
-- **F3.** `auto_send_pending_job` (`src-tauri/src/printer/mod.rs`) clones the first Pending job, and `submit_job` marks it Submitted only after the upload and the MQTT `project_file` command. `auto_send_running` lets one run of a connection hold the printer, and `end_connection` clears it, so a new connection's run is not held up by an old one. Counterexample: run A sends job 1 to printer A. The user switches to printer B before A marks the job Submitted. Printer B reports IDLE, run B picks job 1, which is still Pending, and sends it to printer B. The model does not say what the printers do with the two commands.
 
 ## Run
 
@@ -57,7 +56,8 @@ Exit 0 means every verdict matches the recorded one. Exit 1 means at least one d
 | `ungated-slice` | `slice_model` no longer calls `builds.enter()`. | `no-build-cut-off` |
 | `guard-dropped` | `update_install` binds the `Closed` guard to `_`, which drops it before the restart. | `no-build-cut-off` |
 | `guard-leaked` | An error path keeps the `Closed` guard alive. | `failed-update-reopens` |
-| `unguarded` | The claim in `auto_send_pending_job` no longer checks `auto_send_running`. | `one-send-per-connection` |
+| `unguarded` | The claim in `auto_send_pending_job` no longer checks `queue_run`. | `one-run-at-a-time` |
+| `released-on-switch` | `end_connection` frees `queue_run`, so a new connection's run can start beside an old one still uploading. | `job-sent-once` |
 
 ## Does my change touch the models?
 
@@ -93,7 +93,7 @@ A check whose verdict differs from the recorded one is the signal. Read its `<ch
 Replay each step of the trace against the code.
 
 - A step that cannot happen in the code means the model is wrong. Fix the model, and say what was wrong.
-- Every step can happen means the code breaks the property. Report it in the code's words, as a finding like F1 to F3. Do not change product code unless the user asks.
+- Every step can happen means the code breaks the property. Report it in the code's words, as a finding like F1 and F2. Do not change product code unless the user asks.
 
 ## Change the models with the code
 
