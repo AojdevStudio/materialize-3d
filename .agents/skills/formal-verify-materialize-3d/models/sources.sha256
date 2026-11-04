@@ -1,6 +1,6 @@
 3d20a3577ba84eac44cea1224c67b750322485ad23a756ef548173230d0a122a  src-tauri/src/fabrication/build_gate.rs
 c64e0eaf86f6529f23548e61f66f1a4fdf55577eff6c9d75b10d4567c14c9829  src-tauri/src/updater.rs
 92b3457c9c6352963357f0a6f0347a15aad1580014a15a88f5cafefbf4fa1830  src-tauri/src/print_queue.rs
-c9b226a42c926301f68c289261764dd46eced5acf3d5f2bd6b0eaeaf1fb940a6  src-tauri/src/printer/mod.rs
+579864401d6da5fc90f098114bd8e7574d3142499715ecd98a7bb92023d8e22d  src-tauri/src/printer/mod.rs
 3b2afd685ec918818fbd2fee9af92c5396695cb02741fdac4b36eb4ddc3a6a35  src-tauri/src/commands.rs
 054ada02c73eb3e45d05c3636c6f6fe3c17094ff6258d76234aac72af5ad27bf  src-tauri/src/fabrication/pipeline.rs

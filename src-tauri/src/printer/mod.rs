@@ -21,6 +21,9 @@ use crate::state::{
 const LOCAL_FAILURE_THRESHOLD: u32 = 3;
 /// Maximum reconnect backoff in seconds.
 const MAX_BACKOFF_SECS: u64 = 30;
+/// Bounds each FTPS connect, read, and write. An upload holds the print queue,
+/// so a printer that accepts and then goes silent must not hold it for good.
+const FTPS_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Errors from the PrinterService.
 #[derive(Debug, thiserror::Error)]
@@ -1310,8 +1313,17 @@ pub async fn upload_to_printer(
         // Connect to the FTPS server (implicit TLS on port 990)
         // For implicit FTPS, connect normally then wrap with into_secure
         let addr = format!("{host}:990");
-        let ftp_stream = suppaftp::NativeTlsFtpStream::connect(&addr)
-            .map_err(|e| PrinterError::Ftps(format!("FTPS connect to {addr} failed: {e}")))?;
+        let connect_failed = |e: &dyn std::fmt::Display| PrinterError::Ftps(format!("FTPS connect to {addr} failed: {e}"));
+        let socket_addr = std::net::ToSocketAddrs::to_socket_addrs(addr.as_str())
+            .map_err(|e| connect_failed(&e))?
+            .next()
+            .ok_or_else(|| connect_failed(&"no address"))?;
+        let ftp_stream = timed_stream(socket_addr)
+            .map_err(|e| connect_failed(&e))
+            .and_then(|control| {
+                suppaftp::NativeTlsFtpStream::connect_with_stream(control).map_err(|e| connect_failed(&e))
+            })?
+            .passive_stream_builder(|data| timed_stream(data).map_err(suppaftp::FtpError::ConnectionError));
 
         let mut ftp_stream = ftp_stream
             .into_secure(connector, &host)
@@ -1348,6 +1360,14 @@ pub async fn upload_to_printer(
     })
     .await
     .map_err(|e| PrinterError::Ftps(format!("FTPS upload task panicked: {e}")))?
+}
+
+/// A TCP stream whose connect, reads, and writes each end within `FTPS_TIMEOUT`.
+fn timed_stream(addr: std::net::SocketAddr) -> std::io::Result<std::net::TcpStream> {
+    let stream = std::net::TcpStream::connect_timeout(&addr, FTPS_TIMEOUT)?;
+    stream.set_read_timeout(Some(FTPS_TIMEOUT))?;
+    stream.set_write_timeout(Some(FTPS_TIMEOUT))?;
+    Ok(stream)
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
