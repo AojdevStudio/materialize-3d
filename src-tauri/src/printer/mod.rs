@@ -341,26 +341,22 @@ impl PrinterService {
         app_handle: &AppHandle<R>,
         app_state: &AppState,
     ) -> Result<(), PrinterError> {
-        let config = {
-            let Some(inner) = self.lock_for(id).await else {
+        // `mqtt::connect` does no I/O, so the client is made and stored under
+        // one lock, and a disconnect cannot land between the check and the store.
+        let (client, eventloop) = {
+            let Some(mut inner) = self.lock_for(id).await else {
                 return Ok(());
             };
             let creds = inner
                 .credentials
                 .as_ref()
                 .ok_or(PrinterError::NotConnected)?;
-            cloud::local_mqtt_config(creds)
-        };
-
-        log::info!("attempting local MQTT connection to {}", config.host);
-        let (client, eventloop) = mqtt::connect(&config).map_err(PrinterError::Mqtt)?;
-
-        {
-            let Some(mut inner) = self.lock_for(id).await else {
-                return Ok(());
-            };
+            let config = cloud::local_mqtt_config(creds);
+            log::info!("attempting local MQTT connection to {}", config.host);
+            let (client, eventloop) = mqtt::connect(&config).map_err(PrinterError::Mqtt)?;
             inner.mqtt_client = Some(client.clone());
-        }
+            (client, eventloop)
+        };
 
         self.run_event_loop(
             id,
@@ -380,26 +376,22 @@ impl PrinterService {
         app_handle: &AppHandle<R>,
         app_state: &AppState,
     ) -> Result<(), PrinterError> {
-        let config = {
-            let Some(inner) = self.lock_for(id).await else {
+        // `mqtt::connect` does no I/O, so the client is made and stored under
+        // one lock, and a disconnect cannot land between the check and the store.
+        let (client, eventloop) = {
+            let Some(mut inner) = self.lock_for(id).await else {
                 return Ok(());
             };
             let creds = inner
                 .credentials
                 .as_ref()
                 .ok_or(PrinterError::NotConnected)?;
-            cloud::cloud_mqtt_config(creds)
-        };
-
-        log::info!("attempting Cloud MQTT connection to {}", config.host);
-        let (client, eventloop) = mqtt::connect(&config).map_err(PrinterError::Mqtt)?;
-
-        {
-            let Some(mut inner) = self.lock_for(id).await else {
-                return Ok(());
-            };
+            let config = cloud::cloud_mqtt_config(creds);
+            log::info!("attempting Cloud MQTT connection to {}", config.host);
+            let (client, eventloop) = mqtt::connect(&config).map_err(PrinterError::Mqtt)?;
             inner.mqtt_client = Some(client.clone());
-        }
+            (client, eventloop)
+        };
 
         self.run_event_loop(
             id,
@@ -569,6 +561,7 @@ impl PrinterService {
                         prev_gcode_state,
                         curr
                     );
+                    let first_report = prev_gcode_state.is_none();
                     handle_gcode_transition(
                         prev_gcode_state,
                         curr.clone(),
@@ -577,7 +570,10 @@ impl PrinterService {
                     );
 
                     // ── IDLE transition: advance the print queue ──
-                    if curr == "IDLE" {
+                    // A connection's first report is not a transition. The
+                    // connect handler's trigger owns it, and a second run here
+                    // would upload the job twice.
+                    if curr == "IDLE" && !first_report {
                         log::info!("queue: advancing to next job after IDLE transition");
                         let service = self.clone();
                         let app_handle_clone = app_handle.clone();
@@ -1937,29 +1933,32 @@ mod tests {
         );
     }
 
-    /// Printer A at 127.0.0.2 connects and reports IDLE with one job queued,
-    /// then the user switches to printer B at 127.0.0.1 before A's 2 s
-    /// auto-send wakes.
-    async fn switch_while_auto_send_waits() -> (tauri::App<tauri::test::MockRuntime>, Arc<AppState>) {
+    /// Printer A at 127.0.0.2 starts with `jobs` queued and reaches ConnAck,
+    /// which schedules its 2 s auto-send.
+    async fn connect_printer_a(
+        jobs: usize,
+    ) -> (tauri::App<tauri::test::MockRuntime>, Arc<AppState>, PrinterService, ConnectionId) {
         use tauri::test::{mock_builder, mock_context, noop_assets};
 
         let app = mock_builder().build(mock_context(noop_assets())).expect("mock app");
         let app_state = Arc::new(AppState::default());
         app.manage(Arc::clone(&app_state));
-        let threemf = std::env::temp_dir().join(format!("m3d-auto-send-{}.3mf", uuid::Uuid::new_v4()));
-        std::fs::write(&threemf, b"3mf").expect("write the queued 3MF");
-        app_state.print_queue.lock().unwrap().push(crate::state::QueuedJob {
-            id: "job-1".into(),
-            model_path: String::new(),
-            threemf_path: threemf.to_string_lossy().into_owned(),
-            model_name: "cube".into(),
-            created_at: chrono::Utc::now(),
-            status: QueueStatus::Pending,
-            filament_grams: None,
-            filament_meters: None,
-            quality_profile: None,
-            thumbnail_path: None,
-        });
+        for n in 1..=jobs {
+            let threemf = std::env::temp_dir().join(format!("m3d-auto-send-{}.3mf", uuid::Uuid::new_v4()));
+            std::fs::write(&threemf, b"3mf").expect("write the queued 3MF");
+            app_state.print_queue.lock().unwrap().push(crate::state::QueuedJob {
+                id: format!("job-{n}"),
+                model_path: String::new(),
+                threemf_path: threemf.to_string_lossy().into_owned(),
+                model_name: "cube".into(),
+                created_at: chrono::Utc::now(),
+                status: QueueStatus::Pending,
+                filament_grams: None,
+                filament_meters: None,
+                quality_profile: None,
+                thumbnail_path: None,
+            });
+        }
 
         let service = PrinterService::new();
         let mut printer_a = loopback_printer("01P00A000000000");
@@ -1969,7 +1968,6 @@ mod tests {
             .await
             .expect("printer A starts");
         let a = service.inner.lock().await.connection;
-        app_state.printer.lock().unwrap().gcode_state = Some("IDLE".into());
         service
             .set_connected(
                 a,
@@ -1979,6 +1977,14 @@ mod tests {
                 &app_state,
             )
             .await;
+        (app, app_state, service, a)
+    }
+
+    /// Printer A reports IDLE with one job queued, then the user switches to
+    /// printer B at 127.0.0.1 before A's 2 s auto-send wakes.
+    async fn switch_while_auto_send_waits() -> (tauri::App<tauri::test::MockRuntime>, Arc<AppState>) {
+        let (app, app_state, service, _) = connect_printer_a(1).await;
+        app_state.printer.lock().unwrap().gcode_state = Some("IDLE".into());
 
         service.disconnect(app.handle(), &app_state).await;
         service
@@ -2023,5 +2029,47 @@ mod tests {
             QueueStatus::Pending,
             "only B's own trigger may send to B"
         );
+    }
+
+    #[tokio::test]
+    async fn a_connect_to_an_idle_printer_sends_one_queued_job() {
+        let (app, app_state, service, a) = connect_printer_a(2).await;
+        service
+            .handle_publish(a, br#"{"print":{"gcode_state":"IDLE"}}"#, app.handle(), &app_state)
+            .await;
+        tokio::time::sleep(Duration::from_secs(3)).await;
+
+        let queue = app_state.print_queue.lock().unwrap();
+        assert!(
+            matches!(&queue[0].status, QueueStatus::Failed { reason } if reason.contains("127.0.0.2:990")),
+            "one run sent job 1 to printer A, got {:?}",
+            queue[0].status
+        );
+        assert_eq!(queue[1].status, QueueStatus::Pending, "a second run sent job 2 as well");
+    }
+
+    #[tokio::test]
+    async fn start_drops_the_print_state_the_last_printer_reported() {
+        use tauri::test::{mock_builder, mock_context, noop_assets};
+
+        let app = mock_builder().build(mock_context(noop_assets())).expect("mock app");
+        let app_state = Arc::new(AppState::default());
+        {
+            let mut printer = app_state.printer.lock().unwrap();
+            printer.name = Some("T2".into());
+            printer.gcode_state = Some("RUNNING".into());
+        }
+        PrinterService::new()
+            .start(
+                loopback_printer("01P00B000000000"),
+                app.handle().clone(),
+                Arc::clone(&app_state),
+            )
+            .await
+            .expect("printer B starts");
+
+        let printer = app_state.printer.lock().unwrap();
+        assert_eq!(printer.gcode_state, None, "B starts without the last printer's print state");
+        assert_eq!(printer.name.as_deref(), Some("T2"), "the name the config set is kept");
     }
 }
