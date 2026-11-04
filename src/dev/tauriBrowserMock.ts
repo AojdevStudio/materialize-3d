@@ -638,9 +638,9 @@ export function installTauriBrowserMock() {
     }
 
     if (cmd === 'switch_printer') {
-      const args = payload as { id: string }
-      const config = mockPrinterConfigs.find((c) => c.id === args.id)
-      if (!config) throw new Error(`printer config ${args.id} not found`)
+      const args = payload as { configId: string }
+      const config = mockPrinterConfigs.find((c) => c.id === args.configId)
+      if (!config) throw new Error(`printer config ${args.configId} not found`)
 
       // Disconnect current
       if (mockState.printer.isConnected) {
@@ -655,8 +655,8 @@ export function installTauriBrowserMock() {
       }
 
       // Connect new
-      mockSelectedPrinterId = args.id
-      mockState.selectedPrinterId = args.id
+      mockSelectedPrinterId = args.configId
+      mockState.selectedPrinterId = args.configId
       mockState.printer = {
         ...mockState.printer,
         connectionState: 'discovering',
