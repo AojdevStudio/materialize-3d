@@ -2403,6 +2403,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn three_triggers_get_three_tries_when_a_fresh_trigger_runs_before_an_owed_one() {
+        use std::future::Future;
+
+        let (app, app_state, service, a) = connect_printer_a(0).await;
+        service
+            .handle_publish(a, br#"{"print":{"gcode_state":"IDLE"}}"#, app.handle(), &app_state)
+            .await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        for n in 1..=4 {
+            let threemf_path = if n == 1 {
+                queued_3mf()
+            } else {
+                format!("/tmp/m3d-auto-send-absent-{}.3mf", uuid::Uuid::new_v4())
+            };
+            app_state.print_queue.lock().unwrap().push(crate::state::QueuedJob {
+                id: format!("job-{n}"),
+                model_path: String::new(),
+                threemf_path,
+                model_name: "cube".into(),
+                created_at: chrono::Utc::now(),
+                status: QueueStatus::Pending,
+                filament_grams: None,
+                filament_meters: None,
+                quality_profile: None,
+                thumbnail_path: None,
+            });
+        }
+
+        let mut first = Box::pin(auto_send_pending_job(&service, a, RunCause::Trigger, app.handle()));
+        let holding = std::future::poll_fn(|cx| std::task::Poll::Ready(first.as_mut().poll(cx).is_pending())).await;
+        assert!(holding, "trigger 1 holds the queue while job 1 uploads");
+        auto_send_pending_job(&service, a, RunCause::Trigger, app.handle()).await.unwrap();
+        first.await.unwrap();
+        // Trigger 3 runs before the owed try that trigger 1 just started.
+        auto_send_pending_job(&service, a, RunCause::Trigger, app.handle()).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        let pending: Vec<_> = app_state
+            .print_queue
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|j| j.status == QueueStatus::Pending)
+            .map(|j| j.id.clone())
+            .collect();
+        assert_eq!(pending, ["job-4"], "three triggers got three tries");
+    }
+
+    #[tokio::test]
     async fn a_job_added_before_the_first_report_waits_for_it() {
         let (app, app_state, _service, _a) = connect_printer_a(0).await;
         app_state.printer.lock().unwrap().gcode_state = Some("IDLE".into());
