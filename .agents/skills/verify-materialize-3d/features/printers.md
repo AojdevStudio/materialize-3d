@@ -36,7 +36,7 @@ Preconditions:
 - `wd.ts text` on the badge joins its text spans, so it prints `No PrinterOFFLINE▾`. The `X · Y` form is the status bar `.status-online`, not the badge.
 - The Delete button has opacity 0 until its row is hovered (`.printer-selector-item:hover .printer-selector-delete`). WebDriver treats it as not displayed, so `wd.ts hover` the row first.
 - Deleting the active printer does not stop its connection loop. Disconnect first.
-- Switching while the badge reads `Reconnecting` fails with "printer service already running".
+- Switching while the badge reads `Reconnecting` stops that attempt and starts the new printer **(observed 2026-11-04, after #136)**. With T1 and T2 both at `127.0.0.1`, `Switch to T2` five seconds after `Switch to T1` showed no `.printer-selector-error`, and the badge read `T2RECONNECTING▾`. Before the fix it failed with "printer service already running".
 - Access codes go to the Secret Service through the `keyring` crate's `sync-secret-service` backend (since PR 55). `m3d.sh up` gives each run its own collection on a private D-Bus session, so a code survives a relaunch inside the run and `down` deletes it with `xdg/`. Outside the harness, a code stays in the desktop keyring until its config is deleted.
 - A successful connection, telemetry, and the `MQTT`/`CLOUD` badge need the real P2S. It sits on a separate VLAN, and the Linux host has no confirmed route to it.
 - The onboarding printer form saves the entered config and makes it the default before it tries to connect, and each click adds another row (issue #51), see [onboarding](./onboarding.md).
