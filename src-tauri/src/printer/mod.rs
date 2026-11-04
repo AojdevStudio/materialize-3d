@@ -1937,11 +1937,13 @@ mod tests {
 
     fn printer_a() -> BambuCredentials {
         let mut printer = loopback_printer("01P00A000000000");
-        printer.printer.host = "127.0.0.2".into();
+        // `localhost` refuses at once on Linux and macOS, while macOS leaves
+        // 127.0.0.2 unconfigured and the upload hangs.
+        printer.printer.host = "localhost".into();
         printer
     }
 
-    /// Printer A at 127.0.0.2 starts with `jobs` queued and reaches ConnAck.
+    /// Printer A at localhost starts with `jobs` queued and reaches ConnAck.
     async fn connect_printer_a(
         jobs: usize,
     ) -> (tauri::App<tauri::test::MockRuntime>, Arc<AppState>, PrinterService, ConnectionId) {
@@ -2042,7 +2044,7 @@ mod tests {
         tokio::time::sleep(Duration::from_secs(3)).await;
         let queue = app_state.print_queue.lock().unwrap();
         assert!(
-            matches!(&queue[0].status, QueueStatus::Failed { reason } if reason.contains("127.0.0.2:990")),
+            matches!(&queue[0].status, QueueStatus::Failed { reason } if reason.contains("localhost:990")),
             "one run sent job 1 to printer A, got {:?}",
             queue[0].status
         );
