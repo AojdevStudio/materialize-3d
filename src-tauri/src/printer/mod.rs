@@ -107,7 +107,9 @@ impl PrinterServiceInner {
         self.connection
     }
 
-    async fn publish(&self, cmd: BambuCommand) -> Result<(), PrinterError> {
+    /// Publishes `cmd`. A `project_file` sent while the printer is IDLE, by
+    /// the queue or by a manual start, moves readiness to JobSent.
+    async fn publish(&mut self, cmd: BambuCommand) -> Result<(), PrinterError> {
         let client = self.mqtt_client.as_ref().ok_or(PrinterError::NotConnected)?;
         let creds = self.credentials.as_ref().ok_or(PrinterError::NotConnected)?;
 
@@ -117,7 +119,11 @@ impl PrinterServiceInner {
 
         mqtt::publish(client, &topic, &payload)
             .await
-            .map_err(PrinterError::Mqtt)
+            .map_err(PrinterError::Mqtt)?;
+        if matches!(cmd, BambuCommand::ProjectFile { .. }) && self.readiness == Readiness::Idle {
+            self.readiness = Readiness::JobSent;
+        }
+        Ok(())
     }
 }
 
@@ -1225,13 +1231,7 @@ async fn submit_job(
 
     let sent = match service.lock_for(id).await {
         None => Err(PrinterError::NotConnected),
-        Some(mut inner) => {
-            let sent = inner.publish(cmd).await;
-            if sent.is_ok() && inner.readiness == Readiness::Idle {
-                inner.readiness = Readiness::JobSent;
-            }
-            sent
-        }
+        Some(mut inner) => inner.publish(cmd).await,
     };
     if let Err(e) = sent {
         let err_msg = format!("MQTT command failed: {e}");
