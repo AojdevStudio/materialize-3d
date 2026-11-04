@@ -43,7 +43,7 @@ TLA2TOOLS_JAR=/path/to/tla2tools.jar .agents/skills/formal-verify-materialize-3d
 
 On a machine where installing is allowed, the jar is the `tla2tools.jar` asset of the v1.7.4 release at `https://github.com/tlaplus/tlaplus/releases/tag/v1.7.4`. The script refuses any other jar by its SHA-256. Without TLC, say plainly that the models were not checked. Do not treat that as a pass.
 
-CI runs both commands in `.github/workflows/formal-verification.yml` on each pull request and push to `main` that changes a file in the `git diff` list below or this skill. Keep that workflow's `paths` list the same as the `git diff` list.
+CI runs both commands in `.github/workflows/formal-verification.yml` on each pull request and push to `main` that changes a file listed in `models/sources.sha256` or this skill. Before TLC, it fails when a listed file differs from its recorded hash. TLC reads only the models, so this is what stops the code from drifting away from them. Keep the workflow's `paths` list the same as the files in `models/sources.sha256`.
 
 Exit 0 means every verdict matches the recorded one. Exit 1 means at least one differs. Exit 2 means TLC could not run. The whole run takes about a minute and a half. The last line names the folder that holds each check's TLC output, `<check>.out`.
 
@@ -59,10 +59,11 @@ Exit 0 means every verdict matches the recorded one. Exit 1 means at least one d
 
 ## Does my change touch the models?
 
-Run this, with the sync commit below:
+`models/sources.sha256` holds the hash of each source file the models describe, as it was when someone last confirmed the models against the code. See what changed since then, from the repo root:
 
 ```sh
-git diff --stat <sync commit>..HEAD -- src-tauri/src/fabrication/build_gate.rs src-tauri/src/updater.rs src-tauri/src/print_queue.rs src-tauri/src/printer/mod.rs src-tauri/src/commands.rs src-tauri/src/fabrication/pipeline.rs
+s=.agents/skills/formal-verify-materialize-3d/models/sources.sha256
+git diff --stat "$(git log -1 --format=%H -- "$s")" -- $(awk '{print $2}' "$s")
 ```
 
 Then read each covered function that changed. Also look for new code that reaches the same state: a new caller of `builds.enter()`, a new long task that the restart could cut off, a new writer of the print queue, or a new trigger of `auto_send_pending_job`.
@@ -76,7 +77,11 @@ Then read each covered function that changed. Also look for new code that reache
 | `WriteBegin`, `WriteEnd`, `WriteFails` | `persist_queue` in `print_queue.rs`. |
 | `CheckIdle`, `Pick`, `UploadOk`, `UploadFails`, `UploadAborts`, `SendOk`, `SendFails`, `Mark` | `auto_send_pending_job` in `printer/mod.rs`. Its two `tokio::spawn` triggers are in the status handler and the connect handler. |
 
-Last confirmed to describe the code at sync commit `ce33b74`. Move it forward only after you confirm that the models describe the code at the new commit.
+Record new hashes only after you confirm that the models describe the code at HEAD:
+
+```sh
+sha256sum $(awk '{print $2}' "$s") >| "$s"
+```
 
 ## Read a result
 
@@ -89,7 +94,7 @@ Replay each step of the trace against the code.
 
 ## Change the models with the code
 
-Keep each model action one indivisible step in the code. When the code changes on purpose, change the action that describes it, from the code and not from the result. Change a property only when the promise changed on purpose, and cite the doc comment, test, or commit that says so. A new property that holds needs a mutant that fails it. Then run the checks, run `--mutants`, and move the sync commit.
+Keep each model action one indivisible step in the code. When the code changes on purpose, change the action that describes it, from the code and not from the result. Change a property only when the promise changed on purpose, and cite the doc comment, test, or commit that says so. A new property that holds needs a mutant that fails it. Then run the checks, run `--mutants`, and record the new hashes.
 
 ## Scope
 

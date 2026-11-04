@@ -3,8 +3,13 @@
 # .agents/skills/formal-verify-materialize-3d/SKILL.md.
 #
 # It runs only when a covered source file, the skill, or this file changes. The
-# source list is the one in the skill's "Does my change touch the models?"
-# section. Keep the two lists the same.
+# covered files are the ones in the skill's models/sources.sha256. Keep the two
+# lists the same.
+#
+# TLC reads only the models, so a code change alone cannot fail it. The first
+# check fails when a covered file no longer matches the hash recorded when the
+# models were last confirmed against the code. The skill's "Does my change touch
+# the models?" section says how to confirm them and record new hashes.
 #
 # check.sh exits 0 when every verdict matches the one recorded in its CHECKS
 # table, so the known findings F1 to F3, recorded as `fails`, pass. A finding
@@ -49,8 +54,15 @@ jobs:
     timeout-minutes: 10
     env:
       CHECK: .agents/skills/formal-verify-materialize-3d/scripts/check.sh
+      SOURCES: .agents/skills/formal-verify-materialize-3d/models/sources.sha256
     steps:
       - uses: actions/checkout@v4
+      - name: The covered code is the code the models were last confirmed against
+        run: |
+          if ! sha256sum --check --quiet "$SOURCES"; then
+            echo "::error file=$SOURCES::Code the models describe changed. Follow \"Does my change touch the models?\" in the formal-verify-materialize-3d skill, then record the new hashes."
+            exit 1
+          fi
       # The runner host has no Java. setup-java keeps the JDK in the runner's tool cache and reuses it.
       - uses: actions/setup-java@v6.1.0
         with:
