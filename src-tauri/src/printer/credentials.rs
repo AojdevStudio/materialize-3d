@@ -31,7 +31,7 @@ pub struct PrinterInfo {
 }
 
 /// Bambu Cloud credentials loaded from `~/.bambu-mcp/credentials.json`.
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct BambuCredentials {
     pub access_token: String,

@@ -80,9 +80,9 @@ impl PrinterService {
     /// Start the printer connection with the given credentials.
     /// Spawns a background tokio task for the connection lifecycle.
     ///
-    /// Starting again with the same credentials is a retry. A live
-    /// connection is kept, and an attempt that has not connected yet is
-    /// replaced with a fresh one. Other credentials need a disconnect first.
+    /// Starting again for the same printer is a retry. A live connection is
+    /// kept, and an attempt that has not connected yet is replaced with a
+    /// fresh one. Another printer needs a disconnect first.
     pub async fn start<R: Runtime>(
         &self,
         creds: BambuCredentials,
@@ -92,7 +92,9 @@ impl PrinterService {
         use ConnectionState::*;
 
         let mut inner = self.inner.lock().await;
-        let same_printer = inner.credentials.as_ref() == Some(&creds);
+        // Only the printer part: the optional cloud login is read from disk
+        // on each connect and can expire between two clicks.
+        let same_printer = inner.credentials.as_ref().map(|c| &c.printer) == Some(&creds.printer);
         match (&inner.connection_state, same_printer) {
             (Disconnected | Offline, _) | (Discovering | Reconnecting, true) => {}
             (ConnectedMqtt | ConnectedCloud, true) => return Ok(()),
@@ -113,6 +115,7 @@ impl PrinterService {
         }
         inner.mqtt_client = None;
         inner.credentials = Some(creds);
+        inner.connection_state = Discovering;
         inner.shutdown = false;
         inner.reconnect_count = 0;
         inner.local_failure_count = 0;
@@ -1733,18 +1736,31 @@ mod tests {
             .await
             .expect("first connect starts");
 
-        tokio::time::timeout(Duration::from_secs(10), async {
-            while app_state.printer.lock().unwrap().last_error.is_none() {
-                tokio::time::sleep(Duration::from_millis(20)).await;
+        let next_failure = |within: Duration| {
+            let app_state = Arc::clone(&app_state);
+            async move {
+                app_state.printer.lock().unwrap().last_error = None;
+                tokio::time::timeout(within, async {
+                    while app_state.printer.lock().unwrap().last_error.is_none() {
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                    }
+                })
+                .await
             }
-        })
-        .await
-        .expect("connect to a loopback host with no printer fails");
+        };
 
+        next_failure(Duration::from_secs(10))
+            .await
+            .expect("connect to a loopback host with no printer fails");
+
+        let retried = next_failure(Duration::from_secs(1));
         service
             .start(printer, app.handle().clone(), Arc::clone(&app_state))
             .await
             .expect("retry with the same printer starts a new attempt");
+        retried
+            .await
+            .expect("the retry attempts at once instead of waiting out the 2 s backoff");
 
         let other = service
             .start(
@@ -1756,6 +1772,35 @@ mod tests {
         assert!(
             matches!(other, Err(PrinterError::AlreadyRunning)),
             "a different printer still waits for a disconnect, got {other:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn another_printer_started_right_after_the_first_waits_for_a_disconnect() {
+        use tauri::test::{mock_builder, mock_context, noop_assets};
+
+        let app = mock_builder().build(mock_context(noop_assets())).expect("mock app");
+        let app_state = Arc::new(AppState::default());
+        let service = PrinterService::new();
+
+        service
+            .start(
+                loopback_printer("01P00A000000000"),
+                app.handle().clone(),
+                Arc::clone(&app_state),
+            )
+            .await
+            .expect("first printer starts");
+        let other = service
+            .start(
+                loopback_printer("01P00B000000000"),
+                app.handle().clone(),
+                Arc::clone(&app_state),
+            )
+            .await;
+        assert!(
+            matches!(other, Err(PrinterError::AlreadyRunning)),
+            "the first start already owns the service, got {other:?}"
         );
     }
 }
