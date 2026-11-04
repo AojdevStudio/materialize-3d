@@ -88,7 +88,7 @@ struct PrinterServiceInner {
     /// not ready for waits for its next IDLE report.
     owed_runs: u32,
     /// The `gcode_start_time` of the print each printer, by serial, showed
-    /// RUNNING or PAUSE when the app dropped its print state. The printer's
+    /// RUNNING or PAUSE when the app forgot its print. The printer's
     /// first report that names a start time settles it: a FINISH or FAILED for
     /// the same start time reads as that print's end, and anything else drops
     /// it. A print with no known start time is not kept, because no later
@@ -98,16 +98,24 @@ struct PrinterServiceInner {
 }
 
 impl PrinterServiceInner {
+    /// Forgets the print `printer` shows, so no later report is judged
+    /// against it. A print in progress is kept in `ended_mid_print`.
+    fn forget_print(&mut self, printer: &mut PrinterState) {
+        if let (Some("RUNNING" | "PAUSE"), Some(start), Some(creds)) =
+            (printer.gcode_state.as_deref(), &printer.gcode_start_time, &self.credentials)
+        {
+            self.ended_mid_print.insert(creds.printer.device_id.clone(), start.clone());
+        }
+        printer.gcode_state = None;
+        printer.gcode_start_time = None;
+    }
+
     /// Drops the print state a printer reported, so another printer does not
     /// start with it. The name stays until `start` names the next printer. A
     /// print in progress is kept in `ended_mid_print`.
     fn drop_print_state(&mut self, app_state: &AppState) {
         if let Ok(mut printer) = app_state.printer.lock() {
-            if let (Some("RUNNING" | "PAUSE"), Some(start), Some(creds)) =
-                (printer.gcode_state.as_deref(), &printer.gcode_start_time, &self.credentials)
-            {
-                self.ended_mid_print.insert(creds.printer.device_id.clone(), start.clone());
-            }
+            self.forget_print(&mut printer);
             *printer = PrinterState {
                 name: printer.name.take(),
                 ..PrinterState::default()
@@ -222,9 +230,8 @@ impl PrinterService {
             }
         }
         let id = inner.end_connection();
-        // A retry for the same printer, even at a new host, keeps its state, so
-        // a print that finished while it was offline still reads as RUNNING to
-        // FINISH.
+        // A retry for the same printer, even at a new host, shows what the
+        // printer last reported until the retry connects.
         let same_serial = inner.credentials.as_ref().map(|c| &c.printer.device_id)
             == Some(&creds.printer.device_id);
         if !same_serial {
@@ -658,8 +665,8 @@ impl PrinterService {
                 .map(|p| (p.gcode_state.clone(), p.gcode_start_time.clone()))
                 .unwrap_or_default();
 
-            // A print in progress when this printer's print state was dropped
-            // last read RUNNING, though this connection never saw it.
+            // A print in progress when the app forgot this printer's print
+            // last read RUNNING, though this session never saw it.
             let connection = &mut *connection;
             let serial = connection.credentials.as_ref().map(|c| c.printer.device_id.as_str());
             let ended = matches!(curr_gcode_state.as_deref(), Some("FINISH" | "FAILED"));
@@ -745,8 +752,9 @@ impl PrinterService {
     }
 
     /// Transition to a connected state with the appropriate connection type.
-    /// The first status report after it advances the print queue. Does nothing
-    /// once connection `id` ended, and holds the service lock, like `set_state`.
+    /// The first status report after it advances the print queue, and is not
+    /// judged against the print an earlier session showed. Does nothing once
+    /// connection `id` ended, and holds the service lock, like `set_state`.
     async fn set_connected<R: Runtime>(
         &self,
         id: ConnectionId,
@@ -764,6 +772,7 @@ impl PrinterService {
         let printer_host = inner.credentials.as_ref().map(|c| c.printer.host.clone());
 
         if let Ok(mut printer) = app_state.printer.lock() {
+            inner.forget_print(&mut printer);
             printer.connection_state = state.clone();
             printer.connection_type = Some(conn_type.clone());
             printer.is_connected = true;
@@ -2632,7 +2641,7 @@ mod tests {
         assert_eq!(
             app_state.printer.lock().unwrap().gcode_state.as_deref(),
             Some("RUNNING"),
-            "a print that finishes during the outage still reads as RUNNING to FINISH"
+            "the retry shows the print it last saw until it connects"
         );
     }
 
