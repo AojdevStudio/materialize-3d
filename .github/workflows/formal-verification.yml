@@ -76,6 +76,7 @@ jobs:
           if ! echo "$sha  $jar" | sha256sum --check --status; then
             mkdir -p "$dir"
             tmp=$(mktemp "$dir/download.XXXXXX")
+            trap 'rm -f "$tmp"' EXIT
             curl -fsSL --retry 3 -o "$tmp" https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar
             echo "$sha  $tmp" | sha256sum --check
             mv "$tmp" "$jar"

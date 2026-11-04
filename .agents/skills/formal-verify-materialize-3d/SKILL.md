@@ -43,7 +43,7 @@ TLA2TOOLS_JAR=/path/to/tla2tools.jar .agents/skills/formal-verify-materialize-3d
 
 On a machine where installing is allowed, the jar is the `tla2tools.jar` asset of the v1.7.4 release at `https://github.com/tlaplus/tlaplus/releases/tag/v1.7.4`. The script refuses any other jar by its SHA-256. Without TLC, say plainly that the models were not checked. Do not treat that as a pass.
 
-CI runs both commands in `.github/workflows/formal-verification.yml` on each pull request and push to `main` that changes a file listed in `models/sources.sha256` or this skill. Before TLC, it fails when a listed file differs from its recorded hash. TLC reads only the models, so this is what stops the code from drifting away from them. Keep the workflow's `paths` list the same as the files in `models/sources.sha256`.
+CI runs both commands in `.github/workflows/formal-verification.yml` on each push to `main`, and each pull request from a branch in this repository, that changes a file listed in `models/sources.sha256` or this skill. Pull requests from forks and from Dependabot skip it, as they skip every self-hosted job. Before TLC, it fails when a listed file differs from its recorded hash. TLC reads only the models, so this is what stops the code from drifting away from them. Keep the workflow's `paths` list the same as the files in `models/sources.sha256`.
 
 Exit 0 means every verdict matches the recorded one. Exit 1 means at least one differs. Exit 2 means TLC could not run. The whole run takes about a minute and a half. The last line names the folder that holds each check's TLC output, `<check>.out`.
 
@@ -80,7 +80,7 @@ Then read each covered function that changed. Also look for new code that reache
 Record new hashes only after you confirm that the models describe the code at HEAD:
 
 ```sh
-sha256sum $(awk '{print $2}' "$s") >| "$s"
+sha256sum $(awk '{print $2}' "$s") >| "$s.new" && mv "$s.new" "$s"
 ```
 
 ## Read a result
