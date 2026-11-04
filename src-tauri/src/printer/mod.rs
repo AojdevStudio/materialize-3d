@@ -55,17 +55,21 @@ struct PrinterServiceInner {
     connection_task: Option<tokio::task::JoinHandle<()>>,
 }
 
+/// Drops the print state a printer reported, so another printer does not
+/// start with it. The name comes from the saved config and stays.
+fn drop_print_state(app_state: &AppState) {
+    if let Ok(mut printer) = app_state.printer.lock() {
+        *printer = PrinterState {
+            name: printer.name.take(),
+            ..PrinterState::default()
+        };
+    }
+}
+
 impl PrinterServiceInner {
-    /// Ends the current connection. Work it spawned writes nothing from here
-    /// on, and the print state its printer reported is dropped.
-    fn end_connection(&mut self, app_state: &AppState) -> ConnectionId {
+    /// Ends the current connection. Work it spawned writes nothing from here on.
+    fn end_connection(&mut self) -> ConnectionId {
         self.connection = ConnectionId(self.connection.0 + 1);
-        if let Ok(mut printer) = app_state.printer.lock() {
-            *printer = PrinterState {
-                name: printer.name.take(),
-                ..PrinterState::default()
-            };
-        }
         self.connection
     }
 
@@ -148,7 +152,12 @@ impl PrinterService {
                 Err(e) => std::panic::resume_unwind(e.into_panic()),
             }
         }
-        let id = inner.end_connection(&app_state);
+        let id = inner.end_connection();
+        // A retry for the same printer keeps its state, so a print that
+        // finished while it was offline still reads as RUNNING to FINISH.
+        if !same_printer {
+            drop_print_state(&app_state);
+        }
         inner.mqtt_client = None;
         inner.credentials = Some(creds);
         inner.connection_state = Discovering;
@@ -166,7 +175,8 @@ impl PrinterService {
     /// Disconnect cleanly.
     pub async fn disconnect<R: Runtime>(&self, app_handle: &AppHandle<R>, app_state: &AppState) {
         let mut inner = self.inner.lock().await;
-        inner.end_connection(app_state);
+        inner.end_connection();
+        drop_print_state(app_state);
 
         if let Some(client) = inner.mqtt_client.take() {
             if let Err(e) = client.disconnect().await {
@@ -1128,13 +1138,7 @@ async fn auto_send_pending_job<R: Runtime>(
     let file_path = std::path::PathBuf::from(&job.threemf_path);
     if !file_path.exists() {
         let err = format!("3MF file not found: {}", job.threemf_path);
-        log::error!("auto-send: {err}");
-        crate::print_queue::update_job_status(
-            &app_state,
-            &job.id,
-            crate::state::QueueStatus::Failed { reason: err },
-        )?;
-        return Ok(());
+        return fail_job(service, id, &app_state, &job.id, err).await;
     }
 
     let file_bytes = std::fs::read(&file_path)
@@ -1153,15 +1157,7 @@ async fn auto_send_pending_job<R: Runtime>(
     // Upload via FTPS
     if let Err(e) = upload_to_printer(&host, &access_code, &file_path).await {
         let err_msg = format!("FTPS upload failed: {e}");
-        log::error!("auto-send: {err_msg}");
-        crate::print_queue::update_job_status(
-            &app_state,
-            &job.id,
-            crate::state::QueueStatus::Failed {
-                reason: err_msg,
-            },
-        )?;
-        return Ok(());
+        return fail_job(service, id, &app_state, &job.id, err_msg).await;
     }
 
     // Send MQTT project_file command
@@ -1177,15 +1173,7 @@ async fn auto_send_pending_job<R: Runtime>(
 
     if let Err(e) = service.send_command_for(id, cmd).await {
         let err_msg = format!("MQTT command failed: {e}");
-        log::error!("auto-send: {err_msg}");
-        crate::print_queue::update_job_status(
-            &app_state,
-            &job.id,
-            crate::state::QueueStatus::Failed {
-                reason: err_msg,
-            },
-        )?;
-        return Ok(());
+        return fail_job(service, id, &app_state, &job.id, err_msg).await;
     }
 
     // Mark as submitted
@@ -1200,6 +1188,23 @@ async fn auto_send_pending_job<R: Runtime>(
         job.model_name
     );
     Ok(())
+}
+
+/// Marks an auto-send job Failed. A run whose connection ended writes nothing,
+/// and the job stays Pending for the next printer's run.
+async fn fail_job(
+    service: &PrinterService,
+    id: ConnectionId,
+    app_state: &AppState,
+    job_id: &str,
+    reason: String,
+) -> Result<(), String> {
+    let Some(_connection) = service.lock_for(id).await else {
+        log::info!("auto-send: the connection ended, job {job_id} stays Pending ({reason})");
+        return Ok(());
+    };
+    log::error!("auto-send: {reason}");
+    crate::print_queue::update_job_status(app_state, job_id, QueueStatus::Failed { reason })
 }
 
 // ─── FTPS Upload ──────────────────────────────────────────────────────────────
@@ -2071,5 +2076,31 @@ mod tests {
         let printer = app_state.printer.lock().unwrap();
         assert_eq!(printer.gcode_state, None, "B starts without the last printer's print state");
         assert_eq!(printer.name.as_deref(), Some("T2"), "the name the config set is kept");
+    }
+
+    #[tokio::test]
+    async fn a_retry_for_the_same_printer_keeps_its_print_state() {
+        use tauri::test::{mock_builder, mock_context, noop_assets};
+
+        let app = mock_builder().build(mock_context(noop_assets())).expect("mock app");
+        let app_state = Arc::new(AppState::default());
+        let service = PrinterService::new();
+        let printer = loopback_printer("01P00A000000000");
+        service
+            .start(printer.clone(), app.handle().clone(), Arc::clone(&app_state))
+            .await
+            .expect("printer A starts");
+        app_state.printer.lock().unwrap().gcode_state = Some("RUNNING".into());
+
+        service
+            .start(printer, app.handle().clone(), Arc::clone(&app_state))
+            .await
+            .expect("the retry starts");
+
+        assert_eq!(
+            app_state.printer.lock().unwrap().gcode_state.as_deref(),
+            Some("RUNNING"),
+            "a print that finishes during the outage still reads as RUNNING to FINISH"
+        );
     }
 }

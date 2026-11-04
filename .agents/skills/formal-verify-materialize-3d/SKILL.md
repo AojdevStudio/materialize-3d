@@ -75,7 +75,7 @@ Then read each covered function that changed. Also look for new code that reache
 | `Reopen` | `Drop for Closed`, on each error return of `install_when_idle`. |
 | `Click`, `DownloadFails`, `BackupOk`, `BackupFails`, `InstallOk`, `InstallFails`, `Exit` | `update_install` and `install_when_idle` in `updater.rs`, then Tauri's `AppHandle::restart`, which ends in `process::exit(0)`. |
 | `WriteBegin`, `WriteEnd`, `WriteFails` | `persist_queue` in `print_queue.rs`. |
-| `CheckIdle`, `Pick`, `UploadOk`, `UploadFails`, `UploadAborts`, `SendOk`, `SendFails`, `Mark` | `auto_send_pending_job` in `printer/mod.rs`. Its two `tokio::spawn` triggers are in the status handler and the connect handler. |
+| `CheckIdle`, `Pick`, `UploadOk`, `UploadFails`, `UploadAborts`, `SendOk`, `SendFails`, `SendAborts`, `Mark` | `auto_send_pending_job` in `printer/mod.rs`. Its two `tokio::spawn` triggers are in the status handler and the connect handler. |
 
 Record new hashes only after you confirm that the models describe the code at HEAD:
 

@@ -6,7 +6,7 @@
 (* handler 2 s after it connects. Nothing stops two runs overlapping.      *)
 (*                                                                         *)
 (* Each action is one indivisible step of one run:                         *)
-(*   CheckIdle  lock the service for the run's connection, read           *)
+(*   CheckIdle  lock the service for the run's connection, read            *)
 (*              gcode_state == "IDLE" and the credentials. A run whose     *)
 (*              connection ended reads as not IDLE.                        *)
 (*   Pick       lock AppState.print_queue, clone the first Pending job     *)
@@ -15,7 +15,8 @@
 (*   Mark       update_job_status(Submitted)                               *)
 (* A failed upload or send marks the job Failed and ends the run. A 3MF   *)
 (* that cannot be read, or missing credentials, ends the run with the job  *)
-(* still Pending.                                                          *)
+(* still Pending. So does a failure after the run's connection ended.      *)
+(* fail_job then writes nothing (UploadAborts, SendAborts).                *)
 (***************************************************************************)
 EXTENDS Naturals
 
@@ -76,6 +77,10 @@ SendOk(r) ==
 
 SendFails(r) == pc[r] = "send" /\ Fail(r)
 
+SendAborts(r) ==
+  /\ pc[r] = "send" /\ pc' = [pc EXCEPT ![r] = "done"]
+  /\ UNCHANGED <<printer, status, sent, job>>
+
 Mark(r) ==
   /\ pc[r] = "mark"
   /\ status' = [status EXCEPT ![job[r]] = "Submitted"]
@@ -91,7 +96,7 @@ PrinterStarts ==
 Next ==
   \/ \E r \in Runs :
        CheckIdle(r) \/ Pick(r) \/ UploadOk(r) \/ UploadFails(r) \/ UploadAborts(r)
-       \/ SendOk(r) \/ SendFails(r) \/ Mark(r)
+       \/ SendOk(r) \/ SendFails(r) \/ SendAborts(r) \/ Mark(r)
   \/ PrinterStarts
 
 Spec == Init /\ [][Next]_vars
