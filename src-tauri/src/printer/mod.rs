@@ -88,9 +88,10 @@ struct PrinterServiceInner {
     /// not ready for waits for its next IDLE report.
     owed_runs: u32,
     /// The print each printer was last seen RUNNING, by serial, with its
-    /// `gcode_start_time`, until its end is recorded. It outlives connections,
-    /// so a print that ends while the app is disconnected still gets its
-    /// history row from the printer's first report on its next connection.
+    /// `gcode_start_time` once a report names it, until its end is recorded.
+    /// It outlives connections, so a print that ends while the app is
+    /// disconnected still gets its history row from the printer's first report
+    /// on its next connection.
     unrecorded_prints: HashMap<String, Option<String>>,
     connection_task: Option<tokio::task::JoinHandle<()>>,
 }
@@ -643,10 +644,17 @@ impl PrinterService {
                 let serial = &creds.printer.device_id;
                 match gcode_state.as_str() {
                     "RUNNING" => {
-                        connection.unrecorded_prints.insert(serial.clone(), start_time);
+                        let seen = connection.unrecorded_prints.entry(serial.clone()).or_default();
+                        // A delta without a start time is the same print, not a new one.
+                        if start_time.is_some() {
+                            *seen = start_time;
+                        }
                     }
                     "FINISH" | "FAILED"
-                        if connection.unrecorded_prints.get(serial) == Some(&start_time) =>
+                        if connection
+                            .unrecorded_prints
+                            .get(serial)
+                            .is_some_and(|seen| seen.is_none() || *seen == start_time) =>
                     {
                         connection.unrecorded_prints.remove(serial);
                         log::info!("print ended: {gcode_state} (started {start_time:?})");
@@ -2580,16 +2588,24 @@ mod tests {
         id
     }
 
-    #[tokio::test]
-    async fn a_print_that_finishes_while_switched_away_gets_one_history_row_on_return() {
+    /// A mock app that can show notifications, with a history database.
+    fn history_app() -> (tauri::App<tauri::test::MockRuntime>, Arc<AppState>, PrinterService) {
         use tauri::test::{mock_builder, mock_context, noop_assets};
 
         let app = mock_builder()
             .plugin(tauri_plugin_notification::init())
             .build(mock_context(noop_assets()))
             .expect("mock app");
-        let app_state = Arc::new(test_app_state());
-        let service = PrinterService::new();
+        (app, Arc::new(test_app_state()), PrinterService::new())
+    }
+
+    fn history_rows(app_state: &AppState) -> Vec<(String, String)> {
+        get_test_history(app_state).into_iter().map(|r| (r.model_name, r.status)).collect()
+    }
+
+    #[tokio::test]
+    async fn a_print_that_finishes_while_switched_away_gets_one_history_row_on_return() {
+        let (app, app_state, service) = history_app();
 
         let a = connect_without_loop(&service, printer_a(), &app, &app_state).await;
         service
@@ -2614,11 +2630,50 @@ mod tests {
         service.handle_publish(a, finished, app.handle(), &app_state).await;
         service.handle_publish(a, finished, app.handle(), &app_state).await;
 
-        let history = get_test_history(&app_state);
         assert_eq!(
-            history.iter().map(|r| (r.model_name.as_str(), r.status.as_str())).collect::<Vec<_>>(),
-            [("Benchy", "success")],
+            history_rows(&app_state),
+            [("Benchy".into(), "success".into())],
             "the print A ran while the app was on B gets one row"
         );
+    }
+
+    #[tokio::test]
+    async fn a_print_whose_start_time_first_shows_in_its_last_report_gets_a_history_row() {
+        let (app, app_state, service) = history_app();
+        let a = connect_without_loop(&service, printer_a(), &app, &app_state).await;
+
+        for report in [
+            br#"{"print":{"gcode_state":"RUNNING","subtask_name":"Benchy"}}"#.as_slice(),
+            br#"{"print":{"gcode_state":"FINISH","gcode_start_time":"1710500000"}}"#,
+        ] {
+            service.handle_publish(a, report, app.handle(), &app_state).await;
+        }
+
+        assert_eq!(history_rows(&app_state), [("Benchy".into(), "success".into())]);
+    }
+
+    #[tokio::test]
+    async fn a_running_report_without_a_start_time_keeps_the_print_already_seen() {
+        let (app, app_state, service) = history_app();
+        for report in [
+            br#"{"print":{"gcode_state":"RUNNING","gcode_start_time":"1710500000","subtask_name":"Benchy"}}"#.as_slice(),
+            br#"{"print":{"gcode_state":"RUNNING"}}"#,
+        ] {
+            let a = connect_without_loop(&service, printer_a(), &app, &app_state).await;
+            service.handle_publish(a, report, app.handle(), &app_state).await;
+            service.disconnect(app.handle(), &app_state).await;
+        }
+
+        let a = connect_without_loop(&service, printer_a(), &app, &app_state).await;
+        service
+            .handle_publish(
+                a,
+                br#"{"print":{"gcode_state":"FINISH","gcode_start_time":"1710500000","subtask_name":"Benchy"}}"#,
+                app.handle(),
+                &app_state,
+            )
+            .await;
+
+        assert_eq!(history_rows(&app_state), [("Benchy".into(), "success".into())]);
     }
 }
