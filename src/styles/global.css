@@ -365,7 +365,7 @@ button {
   padding: 6px 8px;
   font-size: 12px;
   font-family: 'JetBrains Mono', monospace;
-  background: var(--bg-primary);
+  background: var(--bg-deep);
   border: 1px solid var(--border);
   border-radius: 4px;
   color: var(--text-primary);
@@ -404,7 +404,7 @@ button {
   background: var(--accent-orange);
   border: none;
   border-radius: 4px;
-  color: var(--bg-primary);
+  color: var(--bg-deep);
   font-weight: 600;
   cursor: pointer;
 }
