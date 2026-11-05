@@ -52,7 +52,7 @@ zip = { version = "9", default-features = false, features = ["aes-crypto", "bzip
 flate2 = "1"
 quick-xml = "0.38"
 tempfile = "3"
-suppaftp = { version = "6", features = ["native-tls", "deprecated"] }
+suppaftp = { version = "12", features = ["native-tls", "deprecated"] }
 md5 = "0.7"
 native-tls = "0.2"
 rusqlite = { version = "0.32", features = ["bundled"] }
