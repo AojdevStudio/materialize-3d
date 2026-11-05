@@ -6,7 +6,6 @@ pub mod protocol;
 pub use credentials::BambuCredentials;
 pub use protocol::{BambuCommand, BambuReport};
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -87,35 +86,15 @@ struct PrinterServiceInner {
     /// a time. The count stays across a reconnect, so a try the printer was
     /// not ready for waits for its next IDLE report.
     owed_runs: u32,
-    /// The `gcode_start_time` of the print each printer, by serial, showed
-    /// RUNNING or PAUSE when the app forgot its print. The first report after
-    /// which the app knows both a start time and a print state settles it: a
-    /// FINISH or FAILED for the same start time reads as that print's end, and
-    /// anything else drops it. A print with no known start time is not kept,
-    /// because no later report could tell it from another print.
-    ended_mid_print: HashMap<String, String>,
     connection_task: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl PrinterServiceInner {
-    /// Forgets the print `printer` shows, so no later report is judged
-    /// against it. A print in progress is kept in `ended_mid_print`.
-    fn forget_print(&mut self, printer: &mut PrinterState) {
-        if let (Some("RUNNING" | "PAUSE"), Some(start), Some(creds)) =
-            (printer.gcode_state.as_deref(), &printer.gcode_start_time, &self.credentials)
-        {
-            self.ended_mid_print.insert(creds.printer.device_id.clone(), start.clone());
-        }
-        printer.gcode_state = None;
-        printer.gcode_start_time = None;
-    }
-
     /// Drops the print state a printer reported, so another printer does not
     /// start with it. The name stays until `start` names the next printer. A
-    /// print in progress is kept in `ended_mid_print`.
+    /// print in progress stays in the `seen_prints` table.
     fn drop_print_state(&mut self, app_state: &AppState) {
         if let Ok(mut printer) = app_state.printer.lock() {
-            self.forget_print(&mut printer);
             *printer = PrinterState {
                 name: printer.name.take(),
                 ..PrinterState::default()
@@ -178,7 +157,6 @@ impl PrinterService {
                 readiness: Readiness::WaitingForIdle,
                 queue_held: false,
                 owed_runs: 0,
-                ended_mid_print: HashMap::new(),
                 connection_task: None,
             })),
             transitions: Arc::default(),
@@ -592,9 +570,8 @@ impl PrinterService {
         }
     }
 
-    /// Parse and merge an incoming MQTT publish message.
-    /// Detects gcode_state transitions and dispatches side effects:
-    /// - RUNNING→FINISH/FAILED: record print history + send notification
+    /// Parse and merge an incoming MQTT publish message, then act on it:
+    /// - A print the app saw in progress ends: record print history + send notification
     /// - A report that shows the printer became IDLE: send it the next queued job
     ///
     /// A report that arrives after connection `id` ended is dropped whole.
@@ -665,43 +642,19 @@ impl PrinterService {
                 .map(|p| (p.gcode_state.clone(), p.gcode_start_time.clone()))
                 .unwrap_or_default();
 
-            // A print in progress when the app forgot this printer's print
-            // last read RUNNING, though this session never saw it.
-            let connection = &mut *connection;
-            let serial = connection.credentials.as_ref().map(|c| c.printer.device_id.as_str());
-            let ended = matches!(curr_gcode_state.as_deref(), Some("FINISH" | "FAILED"));
-            let carried_print_ended = match (serial, &start_time, &curr_gcode_state) {
-                (Some(serial), Some(start), Some(_)) => connection
-                    .ended_mid_print
-                    .remove(serial)
-                    .is_some_and(|carried| ended && carried == *start),
-                _ => false,
-            };
-            let prev_gcode_state = if carried_print_ended {
-                Some("RUNNING".to_string())
-            } else {
-                prev_gcode_state
-            };
-            if ended && prev_gcode_state.as_deref() == Some("RUNNING") {
-                if let Some(serial) = serial {
-                    connection.ended_mid_print.remove(serial);
-                }
+            if curr_gcode_state.is_some() && prev_gcode_state != curr_gcode_state {
+                log::info!("gcode_state transition: {prev_gcode_state:?} → {curr_gcode_state:?}");
             }
-
-            // ── Dispatch transition if state actually changed ──
-            if let Some(ref curr) = curr_gcode_state {
-                if prev_gcode_state.as_deref() != Some(curr.as_str()) {
-                    log::info!(
-                        "gcode_state transition: {:?} → {:?}",
-                        prev_gcode_state,
-                        curr
-                    );
-                    handle_gcode_transition(
-                        prev_gcode_state,
-                        curr.clone(),
-                        app_handle,
-                        app_state,
-                    );
+            if let Some(creds) = &connection.credentials {
+                if let Err(e) = settle_print(
+                    &creds.printer.device_id,
+                    prev_gcode_state.as_deref(),
+                    curr_gcode_state.as_deref(),
+                    start_time.as_deref(),
+                    app_handle,
+                    app_state,
+                ) {
+                    log::error!("print history: {e}");
                 }
             }
 
@@ -753,7 +706,8 @@ impl PrinterService {
 
     /// Transition to a connected state with the appropriate connection type.
     /// The first status report after it advances the print queue, and is not
-    /// judged against the print an earlier session showed. Does nothing once
+    /// judged against the print an earlier session showed. A print in progress
+    /// stays in the `seen_prints` table. Does nothing once
     /// connection `id` ended, and holds the service lock, like `set_state`.
     async fn set_connected<R: Runtime>(
         &self,
@@ -772,7 +726,8 @@ impl PrinterService {
         let printer_host = inner.credentials.as_ref().map(|c| c.printer.host.clone());
 
         if let Ok(mut printer) = app_state.printer.lock() {
-            inner.forget_print(&mut printer);
+            printer.gcode_state = None;
+            printer.gcode_start_time = None;
             printer.connection_state = state.clone();
             printer.connection_type = Some(conn_type.clone());
             printer.is_connected = true;
@@ -791,86 +746,82 @@ impl PrinterService {
     }
 }
 
-// ─── Gcode State Transition Handler ───────────────────────────────────────────
+// ─── Print End Recording ──────────────────────────────────────────────────────
 
-/// Handle a gcode_state transition. Called when prev != curr.
+/// Keeps the seen print of printer `serial` in step with its latest report,
+/// and records a history row when a print the app saw in progress ends.
 ///
-/// - RUNNING→FINISH: Record a "success" history entry, fire notification
-/// - RUNNING→FAILED: Record a "failed" history entry with fail_reason, fire notification
-fn handle_gcode_transition<R: Runtime>(
-    prev: Option<String>,
-    curr: String,
+/// A report that shows RUNNING or PAUSE with a known start time stores that
+/// print as seen. A FINISH or FAILED ends a print the app saw: the stored
+/// print with the same start time, or the one this connection's previous
+/// report showed RUNNING or PAUSE. A recorded print stays marked, so a
+/// repeated report never records it again. An open print that a report with
+/// a known start time does not continue is forgotten. A print with no known
+/// start time is not stored, because no later report could tell it from
+/// another print.
+fn settle_print<R: Runtime>(
+    serial: &str,
+    prev: Option<&str>,
+    curr: Option<&str>,
+    start_time: Option<&str>,
     app_handle: &AppHandle<R>,
     app_state: &AppState,
-) {
-    let prev_str = prev.as_deref().unwrap_or("(none)");
-    let is_from_running = prev_str == "RUNNING";
-
-    if !is_from_running {
-        return;
-    }
-
-    let (status, should_record) = match curr.as_str() {
-        "FINISH" => ("success", true),
-        "FAILED" => ("failed", true),
-        _ => return,
+) -> Result<(), String> {
+    let Some(curr) = curr else { return Ok(()) };
+    let in_progress = |state: &str| matches!(state, "RUNNING" | "PAUSE");
+    let seen = with_db(app_state, |conn| crate::database::seen_print(conn, serial))?;
+    let is_seen = seen.as_ref().is_some_and(|seen| Some(seen.start_time.as_str()) == start_time);
+    let recorded = is_seen && seen.as_ref().is_some_and(|seen| seen.recorded);
+    let open = seen.as_ref().is_some_and(|seen| !seen.recorded);
+    let ended = match curr {
+        "FINISH" => Some("success"),
+        "FAILED" => Some("failed"),
+        _ => None,
     };
 
-    if !should_record {
-        return;
-    }
-
-    match record_print_completion(app_state, status) {
-        Some((model_name, fail_reason)) => {
-            // Emit history:changed with updated list
+    match (ended, start_time) {
+        (Some(status), _) if !recorded && (is_seen || prev.is_some_and(in_progress)) => {
+            let (model_name, fail_reason) = record_print_completion(app_state, serial, status)?;
             emit_history_changed(app_handle, app_state);
-
-            // Fire OS notification
-            let fail_reason_for_notif = if status == "failed" {
-                fail_reason
-            } else {
-                None
-            };
-            send_print_notification(
-                app_handle,
-                &model_name,
-                status,
-                fail_reason_for_notif.as_deref(),
-            );
-
-            // Emit proactive notification for the frontend agent listener
-            let event_type = match status {
-                "success" => "print_complete",
-                "failed" => "print_failed",
-                _ => return,
-            };
+            send_print_notification(app_handle, &model_name, status, fail_reason.as_deref());
+            let event_type = if status == "success" { "print_complete" } else { "print_failed" };
             emit_proactive_notification(app_handle, app_state, &model_name, event_type);
+            Ok(())
         }
-        None => {
-            // Recording was skipped (dedup) or failed (logged inside)
+        (None, Some(start)) if in_progress(curr) => {
+            if is_seen {
+                return Ok(());
+            }
+            with_db(app_state, |conn| crate::database::set_seen_print(conn, serial, start))
         }
+        (_, Some(_)) if open => {
+            with_db(app_state, |conn| crate::database::forget_seen_print(conn, serial))
+        }
+        _ => Ok(()),
     }
 }
 
-/// Core logic for recording a print completion into SQLite.
-/// Returns `Some((model_name, fail_reason))` if a record was inserted,
-/// `None` if skipped (dedup) or if an error occurred.
-///
-/// Separated from `handle_gcode_transition` so it can be unit-tested
-/// without a Tauri `AppHandle`.
+fn with_db<T>(
+    app_state: &AppState,
+    f: impl FnOnce(&rusqlite::Connection) -> Result<T, String>,
+) -> Result<T, String> {
+    let guard = app_state.db.lock().map_err(|e| format!("failed to lock the database: {e}"))?;
+    f(guard.as_ref().ok_or("the database is not initialized")?)
+}
+
+/// Records the end of the print the printer state shows as a history row
+/// with `status`, and marks the seen print of printer `serial` recorded. Returns the
+/// model name and, for a failed print, the fail reason.
 fn record_print_completion(
     app_state: &AppState,
+    serial: &str,
     status: &str,
-) -> Option<(String, Option<String>)> {
-    // Read printer state fields for the history record
+) -> Result<(String, Option<String>), String> {
     let (model_name, gcode_file, gcode_start_time, fail_reason) = {
-        let printer = match app_state.printer.lock() {
-            Ok(p) => p,
-            Err(e) => {
-                log::error!("failed to lock printer state for history recording: {e}");
-                return None;
-            }
-        };
+        let printer = app_state
+            .printer
+            .lock()
+            .map_err(|e| format!("failed to lock printer state: {e}"))?;
         (
             printer
                 .subtask_name
@@ -881,26 +832,6 @@ fn record_print_completion(
             printer.fail_reason.clone(),
         )
     };
-
-    // Deduplication: check if we already recorded this print
-    {
-        let guard = match app_state.last_recorded_start_time.lock() {
-            Ok(g) => g,
-            Err(e) => {
-                log::error!("failed to lock dedup guard: {e}");
-                return None;
-            }
-        };
-        if let Some(ref last_time) = *guard {
-            if gcode_start_time.as_deref() == Some(last_time.as_str()) {
-                log::debug!(
-                    "dedup: skipping duplicate history record for start_time={}",
-                    last_time
-                );
-                return None;
-            }
-        }
-    }
 
     // Calculate duration if start_time is available
     let (started_at, duration_seconds) = if let Some(ref start_str) = gcode_start_time {
@@ -953,52 +884,18 @@ fn record_print_completion(
         completed_at,
         duration_seconds,
         status: status.into(),
-        fail_reason: if status == "failed" {
-            fail_reason.clone()
-        } else {
-            None
-        },
+        fail_reason: fail_reason.filter(|_| status == "failed"),
         filament_grams,
         filament_meters,
         thumbnail_path,
         quality_profile,
     };
 
-    // Insert into SQLite
-    let insert_result = {
-        let db_guard = match app_state.db.lock() {
-            Ok(g) => g,
-            Err(e) => {
-                log::error!("failed to lock db for history insert: {e}");
-                return None;
-            }
-        };
-        match db_guard.as_ref() {
-            Some(conn) => crate::database::insert_history(conn, &record),
-            None => {
-                log::error!("database not initialized — cannot record history");
-                return None;
-            }
-        }
-    };
-
-    if let Err(e) = insert_result {
-        log::error!("failed to insert history record: {e}");
-        return None;
-    }
-
-    log::info!(
-        "print history: recorded '{}' as {}",
-        model_name,
-        status
-    );
-
-    // Update dedup guard
-    if let Ok(mut guard) = app_state.last_recorded_start_time.lock() {
-        *guard = gcode_start_time;
-    }
-
-    Some((model_name, fail_reason))
+    with_db(app_state, |conn| {
+        crate::database::record_print_end(conn, serial, record.started_at.as_deref(), &record)
+    })?;
+    log::info!("print history: recorded '{model_name}' as {status}");
+    Ok((model_name, record.fail_reason))
 }
 
 /// Emit the `history:changed` event with the full history list.
@@ -1561,27 +1458,7 @@ mod tests {
     /// Helper: create an AppState with an in-memory SQLite DB ready for testing.
     fn test_app_state() -> AppState {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
-        conn.pragma_update(None, "journal_mode", "WAL").unwrap();
-        conn.pragma_update(None, "foreign_keys", "ON").unwrap();
-        // Run migrations manually (same as database::init_db but in-memory)
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS print_history (
-                id TEXT PRIMARY KEY,
-                model_name TEXT NOT NULL,
-                gcode_file TEXT,
-                started_at TEXT,
-                completed_at TEXT NOT NULL,
-                duration_seconds INTEGER,
-                status TEXT NOT NULL,
-                fail_reason TEXT,
-                filament_grams REAL,
-                filament_meters REAL,
-                thumbnail_path TEXT,
-                quality_profile TEXT
-            );",
-        )
-        .unwrap();
-        conn.pragma_update(None, "user_version", 1).unwrap();
+        crate::database::run_migrations(&conn).unwrap();
 
         let state = AppState::default();
         *state.db.lock().unwrap() = Some(conn);
@@ -1610,9 +1487,7 @@ mod tests {
         let state = test_app_state();
         set_printer_running(&state, "Benchy", "1710500000");
 
-        let result = record_print_completion(&state, "success");
-        assert!(result.is_some());
-        let (model_name, _) = result.unwrap();
+        let (model_name, _) = record_print_completion(&state, SERIAL_A, "success").unwrap();
         assert_eq!(model_name, "Benchy");
 
         let history = get_test_history(&state);
@@ -1635,9 +1510,7 @@ mod tests {
             printer.fail_reason = Some("Nozzle clog detected".into());
         }
 
-        let result = record_print_completion(&state, "failed");
-        assert!(result.is_some());
-        let (model_name, fail_reason) = result.unwrap();
+        let (model_name, fail_reason) = record_print_completion(&state, SERIAL_A, "failed").unwrap();
         assert_eq!(model_name, "Hook");
         assert_eq!(fail_reason.as_deref(), Some("Nozzle clog detected"));
 
@@ -1648,55 +1521,6 @@ mod tests {
             history[0].fail_reason.as_deref(),
             Some("Nozzle clog detected")
         );
-    }
-
-    #[test]
-    fn duplicate_finish_same_start_time_no_second_record() {
-        let state = test_app_state();
-        set_printer_running(&state, "Benchy", "1710500000");
-
-        // First completion
-        let result1 = record_print_completion(&state, "success");
-        assert!(result1.is_some());
-        assert_eq!(get_test_history(&state).len(), 1);
-
-        // Second completion with same start_time (e.g. repeated pushall)
-        let result2 = record_print_completion(&state, "success");
-        assert!(result2.is_none()); // Deduplicated
-        assert_eq!(get_test_history(&state).len(), 1); // Still 1
-    }
-
-    #[test]
-    fn different_start_time_creates_new_record() {
-        let state = test_app_state();
-        set_printer_running(&state, "Benchy", "1710500000");
-
-        let result1 = record_print_completion(&state, "success");
-        assert!(result1.is_some());
-
-        // New print with different start_time
-        set_printer_running(&state, "Hook", "1710510000");
-        let result2 = record_print_completion(&state, "success");
-        assert!(result2.is_some());
-
-        assert_eq!(get_test_history(&state).len(), 2);
-    }
-
-    #[test]
-    fn non_transition_running_to_running_no_record() {
-        // handle_gcode_transition only fires when prev != curr,
-        // but record_print_completion doesn't check that — it's the caller's job.
-        // We test that the handle_publish logic only dispatches on actual changes
-        // by verifying the transition guard in handle_gcode_transition:
-        // prev=RUNNING, curr=RUNNING would never reach record_print_completion
-        // because curr must be FINISH or FAILED.
-        let state = test_app_state();
-        set_printer_running(&state, "Benchy", "1710500000");
-
-        // Calling with "running" status (not "success" or "failed") should not insert
-        // (handle_gcode_transition wouldn't call record_print_completion for this case)
-        // This tests the guard at the call site level.
-        assert_eq!(get_test_history(&state).len(), 0);
     }
 
     #[test]
@@ -1713,7 +1537,7 @@ mod tests {
     }
 
     #[test]
-    fn record_without_db_returns_none() {
+    fn record_without_db_fails() {
         // AppState with no DB initialized
         let state = AppState::default();
         {
@@ -1722,8 +1546,7 @@ mod tests {
             printer.gcode_start_time = Some("1710500000".into());
         }
 
-        let result = record_print_completion(&state, "success");
-        assert!(result.is_none());
+        assert!(record_print_completion(&state, SERIAL_A, "success").is_err());
     }
 
     #[test]
@@ -1736,8 +1559,7 @@ mod tests {
             printer.fail_reason = Some("leftover error".into());
         }
 
-        let result = record_print_completion(&state, "success");
-        assert!(result.is_some());
+        record_print_completion(&state, SERIAL_A, "success").unwrap();
 
         let history = get_test_history(&state);
         assert_eq!(history.len(), 1);
@@ -1767,8 +1589,7 @@ mod tests {
             });
         }
 
-        let result = record_print_completion(&state, "success");
-        assert!(result.is_some());
+        record_print_completion(&state, SERIAL_A, "success").unwrap();
 
         let history = get_test_history(&state);
         assert_eq!(history[0].filament_grams, Some(12.5));
@@ -1875,7 +1696,7 @@ mod tests {
     fn proactive_event_type_mapping() {
         // "success" status → "print_complete" event type
         // "failed" status → "print_failed" event type
-        // This tests the mapping logic used in handle_gcode_transition's call site
+        // This tests the mapping logic used in settle_print
         let cases = vec![
             ("success", "print_complete"),
             ("failed", "print_failed"),
@@ -2082,8 +1903,10 @@ mod tests {
         );
     }
 
+    const SERIAL_A: &str = "01P00A000000000";
+
     fn printer_a() -> BambuCredentials {
-        let mut printer = loopback_printer("01P00A000000000");
+        let mut printer = loopback_printer(SERIAL_A);
         // `localhost` refuses at once on Linux and macOS, while macOS leaves
         // 127.0.0.2 unconfigured and the upload hangs.
         printer.printer.host = "localhost".into();
@@ -2985,5 +2808,112 @@ mod tests {
             .await;
             assert_eq!(rows, [("Benchy".into(), "success".into())], "{how:?}");
         }
+    }
+
+    #[tokio::test]
+    async fn each_print_gets_one_row_however_often_its_end_is_reported() {
+        let (app, app_state, service) = history_app();
+        let a = connect_without_loop(&service, printer_a(), &app, &app_state).await;
+        for report in [
+            BENCHY_RUNNING,
+            BENCHY_FINISHED,
+            BENCHY_RUNNING,
+            BENCHY_FINISHED,
+            br#"{"print":{"gcode_state":"RUNNING","gcode_start_time":"1710510000","subtask_name":"Hook"}}"#,
+            br#"{"print":{"gcode_state":"FINISH"}}"#,
+            br#"{"print":{"gcode_state":"FINISH"}}"#,
+        ] {
+            service.handle_publish(a, report, app.handle(), &app_state).await;
+        }
+
+        let mut rows = history_rows(&app_state);
+        rows.sort();
+        assert_eq!(rows, [("Benchy".into(), "success".into()), ("Hook".into(), "success".into())]);
+    }
+
+    #[tokio::test]
+    async fn a_print_stopped_while_paused_gets_one_failed_row() {
+        let (app, app_state, service) = history_app();
+        let a = connect_without_loop(&service, printer_a(), &app, &app_state).await;
+        for report in [BENCHY_RUNNING, br#"{"print":{"gcode_state":"PAUSE"}}"#] {
+            service.handle_publish(a, report, app.handle(), &app_state).await;
+        }
+        assert_eq!(history_rows(&app_state), [], "a pause is not an end");
+
+        let stopped = br#"{"print":{"gcode_state":"FAILED","fail_reason":"stopped by user"}}"#;
+        service.handle_publish(a, stopped, app.handle(), &app_state).await;
+        service.handle_publish(a, stopped, app.handle(), &app_state).await;
+
+        let history = get_test_history(&app_state);
+        assert_eq!(history_rows(&app_state), [("Benchy".into(), "failed".into())]);
+        assert_eq!(history[0].fail_reason.as_deref(), Some("stopped by user"));
+    }
+
+    /// One run of the app on the database file `db`, connected to printer A.
+    async fn app_run_on(
+        db: &std::path::Path,
+    ) -> (tauri::App<tauri::test::MockRuntime>, Arc<AppState>, PrinterService, ConnectionId) {
+        let (app, app_state, service) = history_app();
+        *app_state.db.lock().unwrap() = Some(crate::database::init_db(db).expect("the database opens"));
+        let a = connect_without_loop(&service, printer_a(), &app, &app_state).await;
+        (app, app_state, service, a)
+    }
+
+    #[tokio::test]
+    async fn a_print_that_ends_while_the_app_is_closed_gets_one_row_on_the_next_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("materialize.db");
+        {
+            let (app, app_state, service, a) = app_run_on(&db).await;
+            service.handle_publish(a, BENCHY_RUNNING, app.handle(), &app_state).await;
+        }
+
+        let (app, app_state, service, a) = app_run_on(&db).await;
+        service.handle_publish(a, BENCHY_FINISHED, app.handle(), &app_state).await;
+        service.handle_publish(a, BENCHY_FINISHED, app.handle(), &app_state).await;
+        assert_eq!(history_rows(&app_state), [("Benchy".into(), "success".into())]);
+
+        let row = get_test_history(&app_state).remove(0).id;
+        crate::database::delete_history(app_state.db.lock().unwrap().as_ref().unwrap(), &row).unwrap();
+        drop((app, app_state, service));
+        let (app, app_state, service, a) = app_run_on(&db).await;
+        for report in [BENCHY_RUNNING, BENCHY_FINISHED] {
+            service.handle_publish(a, report, app.handle(), &app_state).await;
+        }
+        assert_eq!(history_rows(&app_state), [], "the row the user deleted stays gone");
+    }
+
+    #[tokio::test]
+    async fn a_print_the_last_run_never_saw_gets_no_row_on_the_next_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("materialize.db");
+        {
+            let (app, app_state, service, a) = app_run_on(&db).await;
+            service.handle_publish(a, BENCHY_RUNNING, app.handle(), &app_state).await;
+        }
+
+        let (app, app_state, service, a) = app_run_on(&db).await;
+        let unseen = br#"{"print":{"gcode_state":"FINISH","gcode_start_time":"1710600000","subtask_name":"Unseen"}}"#;
+        service.handle_publish(a, unseen, app.handle(), &app_state).await;
+        assert_eq!(history_rows(&app_state), []);
+    }
+
+    #[tokio::test]
+    async fn a_print_whose_start_time_arrives_late_gets_its_row_beside_an_older_open_print() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("materialize.db");
+        {
+            let (app, app_state, service, a) = app_run_on(&db).await;
+            service.handle_publish(a, BENCHY_RUNNING, app.handle(), &app_state).await;
+        }
+
+        let (app, app_state, service, a) = app_run_on(&db).await;
+        for report in [
+            br#"{"print":{"gcode_state":"RUNNING","subtask_name":"Hook"}}"#.as_slice(),
+            br#"{"print":{"gcode_state":"FINISH","gcode_start_time":"1710510000"}}"#,
+        ] {
+            service.handle_publish(a, report, app.handle(), &app_state).await;
+        }
+        assert_eq!(history_rows(&app_state), [("Hook".into(), "success".into())]);
     }
 }

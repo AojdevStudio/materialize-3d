@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use rusqlite::{params, Connection, OpenFlags};
+use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 
 use crate::state::{LibraryModel, PrintHistoryRecord, PrinterConfig};
 
@@ -101,10 +101,10 @@ pub fn init_db(db_path: &Path) -> Result<Connection, InitError> {
 }
 
 /// Schema version after every migration has run.
-pub const SCHEMA_VERSION: i32 = 6;
+pub const SCHEMA_VERSION: i32 = 7;
 
 /// Run all pending migrations based on `PRAGMA user_version`.
-fn run_migrations(conn: &Connection) -> Result<(), InitError> {
+pub(crate) fn run_migrations(conn: &Connection) -> Result<(), InitError> {
     let version: i32 = conn
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .map_err(|e| format!("failed to read user_version: {e}"))?;
@@ -219,10 +219,25 @@ fn run_migrations(conn: &Connection) -> Result<(), InitError> {
         let tx = conn.unchecked_transaction().map_err(|e| format!("migration 006 failed to start: {e}"))?;
         tx.execute_batch(crate::fabrication::revisions::MIGRATION_006)
             .map_err(|e| format!("migration 006 failed: {e}"))?;
-        tx.pragma_update(None, "user_version", SCHEMA_VERSION)
+        tx.pragma_update(None, "user_version", 6)
             .map_err(|e| format!("failed to set user_version to 6: {e}"))?;
         tx.commit().map_err(|e| format!("migration 006 failed to commit: {e}"))?;
         log::info!("database: migration 006 applied — schema version now 6");
+    }
+
+    if version < 7 {
+        log::info!("database: applying migration 007 — create seen_prints table");
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS seen_prints (
+                printer_serial TEXT PRIMARY KEY,
+                gcode_start_time TEXT NOT NULL,
+                recorded INTEGER NOT NULL DEFAULT 0
+            );",
+        )
+        .map_err(|e| format!("migration 007 failed: {e}"))?;
+        conn.pragma_update(None, "user_version", 7)
+            .map_err(|e| format!("failed to set user_version to 7: {e}"))?;
+        log::info!("database: migration 007 applied — schema version now 7");
     }
 
     Ok(())
@@ -485,6 +500,69 @@ pub fn delete_history(conn: &Connection, id: &str) -> Result<bool, String> {
     }
 
     Ok(rows_affected > 0)
+}
+
+// ─── Seen Prints ──────────────────────────────────────────────────────────────
+
+/// The print a printer last showed RUNNING or PAUSE, and whether the app
+/// recorded its end.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SeenPrint {
+    pub start_time: String,
+    pub recorded: bool,
+}
+
+pub fn seen_print(conn: &Connection, serial: &str) -> Result<Option<SeenPrint>, String> {
+    conn.query_row(
+        "SELECT gcode_start_time, recorded FROM seen_prints WHERE printer_serial = ?1",
+        params![serial],
+        |row| Ok(SeenPrint { start_time: row.get(0)?, recorded: row.get(1)? }),
+    )
+    .optional()
+    .map_err(|e| format!("failed to read the seen print: {e}"))
+}
+
+fn store_seen_print(conn: &Connection, serial: &str, start_time: &str, recorded: bool) -> Result<(), String> {
+    conn.execute(
+        "INSERT INTO seen_prints (printer_serial, gcode_start_time, recorded) VALUES (?1, ?2, ?3)
+         ON CONFLICT(printer_serial) DO UPDATE SET gcode_start_time = excluded.gcode_start_time, recorded = excluded.recorded",
+        params![serial, start_time, recorded],
+    )
+    .map(drop)
+    .map_err(|e| format!("failed to store the seen print: {e}"))
+}
+
+/// Stores the print `serial` shows in progress, with its end not yet recorded.
+pub fn set_seen_print(conn: &Connection, serial: &str, start_time: &str) -> Result<(), String> {
+    store_seen_print(conn, serial, start_time, false)
+}
+
+pub fn forget_seen_print(conn: &Connection, serial: &str) -> Result<(), String> {
+    conn.execute("DELETE FROM seen_prints WHERE printer_serial = ?1", params![serial])
+        .map(drop)
+        .map_err(|e| format!("failed to forget the seen print: {e}"))
+}
+
+/// Inserts `record` and marks the print of `serial` that started at
+/// `start_time` as recorded, in one transaction. The mark stays after the
+/// user deletes the row, so no later report records that print again. A
+/// print with no known start time leaves nothing to mark, and the seen print
+/// is forgotten.
+pub fn record_print_end(
+    conn: &Connection,
+    serial: &str,
+    start_time: Option<&str>,
+    record: &PrintHistoryRecord,
+) -> Result<(), String> {
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| format!("failed to start the history write: {e}"))?;
+    insert_history(&tx, record)?;
+    match start_time {
+        Some(start_time) => store_seen_print(&tx, serial, start_time, true)?,
+        None => forget_seen_print(&tx, serial)?,
+    }
+    tx.commit().map_err(|e| format!("failed to commit the history write: {e}"))
 }
 
 // ─── Library Model CRUD ───────────────────────────────────────────────────────
@@ -1195,7 +1273,7 @@ mod tests {
 
         let conn = init_db(&path).expect("migrates a schema-5 database");
         let version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0)).unwrap();
-        assert_eq!(version, 6);
+        assert_eq!(version, SCHEMA_VERSION);
         let tables: Vec<String> = conn
             .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('builds', 'revisions', 'revision_exports', 'sign_revisions') ORDER BY name")
             .unwrap()
@@ -1315,7 +1393,7 @@ mod tests {
         init_db(&path).expect("migrates");
 
         assert!(!faulted(Fault::HardLinkUnsupported), "the hard link was tried and failed");
-        assert_eq!(version_of(&path), 6);
+        assert_eq!(version_of(&path), SCHEMA_VERSION);
         let backup = Connection::open(backup_of(&path)).expect("the published backup");
         let version: i32 = backup.pragma_query_value(None, "user_version", |row| row.get(0)).unwrap();
         assert_eq!(version, 5);
@@ -1354,7 +1432,7 @@ mod tests {
         assert_eq!(version_of(&path), 5, "migration 006 did not run");
 
         init_db(&path).expect("the retry migrates");
-        assert_eq!(version_of(&path), 6);
+        assert_eq!(version_of(&path), SCHEMA_VERSION);
         let backup = Connection::open(backup_of(&path)).expect("backup");
         assert_eq!(revision_columns(&backup, SIGN_REVISION_COLUMNS), before, "the backup holds every sign revision");
     }
@@ -1430,7 +1508,7 @@ mod tests {
         assert!(backup_of(&path).symlink_metadata().is_err(), "nothing was published under the backup's name");
 
         init_db(&path).expect("the retry migrates");
-        assert_eq!(version_of(&path), 6);
+        assert_eq!(version_of(&path), SCHEMA_VERSION);
         let backup = Connection::open(backup_of(&path)).expect("backup");
         assert_eq!(revision_columns(&backup, SIGN_REVISION_COLUMNS), before, "the backup holds every sign revision");
         assert!(!staged_of(&path).exists(), "the stale staged copy is gone");
@@ -1461,7 +1539,7 @@ mod tests {
 
         init_db(&path).expect("migrates");
 
-        assert_eq!(version_of(&path), 6);
+        assert_eq!(version_of(&path), SCHEMA_VERSION);
         assert_eq!(std::fs::read(backup_of(&path)).unwrap(), earlier, "the earlier copy is kept as it was");
     }
 
