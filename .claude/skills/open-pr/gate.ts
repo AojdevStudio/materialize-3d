@@ -26,7 +26,7 @@ import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { checkPullRequest, formatViolations, titleViolation, type PullRequest } from "./contract";
 import { atSource, findPrCommands, graphqlRisk, type BodySource, type FieldValue, type HeadMatch, type PrCommand } from "./command";
-import { botExempt, decideMerge, PASS_SIGNAL, type CheckRun } from "../land-pr/merge";
+import { botExempt, CODERABBIT_CHECK, decideMerge, PASS_SIGNAL, reviewBotOf, type CheckRun, type Evidence, type Review, type Thread } from "../land-pr/merge";
 
 interface HookInput {
   tool: string;
@@ -66,6 +66,7 @@ function field<T>(obj: unknown, key: string, guard: (v: unknown) => v is T, what
 const isStr = (v: unknown): v is string => typeof v === "string";
 const isNum = (v: unknown): v is number => typeof v === "number";
 const isBool = (v: unknown): v is boolean => typeof v === "boolean";
+const isObjOrNull = (v: unknown): v is Json | null => v === null || isObj(v);
 const isArr = (v: unknown): v is unknown[] => Array.isArray(v);
 const isStrOrNull = (v: unknown): v is string | null => v === null || typeof v === "string";
 
@@ -89,8 +90,10 @@ const DRIFT = {
 };
 const NO_BODY = "the command sets no body. Write the body with the open-pr skill and pass it with --body-file.";
 const EXPANDED = "the command holds `$`, a backquote, `~`, or an escape that a shell expands after this gate reads it, so the gate cannot see what gh gets. Write the text as gh should get it: quote a heredoc delimiter (<<'EOF'), and put an ssh or bash -c command in single quotes.";
-const OPAQUE: Record<"control" | "field" | "program" | "shell" | "query" | "endpoint", string> = {
-  endpoint: "the shell finishes this pulls or issue endpoint at run time, with a `$...` or `$(...)` in its host, its owner and name, or right after `pulls`, the PR number, or `merge`, so gh can reach any PR write, with a query string this gate cannot read. Write the endpoint as text, for example `repos/o/r/pulls` or `repos/o/r/pulls/38`.",
+const OPAQUE: Record<"control" | "field" | "program" | "shell" | "query" | "endpoint" | "unread", string> = {
+  unread:
+    "this gate reads the command differently from bash: its reading ends with a quote, `$(`, `${`, `$((`, backquote, or heredoc still open, or with a `)` that closes nothing. bash runs such text another way, so a gh command can run unchecked. Close every quote, expansion, and heredoc, and run the PR command on its own.",
+  endpoint: "the shell finishes this pulls or issue endpoint at run time, with a `$...` or `$(...)` in its host, its owner and name, after `pulls` or the PR number, or in the final endpoint segment, so gh can reach any PR write, with a query string this gate cannot read. Write the endpoint as text, for example `repos/o/r/pulls` or `repos/o/r/pulls/38`.",
   query: "this REST create sends a query string, from a `?` in the path or field flags beside --input, and GitHub may read PR fields there that this gate cannot check. Put every field in the --input JSON or in -f/-F flags, not both, and keep `?` out of the path.",
   field: "a -f or -F field name comes from the shell, so this gate cannot tell which PR fields the request sets. Write each field name as text.",
   control: "the shell computes the method or a flag of this PR write, or can split an unquoted `$...` into more flags, so this gate cannot tell whether it writes a PR or what it sends. Write the method and every flag as text, and double-quote each `$...`.",
@@ -242,11 +245,14 @@ function parsePull(x: unknown): RestPull {
 }
 
 function parseRun(x: unknown): CheckRun {
+  if (!isObj(x)) throw new Refusal("GitHub returned a check-run that is not an object, so this gate cannot read the review bot's verdict.");
+  const output = optional(x, "output", isObjOrNull) ?? null;
   return {
     name: field(x, "name", isStr, "a check-run"),
     status: field(x, "status", isStr, "a check-run"),
     conclusion: field(x, "conclusion", isStrOrNull, "a check-run"),
     app: field(field(x, "app", isObj, "a check-run"), "slug", isStr, "a check-run app"),
+    summary: output === null ? null : (optional(output, "summary", isStrOrNull) ?? null),
   };
 }
 
@@ -267,8 +273,78 @@ function resolvePull(cmd: Extract<PrCommand, { kind: "merge" }>, cwd: string): {
   return { repo, pull: parsePull(open[0]) };
 }
 
-function latestRuns(repo: string, sha: string, cwd: string): CheckRun[] {
-  const page = ghJson(`repos/${repo}/commits/${sha}/check-runs?check_name=${PASS_SIGNAL}&filter=latest`, cwd);
+function parseReview(x: unknown): Review {
+  const user = field(x, "user", isObjOrNull, "a review");
+  return {
+    login: user === null ? null : field(user, "login", isStr, "a review author"),
+    body: field(x, "body", isStr, "a review"),
+    commitId: field(x, "commit_id", isStrOrNull, "a review"),
+  };
+}
+
+/** A review thread from GraphQL, whose app logins lack the REST `[bot]` suffix. */
+function parseThread(x: unknown): Thread {
+  const [first] = field(field(x, "comments", isObj, "a review thread"), "nodes", isArr, "a review thread's comments");
+  const author = first === undefined ? null : field(first, "author", isObjOrNull, "a thread comment");
+  const login = author === null ? null : field(author, "login", isStr, "a thread author");
+  const bot = author !== null && field(author, "__typename", isStr, "a thread author") === "Bot";
+  return { author: login === null ? null : bot ? `${login}[bot]` : login, resolved: field(x, "isResolved", isBool, "a review thread") };
+}
+
+const THREADS = `query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
+  repository(owner: $owner, name: $name) { pullRequest(number: $number) { reviewThreads(first: 100, after: $endCursor) {
+    pageInfo { hasNextPage endCursor }
+    nodes { isResolved comments(first: 1) { nodes { author { __typename login } } } }
+  } } }
+}`;
+
+/** Every review thread on the PR, across all pages. */
+function allThreads(repo: string, number: number, cwd: string): Thread[] {
+  const [owner, name] = repo.split("/");
+  const pages: unknown = JSON.parse(run(["gh", "api", "graphql", "--paginate", "--slurp", "-f", `query=${THREADS}`, "-F", `owner=${owner}`, "-F", `name=${name}`, "-F", `number=${number}`], cwd));
+  if (!isArr(pages)) throw new Refusal("the review threads GitHub returned are not a list of pages, so this gate cannot read CodeRabbit's open findings.");
+  return pages.flatMap((page) => {
+    const pull = field(field(field(page, "data", isObj, "a thread page"), "repository", isObj, "a thread page"), "pullRequest", isObj, "a thread page");
+    return field(field(pull, "reviewThreads", isObj, "a thread page"), "nodes", isArr, "a thread page").map(parseThread);
+  });
+}
+
+/** Every path a PR file entry touches: its name, and the name it was renamed from. */
+function parsePaths(x: unknown): string[] {
+  if (!isObj(x)) throw new Refusal("GitHub returned a PR file entry that is not an object, so this gate cannot read what the PR changes.");
+  const from = optional(x, "previous_filename", isStr);
+  return [field(x, "filename", isStr, "a PR file"), ...(from === undefined ? [] : [from])];
+}
+
+/** Every item of a paginated REST list, read with `--paginate --slurp`. */
+function allPages(path: string, what: string, cwd: string): unknown[] {
+  const pages: unknown = JSON.parse(run(["gh", "api", `${path}?per_page=100`, "--paginate", "--slurp"], cwd));
+  if (!isArr(pages) || !pages.every(isArr)) throw new Refusal(`the ${what} GitHub returned is not a list of pages, so this gate cannot read CodeRabbit's verdict.`);
+  return pages.flat();
+}
+
+/** What the repo's review bot left on the head, read from GitHub. */
+function evidenceFor(repo: string, pull: RestPull, cwd: string): Evidence {
+  if (reviewBotOf(pull.baseRepo) === "coderabbit") {
+    const files = allPages(`repos/${repo}/pulls/${pull.number}/files`, "file list", cwd);
+    const changed = field(ghJson(`repos/${repo}/pulls/${pull.number}`, cwd), "changed_files", isNum, "a PR");
+    if (files.length !== changed) {
+      throw new Refusal(`GitHub listed ${files.length} of the PR's ${changed} changed files (its file list stops at 3000), so this gate cannot prove the PR leaves CodeRabbit's config alone.`);
+    }
+    return {
+      bot: "coderabbit",
+      runs: latestRuns(repo, pull.headSha, CODERABBIT_CHECK, cwd),
+      comments: allPages(`repos/${repo}/issues/${pull.number}/comments`, "comment list", cwd).map((c) => field(c, "body", isStr, "a PR comment")),
+      reviews: allPages(`repos/${repo}/pulls/${pull.number}/reviews`, "review list", cwd).map(parseReview),
+      threads: allThreads(repo, pull.number, cwd),
+      paths: files.flatMap(parsePaths),
+    };
+  }
+  return { bot: "pullfrog", runs: latestRuns(repo, pull.headSha, PASS_SIGNAL, cwd) };
+}
+
+function latestRuns(repo: string, sha: string, name: string, cwd: string): CheckRun[] {
+  const page = ghJson(`repos/${repo}/commits/${sha}/check-runs?check_name=${encodeURIComponent(name)}&filter=latest`, cwd);
   return field(page, "check_runs", isArr, "a check-run list").map(parseRun);
 }
 
@@ -328,12 +404,14 @@ function checkMerge(cmd: Extract<PrCommand, { kind: "merge" }>, cwd: string): vo
   const sha = pull.headSha;
   const named = cmd.match && namedHead(cmd.match, cmd, cwd);
   if (named !== undefined && named.toLowerCase() !== sha.toLowerCase()) {
-    throw new Refusal(`the merge names head ${named}, but the gate checked ${sha}, so it cannot vouch for the head gh would merge. Name the head the gate checked, or drop the head check.`);
+    throw new Refusal(`the merge names head ${named}, but the gate checked ${sha}, so it cannot vouch for the head gh would merge. Name the head the gate checked.`);
   }
   if (botExempt(pull.baseRepo) && cmd.pinned) return;
-  const runs = latestRuns(repo, sha, cwd);
-  const verdict = decideMerge({ repo: pull.baseRepo, pinned: cmd.pinned, sha, runs });
+  const verdict = decideMerge({ repo: pull.baseRepo, pinned: cmd.pinned, sha, evidence: evidenceFor(repo, pull, cwd) });
   if (!verdict.ok) throw new Refusal(`${repo}#${pull.number} cannot merge: ${verdict.reason} Follow the land-pr skill.`);
+  if (named === undefined) {
+    throw new Refusal(`pin the approved head ${sha} with --match-head-commit for gh pr merge, or the sha field for the REST merge endpoint. Otherwise a concurrent push can change the head that merges.`);
+  }
 }
 
 function classifyIssue(cmd: Extract<PrCommand, { kind: "issue-edit" }>, cwd: string): "issue" | "pull-request" {
@@ -375,9 +453,11 @@ function check(cmd: PrCommand, hookCwd: string): void {
   if (cmd.kind === "graphql") return checkGraphql(cmd, cwd);
   if (cmd.kind === "opaque") throw new Refusal(OPAQUE[cmd.part]);
   if (cmd.kind === "refused") {
-    throw new Refusal(cmd.reason === "revert"
-      ? "gh pr revert opens a PR with a body gh writes, which skips the body contract. Revert on a branch and open the PR with `gh pr create`."
-      : "gh pr ready --undo turns the PR back into a draft, and the PR kit forbids drafts because drafts get no review-bot coverage.");
+    throw new Refusal({
+      revert: "gh pr revert opens a PR with a body gh writes, which skips the body contract. Revert on a branch and open the PR with `gh pr create`.",
+      draft: "gh pr ready --undo turns the PR back into a draft, and the PR kit forbids drafts because drafts get no review-bot coverage.",
+      "async-merge": "the merge-async endpoint can queue or bypass merge rules and is not allowed by the PR kit. Use gh pr merge with --match-head-commit instead.",
+    }[cmd.reason]);
   }
   if (cmd.kind === "unresolved") throw new Refusal(`the PR or issue number \`${cmd.target}\` is not a literal number, so this gate cannot tell which PR this writes. Put the number in the path, for example \`repos/${cmd.repo}/pulls/38\`.`);
   const title = cmd.kind === "create" || cmd.kind === "edit" ? cmd.title && readBody(cmd.title, cmd, cwd) : undefined;

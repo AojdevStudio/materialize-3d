@@ -3,7 +3,7 @@
  * Pure: it never reads files or calls gh. The gate resolves file bodies and merge state.
  *
  * Covered: `gh pr create|edit|merge`, `gh issue edit` title/body/attachment edits, `gh api` POST/PATCH on `repos/O/R/pulls[/N]` and PUT on
- * `repos/O/R/pulls/N/merge`, PATCH on numbered `repos/O/R/issues/N`, and every `gh api graphql` call whose query is not a literal that provably
+ * `repos/O/R/pulls/N/merge`, refusal of PUT to `repos/O/R/pulls/N/merge-async`, PATCH on numbered `repos/O/R/issues/N`, and every `gh api graphql` call whose query is not a literal that provably
  * neither merges nor writes a PR. The same holds inside `ssh host '...'`, `bash -c`, and a program a shell
  * reads on stdin: its last heredoc or here-string, a pipe from cat or from echo or printf of literal words,
  * also into a group or compound opened right after `|`, a heredoc on a closing `)`, `}`, `done`, `fi`, or
@@ -22,7 +22,9 @@
  * A handed-over shell must be alone too, inside and out.
  *
  * The command is read the way bash reads it: quotes, escapes, comments, redirections as tokens, and
- * heredocs as the shell expands them. Text the shell computes comes back marked `expands`, and a PR
+ * heredocs as the shell expands them. A reading that ends with a quote, expansion, `$(`, `(`, or heredoc still open, or with a
+ * `)` that closes nothing, is one bash never runs, so bash reads that text another way: when it holds a `gh` word, the
+ * command comes back `opaque`. Text the shell computes comes back marked `expands`, and a PR
  * write whose method, flag, field name, or gh name the shell computes, or that holds an unquoted `$...`,
  * comes back `opaque`. `"$(cat f)"`, `"$(< f)"`, and `"$(cat <<'EOF' ...)"` are read as text, unless the
  * cat copies or closes a descriptor. `~` or `$HOME` at the start of a path is the home directory, unless the
@@ -34,7 +36,8 @@
  * functions, globs, and profile settings are not followed. A script a shell runs as an operand
  * (`bash script.sh`), a program a shell reads through a pipe from any other command (`curl ... | bash`), or
  * one the outer shell splices an expansion into as an argument, is not read, and the gate allows it, as it
- * allows `eval`. A program a shell reads from a `<` or `<>` file is opaque, since a path can reach a heredoc,
+ * allows `eval`. Arithmetic also evaluates the value of each variable it names, so `x='a[$(cmd)]'; : $((x))` runs cmd and
+ * `x=HOME=0; : $((x))` sets HOME. The gate reads only the names and substitutions written in the expansion. A program a shell reads from a `<` or `<>` file is opaque, since a path can reach a heredoc,
  * a pipe, or a descriptor, so `bash < script.sh` is refused even when the script holds no PR command. fish, csh,
  * tcsh, yash, posh, and Korn shells other than plain ksh (mksh, ksh93, pdksh) take options the gate does not model,
  * so one given any option word or any stdin is opaque.
@@ -108,7 +111,7 @@ export type PrCommand =
    * stdin program it runs in (`program`), a REST endpoint's start, repo, or tail (`endpoint`), or a shell whose options the gate
    * does not read (`shell`). Any write could hide in it.
    */
-  | (Base & { kind: "opaque"; part: "control" | "field" | "program" | "shell" | "query" | "endpoint" })
+  | (Base & { kind: "opaque"; part: "control" | "field" | "program" | "shell" | "query" | "endpoint" | "unread" })
   /**
    * `pinned`: the command itself names the repo with `-R`, a PR URL, or a literal REST path. `hosts`: every GitHub host it names.
    * `match`: the head commit the merge requires, which gh or GitHub checks when it merges.
@@ -119,8 +122,8 @@ export type PrCommand =
   | (Base & { kind: "graphql"; query: FieldValue; json: boolean; operationName: boolean })
   /** A REST PR write whose PR number the command builds at run time, so no check can name the PR. */
   | (Base & { kind: "unresolved"; target: string })
-  /** A gh command the kit never allows: `revert` opens a PR with gh's own body, `draft` is `gh pr ready --undo`. */
-  | (Base & { kind: "refused"; reason: "revert" | "draft" });
+  /** A gh command the kit never allows. */
+  | (Base & { kind: "refused"; reason: "revert" | "draft" | "async-merge" });
 
 /** The head a merge names: `--match-head-commit`, a REST `sha` field, or with `json` the `--input` request whose `sha` field holds it. */
 export interface HeadMatch {
@@ -259,6 +262,17 @@ interface Scope {
   segments: Segment[];
   docs: Heredoc[];
   subs: Sub[];
+  /** The text of each arithmetic expansion, subscript, offset, and `${name=word}`, with its expansions as markers. Each can assign a variable. */
+  assigns: string[];
+  /** The `((` arithmetic readings tried so far. */
+  tries: number;
+  /**
+   * The reading ends where bash would never run it: a quote, expansion, `$(`, `(`, or heredoc still open at the end, or a `)`
+   * that closes nothing. bash reads such text another way, so a gh command the gate missed can run.
+   */
+  broken?: true;
+  /** The reading is broken and the text holds a `gh` word, so the gate cannot tell which gh commands bash runs. */
+  unread?: true;
   /** No setting word names HOME, so `~` and `$HOME` are the gate's home directory. */
   home: boolean;
   env: Env;
@@ -282,13 +296,19 @@ function envOf(scope: Scope, outer: Env): Env {
       if (SETTERS.includes(cmd) && word.split("=")[0].includes("\0")) env.names.add("*");
     }
   }
+  // Arithmetic can assign any name it holds, and a substitution in it can print one. A `$x` read for its value is not followed,
+  // but `$q = 5` assigns to the name q holds.
+  for (const text of scope.assigns) {
+    if (/\0\d+\0/.test(text) || (/[\0$]/.test(text) && /(?:^|[^=!<>])=(?!=)|<<=|>>=|\+\+|--/.test(text))) env.names.add("*");
+    for (const name of text.match(/[A-Za-z_]\w*/g) ?? []) if (CONTEXT.includes(name)) env.names.add(name);
+  }
   return env;
 }
 
 /** Reads `src`. When its words can set HOME, it is read again with `~` and `$HOME` as computed text. */
 function lex(src: string, outer: Env = { names: new Set() }): Scope {
   const parse = (home: boolean): Scope => {
-    const scope: Scope = { segments: [], docs: [], subs: [], home, env: outer };
+    const scope: Scope = { segments: [], docs: [], subs: [], assigns: [], tries: 0, home, env: outer };
     scope.segments = new Lexer(src, scope).commands(false);
     return scope;
   };
@@ -296,6 +316,7 @@ function lex(src: string, outer: Env = { names: new Set() }): Scope {
   const env = envOf(first, outer);
   const scope = env.names.has("HOME") || env.names.has("*") ? parse(false) : first;
   scope.env = env;
+  if (scope.broken && /(?<![\w.-])gh(?![\w.-])/.test(src.replace(/[\\'"]/g, ""))) scope.unread = true;
   return scope;
 }
 
@@ -319,6 +340,20 @@ function descriptorPath(word: string): string | undefined {
 const OUTPUT = /(\d*)(>>|>\||>&|>)|&>>?/y;
 /** The characters that end a word. `commands` consumes each one, so every word read advances. */
 const BREAK = /[ \t\n;&|()<>]/;
+/** Words bash reads as reserved before a command name. `builtin` and `command` are commands, so a word after them is not reserved. */
+const RESERVED = KEYWORDS.filter((w) => w !== "builtin" && w !== "command");
+
+/** The words before this point leave a command name to come, so a reserved word or `((` can start here. */
+const prefix = (words: string[]): boolean =>
+  words.every((w, i) => RESERVED.includes(w) || w === "coproc" || (["-p", "--"].includes(w) && ["time", "-p"].includes(words[i - 1] ?? "")));
+
+/** The next word is the pattern of a `[[ ]]` test: it follows `=~`, `==`, `!=`, or `=` inside an open `[[`. */
+function testPattern(words: string[]): boolean {
+  // The word reader reads the `~` of `=~` as a home directory after `=`, so `=~` arrives as `=` and a marker.
+  if (!["=~", `=${UNKNOWN}`, "==", "!=", "="].includes(words.at(-1) ?? "")) return false;
+  const open = words.lastIndexOf("[[");
+  return open >= 0 && !words.includes("]]", open);
+}
 
 const ANSI_C: Record<string, string> = { a: "\x07", b: "\b", e: "\x1b", E: "\x1b", f: "\f", n: "\n", r: "\r", t: "\t", v: "\v", "\\": "\\", "'": "'", '"': '"', "?": "?" };
 
@@ -351,25 +386,43 @@ class Lexer {
   private cases: number[] = [];
   /** Groups opened right after `|`: the pipeline part they read, and the depths they close at. Every command inside reads it. */
   private feeds: { pipe: Segment; parens: number; compound: number; groups: number }[] = [];
+  /** Where a `$((` turned out to be `$( (`, so a reread takes that reading at once. */
+  private readonly flat = new Set<number>();
+  /** The `((` reads open at `pos`. */
+  private trying = 0;
+  /** The words before the next `)` are a case pattern, where no word is reserved but a first `esac`, and `|` separates patterns. */
+  private pattern = false;
+  /** A `case` keyword waits for its `in`, which starts the first pattern. */
+  private caseHead = false;
+  /** The closer of each `$(`, `<(`, and `${ cmd; }` body open at `pos`. A heredoc in one also ends at a line that starts with its delimiter and holds that closer. */
+  private readonly closers: string[] = [];
 
   constructor(
     private readonly src: string,
     private readonly scope: Scope,
   ) {}
 
-  /** Commands until the end, or with `close` until the `)` that ends a `$(`. */
-  commands(close: boolean): Segment[] {
+  /** Commands until the end, or with `close` until the `)` that ends a `$(`, or with `"}"` until the `}` that ends a `${ cmd; }`. */
+  commands(close: boolean | "}"): Segment[] {
     const out: Segment[] = [this.segment(true)];
     const opens: number[] = [];
     let depth = 0;
     this.cases.push(-1);
+    // bash reads a `$(` body's heredocs inside it, and the outer line's heredocs after that line ends.
+    const outer = close ? this.pending.splice(0) : [];
+    const { pattern, caseHead } = this;
+    this.pattern = this.caseHead = false;
+    if (close) this.closers.push(close === true ? ")" : "}");
+    const groups = this.groups;
+    let closed = false;
     while (this.pos < this.src.length) {
       const c = this.src[this.pos];
       const next = this.src[this.pos + 1];
       REDIRECT.lastIndex = this.pos;
       OUTPUT.lastIndex = this.pos;
       if (c === "\\" && next === "\n") this.pos += 2;
-      else if (c === " " || c === "\t") this.pos++;
+      else if (c !== " " && c !== "\t" && c !== "\n" && testPattern(out.at(-1)!.words)) out.at(-1)!.words.push(this.patternWord());
+      else if (c === " " || c === "\t" || (this.pattern && (c === "(" || (c === "|" && next !== "|")))) this.pos++;
       else if (c === "#") {
         // A `#` that starts a word is a comment to the end of the line. The newline stays, so heredoc bodies still follow it.
         const eol = this.src.indexOf("\n", this.pos);
@@ -385,10 +438,16 @@ class Lexer {
         const left = out.at(-1)!;
         left.after = op === "|&" ? "|" : op;
         if (op === "&") this.scope.background = true;
+        if (op.startsWith(";;") || op === ";&") this.pattern = this.cases.at(-1) === depth;
         if (c === "\n") this.bodies();
         out.push(this.segment(!pair || c === ";"));
         if (left.after === "|") out.at(-1)!.pipe = left;
         if (["|", "&&", "||"].includes(left.after)) this.continuation();
+      } else if (c === "(" && next === "(" && (prefix(out.at(-1)!.words) || out.at(-1)!.words.at(-1) === "for") && !this.flat.has(this.pos)) {
+        // An arithmetic command, `(( ))` or `for (( ))`, runs only the substitutions inside it.
+        const tried = this.arithmetic(0);
+        const subs = (tried.arithmetic ? tried.text.match(SUB)?.join("") : tried.text) ?? "";
+        if (subs) out.at(-1)!.words.push(subs);
       } else if (c === "(") {
         this.feed(out.at(-1)!);
         depth++;
@@ -398,11 +457,16 @@ class Lexer {
         this.pos++;
       } else if (c === ")") {
         this.pos++;
-        if (close && depth === 0) break;
         if (this.cases.at(-1) === depth) {
+          this.pattern = false;
           out.push(this.segment(true));
           continue;
         }
+        if (close === true && depth === 0) {
+          closed = true;
+          break;
+        }
+        if (depth === 0) this.scope.broken = true;
         const start = depth > 0 ? opens.pop() : undefined;
         if (depth > 0) this.parens--;
         depth = Math.max(0, depth - 1);
@@ -411,17 +475,36 @@ class Lexer {
       } else if (REDIRECT.test(this.src)) this.redirect(out.at(-1)!);
       else {
         const seg = out.at(-1)!;
+        const start = this.pos;
         const word = this.word();
-        if (seg.words.every((w) => KEYWORDS.includes(w))) {
+        // bash reserves only an unquoted word where a command name goes: no quote, escape, expansion, or redirect before it.
+        // bash joins a line continuation before it reads a word, so `ca\⏎se` is still `case`.
+        const literal = this.src.slice(start, this.pos).replaceAll("\\\n", "") === word;
+        const reserved = literal && seg.stdin.length + seg.other.length + seg.out.length + seg.copies === 0 && prefix(seg.words);
+        // `case x in esac` has no pattern, so its esac follows `in` on the same command.
+        const bare = this.pattern && literal && word === "esac" && seg.words.at(-1) === "in" && seg.words.at(-3) === "case";
+        if (close === "}" && reserved && !this.pattern && word === "}" && this.groups === groups && depth === 0) {
+          closed = true;
+          break;
+        }
+        if (bare || (reserved && (!this.pattern || (word === "esac" && seg.words.length === 0)))) {
           this.keyword(word, seg, depth);
           if (["{", "if", "while", "until", "for", "case", "select"].includes(word)) opens.push(out.length - 1);
           else if (["}", "fi", "done", "esac"].includes(word)) seg.group = out.slice(opens.pop() ?? -1, -1);
+        } else if (this.caseHead && literal && word === "in" && seg.words.at(-2) === "case") {
+          this.caseHead = false;
+          this.pattern = true;
         }
         seg.words.push(word);
       }
     }
+    if (close ? !closed : depth > 0 || this.pending.length > 0) this.scope.broken = true;
     this.parens -= depth;
     while (this.cases.length > 0 && this.cases.pop() !== -1);
+    // One still open here comes before the outer line's, as bash reads it.
+    this.pending.push(...outer);
+    Object.assign(this, { pattern, caseHead });
+    if (close) this.closers.pop();
     return out.filter((s) => s.words.length > 0 || s.stdin.length > 0 || s.other.length > 0 || s.out.length > 0 || s.copies > 0);
   }
 
@@ -452,10 +535,14 @@ class Lexer {
       this.compound++;
       seg.always = false;
       seg.nested = true;
-      if (word === "case") this.cases.push(depth);
+      if (word === "case") {
+        this.cases.push(depth);
+        this.caseHead = true;
+      }
     } else if (["fi", "done", "esac"].includes(word)) {
       this.compound = Math.max(0, this.compound - 1);
       if (word === "esac" && this.cases.at(-1) !== -1) this.cases.pop();
+      if (word === "esac") this.pattern = false;
     }
   }
 
@@ -474,6 +561,7 @@ class Lexer {
       if (BREAK.test(c)) break;
       else if (c === "'") {
         const end = this.src.indexOf("'", this.pos + 1);
+        if (end < 0) this.scope.broken = true;
         out += this.src.slice(this.pos + 1, end < 0 ? undefined : end);
         this.pos = end < 0 ? this.src.length : end + 1;
       } else if (c === '"') {
@@ -520,6 +608,7 @@ class Lexer {
         this.pos++;
       }
     }
+    if (this.pos >= this.src.length) this.scope.broken = true;
     this.pos++;
     return out;
   }
@@ -541,24 +630,35 @@ class Lexer {
         if (this.src[i] === "\\" && "$`\\".includes(this.src[i + 1] ?? "")) i++;
         inner += this.src[i];
       }
+      if (i >= this.src.length) this.scope.broken = true;
       this.pos = i + 1;
       return this.sub(new Lexer(inner, this.scope).commands(false), output);
     }
+    const tried = next === "(" && this.src[this.pos + 2] === "(" ? this.arithmetic(1) : { arithmetic: false, text: "" };
+    // An arithmetic result is one number, so only the substitutions inside it run.
+    if (tried.arithmetic) return UNKNOWN + (tried.text.match(SUB) ?? []).join("");
     if (next === "(") {
       this.pos += 2;
-      return this.sub(this.commands(true), output);
+      return this.sub(this.commands(true), output) + tried.text;
     }
-    if (next === "{") {
-      let i = this.pos + 1;
-      for (let depth = 0; i < this.src.length; i++) {
-        if (this.src[i] === "{") depth++;
-        else if (this.src[i] === "}" && --depth === 0) break;
+    if (next === "{" && /[ \t\n|]/.test(this.src[this.pos + 2] ?? "")) {
+      // bash 5.3 runs `${ cmd; }` and `${| cmd; }` in the current shell.
+      this.pos += this.src[this.pos + 2] === "|" ? 3 : 2;
+      return this.sub(this.commands("}"), output);
+    }
+    if (next === "{" || next === "[") {
+      this.pos += 2;
+      const { text } = this.enclosed(next, quoted);
+      if (next === "[") {
+        this.scope.assigns.push(text);
+        return UNKNOWN + (text.match(SUB) ?? []).join("");
       }
-      const name = this.src.slice(this.pos + 2, i);
-      this.pos = i + 1;
+      // A `=` default assigns its name alone. A subscript or an offset is arithmetic, which can assign any name.
+      const assigned = /^([A-Za-z_]\w*):?=/.exec(text)?.[1];
+      if (assigned) this.scope.assigns.push(assigned);
+      else if (/^[#!]?(?:[A-Za-z_]\w*|\d+|[@*])(?:\[|:(?![-+?]))/.test(text)) this.scope.assigns.push(text);
       // A default or alternate word runs its substitutions, so they are scanned like any other.
-      const inner = new Lexer(name, this.scope).expansions().match(SUB) ?? [];
-      return param(name) + inner.join("");
+      return param(text) + (text.match(SUB) ?? []).join("");
     }
     const name = /^[A-Za-z_]\w*/.exec(this.src.slice(this.pos + 1, this.pos + 256))?.[0];
     if (name) {
@@ -572,12 +672,173 @@ class Lexer {
     if (!quoted && next === "'") {
       let i = this.pos + 2;
       while (i < this.src.length && this.src[i] !== "'") i += this.src[i] === "\\" ? 2 : 1;
+      if (i >= this.src.length) this.scope.broken = true;
       const text = i < this.src.length ? ansiC(this.src.slice(this.pos + 2, i)) : undefined;
       this.pos = i + 1;
       return text ?? UNKNOWN;
     }
     this.pos++;
     return !quoted && next === '"' ? UNKNOWN : "$";
+  }
+
+  /**
+   * The pattern after `=~`, `==`, `!=`, or `=` in `[[ ]]`. bash reads parens there as part of the word, so `(#)` holds no
+   * comment and `@(a|b)` no pipe. Its expansions are markers, as in any word.
+   */
+  private patternWord(): string {
+    let out = "";
+    for (let depth = 0; this.pos < this.src.length; ) {
+      const c = this.src[this.pos];
+      if ((c === "<" || c === ">") && this.src[this.pos + 1] === "(" && depth > 0) {
+        this.pos += 2;
+        out += this.sub(this.commands(true), "path");
+        continue;
+      }
+      if (depth === 0 && (/[ \t\n;&<>)]/.test(c) || (c === "|" && this.src[this.pos + 1] === "|"))) break;
+      if (c === "(") depth++;
+      else if (c === ")") depth--;
+      if (c === "'") {
+        const end = this.src.indexOf("'", this.pos + 1);
+        if (end < 0) this.scope.broken = true;
+        out += this.src.slice(this.pos + 1, end < 0 ? undefined : end);
+        this.pos = end < 0 ? this.src.length : end + 1;
+      } else if (c === '"') {
+        this.pos++;
+        out += this.double();
+      } else if (c === "\\") {
+        out += this.src[this.pos + 1] ?? "";
+        this.pos += 2;
+      } else if (c === "$" || c === "`") out += this.dollar(false);
+      else {
+        out += c;
+        this.pos++;
+      }
+    }
+    return out;
+  }
+
+  /**
+   * `((` read as arithmetic, from `skip` characters before it. bash takes that reading unless the parens close as `) )`, and
+   * then reads `( (...) )`. The gate also takes that reading after a backquote, which bash matches its own way, but then the
+   * undone try keeps the substitutions it found, as `text`, so the gate scans what either reading runs. Each failed try reads
+   * its inside again, so the gate reads `( (` at once inside 32 open tries or past 256 tries in one command.
+   */
+  private arithmetic(skip: number): { arithmetic: boolean; text: string } {
+    if (this.trying >= 32 || this.scope.tries >= 256) this.flat.add(this.pos);
+    if (this.flat.has(this.pos)) return { arithmetic: false, text: "" };
+    this.scope.tries++;
+    const start = this.pos;
+    const undo = this.mark();
+    this.pos += skip + 2;
+    this.trying++;
+    const { text, plain } = this.enclosed("(");
+    this.trying--;
+    if (plain && this.src[this.pos] === ")") {
+      this.pos++;
+      this.scope.assigns.push(text);
+      // A `#` after a blank in `$((` can make bash read a `$( (` command with a comment instead, and bash's choice depends
+      // on more than the gate models. The read goes on from the arithmetic end, and the `$( (` reading is scanned too.
+      if (skip === 0 || !/\s#/.test(text)) return { arithmetic: true, text };
+      const back = this.mark();
+      this.pos = start + 2;
+      this.trying++;
+      const other = this.sub(this.commands(true), "word");
+      this.trying--;
+      back(true);
+      return { arithmetic: true, text: text + other };
+    }
+    this.flat.add(undo(!plain));
+    return { arithmetic: false, text: plain ? "" : (text.match(SUB) ?? []).join("") };
+  }
+
+  /**
+   * The text of a `((`, `${`, or `$[` expansion, from just past its opener through the bracket that ends it, matched the way
+   * bash matches the pair. Quotes, escapes, `$'...'`, and each nested `$(`, `<(`, and backquote are read as the lexer reads
+   * them, so a comment, heredoc, or case pattern in a nested `$(` hides no delimiter. bash counts only the opener's own
+   * bracket, and nests `${` only inside `${`, so a nested `$[`, a `${` in arithmetic, and a bare `{` are plain text.
+   * bash matches quotes here, but in arithmetic and in a double-quoted `${ }` it keeps them as text and still expands a `$(`
+   * inside `'...'` or `$'...'`, so the gate reads that text for expansions. Elsewhere the quotes keep their text literal.
+   * `plain`: no backquote occurred.
+   */
+  private enclosed(open: "(" | "[" | "{", quoted = false): { text: string; plain: boolean } {
+    const close = { "(": ")", "[": "]", "{": "}" }[open];
+    const arithmetic = open !== "{";
+    // In `${ }`, a subscript or an offset right after the name is arithmetic too.
+    const lead = /[#!]?(?:[A-Za-z_]\w*|\d+|[@*])/y;
+    lead.lastIndex = this.pos;
+    let after = !arithmetic && lead.test(this.src) ? lead.lastIndex : -1;
+    let subscript = false;
+    let offset = false;
+    const single = (body: string) => (arithmetic || quoted || subscript || offset ? new Lexer(body, this.scope).expansions() : body);
+    let text = "";
+    let plain = true;
+    let closed = false;
+    for (let depth = 0; this.pos < this.src.length; ) {
+      const c = this.src[this.pos];
+      const next = this.src[this.pos + 1];
+      if (c === close && depth-- === 0) {
+        this.pos++;
+        closed = true;
+        break;
+      }
+      if (c === open && arithmetic) depth++;
+      if (this.pos === after && c === "[") subscript = true;
+      else if (subscript && c === "]") {
+        subscript = false;
+        after = this.pos + 1;
+      } else if (this.pos === after && c === ":" && !"-=?+".includes(next ?? "")) offset = true;
+      if (c === "$" && next === "'") {
+        let i = this.pos + 2;
+        while (i < this.src.length && this.src[i] !== "'") i += this.src[i] === "\\" ? 2 : 1;
+        if (i >= this.src.length) this.scope.broken = true;
+        text += single(this.src.slice(this.pos + 2, i));
+        this.pos = i + 1;
+      } else if (c === "$" && (next === "[" || (next === "{" && arithmetic && !/[ \t\n|]/.test(this.src[this.pos + 2] ?? "")))) {
+        text += c;
+        this.pos++;
+      } else if (c === "$" || c === "`") {
+        plain &&= c === "$";
+        text += this.dollar(true);
+      } else if (!arithmetic && (c === "<" || c === ">") && next === "(") {
+        this.pos += 2;
+        text += this.sub(this.commands(true), "path");
+      } else if (c === '"') {
+        this.pos++;
+        text += this.double();
+      } else if (c === "'") {
+        const end = this.src.indexOf("'", this.pos + 1);
+        if (end < 0) this.scope.broken = true;
+        text += single(this.src.slice(this.pos + 1, end < 0 ? undefined : end));
+        this.pos = end < 0 ? this.src.length : end + 1;
+      } else if (c === "\\") {
+        text += this.src.slice(this.pos, this.pos + 2);
+        this.pos += 2;
+      } else {
+        text += c;
+        this.pos++;
+      }
+    }
+    if (!closed) this.scope.broken = true;
+    return { text, plain };
+  }
+
+  /**
+   * Saves where the read is. The function it returns goes back there, for a reading bash does not take, and gives that
+   * position. With `keep`, what the scope collected stays, so the substitutions that reading found are still scanned.
+   */
+  private mark(): (keep: boolean) => number {
+    const { pos, parens, compound, groups, scope } = this;
+    const pending = [...this.pending];
+    const cases = [...this.cases];
+    const feeds = [...this.feeds];
+    const { broken } = scope;
+    const [subs, docs, assigns] = [scope.subs.length, scope.docs.length, scope.assigns.length];
+    return (keep) => {
+      Object.assign(this, { pos, parens, compound, groups, pending, cases, feeds });
+      scope.broken = broken;
+      if (!keep) [scope.subs.length, scope.docs.length, scope.assigns.length] = [subs, docs, assigns];
+      return pos;
+    };
   }
 
   /** Starts a feed when `seg` opens a group as the first thing after `|`. */
@@ -608,8 +869,10 @@ class Lexer {
     const target = sub ? this.sub(this.commands(true), "path") : this.word();
     let stdin: Stdin = { kind: "other", word: target };
     if (op === "<<" || op === "<<-") {
-      const doc = this.scope.docs.push({ text: "", quoted: /['"\\]/.test(this.src.slice(start, this.pos)) }) - 1;
-      this.pending.push({ delim: target, strip: op === "<<-", doc });
+      const raw = this.src.slice(start, this.pos);
+      // A line continuation is joined before bash reads the delimiter, so it quotes nothing.
+      const doc = this.scope.docs.push({ text: "", quoted: /['"\\]/.test(raw.replaceAll("\\\n", "")) }) - 1;
+      this.pending.push({ delim: delimiter(raw), strip: op === "<<-", doc });
       stdin = { kind: "doc", doc };
     } else if (op === "<<<") stdin = { kind: "string", word: target };
     else if (op === "<&") stdin = { kind: "copy", fd: target, word: target };
@@ -639,15 +902,21 @@ class Lexer {
   private bodies(): void {
     for (const { delim, strip, doc } of this.pending.splice(0)) {
       const lines: string[] = [];
-      while (this.pos < this.src.length) {
+      let ended = false;
+      while (!ended && this.pos < this.src.length) {
         const eol = this.src.indexOf("\n", this.pos);
         const end = eol < 0 ? this.src.length : eol;
         const raw = this.src.slice(this.pos, end);
         const line = strip ? raw.replace(/^\t+/, "") : raw;
-        this.pos = end + 1;
-        if (line === delim) break;
-        lines.push(line);
+        // Inside `$( )` or `${ cmd; }`, bash also ends the body at a line that starts with the delimiter and holds the `)` or
+        // `}`, and reads on from just past the delimiter, so `EOF)` after `<<E` runs `OF` and closes the substitution.
+        const closer = this.closers.at(-1);
+        const closing = closer !== undefined && line !== delim && line.startsWith(delim) && line.includes(closer, delim.length);
+        ended = closing || line === delim;
+        this.pos = closing ? end - line.length + delim.length : end + 1;
+        if (!ended) lines.push(line);
       }
+      if (!ended) this.scope.broken = true;
       const heredoc = this.scope.docs[doc];
       heredoc.text = lines.join("\n");
       if (!heredoc.quoted) heredoc.marked = new Lexer(heredoc.text, this.scope).expansions();
@@ -671,6 +940,43 @@ class Lexer {
     }
     return out;
   }
+}
+
+/** A `$'...'` body as bash decodes it for a heredoc delimiter, which it compares as text: a NUL ends it, and `\c` makes a control character. */
+function decoded(body: string): string {
+  const text = body.replace(/\\(?:([0-7]{1,3})|x([0-9a-fA-F]{1,2})|u([0-9a-fA-F]{1,4})|U([0-9a-fA-F]{1,8})|c([\s\S])|([\s\S]))/g, (all, oct, hex, u, big, ctl, ch) => {
+    if (ctl !== undefined) return String.fromCharCode(ctl.charCodeAt(0) & 0x1f);
+    const code = oct ? parseInt(oct, 8) & 0xff : hex || u || big ? parseInt(hex || u || big, 16) : undefined;
+    return code === undefined ? (ANSI_C[ch] ?? all) : String.fromCodePoint(Math.min(code, 0x10ffff));
+  });
+  const nul = text.indexOf("\0");
+  return nul < 0 ? text : text.slice(0, nul);
+}
+
+/** A heredoc delimiter as bash reads it: quotes removed, `$'...'` decoded, and nothing expanded, so `<<$E` ends at a `$E` line. */
+function delimiter(raw: string): string {
+  let out = "";
+  for (let i = 0; i < raw.length; ) {
+    const c = raw[i];
+    if (c === "\\") {
+      if (raw[i + 1] !== "\n") out += raw[i + 1] ?? "";
+      i += 2;
+    } else if (c === "'" || (c === "$" && raw[i + 1] === "'")) {
+      const from = c === "$" ? i + 2 : i + 1;
+      let end = from;
+      while (end < raw.length && raw[end] !== "'") end += c === "$" && raw[end] === "\\" ? 2 : 1;
+      out += c === "$" ? decoded(raw.slice(from, end)) : raw.slice(from, end);
+      i = end + 1;
+    } else if (c === '"' || (c === "$" && raw[i + 1] === '"')) {
+      i += c === "$" ? 2 : 1;
+      for (; i < raw.length && raw[i] !== '"'; i++) {
+        if (raw[i] === "\\" && '$`"\\\n'.includes(raw[i + 1] ?? "")) i++;
+        if (raw[i] !== "\n" || raw[i - 1] !== "\\") out += raw[i];
+      }
+      i++;
+    } else out += raw[i++];
+  }
+  return out;
 }
 
 /** A word for messages, with each computed part shown as `$...`. */
@@ -1089,6 +1395,8 @@ function ghApi(found: Found, seg: Segment, ctx: Ctx): PrCommand | null {
   const [, repo, number, merge] = m;
   const base = { ...where, repo };
   if (control) return { ...base, kind: "opaque", part: "control" };
+  // A computed part can hide a merge suffix or turn the remaining literal path into a query string.
+  if (!merge && method === "PUT" && raw?.includes("\0")) return { ...base, kind: "opaque", part: "endpoint" };
   // `pulls/$PR` builds the PR number at run time, so a write there cannot be pinned to a PR.
   const unresolved = number !== undefined && !/^\d+$/.test(number) ? ({ ...base, kind: "unresolved", target: display(number) } as const) : undefined;
   const pinned = !repo.includes("{") && !args.flags.some((f) => f.name === "hostname");
@@ -1097,6 +1405,7 @@ function ghApi(found: Found, seg: Segment, ctx: Ctx): PrCommand | null {
   const hosts = [urlHost(raw), hostname === undefined ? undefined : display(hostname)].filter((h) => h !== undefined);
   if (merge) {
     if (method !== "PUT") return null;
+    if (merge.toLowerCase() === "/merge-async") return { ...base, kind: "refused", reason: "async-merge" };
     if (unresolved) return unresolved;
     const sha = fields.get("sha");
     const match = input !== undefined ? { value: { source: pathSource(input, seg, ctx), typed: false }, json: true } : sha && { value: fieldValue(sha, seg, ctx), json: false };
@@ -1129,13 +1438,13 @@ function ghApi(found: Found, seg: Segment, ctx: Ctx): PrCommand | null {
 }
 
 const ISSUES = /^repos\/([^/]+\/[^/]+)\/issues\/([^/]+)$/i;
-const PULLS = /^repos\/([^/]+\/[^/]+)\/pulls(?:\/([^/]+)(\/merge)?)?$/i;
+const PULLS = /^repos\/([^/]+\/[^/]+)\/pulls(?:\/([^/]+)(\/merge(?:-async)?)?)?$/i;
 /**
  * A pulls or numbered issue endpoint that PULLS and ISSUES miss because the shell finishes it at run time: a computed start
  * (a scheme, host, or `api/v3` prefix), owner and name (`$REPO` holds the slash), or text right after `pulls`, the PR number,
- * or `merge`. That text can add a number, `/merge`, or a query string, so gh can reach any PR write there.
+ * or anywhere in the final endpoint segment. That text can add a number, `/merge`, `/merge-async`, or a query string.
  */
-const COMPUTED_PR = /^(?:.*\0\0.*\/)?repos\/(?:[^/]+\/[^/]+|[^/]*\0\0[^/]*)\/(?:pulls(?:\/[^/]+(?:\/merge)?)?|issues\/[^/]+)(?:\0\0|$)/i;
+const COMPUTED_PR = /^(?:.*\0\0.*\/)?repos\/(?:[^/]+\/[^/]+|[^/]*\0\0[^/]*)\/(?:pulls(?:\/(?:[^/]+(?:\/merge(?:-async)?)?|\d+\/[^/]*(?=\0\0)))?|issues\/[^/]+)(?:\0\0|$)/i;
 
 interface ApiField {
   value: string;
@@ -1355,6 +1664,7 @@ function alone(segments: Segment[], at: number, made: PrCommand[], reads: Read[]
  * to the end of an unbroken && chain from the start of its list. A cd in a subshell stays there, and any later PR write that reads a file, and any later merge, is crowded.
  */
 function scan(segments: Segment[], ctx: Ctx): PrCommand[] {
+  if (ctx.scope.unread) return [{ via: "this command", dir: ctx.dir, host: ctx.host, lost: ctx.lost, kind: "opaque", part: "unread" }];
   const found: PrCommand[] = [];
   /** By segment index: the absolute name a `cat > f <<'EOF'` before a PR command writes. */
   const heredocs = new Map<number, string | undefined>();

@@ -304,9 +304,31 @@ function runnerLabel(): string {
   return best[0];
 }
 
+/**
+ * A step's `uses:` line pinned to a commit, with a comment that names its version: its indent and key, the pin and comment,
+ * the quote, the action, and the version. A tag ref such as `@v7` is no pin, so the template's commit replaces it.
+ */
+const PIN = /^([ \t]*(?:-[ \t]+)?uses:[ \t]*)((["']?)([^@\s"']+)@[0-9a-f]{40}\3[ \t]*#[ \t]*v?(\d+(?:\.\d+)*)[^\r\n]*?)[ \t]*\r?$/gm;
+
+function newer(a: string, b: string): boolean {
+  const [x, y] = [a, b].map((v) => v.split(".").map(Number));
+  for (let i = 0; i < Math.max(x.length, y.length); i++) if ((x[i] ?? 0) !== (y[i] ?? 0)) return (x[i] ?? 0) > (y[i] ?? 0);
+  return false;
+}
+
+/** Writes pr-kit.yml. A pin the installed copy has at a newer version stays, so an install never downgrades an action the repo's Dependabot moved ahead. */
 function writeWorkflow(label: string): void {
-  const yml = readFileSync(join(SOURCE["open-pr"], "pr-kit.yml"), "utf8").replace("__RUNS_ON__", label).replaceAll(".claude/skills/", `${layout.directory}/`);
-  writeIfChanged(join(repo, ".github", "workflows", "pr-kit.yml"), yml);
+  const path = join(repo, ".github", "workflows", "pr-kit.yml");
+  const installed = new Map(existsSync(path) ? [...readFileSync(path, "utf8").matchAll(PIN)].map((m) => [m[4], { pin: m[2], version: m[5] }] as const) : []);
+  const yml = readFileSync(join(SOURCE["open-pr"], "pr-kit.yml"), "utf8")
+    .replace("__RUNS_ON__", label)
+    .replaceAll(".claude/skills/", `${layout.directory}/`)
+    // Only the pin moves over, so the template keeps its own indent and step layout.
+    .replace(PIN, (line, key: string, _pin: string, _quote: string, action: string, version: string) => {
+      const have = installed.get(action);
+      return have && newer(have.version, version) ? key + have.pin : line;
+    });
+  writeIfChanged(path, yml);
 }
 
 type InstructionWrite = { path: string; text: string };
