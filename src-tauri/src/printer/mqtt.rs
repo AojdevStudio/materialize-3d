@@ -263,6 +263,15 @@ pub async fn publish(client: &AsyncClient, topic: &str, payload: &str) -> Result
         .map_err(|e| format!("MQTT publish failed: {e}"))
 }
 
+/// Publish a message at QoS 1 without waiting for room in the request queue.
+/// The task that polls the event loop sends with this, because only its own
+/// next poll frees room, so waiting would stop the connection for good.
+pub fn try_publish(client: &AsyncClient, topic: &str, payload: &str) -> Result<(), String> {
+    client
+        .try_publish(topic, QoS::AtLeastOnce, false, payload.as_bytes())
+        .map_err(|e| format!("MQTT publish failed: {e}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

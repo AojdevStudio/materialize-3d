@@ -582,7 +582,7 @@ impl PrinterService {
                     let has_print_state = app_state.printer.lock().is_ok_and(|p| p.gcode_state.is_some());
                     if !has_print_state {
                         let payload = BambuCommand::PushAll.to_json();
-                        if let Err(e) = mqtt::publish(&client, &request_topic, &payload).await {
+                        if let Err(e) = mqtt::try_publish(&client, &request_topic, &payload) {
                             log::warn!("failed to send pushall: {e}");
                         }
                         pushall_due = (sends > 1)
@@ -3619,9 +3619,10 @@ mod tests {
         (port, handle)
     }
 
-    /// Runs one session of printer A against `fake_broker` for 1.5 s and
-    /// returns how many `pushall` requests the broker read.
-    async fn pushalls_in_one_session(answers_pushall: bool) -> usize {
+    /// Runs one session of printer A against `fake_broker` for 1.5 s, with an
+    /// MQTT request queue of `capacity`. Returns how many `pushall` requests
+    /// the broker read, and the nozzle temperature the app last read.
+    async fn one_session(answers_pushall: bool, capacity: usize) -> (usize, Option<f32>) {
         let (port, broker) = fake_broker(answers_pushall);
         let (app, app_state, service) = history_app();
         service
@@ -3631,20 +3632,22 @@ mod tests {
         stop_connection_loop(&service).await;
         let id = service.inner.lock().await.connection;
         let (client, event_loop) =
-            AsyncClient::new(rumqttc::MqttOptions::new("m3d-test", "127.0.0.1", port), 10);
+            AsyncClient::new(rumqttc::MqttOptions::new("m3d-test", "127.0.0.1", port), capacity);
 
         let session = service.run_event_loop(id, client, event_loop, ConnectionType::Mqtt, app.handle(), &app_state);
         let ended = tokio::time::timeout(Duration::from_millis(1500), session).await;
         assert!(ended.is_err(), "the session stays connected, got {ended:?}");
-        tokio::task::spawn_blocking(move || broker.join().expect("broker thread"))
+        let pushalls = tokio::task::spawn_blocking(move || broker.join().expect("broker thread"))
             .await
-            .expect("join the broker")
+            .expect("join the broker");
+        let nozzle_temp = app_state.printer.lock().unwrap().nozzle_temp;
+        (pushalls, nozzle_temp)
     }
 
     #[tokio::test]
     async fn a_session_with_no_print_state_asks_for_the_full_state_again_a_bounded_number_of_times() {
         assert_eq!(
-            pushalls_in_one_session(false).await,
+            one_session(false, 10).await.0,
             1 + PUSHALL_RETRIES as usize,
             "one pushall on ConnAck, then one per retry, then no more"
         );
@@ -3652,6 +3655,15 @@ mod tests {
 
     #[tokio::test]
     async fn a_session_whose_pushall_is_answered_asks_once() {
-        assert_eq!(pushalls_in_one_session(true).await, 1);
+        assert_eq!(one_session(true, 10).await.0, 1);
+    }
+
+    #[tokio::test]
+    async fn a_session_whose_request_queue_is_full_when_a_pushall_is_due_keeps_reading_reports() {
+        // With one slot, the subscribe sent on ConnAck fills the queue just as
+        // the first pushall comes due, and only this session's poll drains it.
+        let (pushalls, nozzle_temp) = one_session(false, 1).await;
+        assert_eq!(nozzle_temp, Some(210.0), "the session read the printer's reports");
+        assert_eq!(pushalls, PUSHALL_RETRIES as usize, "the pushall that found the queue full is one of the sends");
     }
 }
