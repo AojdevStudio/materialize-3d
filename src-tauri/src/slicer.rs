@@ -900,6 +900,122 @@ mod tests {
         assert!(svc.profile_base_path.to_str().unwrap().contains("BambuStudio/system/BBL"));
     }
 
+    // ── run_slicer against a fake OrcaSlicer ──────────────────────────
+
+    /// A trimmed copy of the real P2S profile chain, laid out like `system/BBL`.
+    fn fixture_profiles() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/stl-slicer/profiles/system/BBL")
+    }
+
+    /// An OrcaSlicer output 3MF whose one plate lists `objects` sliced parts.
+    fn write_sliced_3mf(path: &Path, objects: usize) {
+        use std::io::Write;
+
+        let parts: String = (1..=objects)
+            .map(|id| format!(r#"<object identify_id="{id}" name="part{id}.stl" skipped="false"/>"#))
+            .collect();
+        let config = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?><config><plate><metadata key="prediction" value="631"/>{parts}<filament id="1" type="PLA" used_m="1.29" used_g="3.85"/></plate></config>"#
+        );
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(path).expect("create 3mf"));
+        zip.start_file("Metadata/slice_info.config", zip::write::SimpleFileOptions::default())
+            .expect("slice_info entry");
+        zip.write_all(config.as_bytes()).expect("write slice_info");
+        zip.finish().expect("finish 3mf");
+    }
+
+    /// A slice of `parts` input STLs by a fake OrcaSlicer that copies the presets it is handed
+    /// into `<dir>/received` and exports a 3MF listing `sliced_objects` parts. The fake runs as
+    /// `/bin/sh <first STL>`, so the first STL is the script: exec'ing a freshly written file
+    /// races other test threads' forks (ETXTBSY).
+    fn fake_orca_slice(dir: &Path, parts: usize, sliced_objects: usize) -> (SlicerService, SliceInput) {
+        let received = dir.join("received");
+        std::fs::create_dir(&received).expect("received dir");
+        let sliced = dir.join("sliced.3mf");
+        write_sliced_3mf(&sliced, sliced_objects);
+        let script = format!(
+            r#"while [ $# -gt 0 ]; do
+  case "$1" in
+    --load-settings) machine=${{2%%;*}}; process=${{2#*;}}; shift ;;
+    --load-filaments) filament=$2; shift ;;
+    --export-3mf) out=$2; shift ;;
+  esac
+  shift
+done
+cp "$machine" '{received}/machine.json' && cp "$process" '{received}/process.json' && cp "$filament" '{received}/filament.json' && cp '{sliced}' "$out"
+"#,
+            received = received.display(),
+            sliced = sliced.display()
+        );
+        let input_files: Vec<PathBuf> = (1..=parts).map(|n| dir.join(format!("part{n}.stl"))).collect();
+        std::fs::write(&input_files[0], script).expect("fake OrcaSlicer");
+        for stl in &input_files[1..] {
+            std::fs::write(stl, "solid part\nendsolid part\n").expect("stl");
+        }
+        let service = SlicerService {
+            orca_cli_path: PathBuf::from("/bin/sh"),
+            profile_base_path: fixture_profiles(),
+        };
+        let input = SliceInput {
+            input_files,
+            output_file: dir.join("out.3mf"),
+            quality: "0.20".to_string(),
+            filament: "Bambu PLA Basic".to_string(),
+        };
+        (service, input)
+    }
+
+    fn received_preset(dir: &Path, file: &str) -> serde_json::Value {
+        let text = std::fs::read_to_string(dir.join("received").join(file)).expect("preset handed to OrcaSlicer");
+        serde_json::from_str(&text).expect("preset JSON")
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn orca_gets_presets_merged_with_their_inherited_parents() {
+        let dir = TempDir::new().unwrap();
+        let (svc, input) = fake_orca_slice(dir.path(), 1, 1);
+        svc.run_slicer(&input).await.expect("slice succeeds");
+
+        let machine = received_preset(dir.path(), "machine.json");
+        assert_eq!(machine["gcode_flavor"], "marlin", "set only by fdm_machine_common");
+        assert_eq!(machine["extruder_type"], serde_json::json!(["Direct Drive"]), "set only by fdm_bbl_3dp_001_common");
+        assert_eq!(machine["extruder_clearance_radius"], "72", "the P2S preset overrides both parents");
+
+        let process = received_preset(dir.path(), "process.json");
+        assert_eq!(process["layer_height"], "0.2", "set only by fdm_process_single_0.20");
+        assert_eq!(process["travel_speed"], serde_json::json!(["1000", "1000", "1000"]), "the P2S process overrides its parent");
+
+        let filament = received_preset(dir.path(), "filament.json");
+        assert_eq!(filament["filament_type"], serde_json::json!(["PLA"]), "set only by Bambu PLA Basic @base");
+        assert_eq!(filament["nozzle_temperature"], serde_json::json!(["220", "220", "220"]), "the P2S filament overrides its parent");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn orca_gets_the_p2s_bed_from_the_machine_profile_chain() {
+        let dir = TempDir::new().unwrap();
+        let (svc, input) = fake_orca_slice(dir.path(), 1, 1);
+        svc.run_slicer(&input).await.expect("slice succeeds");
+
+        let machine = received_preset(dir.path(), "machine.json");
+        assert_eq!(machine["printable_area"], serde_json::json!(["0x0", "256x0", "256x256", "0x256"]));
+        assert_eq!(machine["printable_height"], "256");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_slice_fails_when_orca_drops_an_input_part() {
+        let dropped = TempDir::new().unwrap();
+        let (svc, input) = fake_orca_slice(dropped.path(), 2, 1);
+        let err = svc.run_slicer(&input).await.expect_err("one of two parts was not sliced");
+        assert!(err.to_string().contains("sliced 1 of 2 input parts"), "{err}");
+
+        let complete = TempDir::new().unwrap();
+        let (svc, input) = fake_orca_slice(complete.path(), 2, 2);
+        svc.run_slicer(&input).await.expect("both parts sliced");
+    }
+
     // ── Integration test (requires OrcaSlicer installed) ──────────────
 
     #[test]

@@ -1,0 +1,16 @@
+{
+    "type": "process",
+    "name": "0.20mm Standard @BBL P2S",
+    "inherits": "fdm_process_single_0.20",
+    "from": "system",
+    "setting_id": "GP155",
+    "instantiation": "true",
+    "travel_speed": [
+        "1000",
+        "1000",
+        "1000"
+    ],
+    "compatible_printers": [
+        "Bambu Lab P2S 0.4 nozzle"
+    ]
+}
