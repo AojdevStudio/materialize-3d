@@ -88,26 +88,34 @@ struct PrinterServiceInner {
     /// not ready for waits for its next IDLE report.
     owed_runs: u32,
     /// The `gcode_start_time` of the print each printer, by serial, showed
-    /// RUNNING or PAUSE when the app dropped its print state. The printer's
-    /// first report that names a start time settles it: a FINISH or FAILED for
-    /// the same start time reads as that print's end, and anything else drops
-    /// it. A print with no known start time is not kept, because no later
-    /// report could tell it from another print.
+    /// RUNNING or PAUSE when the app forgot its print. The first report after
+    /// which the app knows both a start time and a print state settles it: a
+    /// FINISH or FAILED for the same start time reads as that print's end, and
+    /// anything else drops it. A print with no known start time is not kept,
+    /// because no later report could tell it from another print.
     ended_mid_print: HashMap<String, String>,
     connection_task: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl PrinterServiceInner {
+    /// Forgets the print `printer` shows, so no later report is judged
+    /// against it. A print in progress is kept in `ended_mid_print`.
+    fn forget_print(&mut self, printer: &mut PrinterState) {
+        if let (Some("RUNNING" | "PAUSE"), Some(start), Some(creds)) =
+            (printer.gcode_state.as_deref(), &printer.gcode_start_time, &self.credentials)
+        {
+            self.ended_mid_print.insert(creds.printer.device_id.clone(), start.clone());
+        }
+        printer.gcode_state = None;
+        printer.gcode_start_time = None;
+    }
+
     /// Drops the print state a printer reported, so another printer does not
     /// start with it. The name stays until `start` names the next printer. A
     /// print in progress is kept in `ended_mid_print`.
     fn drop_print_state(&mut self, app_state: &AppState) {
         if let Ok(mut printer) = app_state.printer.lock() {
-            if let (Some("RUNNING" | "PAUSE"), Some(start), Some(creds)) =
-                (printer.gcode_state.as_deref(), &printer.gcode_start_time, &self.credentials)
-            {
-                self.ended_mid_print.insert(creds.printer.device_id.clone(), start.clone());
-            }
+            self.forget_print(&mut printer);
             *printer = PrinterState {
                 name: printer.name.take(),
                 ..PrinterState::default()
@@ -222,9 +230,8 @@ impl PrinterService {
             }
         }
         let id = inner.end_connection();
-        // A retry for the same printer, even at a new host, keeps its state, so
-        // a print that finished while it was offline still reads as RUNNING to
-        // FINISH.
+        // A retry for the same printer, even at a new host, shows what the
+        // printer last reported until the retry connects.
         let same_serial = inner.credentials.as_ref().map(|c| &c.printer.device_id)
             == Some(&creds.printer.device_id);
         if !same_serial {
@@ -658,13 +665,13 @@ impl PrinterService {
                 .map(|p| (p.gcode_state.clone(), p.gcode_start_time.clone()))
                 .unwrap_or_default();
 
-            // A print in progress when this printer's print state was dropped
-            // last read RUNNING, though this connection never saw it.
+            // A print in progress when the app forgot this printer's print
+            // last read RUNNING, though this session never saw it.
             let connection = &mut *connection;
             let serial = connection.credentials.as_ref().map(|c| c.printer.device_id.as_str());
             let ended = matches!(curr_gcode_state.as_deref(), Some("FINISH" | "FAILED"));
-            let carried_print_ended = match (serial, &start_time) {
-                (Some(serial), Some(start)) => connection
+            let carried_print_ended = match (serial, &start_time, &curr_gcode_state) {
+                (Some(serial), Some(start), Some(_)) => connection
                     .ended_mid_print
                     .remove(serial)
                     .is_some_and(|carried| ended && carried == *start),
@@ -745,8 +752,9 @@ impl PrinterService {
     }
 
     /// Transition to a connected state with the appropriate connection type.
-    /// The first status report after it advances the print queue. Does nothing
-    /// once connection `id` ended, and holds the service lock, like `set_state`.
+    /// The first status report after it advances the print queue, and is not
+    /// judged against the print an earlier session showed. Does nothing once
+    /// connection `id` ended, and holds the service lock, like `set_state`.
     async fn set_connected<R: Runtime>(
         &self,
         id: ConnectionId,
@@ -764,6 +772,7 @@ impl PrinterService {
         let printer_host = inner.credentials.as_ref().map(|c| c.printer.host.clone());
 
         if let Ok(mut printer) = app_state.printer.lock() {
+            inner.forget_print(&mut printer);
             printer.connection_state = state.clone();
             printer.connection_type = Some(conn_type.clone());
             printer.is_connected = true;
@@ -2089,9 +2098,17 @@ mod tests {
 
     /// Stops the real connection loop, which fails against a host with no
     /// printer, so the connects and reports a test fakes are the only ones.
+    /// A loop already running on another worker stops only at its next await,
+    /// so this waits for it, or its `Discovering` can land after a faked ConnAck.
     async fn stop_connection_loop(service: &PrinterService) {
-        if let Some(task) = service.inner.lock().await.connection_task.take() {
+        let task = service.inner.lock().await.connection_task.take();
+        if let Some(task) = task {
             task.abort();
+            match task.await {
+                Ok(()) => {}
+                Err(e) if e.is_cancelled() => {}
+                Err(e) => std::panic::resume_unwind(e.into_panic()),
+            }
         }
     }
 
@@ -2331,7 +2348,7 @@ mod tests {
         );
     }
 
-    /// A named pipe as a job's 3MF. A run that reads it waits until `feed`.
+    /// A named pipe as a job's 3MF.
     #[cfg(unix)]
     fn held_3mf() -> std::path::PathBuf {
         let fifo = std::env::temp_dir().join(format!("m3d-auto-send-{}.3mf", uuid::Uuid::new_v4()));
@@ -2340,26 +2357,74 @@ mod tests {
         fifo
     }
 
-    /// Lets the run waiting on `fifo` read it once.
-    #[cfg(unix)]
-    async fn feed(fifo: &std::path::Path) {
-        use std::io::Write;
-        use std::os::unix::fs::OpenOptionsExt;
+    /// Long enough that only a deadlock reaches it.
+    const DEADLOCK: Duration = Duration::from_secs(60);
 
-        let fifo = fifo.to_path_buf();
-        tokio::task::spawn_blocking(move || {
-            for _ in 0..150 {
-                match std::fs::OpenOptions::new().write(true).custom_flags(libc::O_NONBLOCK).open(&fifo) {
-                    Ok(mut reader_waiting) => return reader_waiting.write_all(b"3mf").expect("feed the 3MF"),
-                    Err(e) if e.raw_os_error() == Some(libc::ENXIO) => std::thread::sleep(Duration::from_millis(20)),
-                    Err(e) => panic!("feed {}: {e}", fifo.display()),
-                }
+    async fn until(what: &str, mut done: impl FnMut() -> bool) {
+        let wait = async {
+            while !done() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
             }
-            panic!("no run reads {}", fifo.display());
+        };
+        tokio::time::timeout(DEADLOCK, wait)
+            .await
+            .unwrap_or_else(|_| panic!("never saw {what}"));
+    }
+
+    /// A run reading a job's 3MF for its md5, which holds the queue. It reads
+    /// nothing until this drops.
+    #[cfg(unix)]
+    struct HeldRead {
+        fifo: std::path::PathBuf,
+        writer: std::fs::File,
+    }
+
+    #[cfg(unix)]
+    impl HeldRead {
+        /// Waits until a run opens `fifo` to read it.
+        async fn wait(fifo: &std::path::Path) -> Self {
+            let (opened, open) = tokio::sync::oneshot::channel();
+            let path = fifo.to_path_buf();
+            // The open returns once a reader opens the pipe. A plain thread,
+            // because a runtime waits for its blocking tasks as it shuts down.
+            std::thread::spawn(move || {
+                let _ = opened.send(std::fs::OpenOptions::new().write(true).open(&path));
+            });
+            let writer = tokio::time::timeout(DEADLOCK, open)
+                .await
+                .unwrap_or_else(|_| panic!("no run reads {}", fifo.display()))
+                .expect("the thread that opens the 3MF")
+                .expect("open the 3MF to write");
+            Self { fifo: fifo.to_path_buf(), writer }
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for HeldRead {
+        fn drop(&mut self) {
+            use std::io::Write;
+
+            // The upload reads the 3MF again, and a plain file lets it read
+            // without a second writer.
+            let plain = self.fifo.with_extension("plain");
+            std::fs::write(&plain, b"3mf").expect("write the plain 3MF");
+            std::fs::rename(&plain, &self.fifo).expect("put the plain 3MF in place of the pipe");
+            self.writer.write_all(b"3mf").expect("feed the 3MF");
+        }
+    }
+
+    async fn both_added_jobs_are_owed_a_try(service: &PrinterService) {
+        until("both added jobs owed a try", || {
+            service.inner.try_lock().is_ok_and(|inner| inner.owed_runs == 2)
         })
-        .await
-        .expect("feed task");
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        .await;
+    }
+
+    async fn every_job_settled(app_state: &AppState) {
+        until("every job settled", || {
+            app_state.print_queue.lock().unwrap().iter().all(|j| j.status != QueueStatus::Pending)
+        })
+        .await;
     }
 
     #[cfg(unix)]
@@ -2382,15 +2447,13 @@ mod tests {
         service
             .handle_publish(a, br#"{"print":{"gcode_state":"IDLE"}}"#, app.handle(), &app_state)
             .await;
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        let held = HeldRead::wait(&job_1).await;
         tokio::task::block_in_place(|| add_to_queue_from_the_window(&app));
         tokio::task::block_in_place(|| add_to_queue_from_the_window(&app));
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        both_added_jobs_are_owed_a_try(&service).await;
 
-        // Job 1 is read for its md5, then again by the upload, which fails.
-        feed(&job_1).await;
-        feed(&job_1).await;
-        tokio::time::sleep(Duration::from_secs(3)).await;
+        drop(held);
+        every_job_settled(&app_state).await;
 
         let queue = app_state.print_queue.lock().unwrap().clone();
         assert_eq!(queue.len(), 3);
@@ -2424,10 +2487,10 @@ mod tests {
         service
             .handle_publish(a, br#"{"print":{"gcode_state":"IDLE"}}"#, app.handle(), &app_state)
             .await;
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        let held = HeldRead::wait(&job_1).await;
         tokio::task::block_in_place(|| add_to_queue_from_the_window(&app));
         tokio::task::block_in_place(|| add_to_queue_from_the_window(&app));
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        both_added_jobs_are_owed_a_try(&service).await;
         service
             .set_state(a, ConnectionState::Reconnecting, app.handle(), &app_state, "connection lost")
             .await;
@@ -2435,13 +2498,16 @@ mod tests {
             .set_connected(a, ConnectionState::ConnectedMqtt, ConnectionType::Mqtt, app.handle(), &app_state)
             .await;
 
-        feed(&job_1).await;
-        feed(&job_1).await;
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        drop(held);
+        until("the run for job 1 let go of the queue", || {
+            app_state.print_queue.lock().unwrap()[0].status != QueueStatus::Pending
+                && service.inner.try_lock().is_ok_and(|inner| !inner.queue_held)
+        })
+        .await;
         service
             .handle_publish(a, br#"{"print":{"gcode_state":"IDLE"}}"#, app.handle(), &app_state)
             .await;
-        tokio::time::sleep(Duration::from_secs(3)).await;
+        every_job_settled(&app_state).await;
 
         let queue = app_state.print_queue.lock().unwrap().clone();
         assert_eq!(queue.len(), 3);
@@ -2632,7 +2698,7 @@ mod tests {
         assert_eq!(
             app_state.printer.lock().unwrap().gcode_state.as_deref(),
             Some("RUNNING"),
-            "a print that finishes during the outage still reads as RUNNING to FINISH"
+            "the retry shows the print it last saw until it connects"
         );
     }
 
@@ -2817,5 +2883,107 @@ mod tests {
         }
 
         assert_eq!(history_rows(&app_state).len(), 1, "one print, one row");
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    enum Return {
+        /// The loop reconnects on its own after the connection is lost.
+        Reconnect,
+        /// The printer went Offline and the user starts it again.
+        Retry,
+    }
+
+    /// Printer A's connection `a` drops, then a new session comes back `how`.
+    async fn return_to_printer_a(
+        how: Return,
+        service: &PrinterService,
+        a: ConnectionId,
+        app: &tauri::App<tauri::test::MockRuntime>,
+        app_state: &Arc<AppState>,
+    ) -> ConnectionId {
+        match how {
+            Return::Reconnect => {
+                service
+                    .set_state(a, ConnectionState::Reconnecting, app.handle(), app_state, "connection lost")
+                    .await;
+                service
+                    .set_connected(a, ConnectionState::ConnectedMqtt, ConnectionType::Mqtt, app.handle(), app_state)
+                    .await;
+                a
+            }
+            Return::Retry => {
+                service
+                    .set_state(a, ConnectionState::Offline, app.handle(), app_state, "both paths exhausted")
+                    .await;
+                connect_without_loop(service, printer_a(), app, app_state).await
+            }
+        }
+    }
+
+    /// Printer A sends `before`, its connection drops and comes back `how`,
+    /// then it sends `after`. Returns the history rows.
+    async fn history_across_a_return(how: Return, before: &[&[u8]], after: &[&[u8]]) -> Vec<(String, String)> {
+        let (app, app_state, service) = history_app();
+        let a = connect_without_loop(&service, printer_a(), &app, &app_state).await;
+        for report in before {
+            service.handle_publish(a, report, app.handle(), &app_state).await;
+        }
+        let a = return_to_printer_a(how, &service, a, &app, &app_state).await;
+        for report in after {
+            service.handle_publish(a, report, app.handle(), &app_state).await;
+        }
+        history_rows(&app_state)
+    }
+
+    const BENCHY_RUNNING: &[u8] =
+        br#"{"print":{"gcode_state":"RUNNING","gcode_start_time":"1710500000","subtask_name":"Benchy"}}"#;
+    const BENCHY_FINISHED: &[u8] =
+        br#"{"print":{"gcode_state":"FINISH","gcode_start_time":"1710500000","subtask_name":"Benchy"}}"#;
+
+    #[tokio::test]
+    async fn a_print_the_app_never_saw_gets_no_row_when_the_printer_comes_back() {
+        for how in [Return::Reconnect, Return::Retry] {
+            let rows = history_across_a_return(
+                how,
+                &[BENCHY_RUNNING],
+                &[br#"{"print":{"gcode_state":"FINISH","gcode_start_time":"1710600000","subtask_name":"Unseen"}}"#],
+            )
+            .await;
+            assert_eq!(rows, [], "{how:?}: Benchy ended and Unseen ran while the printer was away");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_print_paused_when_the_printer_drops_gets_a_row_when_it_finishes() {
+        for how in [Return::Reconnect, Return::Retry] {
+            let rows = history_across_a_return(
+                how,
+                &[BENCHY_RUNNING, br#"{"print":{"gcode_state":"PAUSE"}}"#],
+                &[BENCHY_FINISHED],
+            )
+            .await;
+            assert_eq!(rows, [("Benchy".into(), "success".into())], "{how:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_print_that_finishes_while_the_printer_is_away_gets_one_row() {
+        for how in [Return::Reconnect, Return::Retry] {
+            let rows = history_across_a_return(how, &[BENCHY_RUNNING], &[BENCHY_FINISHED, BENCHY_FINISHED]).await;
+            assert_eq!(rows, [("Benchy".into(), "success".into())], "{how:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_report_that_names_only_the_start_time_keeps_the_print_seen() {
+        for how in [Return::Reconnect, Return::Retry] {
+            let rows = history_across_a_return(
+                how,
+                &[BENCHY_RUNNING],
+                &[br#"{"print":{"gcode_start_time":"1710500000"}}"#, BENCHY_FINISHED],
+            )
+            .await;
+            assert_eq!(rows, [("Benchy".into(), "success".into())], "{how:?}");
+        }
     }
 }
