@@ -1183,7 +1183,17 @@ async fn submit_job(
         use_ams: false,
         ams_mapping: String::new(),
     };
+    send_project_file(service, id, app_state, job, cmd).await
+}
 
+/// Publishes `cmd`, the `project_file` for `job`, whose 3MF the run uploaded.
+async fn send_project_file(
+    service: &PrinterService,
+    id: ConnectionId,
+    app_state: &AppState,
+    job: &crate::state::QueuedJob,
+    cmd: BambuCommand,
+) -> Result<(), String> {
     let sent = match service.lock_for(id).await {
         None => Err(PrinterError::NotConnected),
         Some(mut inner) => inner.publish(cmd).await,
@@ -1238,32 +1248,30 @@ pub async fn upload_to_printer(
     access_code: &str,
     file_path: &std::path::Path,
 ) -> Result<(), PrinterError> {
+    let file_bytes = tokio::fs::read(file_path).await.map_err(|e| {
+        PrinterError::Ftps(format!("failed to read file '{}': {e}", file_path.display()))
+    })?;
+    let filename = file_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("upload.3mf")
+        .to_string();
+    upload(format!("{host}:990"), host.to_string(), access_code.to_string(), filename, file_bytes, Duration::MAX).await
+}
+
+async fn upload(
+    addr: String,
+    host: String,
+    access_code: String,
+    filename: String,
+    file_bytes: Vec<u8>,
+    _deadline: Duration,
+) -> Result<(), PrinterError> {
     use std::io::Cursor;
 
-    let host = host.to_string();
-    let access_code = access_code.to_string();
-    let file_path = file_path.to_path_buf();
-
     tokio::task::spawn_blocking(move || {
-        // Read file into memory (3MF files are typically 1-10MB)
-        let file_bytes = std::fs::read(&file_path).map_err(|e| {
-            PrinterError::Ftps(format!(
-                "failed to read file '{}': {e}",
-                file_path.display()
-            ))
-        })?;
-
-        let filename = file_path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("upload.3mf");
-
-        log::info!(
-            "FTPS: connecting to {}:990 for upload of {} ({} bytes)",
-            host,
-            filename,
-            file_bytes.len()
-        );
+        let filename = filename.as_str();
+        log::info!("FTPS: connecting to {addr} for upload of {filename} ({} bytes)", file_bytes.len());
 
         // Build TLS connector that accepts Bambu's CN="" self-signed certs
         let tls_connector = native_tls::TlsConnector::builder()
@@ -1275,7 +1283,6 @@ pub async fn upload_to_printer(
 
         // Connect to the FTPS server (implicit TLS on port 990)
         // For implicit FTPS, connect normally then wrap with into_secure
-        let addr = format!("{host}:990");
         let connect_failed = |e: &dyn std::fmt::Display| PrinterError::Ftps(format!("FTPS connect to {addr} failed: {e}"));
         let control = timed_connect(&addr).map_err(|e| connect_failed(&e))?;
         let ftp_stream = suppaftp::NativeTlsFtpStream::connect_with_stream(control)
@@ -2435,6 +2442,137 @@ mod tests {
             QueueStatus::Pending,
             "no report from this connection said IDLE"
         );
+    }
+
+    /// Printer A has reported IDLE with `jobs` queued. Its MQTT event loop is
+    /// returned unpolled, so a publish is buffered as a live broker would take it.
+    async fn idle_printer_a_with_mqtt(
+        jobs: usize,
+    ) -> (tauri::App<tauri::test::MockRuntime>, Arc<AppState>, PrinterService, ConnectionId, rumqttc::EventLoop) {
+        let (app, app_state, service, a) = connect_printer_a(jobs).await;
+        let (client, event_loop) = mqtt::connect(&cloud::local_mqtt_config(&printer_a())).expect("mqtt client");
+        let mut inner = service.inner.lock().await;
+        inner.mqtt_client = Some(client);
+        inner.readiness = Readiness::Idle;
+        drop(inner);
+        (app, app_state, service, a, event_loop)
+    }
+
+    fn project_file_for_cube() -> BambuCommand {
+        BambuCommand::ProjectFile {
+            param: "Metadata/plate_1.gcode".into(),
+            subtask_name: "cube.3mf".into(),
+            url: "ftp:///cache/cube.3mf".into(),
+            md5: String::new(),
+            use_ams: false,
+            ams_mapping: String::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_job_whose_printer_starts_another_print_during_its_upload_stays_pending() {
+        let (app, app_state, service, a, _event_loop) = idle_printer_a_with_mqtt(1).await;
+        let job = app_state.print_queue.lock().unwrap()[0].clone();
+        service
+            .handle_publish(a, br#"{"print":{"gcode_state":"RUNNING"}}"#, app.handle(), &app_state)
+            .await;
+
+        send_project_file(&service, a, &app_state, &job, project_file_for_cube())
+            .await
+            .expect("the send step");
+
+        assert_eq!(
+            app_state.print_queue.lock().unwrap()[0].status,
+            QueueStatus::Pending,
+            "the job waits for the printer's next IDLE"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_job_removed_during_its_upload_is_not_sent_and_the_next_job_goes() {
+        let (app, app_state, service, a, _event_loop) = idle_printer_a_with_mqtt(2).await;
+        let job = app_state.print_queue.lock().unwrap()[0].clone();
+        crate::print_queue::remove_job(&app_state, &job.id).expect("remove job 1");
+
+        send_project_file(&service, a, &app_state, &job, project_file_for_cube())
+            .await
+            .expect("the send step");
+        assert_eq!(
+            service.inner.lock().await.readiness,
+            Readiness::Idle,
+            "no project_file went out for the removed job"
+        );
+
+        auto_send_pending_job(&service, a, RunCause::OwedTry, app.handle())
+            .await
+            .expect("the run that follows");
+        let status = app_state.print_queue.lock().unwrap()[0].status.clone();
+        assert!(
+            matches!(&status, QueueStatus::Failed { reason } if reason.contains("localhost:990")),
+            "job 2 went to the idle printer next, got {status:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_job_whose_3mf_cannot_be_read_fails() {
+        let (app, app_state, service, a) = connect_printer_a(1).await;
+        let unreadable = std::env::temp_dir().join(format!("m3d-auto-send-{}.3mf", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&unreadable).expect("a directory where the 3MF should be");
+        app_state.print_queue.lock().unwrap()[0].threemf_path = unreadable.to_string_lossy().into_owned();
+
+        service
+            .handle_publish(a, br#"{"print":{"gcode_state":"IDLE"}}"#, app.handle(), &app_state)
+            .await;
+        every_job_settled(&app_state).await;
+
+        let status = app_state.print_queue.lock().unwrap()[0].status.clone();
+        assert!(
+            matches!(&status, QueueStatus::Failed { reason } if reason.contains("failed to read 3MF")),
+            "got {status:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_upload_to_a_printer_that_answers_a_byte_at_a_time_ends_at_its_deadline() {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("local addr").to_string();
+        let (closed, upload_closed) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let (mut printer, _) = listener.accept().expect("accept");
+            let mut reads = printer.try_clone().expect("clone the printer's socket");
+            std::thread::spawn(move || {
+                let _ = reads.read(&mut [0; 64]);
+                let _ = closed.send(());
+            });
+            // A greeting with no line end, well inside each read's timeout.
+            for _ in 0..100 {
+                if printer.write_all(b"2").is_err() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            let _ = printer.shutdown(std::net::Shutdown::Both);
+        });
+
+        let put = upload(
+            addr,
+            "127.0.0.1".into(),
+            "12345678".into(),
+            "cube.3mf".into(),
+            b"3mf".to_vec(),
+            Duration::from_secs(1),
+        )
+        .await;
+
+        assert!(
+            matches!(&put, Err(PrinterError::Ftps(e)) if e.contains("did not finish within")),
+            "the upload ends at its deadline, got {put:?}"
+        );
+        upload_closed
+            .recv_timeout(Duration::from_secs(2))
+            .expect("the upload closed its socket before it returned");
     }
 
     #[tokio::test]
