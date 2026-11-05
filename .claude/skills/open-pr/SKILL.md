@@ -1,6 +1,6 @@
 ---
 name: open-pr
-description: Open every pull request through this skill. It self-reviews the diff, proves the change, measures the merge danger, and writes the fixed PR body (Problem, Change, Proof, Review, Merge danger) that the PR gate and the pr-kit CI check require. Use before any `gh pr create`, `gh api .../pulls`, or PR body edit.
+description: Open every pull request through this skill. It self-reviews the diff, proves the change, runs the project's verify skills, measures the merge danger, and writes the fixed PR body (Problem, Change, Proof, Review, Merge danger) that the PR gate and the pr-kit CI check require. Use before any `gh pr create`, `gh api .../pulls`, or PR body edit.
 metadata:
   category: git/pr
   lanes: [claude, codex, pi]
@@ -31,16 +31,20 @@ The PR body is a briefing for a reviewer who has one minute. A gate checks the b
    - For a performance change, a chart or table of the before and after numbers.
    - The test that fails on the base and passes on the branch. Quote the failure.
    - Command output in a code block.
-4. **Measure the merge danger.**
+4. **Run the project's verify skills.** Run `bun <this skill's dir>/verify.ts --base origin/<base>` in the repo. It lists the `verify-*` skills this diff needs, in order: the skill of each app the diff touches, then the repo-level skills.
+   - Read each listed `SKILL.md` in full and run it against this branch, in the listed order. The listed paths are relative to the repo root. Its evidence goes in Proof.
+   - When one fails, stop. Do not open the PR. Report the skill, the failing step, and its output. A skill that cannot start counts as a failure, and so does a non-zero exit from `verify.ts`. Never read a `verify.ts` error as nothing to run.
+   - When it prints `verify: none.`, put that line in Proof and go on.
+5. **Measure the merge danger.**
    - **Door.** Two-way when a revert undoes it. One-way when it deletes something you didn't make (dead entries that point at nothing stay two-way), deletes data or work that cannot be put back, migrates a schema, publishes, sends, deploys to users, spends money, changes prod user data, or changes a contract that others consume. The door rates the change, not the merge.
    - **Blast radius.** Find what the change can break outside the diff: callers, consumers, config, jobs, other repos. Prove the one fact that makes it safe by running code, not by reading it. Name the radius in one word: `none`, `low`, `medium`, `high`. Rate it honestly, and include the rating in the local review. A radius of `medium` or lower lets the agent merge without asking, and `high` waits for the owner's word and gets an explainer video before he decides (see `land-pr`).
-5. **Write the body** to a file with the template below. Write in ASD-STE100:
+6. **Write the body** to a file with the template below. Write in ASD-STE100:
    - Start with the problem. No preamble, no "This PR".
    - One topic per sentence, at most 25 words. Active voice, present tense.
    - Periods and commas. No em dashes.
    - Problem uses at most four sentences.
-6. **Check the body.** Run `bun <this skill's dir>/check.ts body.md --title "<title>"`. Fix every violation it names.
-7. **Open the PR ready for review.** Never a draft.
+7. **Check the body.** Run `bun <this skill's dir>/check.ts body.md --title "<title>"`. Fix every violation it names.
+8. **Open the PR ready for review.** Never a draft.
    - `gh pr create --title "<title>" --body-file body.md --base <base>`
    - Run the push in its own call before the create, since the alone rule refuses `git push && gh pr create ...`.
    - To write the body in the same call, put the heredoc first and join it with `&&`: `cat > body.md <<'EOF' && gh pr create --title "<title>" --body-file body.md --base <base>`, with the body lines and `EOF` after it. Under noclobber `cat` fails on an existing file, and only `&&` stops gh from then reading the old file. Use `cat >| body.md` when the file already exists.
@@ -51,7 +55,7 @@ The PR body is a briefing for a reviewer who has one minute. A gate checks the b
    - When `gh` runs through `ssh`, put the remote command in single quotes and pass the body inline with a quoted heredoc. Inside single quotes, quote the delimiter with double quotes: `<<"EOF"`.
    - The gate refuses text a shell changes after the gate reads it. That is an unquoted heredoc with `$` or backquotes, and any `$` or backquote in a double-quoted ssh command. The local shell expands the second kind before ssh runs, even under a quoted heredoc. The gate also refuses remote `--body-file` paths, even when the file exists there. It refuses a `gh pr` or `gh api` PR write whose method, a flag, or a field name comes from the shell, such as `-X "$M"` or `"$DRAFT_FLAG"`, since any request could hide in it. Write those as text. It also refuses an unquoted `$...` anywhere in that command, even after `--jq`, because the shell can split it into more flags. Double-quote it: `--jq "$Q"`.
    - After `--attach`, move any appended image links into Proof and keep `Changes made by ...` last. Check the body again before submitting the edit.
-8. **Read it back.** `gh api repos/{owner}/{repo}/pulls/<n>` and confirm base, body, and draft state. Then hand over to the `land-pr` skill.
+9. **Read it back.** `gh api repos/{owner}/{repo}/pulls/<n>` and confirm base, body, and draft state. Then hand over to the `land-pr` skill.
 
 ## Install the kit
 

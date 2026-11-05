@@ -3,7 +3,7 @@
  * Pure: it never reads files or calls gh. The gate resolves file bodies and merge state.
  *
  * Covered: `gh pr create|edit|merge`, `gh issue edit` title/body/attachment edits, `gh api` POST/PATCH on `repos/O/R/pulls[/N]` and PUT on
- * `repos/O/R/pulls/N/merge`, PATCH on numbered `repos/O/R/issues/N`, and every `gh api graphql` call whose query is not a literal that provably
+ * `repos/O/R/pulls/N/merge`, refusal of PUT to `repos/O/R/pulls/N/merge-async`, PATCH on numbered `repos/O/R/issues/N`, and every `gh api graphql` call whose query is not a literal that provably
  * neither merges nor writes a PR. The same holds inside `ssh host '...'`, `bash -c`, and a program a shell
  * reads on stdin: its last heredoc or here-string, a pipe from cat or from echo or printf of literal words,
  * also into a group or compound opened right after `|`, a heredoc on a closing `)`, `}`, `done`, `fi`, or
@@ -119,8 +119,8 @@ export type PrCommand =
   | (Base & { kind: "graphql"; query: FieldValue; json: boolean; operationName: boolean })
   /** A REST PR write whose PR number the command builds at run time, so no check can name the PR. */
   | (Base & { kind: "unresolved"; target: string })
-  /** A gh command the kit never allows: `revert` opens a PR with gh's own body, `draft` is `gh pr ready --undo`. */
-  | (Base & { kind: "refused"; reason: "revert" | "draft" });
+  /** A gh command the kit never allows. */
+  | (Base & { kind: "refused"; reason: "revert" | "draft" | "async-merge" });
 
 /** The head a merge names: `--match-head-commit`, a REST `sha` field, or with `json` the `--input` request whose `sha` field holds it. */
 export interface HeadMatch {
@@ -544,6 +544,16 @@ class Lexer {
       this.pos = i + 1;
       return this.sub(new Lexer(inner, this.scope).commands(false), output);
     }
+    if (next === "(" && this.src[this.pos + 2] === "(") {
+      const end = arithmeticEnd(this.src, this.pos + 3);
+      if (end !== undefined) {
+        const body = this.src.slice(this.pos + 3, end);
+        this.pos = end + 2;
+        // An arithmetic result is one number, so only the substitutions inside it run.
+        const inner = new Lexer(body, this.scope).expansions().match(SUB) ?? [];
+        return UNKNOWN + inner.join("");
+      }
+    }
     if (next === "(") {
       this.pos += 2;
       return this.sub(this.commands(true), output);
@@ -671,6 +681,25 @@ class Lexer {
     }
     return out;
   }
+}
+
+/**
+ * Where the `))` that closes a `$((` starts, or undefined when the text is not plain arithmetic. A quote, backquote,
+ * or backslash inside keeps the command-substitution reading, and so do parens that close as `) )`, which bash
+ * reads as `$( (...) )`.
+ */
+function arithmeticEnd(src: string, from: number): number | undefined {
+  let depth = 0;
+  for (let i = from; i < src.length; i++) {
+    const c = src[i];
+    if (c === "'" || c === '"' || c === "`" || c === "\\") return undefined;
+    if (c === "(") depth++;
+    else if (c === ")") {
+      if (depth > 0) depth--;
+      else return src[i + 1] === ")" ? i : undefined;
+    }
+  }
+  return undefined;
 }
 
 /** A word for messages, with each computed part shown as `$...`. */
@@ -1089,6 +1118,8 @@ function ghApi(found: Found, seg: Segment, ctx: Ctx): PrCommand | null {
   const [, repo, number, merge] = m;
   const base = { ...where, repo };
   if (control) return { ...base, kind: "opaque", part: "control" };
+  // A computed part can hide a merge suffix or turn the remaining literal path into a query string.
+  if (!merge && method === "PUT" && raw?.includes("\0")) return { ...base, kind: "opaque", part: "endpoint" };
   // `pulls/$PR` builds the PR number at run time, so a write there cannot be pinned to a PR.
   const unresolved = number !== undefined && !/^\d+$/.test(number) ? ({ ...base, kind: "unresolved", target: display(number) } as const) : undefined;
   const pinned = !repo.includes("{") && !args.flags.some((f) => f.name === "hostname");
@@ -1097,6 +1128,7 @@ function ghApi(found: Found, seg: Segment, ctx: Ctx): PrCommand | null {
   const hosts = [urlHost(raw), hostname === undefined ? undefined : display(hostname)].filter((h) => h !== undefined);
   if (merge) {
     if (method !== "PUT") return null;
+    if (merge.toLowerCase() === "/merge-async") return { ...base, kind: "refused", reason: "async-merge" };
     if (unresolved) return unresolved;
     const sha = fields.get("sha");
     const match = input !== undefined ? { value: { source: pathSource(input, seg, ctx), typed: false }, json: true } : sha && { value: fieldValue(sha, seg, ctx), json: false };
@@ -1129,13 +1161,13 @@ function ghApi(found: Found, seg: Segment, ctx: Ctx): PrCommand | null {
 }
 
 const ISSUES = /^repos\/([^/]+\/[^/]+)\/issues\/([^/]+)$/i;
-const PULLS = /^repos\/([^/]+\/[^/]+)\/pulls(?:\/([^/]+)(\/merge)?)?$/i;
+const PULLS = /^repos\/([^/]+\/[^/]+)\/pulls(?:\/([^/]+)(\/merge(?:-async)?)?)?$/i;
 /**
  * A pulls or numbered issue endpoint that PULLS and ISSUES miss because the shell finishes it at run time: a computed start
  * (a scheme, host, or `api/v3` prefix), owner and name (`$REPO` holds the slash), or text right after `pulls`, the PR number,
- * or `merge`. That text can add a number, `/merge`, or a query string, so gh can reach any PR write there.
+ * or anywhere in the final endpoint segment. That text can add a number, `/merge`, `/merge-async`, or a query string.
  */
-const COMPUTED_PR = /^(?:.*\0\0.*\/)?repos\/(?:[^/]+\/[^/]+|[^/]*\0\0[^/]*)\/(?:pulls(?:\/[^/]+(?:\/merge)?)?|issues\/[^/]+)(?:\0\0|$)/i;
+const COMPUTED_PR = /^(?:.*\0\0.*\/)?repos\/(?:[^/]+\/[^/]+|[^/]*\0\0[^/]*)\/(?:pulls(?:\/(?:[^/]+(?:\/merge(?:-async)?)?|\d+\/[^/]*(?=\0\0)))?|issues\/[^/]+)(?:\0\0|$)/i;
 
 interface ApiField {
   value: string;
