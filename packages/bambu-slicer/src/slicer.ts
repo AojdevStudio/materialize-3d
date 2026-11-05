@@ -148,7 +148,7 @@ export async function runSlicer(input: SliceInput): Promise<SliceResult> {
     return {
       success: false,
       outputFile: input.outputFile,
-      error: `Could not read the sliced parts from ${staged}: ${e instanceof Error ? e.message : String(e)}`,
+      error: `Could not read the sliced parts of the 3MF OrcaSlicer wrote for ${input.outputFile}:${e instanceof Error ? e.message : String(e)}`,
     };
   }
   if (slicedParts !== input.inputFiles.length) {
