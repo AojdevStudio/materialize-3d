@@ -15,6 +15,7 @@ use tokio::sync::{Mutex as TokioMutex, MutexGuard};
 
 use crate::state::{
     AppState, ConnectionState, ConnectionType, PrintHistoryRecord, PrinterState, QueueStatus,
+    SentPrint,
 };
 
 /// Maximum consecutive local MQTT failures before falling back to Cloud.
@@ -491,9 +492,11 @@ impl PrinterService {
         .await
     }
 
-    /// Run the MQTT event loop.  On first successful connect, sends `pushall`
-    /// and transitions to the connected state for `conn_type`.  Processes incoming
-    /// messages and merges them into `PrinterState`.
+    /// Run the MQTT event loop.  On first successful connect, transitions to the
+    /// connected state for `conn_type` and sends `pushall`, again every
+    /// `PUSHALL_RETRY_AFTER` up to `PUSHALL_RETRIES` times while no report has
+    /// carried a print state.  Processes incoming messages and merges them
+    /// into `PrinterState`.
     async fn run_event_loop<R: Runtime>(
         &self,
         id: ConnectionId,
@@ -519,6 +522,8 @@ impl PrinterService {
         };
 
         let mut connected = false;
+        // When this session next sends `pushall`, and how many sends it has left.
+        let mut pushall_due: Option<(tokio::time::Instant, u32)> = None;
 
         loop {
             if self.lock_for(id).await.is_none() {
@@ -535,14 +540,6 @@ impl PrinterService {
                         log::warn!("failed to subscribe to {report_topic}: {e}");
                     }
 
-                    // Send pushall to get initial full state
-                    let pushall_payload = BambuCommand::PushAll.to_json();
-                    if let Err(e) =
-                        mqtt::publish(&client, &request_topic, &pushall_payload).await
-                    {
-                        log::warn!("failed to send pushall: {e}");
-                    }
-
                     // Transition to connected
                     self.set_connected(
                         id,
@@ -552,6 +549,7 @@ impl PrinterService {
                         app_state,
                     )
                     .await;
+                    pushall_due = Some((tokio::time::Instant::now(), 1 + PUSHALL_RETRIES));
                 }
                 Ok(Event::Incoming(Incoming::Publish(publish))) => {
                     self.handle_publish(id, &publish.payload, app_handle, app_state)
@@ -572,6 +570,23 @@ impl PrinterService {
                     } else {
                         // Never connected — connection failed
                         return Err(PrinterError::Mqtt(e.to_string()));
+                    }
+                }
+            }
+
+            // Checked after each event, so on a quiet link the next keepalive
+            // ping is when a send that came due goes out.
+            if let Some((due, sends)) = pushall_due {
+                if tokio::time::Instant::now() >= due {
+                    pushall_due = None;
+                    let has_print_state = app_state.printer.lock().is_ok_and(|p| p.gcode_state.is_some());
+                    if !has_print_state {
+                        let payload = BambuCommand::PushAll.to_json();
+                        if let Err(e) = mqtt::publish(&client, &request_topic, &payload).await {
+                            log::warn!("failed to send pushall: {e}");
+                        }
+                        pushall_due = (sends > 1)
+                            .then(|| (tokio::time::Instant::now() + PUSHALL_RETRY_AFTER, sends - 1));
                     }
                 }
             }
@@ -825,16 +840,13 @@ fn record_print_completion(
     serial: &str,
     status: &str,
 ) -> Result<(String, Option<String>), String> {
-    let (model_name, gcode_file, gcode_start_time, fail_reason) = {
+    let (subtask_name, gcode_file, gcode_start_time, fail_reason) = {
         let printer = app_state
             .printer
             .lock()
             .map_err(|e| format!("failed to lock printer state: {e}"))?;
         (
-            printer
-                .subtask_name
-                .clone()
-                .unwrap_or_else(|| "Unknown".into()),
+            printer.subtask_name.clone(),
             printer.gcode_file.clone(),
             printer.gcode_start_time.clone(),
             printer.fail_reason.clone(),
@@ -864,13 +876,18 @@ fn record_print_completion(
         (None, None)
     };
 
-    // Try to get filament estimates from the first Submitted queue job
+    // The latest job sent to this printer under the print's subtask name
+    // started it. A print no job started takes nothing from the queue.
     let (filament_grams, filament_meters, quality_profile, thumbnail_path) = {
         let queue = app_state.print_queue.lock().ok();
+        let started_by = subtask_name.clone().map(|subtask_name| QueueStatus::Submitted {
+            print: Some(SentPrint { serial: serial.into(), subtask_name }),
+        });
         queue
             .and_then(|q| {
                 q.iter()
-                    .find(|j| j.status == QueueStatus::Submitted)
+                    .rev()
+                    .find(|j| Some(&j.status) == started_by.as_ref())
                     .map(|j| {
                         (
                             j.filament_grams,
@@ -883,6 +900,7 @@ fn record_print_completion(
             .unwrap_or((None, None, None, None))
     };
 
+    let model_name = subtask_name.unwrap_or_else(|| "Unknown".into());
     let completed_at = chrono::Utc::now().to_rfc3339();
     let record = PrintHistoryRecord {
         id: uuid::Uuid::new_v4().to_string(),
@@ -1195,31 +1213,23 @@ async fn submit_job(
         return fail_job(service, id, app_state, &job.id, err_msg).await;
     }
 
-    // Send MQTT project_file command
-    let ftp_url = format!("ftp:///cache/{filename}");
-    let cmd = BambuCommand::ProjectFile {
-        param: "Metadata/plate_1.gcode".into(),
-        subtask_name: filename.clone(),
-        url: ftp_url,
-        md5: md5_digest,
-        use_ams: false,
-        ams_mapping: String::new(),
-    };
-    send_project_file(service, id, app_state, job, cmd).await
+    send_project_file(service, id, app_state, job, filename, md5_digest).await
 }
 
-/// Publishes `cmd`, the `project_file` for `job`, whose 3MF the run uploaded.
-/// During the upload the printer may have started another print, or the user
-/// may have removed the job, so both are checked again under the lock that
-/// the publish holds. A printer that is busy or reconnecting leaves the job
-/// Pending for its next IDLE.
-/// A job that left the queue is not sent.
+/// Publishes the `project_file` that prints `filename`, the 3MF of `job` that
+/// the run uploaded. During the upload the printer may have started another
+/// print, or the user may have removed the job, so both are checked again
+/// under the lock that the publish holds. A printer that is busy or
+/// reconnecting leaves the job Pending for its next IDLE.
+/// A job that left the queue is not sent. A sent job names its printer and
+/// `filename`, the subtask name that printer reports for the print.
 async fn send_project_file(
     service: &PrinterService,
     id: ConnectionId,
     app_state: &AppState,
     job: &crate::state::QueuedJob,
-    cmd: BambuCommand,
+    filename: String,
+    md5: String,
 ) -> Result<(), String> {
     let Some(mut inner) = service.lock_for(id).await else {
         log::info!("auto-send: the connection ended, job {} stays Pending", job.id);
@@ -1235,6 +1245,13 @@ async fn send_project_file(
         log::info!("auto-send: the printer is not ready, job {} waits for its next IDLE", job.id);
         return Ok(());
     }
+    let serial = inner
+        .credentials
+        .as_ref()
+        .ok_or_else(|| PrinterError::NotConnected.to_string())?
+        .printer
+        .device_id
+        .clone();
     // `remove_from_queue` takes no service lock. Claiming the job before the
     // publish means a job removed after this point was already sent.
     let claimed = {
@@ -1244,7 +1261,9 @@ async fn send_project_file(
             .map_err(|e| format!("failed to lock print queue: {e}"))?;
         match queue.iter_mut().find(|queued| queued.id == job.id && queued.status == QueueStatus::Pending) {
             Some(queued) => {
-                queued.status = QueueStatus::Submitted;
+                queued.status = QueueStatus::Submitted {
+                    print: Some(SentPrint { serial, subtask_name: filename.clone() }),
+                };
                 true
             }
             None => false,
@@ -1254,6 +1273,14 @@ async fn send_project_file(
         log::info!("auto-send: job {} left the queue during its upload", job.id);
         return Ok(());
     }
+    let cmd = BambuCommand::ProjectFile {
+        param: "Metadata/plate_1.gcode".into(),
+        url: format!("ftp:///cache/{filename}"),
+        subtask_name: filename,
+        md5,
+        use_ams: false,
+        ams_mapping: String::new(),
+    };
     if let Err(e) = inner.publish(cmd).await {
         let reason = format!("MQTT command failed: {e}");
         log::error!("auto-send: {reason}");
@@ -1714,7 +1741,9 @@ mod tests {
                 threemf_path: "/tmp/benchy.3mf".into(),
                 model_name: "Benchy".into(),
                 created_at: chrono::Utc::now(),
-                status: QueueStatus::Submitted,
+                status: QueueStatus::Submitted {
+                    print: Some(SentPrint { serial: SERIAL_A.into(), subtask_name: "Benchy".into() }),
+                },
                 filament_grams: Some(12.5),
                 filament_meters: Some(4.2),
                 quality_profile: Some("0.20mm Standard".into()),
@@ -2578,17 +2607,6 @@ mod tests {
         (app, app_state, service, a, event_loop)
     }
 
-    fn project_file_for_cube() -> BambuCommand {
-        BambuCommand::ProjectFile {
-            param: "Metadata/plate_1.gcode".into(),
-            subtask_name: "cube.3mf".into(),
-            url: "ftp:///cache/cube.3mf".into(),
-            md5: String::new(),
-            use_ams: false,
-            ams_mapping: String::new(),
-        }
-    }
-
     #[tokio::test]
     async fn a_job_whose_printer_starts_another_print_during_its_upload_stays_pending() {
         let (app, app_state, service, a, _event_loop) = idle_printer_a_with_mqtt(1).await;
@@ -2597,7 +2615,7 @@ mod tests {
             .handle_publish(a, br#"{"print":{"gcode_state":"RUNNING"}}"#, app.handle(), &app_state)
             .await;
 
-        send_project_file(&service, a, &app_state, &job, project_file_for_cube())
+        send_project_file(&service, a, &app_state, &job, "cube.3mf".into(), String::new())
             .await
             .expect("the send step");
 
@@ -2620,7 +2638,7 @@ mod tests {
         let (client, _event_loop) = mqtt::connect(&cloud::local_mqtt_config(&printer_a())).expect("mqtt client");
         service.inner.lock().await.mqtt_client = Some(client);
 
-        send_project_file(&service, a, &app_state, &job, project_file_for_cube())
+        send_project_file(&service, a, &app_state, &job, "cube.3mf".into(), String::new())
             .await
             .expect("the send step");
 
@@ -2637,7 +2655,7 @@ mod tests {
         let job = app_state.print_queue.lock().unwrap()[0].clone();
         crate::print_queue::remove_job(&app_state, &job.id).expect("remove the job");
 
-        send_project_file(&service, a, &app_state, &job, project_file_for_cube())
+        send_project_file(&service, a, &app_state, &job, "cube.3mf".into(), String::new())
             .await
             .expect("the send step");
 
@@ -3325,15 +3343,9 @@ mod tests {
             inner.readiness = Readiness::Idle;
         }
         let job = app_state.print_queue.lock().unwrap().iter().find(|j| j.id == id).cloned().expect("queued job");
-        let cmd = BambuCommand::ProjectFile {
-            param: "Metadata/plate_1.gcode".into(),
-            subtask_name: subtask_name.into(),
-            url: format!("ftp:///cache/{subtask_name}"),
-            md5: String::new(),
-            use_ams: false,
-            ams_mapping: String::new(),
-        };
-        send_project_file(service, connection, app_state, &job, cmd).await.expect("the send step");
+        send_project_file(service, connection, app_state, &job, subtask_name.into(), String::new())
+            .await
+            .expect("the send step");
         (connection, event_loop)
     }
 
