@@ -946,6 +946,18 @@ cp "$machine" '{received}/machine.json' && cp "$process" '{received}/process.jso
         svc.run_slicer(&input).await.expect("both parts sliced");
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_slice_fails_when_orca_exits_0_without_writing_over_an_earlier_slice() {
+        let dir = TempDir::new().unwrap();
+        let (svc, input) = fake_orca_slice(dir.path(), 1, 1, 0);
+        write_sliced_3mf(&input.output_file, 1, 0);
+        std::fs::write(&input.input_files[0], "exit 0\n").expect("OrcaSlicer that writes nothing");
+
+        let err = svc.run_slicer(&input).await.expect_err("the earlier slice is not this one");
+        assert!(matches!(err, SlicerError::OutputMissing { .. }), "{err}");
+    }
+
     // ── Integration test (requires OrcaSlicer installed) ──────────────
 
     #[test]

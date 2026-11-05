@@ -11,7 +11,7 @@ const PROFILE_BASE = join(FIXTURES, 'profiles', 'system', 'BBL');
 
 async function sliceWithFakeOrca(
   parts: string[],
-  sliced3mf: string,
+  sliced3mf: string | null,
   { profileBase = PROFILE_BASE, dir = mkdtempSync(join(tmpdir(), 'fake-orca-')) } = {},
 ) {
   const cli = join(dir, 'orca-slicer');
@@ -29,7 +29,7 @@ done
 cp "\${settings%%;*}" '${dir}/machine.json'
 cp "\${settings#*;}" '${dir}/process.json'
 cp "$filaments" '${dir}/filament.json'
-cp '${resolve(FIXTURES, sliced3mf)}' "$out"
+${sliced3mf === null ? '' : `cp '${resolve(FIXTURES, sliced3mf)}' "$out"`}
 `,
     { mode: 0o755 },
   );
@@ -176,5 +176,16 @@ describe.skipIf(process.platform === 'win32' || typeof Bun === 'undefined')('run
 
     const complete = await sliceWithFakeOrca(['box.stl', 'cylinder.stl'], 'sliced-two-objects.3mf');
     expect(complete.result).toEqual({ success: true, outputFile: complete.outputFile });
+  });
+
+  it('fails when OrcaSlicer exits 0 without writing over an earlier slice (#180)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fake-orca-'));
+    cpSync(join(FIXTURES, 'sliced-one-object.3mf'), join(dir, 'out.3mf'));
+
+    const stale = await sliceWithFakeOrca(['box.stl'], null, { dir });
+    expect(stale.result).toMatchObject({
+      success: false,
+      error: expect.stringContaining('output file not found'),
+    });
   });
 });
