@@ -208,6 +208,16 @@ describe.skipIf(process.platform === 'win32')('runSlicer with the P2S profiles',
     }
   });
 
+  it('slices into a folder whose path holds a semicolon, the --load-settings separator', async () => {
+    const slice = await sliceWithFakeOrca(['box.stl'], 'sliced-one-object.3mf', {
+      dir: mkdtempSync(join(tmpdir(), 'prints;v2-')),
+    });
+
+    expect(slice.result).toEqual({ success: true, outputFile: slice.outputFile });
+    expect(slice.machine()).toMatchObject({ printable_height: '256' });
+    expect(slice.process()).toMatchObject({ layer_height: '0.2' });
+  });
+
   it('returns a failed slice when the output folder is missing', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'fake-orca-'));
     const outputFile = join(dir, 'no-such-folder', 'out.3mf');
