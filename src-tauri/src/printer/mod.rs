@@ -2684,7 +2684,10 @@ mod tests {
     }
 
     /// A loopback FTPS server that takes one upload and returns the bytes it stored.
+    /// It speaks TLS through rustls, because macOS cannot import rcgen's EC key
+    /// into a native-tls identity.
     fn ftps_printer() -> (String, std::thread::JoinHandle<Vec<u8>>) {
+        use rumqttc::tokio_rustls::rustls;
         use std::io::{BufRead, BufReader, Read, Write};
 
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind control");
@@ -2693,9 +2696,18 @@ mod tests {
         let data_port = data_listener.local_addr().expect("data addr").port();
         let rcgen::CertifiedKey { cert, signing_key } =
             rcgen::generate_simple_self_signed(vec!["127.0.0.1".into()]).expect("printer cert");
-        let identity = native_tls::Identity::from_pkcs8(cert.pem().as_bytes(), signing_key.serialize_pem().as_bytes())
-            .expect("printer identity");
-        let tls = native_tls::TlsAcceptor::new(identity).expect("printer TLS");
+        let key = rustls::pki_types::PrivateKeyDer::try_from(signing_key.serialize_der()).expect("printer key");
+        let tls = Arc::new(
+            rustls::ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+                .with_safe_default_protocol_versions()
+                .expect("TLS versions")
+                .with_no_client_auth()
+                .with_single_cert(vec![cert.der().clone()], key)
+                .expect("printer TLS"),
+        );
+        let accept = move |tcp: std::net::TcpStream| {
+            rustls::StreamOwned::new(rustls::ServerConnection::new(Arc::clone(&tls)).expect("TLS session"), tcp)
+        };
         let printer = std::thread::spawn(move || {
             let (mut control, _) = listener.accept().expect("accept control");
             control.set_read_timeout(Some(Duration::from_secs(10))).expect("read timeout");
@@ -2704,7 +2716,7 @@ mod tests {
             let mut auth = String::new();
             plain.read_line(&mut auth).expect("read AUTH");
             plain.get_mut().write_all(b"234 Begin TLS\r\n").expect("answer AUTH");
-            let mut control = BufReader::new(tls.accept(plain.into_inner()).expect("control TLS"));
+            let mut control = BufReader::new(accept(plain.into_inner()));
             let mut stored = Vec::new();
             loop {
                 let mut line = String::new();
@@ -2718,8 +2730,9 @@ mod tests {
                     "PASV" => format!("227 Passive (127,0,0,1,{},{})\r\n", data_port / 256, data_port % 256),
                     "STOR" => {
                         control.get_mut().write_all(b"150 Send it\r\n").expect("answer STOR");
+                        control.get_mut().flush().expect("send 150");
                         let (data, _) = data_listener.accept().expect("accept data");
-                        let mut data = tls.accept(data).expect("data TLS");
+                        let mut data = accept(data);
                         let _ = data.read_to_end(&mut stored);
                         "226 Stored\r\n".to_string()
                     }
@@ -2730,6 +2743,7 @@ mod tests {
                     _ => "200 OK\r\n".to_string(),
                 };
                 control.get_mut().write_all(reply.as_bytes()).expect("reply");
+                control.get_mut().flush().expect("send reply");
             }
         });
         (addr, printer)
