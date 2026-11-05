@@ -1,14 +1,14 @@
-import { existsSync, readFileSync, writeFileSync, mkdtempSync } from 'fs';
+import { existsSync, writeFileSync, mkdtempSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { detectOrcaSlicer, expectedOrcaCli, orcaInstallHint } from './platform';
+import type { PresetConfig, ResolvedProfiles } from './profiles';
+import { readZipEntry } from './zip';
 
 // This legacy STL path slices with OrcaSlicer. It was chosen when Bambu Studio's
 // CLI crashed on STL input with P2S 0.4 nozzle profiles (GitHub #9636). Sign
 // packages are Bambu project 3MFs sliced by Bambu Studio 02.08.02.61 in the app's
 // Rust fabrication module instead.
-// Resolved per-platform (env override → install paths → PATH); see platform.ts.
-const ORCA_CLI = detectOrcaSlicer() ?? expectedOrcaCli();
 
 // Simplified gcode templates compatible with OrcaSlicer's parser.
 // BambuStudio profiles use variables like `min_vitrification_temperature` that
@@ -21,21 +21,20 @@ const ORCA_MACHINE_END_GCODE =
 const ORCA_LAYER_CHANGE_GCODE =
   'G92 E0\\n;LAYER_CHANGE\\n;Z:[layer_z]\\nM73 L[layer_num]\\n';
 
-export interface SliceInput {
+interface SliceFiles {
   inputFiles: string[];
   outputFile: string;
-  machine: string;
-  process: string;
-  filament: string;
 }
 
-export interface SliceResult {
-  success: boolean;
-  outputFile: string;
-  error?: string;
-}
+export type SliceInput = SliceFiles & ResolvedProfiles;
 
-export function buildSliceArgs(input: SliceInput): string[] {
+export type SliceResult =
+  | { success: true; outputFile: string }
+  | { success: false; outputFile: string; error: string };
+
+export function buildSliceArgs(
+  input: SliceFiles & { machine: string; process: string; filament: string },
+): string[] {
   return [
     ...input.inputFiles,
     '--load-settings',
@@ -53,53 +52,20 @@ export function buildSliceArgs(input: SliceInput): string[] {
   ];
 }
 
-/**
- * Patches a BambuStudio machine profile to be OrcaSlicer-compatible.
- * Merges template includes inline and replaces BambuStudio-specific gcode
- * with simplified versions that OrcaSlicer can parse.
- */
-function patchMachineProfile(machineProfilePath: string): string {
-  const profile = JSON.parse(readFileSync(machineProfilePath, 'utf-8'));
-  const profileDir = machineProfilePath.replace(/\/[^/]+$/, '');
-
-  // Inline template includes
-  if (profile.include) {
-    for (const inc of profile.include) {
-      const tpath = join(profileDir, `${inc}.json`);
-      if (existsSync(tpath)) {
-        const template = JSON.parse(readFileSync(tpath, 'utf-8'));
-        for (const [k, v] of Object.entries(template)) {
-          if (!['name', 'instantiation', 'type', 'from'].includes(k)) {
-            profile[k] = v;
-          }
-        }
-      }
-    }
-    delete profile.include;
-  }
-
-  // Replace BambuStudio-specific gcode with OrcaSlicer-compatible versions
-  profile.machine_start_gcode = ORCA_MACHINE_START_GCODE;
-  profile.machine_end_gcode = ORCA_MACHINE_END_GCODE;
-  profile.layer_change_gcode = ORCA_LAYER_CHANGE_GCODE;
-
-  // Ensure nozzle_volume_type exists
-  if (!profile.nozzle_volume_type) {
-    profile.nozzle_volume_type = ['0'];
-  }
-
-  const tmpDir = mkdtempSync(join(tmpdir(), 'bambu-slicer-'));
-  const patchedPath = join(tmpDir, 'machine-patched.json');
-  writeFileSync(patchedPath, JSON.stringify(profile, null, 2));
-  return patchedPath;
+/** Counts the parts OrcaSlicer reports as sliced in the 3MF's `slice_info.config`. */
+function countSlicedParts(outputFile: string): number {
+  const sliceInfo = readZipEntry(outputFile, 'Metadata/slice_info.config').toString('utf-8');
+  const objects = sliceInfo.match(/<object\b[^>]*>/g) ?? [];
+  return objects.filter((tag) => !/\bskipped="true"/.test(tag)).length;
 }
 
 export async function runSlicer(input: SliceInput): Promise<SliceResult> {
-  if (!existsSync(ORCA_CLI)) {
+  const orcaCli = detectOrcaSlicer() ?? expectedOrcaCli();
+  if (!existsSync(orcaCli)) {
     return {
       success: false,
       outputFile: input.outputFile,
-      error: `OrcaSlicer CLI not found at ${ORCA_CLI}. Install: ${orcaInstallHint()}`,
+      error: `OrcaSlicer CLI not found at ${orcaCli}. Install: ${orcaInstallHint()}`,
     };
   }
 
@@ -113,12 +79,28 @@ export async function runSlicer(input: SliceInput): Promise<SliceResult> {
     }
   }
 
-  // Patch machine profile for OrcaSlicer compatibility
-  const patchedMachine = patchMachineProfile(input.machine);
-  const patchedInput = { ...input, machine: patchedMachine };
+  const machine = {
+    ...input.machine,
+    machine_start_gcode: ORCA_MACHINE_START_GCODE,
+    machine_end_gcode: ORCA_MACHINE_END_GCODE,
+    layer_change_gcode: ORCA_LAYER_CHANGE_GCODE,
+    nozzle_volume_type: input.machine.nozzle_volume_type ?? ['0'],
+  };
+  const tmpDir = mkdtempSync(join(tmpdir(), 'bambu-slicer-'));
+  const writePreset = (kind: keyof ResolvedProfiles, config: PresetConfig) => {
+    const path = join(tmpDir, `${kind}.json`);
+    writeFileSync(path, JSON.stringify(config, null, 2));
+    return path;
+  };
 
-  const args = buildSliceArgs(patchedInput);
-  const proc = Bun.spawn([ORCA_CLI, ...args], {
+  const args = buildSliceArgs({
+    inputFiles: input.inputFiles,
+    outputFile: input.outputFile,
+    machine: writePreset('machine', machine),
+    process: writePreset('process', input.process),
+    filament: writePreset('filament', input.filament),
+  });
+  const proc = Bun.spawn([orcaCli, ...args], {
     stdout: 'pipe',
     stderr: 'pipe',
   });
@@ -143,8 +125,23 @@ export async function runSlicer(input: SliceInput): Promise<SliceResult> {
     };
   }
 
-  return {
-    success: true,
-    outputFile: input.outputFile,
-  };
+  let slicedParts: number;
+  try {
+    slicedParts = countSlicedParts(input.outputFile);
+  } catch (e) {
+    return {
+      success: false,
+      outputFile: input.outputFile,
+      error: `Could not read the sliced parts from ${input.outputFile}: ${e instanceof Error ? e.message : String(e)}`,
+    };
+  }
+  if (slicedParts !== input.inputFiles.length) {
+    return {
+      success: false,
+      outputFile: input.outputFile,
+      error: `OrcaSlicer sliced ${slicedParts} of ${input.inputFiles.length} input parts\nstdout: ${stdout}\nstderr: ${stderr}`,
+    };
+  }
+
+  return { success: true, outputFile: input.outputFile };
 }
