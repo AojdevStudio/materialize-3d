@@ -88,11 +88,11 @@ struct PrinterServiceInner {
     /// not ready for waits for its next IDLE report.
     owed_runs: u32,
     /// The `gcode_start_time` of the print each printer, by serial, showed
-    /// RUNNING or PAUSE when the app forgot its print. The printer's
-    /// first report that names a start time settles it: a FINISH or FAILED for
-    /// the same start time reads as that print's end, and anything else drops
-    /// it. A print with no known start time is not kept, because no later
-    /// report could tell it from another print.
+    /// RUNNING or PAUSE when the app forgot its print. The first report after
+    /// which the app knows both a start time and a print state settles it: a
+    /// FINISH or FAILED for the same start time reads as that print's end, and
+    /// anything else drops it. A print with no known start time is not kept,
+    /// because no later report could tell it from another print.
     ended_mid_print: HashMap<String, String>,
     connection_task: Option<tokio::task::JoinHandle<()>>,
 }
@@ -670,8 +670,8 @@ impl PrinterService {
             let connection = &mut *connection;
             let serial = connection.credentials.as_ref().map(|c| c.printer.device_id.as_str());
             let ended = matches!(curr_gcode_state.as_deref(), Some("FINISH" | "FAILED"));
-            let carried_print_ended = match (serial, &start_time) {
-                (Some(serial), Some(start)) => connection
+            let carried_print_ended = match (serial, &start_time, &curr_gcode_state) {
+                (Some(serial), Some(start), Some(_)) => connection
                     .ended_mid_print
                     .remove(serial)
                     .is_some_and(|carried| ended && carried == *start),
