@@ -424,9 +424,6 @@ pub struct AppState {
     pub print_queue_file: Option<PathBuf>,
     pub openscad: Mutex<OpenScadSnapshot>,
     pub db: Mutex<Option<Connection>>,
-    /// Deduplication guard: the `gcode_start_time` of the last recorded history entry.
-    /// Prevents duplicate history records from repeated pushall/push_status messages.
-    pub last_recorded_start_time: Mutex<Option<String>>,
     /// Currently selected printer config ID (for multi-printer support).
     pub selected_printer_id: Mutex<Option<String>>,
     /// Running builds, which an update waits for before it restarts the app.

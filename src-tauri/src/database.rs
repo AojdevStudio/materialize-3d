@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use rusqlite::{params, Connection, OpenFlags};
+use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 
 use crate::state::{LibraryModel, PrintHistoryRecord, PrinterConfig};
 
@@ -101,10 +101,10 @@ pub fn init_db(db_path: &Path) -> Result<Connection, InitError> {
 }
 
 /// Schema version after every migration has run.
-pub const SCHEMA_VERSION: i32 = 6;
+pub const SCHEMA_VERSION: i32 = 7;
 
 /// Run all pending migrations based on `PRAGMA user_version`.
-fn run_migrations(conn: &Connection) -> Result<(), InitError> {
+pub(crate) fn run_migrations(conn: &Connection) -> Result<(), InitError> {
     let version: i32 = conn
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .map_err(|e| format!("failed to read user_version: {e}"))?;
@@ -219,10 +219,24 @@ fn run_migrations(conn: &Connection) -> Result<(), InitError> {
         let tx = conn.unchecked_transaction().map_err(|e| format!("migration 006 failed to start: {e}"))?;
         tx.execute_batch(crate::fabrication::revisions::MIGRATION_006)
             .map_err(|e| format!("migration 006 failed: {e}"))?;
-        tx.pragma_update(None, "user_version", SCHEMA_VERSION)
+        tx.pragma_update(None, "user_version", 6)
             .map_err(|e| format!("failed to set user_version to 6: {e}"))?;
         tx.commit().map_err(|e| format!("migration 006 failed to commit: {e}"))?;
         log::info!("database: migration 006 applied — schema version now 6");
+    }
+
+    if version < 7 {
+        log::info!("database: applying migration 007 — create open_prints table");
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS open_prints (
+                printer_serial TEXT PRIMARY KEY,
+                gcode_start_time TEXT NOT NULL
+            );",
+        )
+        .map_err(|e| format!("migration 007 failed: {e}"))?;
+        conn.pragma_update(None, "user_version", 7)
+            .map_err(|e| format!("failed to set user_version to 7: {e}"))?;
+        log::info!("database: migration 007 applied — schema version now 7");
     }
 
     Ok(())
@@ -485,6 +499,47 @@ pub fn delete_history(conn: &Connection, id: &str) -> Result<bool, String> {
     }
 
     Ok(rows_affected > 0)
+}
+
+// ─── Open Prints ──────────────────────────────────────────────────────────────
+
+/// The start time of the print printer `serial` showed RUNNING or PAUSE and
+/// whose end the app has not recorded yet.
+pub fn open_print(conn: &Connection, serial: &str) -> Result<Option<String>, String> {
+    conn.query_row(
+        "SELECT gcode_start_time FROM open_prints WHERE printer_serial = ?1",
+        params![serial],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(|e| format!("failed to read the open print: {e}"))
+}
+
+pub fn set_open_print(conn: &Connection, serial: &str, start_time: &str) -> Result<(), String> {
+    conn.execute(
+        "INSERT INTO open_prints (printer_serial, gcode_start_time) VALUES (?1, ?2)
+         ON CONFLICT(printer_serial) DO UPDATE SET gcode_start_time = excluded.gcode_start_time",
+        params![serial, start_time],
+    )
+    .map(drop)
+    .map_err(|e| format!("failed to store the open print: {e}"))
+}
+
+pub fn close_open_print(conn: &Connection, serial: &str) -> Result<(), String> {
+    conn.execute("DELETE FROM open_prints WHERE printer_serial = ?1", params![serial])
+        .map(drop)
+        .map_err(|e| format!("failed to close the open print: {e}"))
+}
+
+/// Inserts `record` and closes the open print of `serial` in one transaction,
+/// so a print that ended gets one row, and a row the user deletes stays gone.
+pub fn record_print_end(conn: &Connection, serial: &str, record: &PrintHistoryRecord) -> Result<(), String> {
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| format!("failed to start the history write: {e}"))?;
+    insert_history(&tx, record)?;
+    close_open_print(&tx, serial)?;
+    tx.commit().map_err(|e| format!("failed to commit the history write: {e}"))
 }
 
 // ─── Library Model CRUD ───────────────────────────────────────────────────────
