@@ -659,10 +659,10 @@ impl PrinterService {
             let _ = app_state.emit_state_change(app_handle, "printer:changed");
 
             // ── Read current gcode_state after merge ──
-            let (curr_gcode_state, start_time, subtask_name) = app_state
+            let (curr_gcode_state, start_time) = app_state
                 .printer
                 .lock()
-                .map(|p| (p.gcode_state.clone(), p.gcode_start_time.clone(), p.subtask_name.clone()))
+                .map(|p| (p.gcode_state.clone(), p.gcode_start_time.clone()))
                 .unwrap_or_default();
 
             if curr_gcode_state.is_some() && prev_gcode_state != curr_gcode_state {
@@ -674,7 +674,6 @@ impl PrinterService {
                     prev_gcode_state.as_deref(),
                     curr_gcode_state.as_deref(),
                     start_time.as_deref(),
-                    subtask_name.as_deref(),
                     app_handle,
                     app_state,
                 ) {
@@ -782,13 +781,13 @@ impl PrinterService {
 /// repeated report never records it again. An open print that a report with
 /// a known start time does not continue is forgotten. A print with no known
 /// start time is not stored, because no later report could tell it from
-/// another print. A print stored as seen binds the queued job that started it.
+/// another print. The queue is saved after the history row, so a queue file
+/// that cannot be written never costs a row.
 fn settle_print<R: Runtime>(
     serial: &str,
     prev: Option<&str>,
     curr: Option<&str>,
     start_time: Option<&str>,
-    subtask_name: Option<&str>,
     app_handle: &AppHandle<R>,
     app_state: &AppState,
 ) -> Result<(), String> {
@@ -817,21 +816,7 @@ fn settle_print<R: Runtime>(
             if is_seen {
                 return Ok(());
             }
-            with_db(app_state, |conn| crate::database::set_seen_print(conn, serial, start))?;
-            {
-                let mut queue = app_state
-                    .print_queue
-                    .lock()
-                    .map_err(|e| format!("failed to lock print queue: {e}"))?;
-                let started = job_for_print(&queue, serial, subtask_name, Some(start)).map(|job| job.id.clone());
-                close_unstarted_jobs(&mut queue, serial, started.as_deref());
-                for job in queue.iter_mut().filter(|job| Some(&job.id) == started.as_ref()) {
-                    if let QueueStatus::Submitted { print: Some(print) } = &mut job.status {
-                        print.start_time = Some(start.into());
-                    }
-                }
-            }
-            crate::print_queue::persist_queue(app_state)
+            with_db(app_state, |conn| crate::database::set_seen_print(conn, serial, start))
         }
         (_, Some(_)) if open => {
             with_db(app_state, |conn| crate::database::forget_seen_print(conn, serial))
@@ -851,6 +836,11 @@ fn with_db<T>(
 /// Records the end of the print the printer state shows as a history row
 /// with `status`, and marks the seen print of printer `serial` recorded. Returns the
 /// model name and, for a failed print, the fail reason.
+///
+/// The row takes filament, quality, and thumbnail from the latest job sent
+/// to printer `serial` under the print's subtask name that no earlier row
+/// used. A print no such job started gets none. The job is used up only once
+/// the row is written, so a write that fails leaves it for the retry.
 fn record_print_completion(
     app_state: &AppState,
     serial: &str,
@@ -892,13 +882,17 @@ fn record_print_completion(
         (None, None)
     };
 
-    let job = {
-        let queue = app_state
-            .print_queue
-            .lock()
-            .map_err(|e| format!("failed to lock print queue: {e}"))?;
-        job_for_print(&queue, serial, subtask_name.as_deref(), gcode_start_time.as_deref()).cloned()
-    };
+    let started_by = subtask_name.clone().map(|subtask_name| QueueStatus::Submitted {
+        print: Some(SentPrint { serial: serial.into(), subtask_name }),
+    });
+    let job = app_state
+        .print_queue
+        .lock()
+        .map_err(|e| format!("failed to lock print queue: {e}"))?
+        .iter()
+        .rev()
+        .find(|job| Some(&job.status) == started_by.as_ref())
+        .cloned();
     let (filament_grams, filament_meters, quality_profile, thumbnail_path) = job
         .as_ref()
         .map(|j| (j.filament_grams, j.filament_meters, j.quality_profile.clone(), j.thumbnail_path.clone()))
@@ -926,57 +920,16 @@ fn record_print_completion(
     })?;
     log::info!("print history: recorded '{model_name}' as {status}");
 
-    // Only once the row is written, so a write that fails leaves the job for
-    // the retry. The ended print's job describes no later print.
-    let mut queue = app_state
-        .print_queue
-        .lock()
-        .map_err(|e| format!("failed to lock print queue: {e}"))?;
-    close_unstarted_jobs(&mut queue, serial, None);
-    for ended in queue.iter_mut().filter(|queued| job.as_ref().is_some_and(|job| job.id == queued.id)) {
-        ended.status = QueueStatus::Submitted { print: None };
-    }
-    Ok((model_name, record.fail_reason))
-}
-
-/// The print job `job` started on printer `serial`, when it was sent there.
-fn sent_to<'a>(job: &'a crate::state::QueuedJob, serial: &str) -> Option<&'a SentPrint> {
-    match &job.status {
-        QueueStatus::Submitted { print: Some(print) } if print.serial == serial => Some(print),
-        _ => None,
-    }
-}
-
-/// The queued job that started the print printer `serial` runs as
-/// `subtask_name` since `start`: the job bound to that print, else the job
-/// sent under that name that no print has started yet.
-fn job_for_print<'a>(
-    queue: &'a [crate::state::QueuedJob],
-    serial: &str,
-    subtask_name: Option<&str>,
-    start: Option<&str>,
-) -> Option<&'a crate::state::QueuedJob> {
-    let subtask_name = subtask_name?;
-    let sent_as = |job: &crate::state::QueuedJob, start: Option<&str>| {
-        sent_to(job, serial).is_some_and(|p| p.subtask_name == subtask_name && p.start_time.as_deref() == start)
-    };
-    start
-        .and_then(|start| queue.iter().rev().find(|job| sent_as(job, Some(start))))
-        .or_else(|| queue.iter().rev().find(|job| sent_as(job, None)))
-}
-
-/// Closes every job sent to printer `serial` that no print has started,
-/// except the job `keep`. The app sends a job only while its printer is IDLE,
-/// and a printer runs one print at a time, so once the printer runs a print,
-/// every other job sent to it before never starts. A job sent while the
-/// printer was still starting an earlier one stays open until a print shows
-/// which of them ran.
-fn close_unstarted_jobs(queue: &mut [crate::state::QueuedJob], serial: &str, keep: Option<&str>) {
-    for job in queue.iter_mut() {
-        if Some(job.id.as_str()) != keep && sent_to(job, serial).is_some_and(|p| p.start_time.is_none()) {
-            job.status = QueueStatus::Submitted { print: None };
+    if let Some(job) = job {
+        let mut queue = app_state
+            .print_queue
+            .lock()
+            .map_err(|e| format!("failed to lock print queue: {e}"))?;
+        for used in queue.iter_mut().filter(|queued| queued.id == job.id) {
+            used.status = QueueStatus::Submitted { print: None };
         }
     }
+    Ok((model_name, record.fail_reason))
 }
 
 /// Emit the `history:changed` event with the full history list.
@@ -1317,7 +1270,7 @@ async fn send_project_file(
         match queue.iter_mut().find(|queued| queued.id == job.id && queued.status == QueueStatus::Pending) {
             Some(queued) => {
                 queued.status = QueueStatus::Submitted {
-                    print: Some(SentPrint { serial, subtask_name: filename.clone(), start_time: None }),
+                    print: Some(SentPrint { serial, subtask_name: filename.clone() }),
                 };
                 true
             }
@@ -1797,11 +1750,7 @@ mod tests {
                 model_name: "Benchy".into(),
                 created_at: chrono::Utc::now(),
                 status: QueueStatus::Submitted {
-                    print: Some(SentPrint {
-                        serial: SERIAL_A.into(),
-                        subtask_name: "Benchy".into(),
-                        start_time: None,
-                    }),
+                    print: Some(SentPrint { serial: SERIAL_A.into(), subtask_name: "Benchy".into() }),
                 },
                 filament_grams: Some(12.5),
                 filament_meters: Some(4.2),
@@ -3492,34 +3441,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_print_that_reuses_the_last_name_after_a_reconnect_does_not_take_its_job() {
-        let (app, app_state, service) = history_app();
-        queue_job(&app_state, "cube", 12.5);
-        let (a, _event_loop) = send_job(&service, printer_a(), "cube", "cube.3mf", &app, &app_state).await;
-        service
-            .handle_publish(
-                a,
-                br#"{"print":{"gcode_state":"RUNNING","gcode_start_time":"1710500000","subtask_name":"cube.3mf"}}"#,
-                app.handle(),
-                &app_state,
-            )
-            .await;
-        let a = return_to_printer_a(Return::Reconnect, &service, a, &app, &app_state).await;
-
-        for report in [
-            br#"{"print":{"gcode_state":"RUNNING","gcode_start_time":"1710600000"}}"#.as_slice(),
-            br#"{"print":{"gcode_state":"FINISH"}}"#,
-        ] {
-            service.handle_publish(a, report, app.handle(), &app_state).await;
-        }
-        assert_eq!(
-            metadata_of_row_started_at(&app_state, "1710600000"),
-            (None, None, None),
-            "the job is bound to the print that started at 1710500000"
-        );
-    }
-
-    #[tokio::test]
     async fn a_job_whose_print_ends_without_a_start_time_does_not_describe_a_later_print() {
         let (app, app_state, service) = history_app();
         queue_job(&app_state, "cube", 12.5);
@@ -3538,31 +3459,6 @@ mod tests {
             metadata_of_row_started_at(&app_state, "1710600000"),
             (None, None, None),
             "the job's print already ended"
-        );
-    }
-
-    #[tokio::test]
-    async fn a_job_sent_before_the_job_that_printed_does_not_describe_a_later_print() {
-        let (app, app_state, service) = history_app();
-        queue_job(&app_state, "old", 5.0);
-        queue_job(&app_state, "cube", 12.5);
-        let (_, _old_loop) = send_job(&service, printer_a(), "old", "cube.3mf", &app, &app_state).await;
-        service.disconnect(app.handle(), &app_state).await;
-        let (a, _cube_loop) = send_job(&service, printer_a(), "cube", "cube.3mf", &app, &app_state).await;
-        assert_eq!(
-            finish_print(&service, a, "cube.3mf", &app, &app_state).await,
-            (Some(12.5), Some("cube quality".into()), Some("/tmp/cube.png".into()))
-        );
-        for report in [
-            br#"{"print":{"gcode_state":"RUNNING","gcode_start_time":"1710600000","subtask_name":"cube.3mf"}}"#.as_slice(),
-            br#"{"print":{"gcode_state":"FINISH"}}"#,
-        ] {
-            service.handle_publish(a, report, app.handle(), &app_state).await;
-        }
-        assert_eq!(
-            metadata_of_row_started_at(&app_state, "1710600000"),
-            (None, None, None),
-            "the old job can no longer start once a later job printed"
         );
     }
 
@@ -3591,55 +3487,6 @@ mod tests {
         );
     }
 
-    /// Starts `filename` the way the window's manual start does, with no queued job.
-    async fn start_by_hand(service: &PrinterService, filename: &str) -> rumqttc::EventLoop {
-        let (client, event_loop) = mqtt::connect(&cloud::local_mqtt_config(&printer_a())).expect("mqtt client");
-        {
-            let mut inner = service.inner.lock().await;
-            inner.mqtt_client = Some(client);
-            inner.readiness = Readiness::Idle;
-        }
-        service
-            .send_command(BambuCommand::ProjectFile {
-                param: "Metadata/plate_1.gcode".into(),
-                subtask_name: filename.into(),
-                url: format!("ftp:///cache/{filename}"),
-                md5: String::new(),
-                use_ams: false,
-                ams_mapping: String::new(),
-            })
-            .await
-            .expect("the manual start is published");
-        event_loop
-    }
-
-    #[tokio::test]
-    async fn a_job_whose_print_ended_unseen_does_not_describe_a_print_after_another_print() {
-        let (app, app_state, service) = history_app();
-        queue_job(&app_state, "cube", 12.5);
-        let (a, _event_loop) = send_job(&service, printer_a(), "cube", "cube.3mf", &app, &app_state).await;
-        service
-            .handle_publish(a, br#"{"print":{"gcode_state":"RUNNING","subtask_name":"cube.3mf"}}"#, app.handle(), &app_state)
-            .await;
-        service.disconnect(app.handle(), &app_state).await;
-        let a = connect_without_loop(&service, printer_a(), &app, &app_state).await;
-        let _benchy_loop = start_by_hand(&service, "benchy.3mf").await;
-        assert_eq!(finish_print(&service, a, "benchy.3mf", &app, &app_state).await, (None, None, None));
-
-        let _cube_loop = start_by_hand(&service, "cube.3mf").await;
-        for report in [
-            br#"{"print":{"gcode_state":"RUNNING","gcode_start_time":"1710600000","subtask_name":"cube.3mf"}}"#.as_slice(),
-            br#"{"print":{"gcode_state":"FINISH"}}"#,
-        ] {
-            service.handle_publish(a, report, app.handle(), &app_state).await;
-        }
-        assert_eq!(
-            metadata_of_row_started_at(&app_state, "1710600000"),
-            (None, None, None),
-            "the queued cube ran before benchy"
-        );
-    }
-
     #[tokio::test]
     async fn a_history_write_that_fails_keeps_the_job_for_the_retry() {
         let dir = tempfile::tempdir().unwrap();
@@ -3661,7 +3508,7 @@ mod tests {
 
         let writer = rusqlite::Connection::open(&db_path).unwrap();
         writer.execute_batch("BEGIN IMMEDIATE").unwrap();
-        let finished = |prev| settle_print(SERIAL_A, Some(prev), Some("FINISH"), Some("1710500000"), Some("cube.3mf"), app.handle(), &app_state);
+        let finished = |prev| settle_print(SERIAL_A, Some(prev), Some("FINISH"), Some("1710500000"), app.handle(), &app_state);
         assert!(finished("RUNNING").is_err(), "another writer holds the database");
         writer.execute_batch("ROLLBACK").unwrap();
         finished("FINISH").expect("the retry writes the row");
@@ -3691,6 +3538,24 @@ mod tests {
             finish_print(&service, a, "cube.3mf", &app, &app_state).await,
             (Some(12.5), Some("cube quality".into()), Some("/tmp/cube.png".into())),
             "the printer was still starting cube when benchy was sent, and cube ran"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_print_whose_name_arrives_after_its_start_takes_its_job() {
+        let (app, app_state, service) = history_app();
+        queue_job(&app_state, "cube", 12.5);
+        let (a, _event_loop) = send_job(&service, printer_a(), "cube", "cube.3mf", &app, &app_state).await;
+        for report in [
+            br#"{"print":{"gcode_state":"RUNNING","gcode_start_time":"1710500000"}}"#.as_slice(),
+            br#"{"print":{"subtask_name":"cube.3mf"}}"#,
+            br#"{"print":{"gcode_state":"FINISH"}}"#,
+        ] {
+            service.handle_publish(a, report, app.handle(), &app_state).await;
+        }
+        assert_eq!(
+            metadata_of_row_started_at(&app_state, "1710500000"),
+            (Some(12.5), Some("cube quality".into()), Some("/tmp/cube.png".into()))
         );
     }
 
