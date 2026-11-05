@@ -752,13 +752,13 @@ impl PrinterService {
 /// and records a history row when a print the app saw in progress ends.
 ///
 /// A report that shows RUNNING or PAUSE with a known start time stores that
-/// print as seen. A FINISH or FAILED ends a seen print whose end is not
-/// recorded yet: one whose start time matches, or, when no other open print
-/// is stored, the one this connection's previous report showed RUNNING or
-/// PAUSE. A recorded print stays marked, so a repeated report never records
-/// it again. An open print that a report with a known start time does not
-/// continue is forgotten. A print with no known start time is not stored,
-/// because no later report could tell it from another print.
+/// print as seen. A FINISH or FAILED ends a print the app saw: the stored
+/// print with the same start time, or the one this connection's previous
+/// report showed RUNNING or PAUSE. A recorded print stays marked, so a
+/// repeated report never records it again. An open print that a report with
+/// a known start time does not continue is forgotten. A print with no known
+/// start time is not stored, because no later report could tell it from
+/// another print.
 fn settle_print<R: Runtime>(
     serial: &str,
     prev: Option<&str>,
@@ -771,7 +771,8 @@ fn settle_print<R: Runtime>(
     let in_progress = |state: &str| matches!(state, "RUNNING" | "PAUSE");
     let seen = with_db(app_state, |conn| crate::database::seen_print(conn, serial))?;
     let is_seen = seen.as_ref().is_some_and(|seen| Some(seen.start_time.as_str()) == start_time);
-    let open = seen.as_ref().filter(|seen| !seen.recorded);
+    let recorded = is_seen && seen.as_ref().is_some_and(|seen| seen.recorded);
+    let open = seen.as_ref().is_some_and(|seen| !seen.recorded);
     let ended = match curr {
         "FINISH" => Some("success"),
         "FAILED" => Some("failed"),
@@ -779,10 +780,7 @@ fn settle_print<R: Runtime>(
     };
 
     match (ended, start_time) {
-        (Some(status), _)
-            if open.is_some_and(|_| is_seen)
-                || prev.is_some_and(in_progress) && !is_seen && (open.is_none() || start_time.is_none()) =>
-        {
+        (Some(status), _) if !recorded && (is_seen || prev.is_some_and(in_progress)) => {
             let (model_name, fail_reason) = record_print_completion(app_state, serial, status)?;
             emit_history_changed(app_handle, app_state);
             send_print_notification(app_handle, &model_name, status, fail_reason.as_deref());
@@ -796,7 +794,7 @@ fn settle_print<R: Runtime>(
             }
             with_db(app_state, |conn| crate::database::set_seen_print(conn, serial, start))
         }
-        (_, Some(_)) if open.is_some() => {
+        (_, Some(_)) if open => {
             with_db(app_state, |conn| crate::database::forget_seen_print(conn, serial))
         }
         _ => Ok(()),
@@ -2851,20 +2849,6 @@ mod tests {
         assert_eq!(history[0].fail_reason.as_deref(), Some("stopped by user"));
     }
 
-    #[tokio::test]
-    async fn a_paused_print_does_not_stand_in_for_the_end_of_another_print() {
-        let (app, app_state, service) = history_app();
-        let a = connect_without_loop(&service, printer_a(), &app, &app_state).await;
-        for report in [
-            BENCHY_RUNNING,
-            br#"{"print":{"gcode_state":"PAUSE"}}"#,
-            br#"{"print":{"gcode_state":"FAILED","gcode_start_time":"1710600000","subtask_name":"Unseen"}}"#,
-        ] {
-            service.handle_publish(a, report, app.handle(), &app_state).await;
-        }
-        assert_eq!(history_rows(&app_state), [], "the app never saw the print that failed");
-    }
-
     /// One run of the app on the database file `db`, connected to printer A.
     async fn app_run_on(
         db: &std::path::Path,
@@ -2912,5 +2896,24 @@ mod tests {
         let unseen = br#"{"print":{"gcode_state":"FINISH","gcode_start_time":"1710600000","subtask_name":"Unseen"}}"#;
         service.handle_publish(a, unseen, app.handle(), &app_state).await;
         assert_eq!(history_rows(&app_state), []);
+    }
+
+    #[tokio::test]
+    async fn a_print_whose_start_time_arrives_late_gets_its_row_beside_an_older_open_print() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("materialize.db");
+        {
+            let (app, app_state, service, a) = app_run_on(&db).await;
+            service.handle_publish(a, BENCHY_RUNNING, app.handle(), &app_state).await;
+        }
+
+        let (app, app_state, service, a) = app_run_on(&db).await;
+        for report in [
+            br#"{"print":{"gcode_state":"RUNNING","subtask_name":"Hook"}}"#.as_slice(),
+            br#"{"print":{"gcode_state":"FINISH","gcode_start_time":"1710510000"}}"#,
+        ] {
+            service.handle_publish(a, report, app.handle(), &app_state).await;
+        }
+        assert_eq!(history_rows(&app_state), [("Hook".into(), "success".into())]);
     }
 }
