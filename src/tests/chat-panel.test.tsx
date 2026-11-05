@@ -24,10 +24,6 @@ vi.mock('@assistant-ui/react', async (importOriginal) => {
   return { ...ui, ComposerPrimitive: { ...ui.ComposerPrimitive, Input } }
 })
 
-// jsdom parses its default stylesheet on the first getComputedStyle, about
-// 0.5 s. Role queries call it, so pay that once here, outside a test's timeout.
-window.getComputedStyle(document.body)
-
 // A fake Rust agent behind mockIPC: each agent_send hands its channel to the
 // test, which then plays events and resolves the send.
 interface Turn {
