@@ -1250,7 +1250,7 @@ mod tests {
 
         let conn = init_db(&path).expect("migrates a schema-5 database");
         let version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0)).unwrap();
-        assert_eq!(version, 6);
+        assert_eq!(version, SCHEMA_VERSION);
         let tables: Vec<String> = conn
             .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('builds', 'revisions', 'revision_exports', 'sign_revisions') ORDER BY name")
             .unwrap()
@@ -1370,7 +1370,7 @@ mod tests {
         init_db(&path).expect("migrates");
 
         assert!(!faulted(Fault::HardLinkUnsupported), "the hard link was tried and failed");
-        assert_eq!(version_of(&path), 6);
+        assert_eq!(version_of(&path), SCHEMA_VERSION);
         let backup = Connection::open(backup_of(&path)).expect("the published backup");
         let version: i32 = backup.pragma_query_value(None, "user_version", |row| row.get(0)).unwrap();
         assert_eq!(version, 5);
@@ -1409,7 +1409,7 @@ mod tests {
         assert_eq!(version_of(&path), 5, "migration 006 did not run");
 
         init_db(&path).expect("the retry migrates");
-        assert_eq!(version_of(&path), 6);
+        assert_eq!(version_of(&path), SCHEMA_VERSION);
         let backup = Connection::open(backup_of(&path)).expect("backup");
         assert_eq!(revision_columns(&backup, SIGN_REVISION_COLUMNS), before, "the backup holds every sign revision");
     }
@@ -1485,7 +1485,7 @@ mod tests {
         assert!(backup_of(&path).symlink_metadata().is_err(), "nothing was published under the backup's name");
 
         init_db(&path).expect("the retry migrates");
-        assert_eq!(version_of(&path), 6);
+        assert_eq!(version_of(&path), SCHEMA_VERSION);
         let backup = Connection::open(backup_of(&path)).expect("backup");
         assert_eq!(revision_columns(&backup, SIGN_REVISION_COLUMNS), before, "the backup holds every sign revision");
         assert!(!staged_of(&path).exists(), "the stale staged copy is gone");
@@ -1516,7 +1516,7 @@ mod tests {
 
         init_db(&path).expect("migrates");
 
-        assert_eq!(version_of(&path), 6);
+        assert_eq!(version_of(&path), SCHEMA_VERSION);
         assert_eq!(std::fs::read(backup_of(&path)).unwrap(), earlier, "the earlier copy is kept as it was");
     }
 
