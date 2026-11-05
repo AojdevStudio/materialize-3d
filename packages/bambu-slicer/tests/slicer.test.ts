@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach } from 'bun:test';
 import { cpSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, resolve } from 'path';
@@ -101,8 +101,7 @@ describe('buildSliceArgs', () => {
   });
 });
 
-// runSlicer spawns OrcaSlicer with Bun.spawn, so vitest under Node skips it.
-describe.skipIf(process.platform === 'win32' || typeof Bun === 'undefined')('runSlicer with the P2S profiles', () => {
+describe.skipIf(process.platform === 'win32')('runSlicer with the P2S profiles', () => {
   afterEach(() => {
     delete process.env[ORCA_SLICER_CLI_ENV];
   });

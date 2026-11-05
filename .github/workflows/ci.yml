@@ -77,7 +77,7 @@ jobs:
         run: "! grep -rl __M3D_E2E_DIALOGS__ dist"
       - name: Slicer package tests
         working-directory: packages/bambu-slicer
-        run: bun test
+        run: bun run test
       - name: Rust tests
         working-directory: src-tauri
         run: cargo test --lib --locked
@@ -145,7 +145,7 @@ jobs:
         run: bun run test
       - name: Slicer package tests
         working-directory: packages/bambu-slicer
-        run: bun test
+        run: bun run test
       - name: Rust tests
         working-directory: src-tauri
         run: cargo test --lib --locked
