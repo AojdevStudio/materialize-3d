@@ -2973,4 +2973,17 @@ mod tests {
             assert_eq!(rows, [("Benchy".into(), "success".into())], "{how:?}");
         }
     }
+
+    #[tokio::test]
+    async fn a_report_that_names_only_the_start_time_keeps_the_print_seen() {
+        for how in [Return::Reconnect, Return::Retry] {
+            let rows = history_across_a_return(
+                how,
+                &[BENCHY_RUNNING],
+                &[br#"{"print":{"gcode_start_time":"1710500000"}}"#, BENCHY_FINISHED],
+            )
+            .await;
+            assert_eq!(rows, [("Benchy".into(), "success".into())], "{how:?}");
+        }
+    }
 }
