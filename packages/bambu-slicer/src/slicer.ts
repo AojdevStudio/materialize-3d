@@ -96,7 +96,16 @@ export async function runSlicer(input: SliceInput): Promise<SliceResult> {
   // OrcaSlicer exports into a directory this run owns, beside the output, and the 3MF
   // moves into place only once it checks out. An earlier slice's 3MF at the output path
   // can't pass as this one, and a failed slice leaves it untouched.
-  const stagingDir = mkdtempSync(join(dirname(input.outputFile), '.slice-'));
+  let stagingDir: string;
+  try {
+    stagingDir = mkdtempSync(join(dirname(input.outputFile), '.slice-'));
+  } catch (e) {
+    return {
+      success: false,
+      outputFile: input.outputFile,
+      error: `Could not stage the slice beside ${input.outputFile}: ${e instanceof Error ? e.message : String(e)}`,
+    };
+  }
   using _staging = { [Symbol.dispose]: () => rmSync(stagingDir, { recursive: true, force: true }) };
   const staged = join(stagingDir, 'out.3mf');
 
@@ -128,7 +137,7 @@ export async function runSlicer(input: SliceInput): Promise<SliceResult> {
     return {
       success: false,
       outputFile: input.outputFile,
-      error: `Slicing completed but output file not found at ${staged}\nstdout: ${stdout}\nstderr: ${stderr}`,
+      error: `Slicing completed but OrcaSlicer wrote no 3MF for ${input.outputFile}\nstdout: ${stdout}\nstderr: ${stderr}`,
     };
   }
 
@@ -150,6 +159,14 @@ export async function runSlicer(input: SliceInput): Promise<SliceResult> {
     };
   }
 
-  renameSync(staged, input.outputFile);
+  try {
+    renameSync(staged, input.outputFile);
+  } catch (e) {
+    return {
+      success: false,
+      outputFile: input.outputFile,
+      error: `Could not move the slice to ${input.outputFile}: ${e instanceof Error ? e.message : String(e)}`,
+    };
+  }
   return { success: true, outputFile: input.outputFile };
 }

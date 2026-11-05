@@ -184,7 +184,19 @@ describe.skipIf(process.platform === 'win32')('runSlicer with the P2S profiles',
     const stale = await sliceWithFakeOrca(['box.stl'], null, { dir });
     expect(stale.result).toMatchObject({
       success: false,
-      error: expect.stringContaining('output file not found'),
+      error: expect.stringContaining('wrote no 3MF'),
     });
+  });
+
+  it('returns a failed slice when the output folder is missing', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fake-orca-'));
+    const outputFile = join(dir, 'no-such-folder', 'out.3mf');
+    process.env[ORCA_SLICER_CLI_ENV] = join(dir, 'orca-slicer');
+    writeFileSync(join(dir, 'orca-slicer'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    writeFileSync(join(dir, 'box.stl'), 'solid box\nendsolid box\n');
+    const profiles = resolveProfiles({ quality: '0.20', filament: 'Bambu PLA Basic', profileBase: PROFILE_BASE });
+
+    const result = await runSlicer({ inputFiles: [join(dir, 'box.stl')], outputFile, ...profiles });
+    expect(result).toMatchObject({ success: false, error: expect.stringContaining('Could not stage the slice') });
   });
 });

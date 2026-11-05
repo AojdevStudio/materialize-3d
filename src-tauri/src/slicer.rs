@@ -86,7 +86,7 @@ pub enum SlicerError {
         stderr: String,
     },
 
-    #[error("slicing completed but output file not found at {path}\nstdout: {stdout}\nstderr: {stderr}")]
+    #[error("slicing completed but OrcaSlicer wrote no 3MF for {path}\nstdout: {stdout}\nstderr: {stderr}")]
     OutputMissing {
         path: String,
         stdout: String,
@@ -394,9 +394,9 @@ impl SlicerService {
 
         // Verify output file exists (OrcaSlicer can exit 0 with no output on relative paths)
         if !staged.exists() {
-            log::error!("slice error: output file missing at {}", staged.display());
+            log::error!("slice error: OrcaSlicer wrote no 3MF for {}", output_abs.display());
             return Err(SlicerError::OutputMissing {
-                path: staged.display().to_string(),
+                path: output_abs.display().to_string(),
                 stdout,
                 stderr,
             });
