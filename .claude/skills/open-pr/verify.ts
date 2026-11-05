@@ -7,6 +7,8 @@
  * It covers one app when it sits inside that app's folder, or when it sits at the repo root and exactly one
  * of `apps/<x>`, `packages/<x>`, or `services/<x>` exists. Every other skill covers the whole repo.
  * The plan lists the app skills whose app or skill folder the diff touches, then every repo-level skill.
+ * It reads the committed trees, never the index. It fails when a skill at the merge base is gone at HEAD, by name and folder
+ * prefix, since the PR would drop its own check.
  *
  * Usage: bun verify.ts --base <ref> [--json]. Run it in the repo, on the branch.
  */
@@ -51,8 +53,25 @@ export function findSkills(tracked: string[]): VerifySkill[] {
   return [...found.values()];
 }
 
-export function planVerify(tracked: string[], changed: string[]): VerifyPlan {
+export function planVerify(tracked: string[], changed: string[], baseTracked: string[]): VerifyPlan {
   const skills = findSkills(tracked);
+  // A base skill stays when HEAD has its name in the same folder prefix, the repo root or an app's. A root skill may also move
+  // to a prefix where the base had no skill of that name, as when it moves into its app. A scope change alone keeps it.
+  const at = (files: string[]) =>
+    files.flatMap((file) => {
+      const m = SKILL.exec(file);
+      return m ? [{ file, prefix: m[1] ?? "", name: m[2] }] : [];
+    });
+  const base = at(baseTracked);
+  const head = at(tracked);
+  const gone = base
+    .filter((b) => !head.some((h) => h.name === b.name && (h.prefix === b.prefix || (b.prefix === "" && !base.some((x) => x.name === h.name && x.prefix === h.prefix)))))
+    .map((b) => b.file);
+  if (gone.length > 0) {
+    throw new Error(
+      `this diff removes or renames ${gone.join(", ")}, which the base requires. A PR cannot drop the check that runs on it. Keep the skill here, and remove or rename it in a PR of its own that the owner merges.`,
+    );
+  }
   if (skills.length === 0) return { kind: "none", reason: "this repo has no project verify-* skill, so the PR flow runs as before" };
   if (changed.length === 0) return { kind: "none", reason: "the diff changes no files" };
   const touched = (s: VerifySkill) => changed.filter((f) => under(f, s.dir) || (rootOf(s) !== "" && under(f, rootOf(s)))).length;
@@ -95,7 +114,9 @@ if (import.meta.main) {
   }
   try {
     const top = git(["rev-parse", "--show-toplevel"])[0].replace(/\n$/, "");
-    const plan = planVerify(git(["ls-files", "-z"], top), git(["diff", "-z", "--name-only", "--no-renames", `${base}...HEAD`], top));
+    const fork = git(["merge-base", base, "HEAD"], top)[0].trim();
+    const tree = (ref: string) => git(["ls-tree", "-r", "-z", "--name-only", ref], top);
+    const plan = planVerify(tree("HEAD"), git(["diff", "-z", "--name-only", "--no-renames", `${fork}..HEAD`], top), tree(fork));
     console.log(args.includes("--json") ? JSON.stringify(plan, null, 2) : render(plan));
   } catch (e) {
     console.error(`verify: ${(e as Error).message}`);

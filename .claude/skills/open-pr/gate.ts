@@ -90,7 +90,9 @@ const DRIFT = {
 };
 const NO_BODY = "the command sets no body. Write the body with the open-pr skill and pass it with --body-file.";
 const EXPANDED = "the command holds `$`, a backquote, `~`, or an escape that a shell expands after this gate reads it, so the gate cannot see what gh gets. Write the text as gh should get it: quote a heredoc delimiter (<<'EOF'), and put an ssh or bash -c command in single quotes.";
-const OPAQUE: Record<"control" | "field" | "program" | "shell" | "query" | "endpoint", string> = {
+const OPAQUE: Record<"control" | "field" | "program" | "shell" | "query" | "endpoint" | "unread", string> = {
+  unread:
+    "this gate reads the command differently from bash: its reading ends with a quote, `$(`, `${`, `$((`, backquote, or heredoc still open, or with a `)` that closes nothing. bash runs such text another way, so a gh command can run unchecked. Close every quote, expansion, and heredoc, and run the PR command on its own.",
   endpoint: "the shell finishes this pulls or issue endpoint at run time, with a `$...` or `$(...)` in its host, its owner and name, after `pulls` or the PR number, or in the final endpoint segment, so gh can reach any PR write, with a query string this gate cannot read. Write the endpoint as text, for example `repos/o/r/pulls` or `repos/o/r/pulls/38`.",
   query: "this REST create sends a query string, from a `?` in the path or field flags beside --input, and GitHub may read PR fields there that this gate cannot check. Put every field in the --input JSON or in -f/-F flags, not both, and keep `?` out of the path.",
   field: "a -f or -F field name comes from the shell, so this gate cannot tell which PR fields the request sets. Write each field name as text.",
