@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach } from 'bun:test';
 import { cpSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, resolve } from 'path';
@@ -11,7 +11,7 @@ const PROFILE_BASE = join(FIXTURES, 'profiles', 'system', 'BBL');
 
 async function sliceWithFakeOrca(
   parts: string[],
-  sliced3mf: string,
+  sliced3mf: string | null,
   { profileBase = PROFILE_BASE, dir = mkdtempSync(join(tmpdir(), 'fake-orca-')) } = {},
 ) {
   const cli = join(dir, 'orca-slicer');
@@ -29,7 +29,7 @@ done
 cp "\${settings%%;*}" '${dir}/machine.json'
 cp "\${settings#*;}" '${dir}/process.json'
 cp "$filaments" '${dir}/filament.json'
-cp '${resolve(FIXTURES, sliced3mf)}' "$out"
+${sliced3mf === null ? '' : `cp '${resolve(FIXTURES, sliced3mf)}' "$out"`}
 `,
     { mode: 0o755 },
   );
@@ -101,8 +101,7 @@ describe('buildSliceArgs', () => {
   });
 });
 
-// runSlicer spawns OrcaSlicer with Bun.spawn, so vitest under Node skips it.
-describe.skipIf(process.platform === 'win32' || typeof Bun === 'undefined')('runSlicer with the P2S profiles', () => {
+describe.skipIf(process.platform === 'win32')('runSlicer with the P2S profiles', () => {
   afterEach(() => {
     delete process.env[ORCA_SLICER_CLI_ENV];
   });
@@ -172,9 +171,37 @@ describe.skipIf(process.platform === 'win32' || typeof Bun === 'undefined')('run
     const notZip = join(mkdtempSync(join(tmpdir(), 'not-zip-')), 'out.3mf');
     writeFileSync(notZip, 'OrcaSlicer crashed mid-export');
     const unreadable = await sliceWithFakeOrca(['box.stl'], notZip);
-    expect(unreadable.result).toMatchObject({ success: false });
+    expect(unreadable.result).toMatchObject({
+      success: false,
+      error: expect.stringContaining(`for ${unreadable.outputFile}: not a ZIP archive`),
+    });
 
     const complete = await sliceWithFakeOrca(['box.stl', 'cylinder.stl'], 'sliced-two-objects.3mf');
     expect(complete.result).toEqual({ success: true, outputFile: complete.outputFile });
+  });
+
+  it('fails when OrcaSlicer exits 0 without writing over an earlier slice (#180)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fake-orca-'));
+    const earlier = join(FIXTURES, 'sliced-one-object.3mf');
+    cpSync(earlier, join(dir, 'out.3mf'));
+
+    const stale = await sliceWithFakeOrca(['box.stl'], null, { dir });
+    expect(stale.result).toMatchObject({
+      success: false,
+      error: expect.stringContaining('wrote no 3MF'),
+    });
+    expect(readFileSync(stale.outputFile)).toEqual(readFileSync(earlier));
+  });
+
+  it('returns a failed slice when the output folder is missing', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fake-orca-'));
+    const outputFile = join(dir, 'no-such-folder', 'out.3mf');
+    process.env[ORCA_SLICER_CLI_ENV] = join(dir, 'orca-slicer');
+    writeFileSync(join(dir, 'orca-slicer'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    writeFileSync(join(dir, 'box.stl'), 'solid box\nendsolid box\n');
+    const profiles = resolveProfiles({ quality: '0.20', filament: 'Bambu PLA Basic', profileBase: PROFILE_BASE });
+
+    const result = await runSlicer({ inputFiles: [join(dir, 'box.stl')], outputFile, ...profiles });
+    expect(result).toMatchObject({ success: false, error: expect.stringContaining('Could not stage the slice') });
   });
 });

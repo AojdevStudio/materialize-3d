@@ -86,7 +86,7 @@ pub enum SlicerError {
         stderr: String,
     },
 
-    #[error("slicing completed but output file not found at {path}\nstdout: {stdout}\nstderr: {stderr}")]
+    #[error("slicing completed but OrcaSlicer wrote no 3MF for {path}\nstdout: {stdout}\nstderr: {stderr}")]
     OutputMissing {
         path: String,
         stdout: String,
@@ -301,7 +301,7 @@ impl SlicerService {
     ///
     /// Validates prerequisites, flattens the selected presets' `inherits` chains and
     /// includes, patches the machine preset, runs the CLI subprocess, checks that every
-    /// input part was sliced, and extracts estimates from the output 3MF.
+    /// input part was sliced, extracts estimates, and moves the new 3MF to the output path.
     pub async fn run_slicer(&self, input: &SliceInput) -> Result<SliceResult, SlicerError> {
         let start = Instant::now();
 
@@ -351,10 +351,19 @@ impl SlicerService {
         )?;
         let patched_machine = Self::patch_machine_profile(presets.machine.config, run_dir.path())?;
 
+        // OrcaSlicer exports into a directory this run owns, beside the output, and the 3MF
+        // moves into place only once it checks out. An earlier slice's 3MF at the output path
+        // can't pass as this one, and a failed slice leaves it untouched.
+        let output_dir = output_abs
+            .parent()
+            .ok_or_else(|| std::io::Error::other(format!("output path {} names no file", output_abs.display())))?;
+        let staging = tempfile::Builder::new().prefix(".slice-").tempdir_in(output_dir)?;
+        let staged = staging.path().join("out.3mf");
+
         // Build args with absolute paths
         let args = self.build_slice_args(
             &canonical_inputs,
-            &output_abs,
+            &staged,
             &patched_machine,
             &presets.process.path,
             &presets.filaments[0].path,
@@ -384,8 +393,8 @@ impl SlicerService {
         }
 
         // Verify output file exists (OrcaSlicer can exit 0 with no output on relative paths)
-        if !output_abs.exists() {
-            log::error!("slice error: output file missing at {}", output_abs.display());
+        if !staged.exists() {
+            log::error!("slice error: OrcaSlicer wrote no 3MF for {}", output_abs.display());
             return Err(SlicerError::OutputMissing {
                 path: output_abs.display().to_string(),
                 stdout,
@@ -393,13 +402,14 @@ impl SlicerService {
             });
         }
 
-        let SliceInfo { estimates, sliced_parts } = parse_slice_info(&output_abs)?;
+        let SliceInfo { estimates, sliced_parts } = parse_slice_info(&staged)?;
         if sliced_parts != canonical_inputs.len() {
             return Err(SlicerError::PartsDropped {
                 expected: canonical_inputs.len(),
                 sliced: sliced_parts,
             });
         }
+        std::fs::rename(&staged, &output_abs)?;
         log::info!(
             "slice complete: duration={:?}, time_est={}s, filament={:.2}m / {:.1}g",
             start.elapsed(),
@@ -944,6 +954,20 @@ cp "$machine" '{received}/machine.json' && cp "$process" '{received}/process.jso
         let complete = TempDir::new().unwrap();
         let (svc, input) = fake_orca_slice(complete.path(), 2, 2, 0);
         svc.run_slicer(&input).await.expect("both parts sliced");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_slice_fails_when_orca_exits_0_without_writing_over_an_earlier_slice() {
+        let dir = TempDir::new().unwrap();
+        let (svc, input) = fake_orca_slice(dir.path(), 1, 1, 0);
+        write_sliced_3mf(&input.output_file, 1, 0);
+        let earlier = std::fs::read(&input.output_file).expect("earlier slice");
+        std::fs::write(&input.input_files[0], "exit 0\n").expect("OrcaSlicer that writes nothing");
+
+        let err = svc.run_slicer(&input).await.expect_err("the earlier slice is not this one");
+        assert!(matches!(err, SlicerError::OutputMissing { .. }), "{err}");
+        assert_eq!(std::fs::read(&input.output_file).expect("earlier slice kept"), earlier);
     }
 
     // ── Integration test (requires OrcaSlicer installed) ──────────────

@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect } from 'bun:test';
 import { join } from 'path';
 import { resolveProfiles } from '../src/profiles.js';
 

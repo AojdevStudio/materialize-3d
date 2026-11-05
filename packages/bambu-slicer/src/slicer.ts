@@ -1,5 +1,5 @@
-import { existsSync, writeFileSync, mkdtempSync } from 'fs';
-import { join } from 'path';
+import { existsSync, writeFileSync, mkdtempSync, renameSync, rmSync } from 'fs';
+import { dirname, join } from 'path';
 import { tmpdir } from 'os';
 import { detectOrcaSlicer, expectedOrcaCli, orcaInstallHint } from './platform';
 import type { PresetConfig, ResolvedProfiles } from './profiles';
@@ -93,9 +93,25 @@ export async function runSlicer(input: SliceInput): Promise<SliceResult> {
     return path;
   };
 
+  // OrcaSlicer exports into a directory this run owns, beside the output, and the 3MF
+  // moves into place only once it checks out. An earlier slice's 3MF at the output path
+  // can't pass as this one, and a failed slice leaves it untouched.
+  let stagingDir: string;
+  try {
+    stagingDir = mkdtempSync(join(dirname(input.outputFile), '.slice-'));
+  } catch (e) {
+    return {
+      success: false,
+      outputFile: input.outputFile,
+      error: `Could not stage the slice beside ${input.outputFile}: ${e instanceof Error ? e.message : String(e)}`,
+    };
+  }
+  using _staging = { [Symbol.dispose]: () => rmSync(stagingDir, { recursive: true, force: true }) };
+  const staged = join(stagingDir, 'out.3mf');
+
   const args = buildSliceArgs({
     inputFiles: input.inputFiles,
-    outputFile: input.outputFile,
+    outputFile: staged,
     machine: writePreset('machine', machine),
     process: writePreset('process', input.process),
     filament: writePreset('filament', input.filament),
@@ -117,22 +133,22 @@ export async function runSlicer(input: SliceInput): Promise<SliceResult> {
     };
   }
 
-  if (!existsSync(input.outputFile)) {
+  if (!existsSync(staged)) {
     return {
       success: false,
       outputFile: input.outputFile,
-      error: `Slicing completed but output file not found at ${input.outputFile}\nstdout: ${stdout}\nstderr: ${stderr}`,
+      error: `Slicing completed but OrcaSlicer wrote no 3MF for ${input.outputFile}\nstdout: ${stdout}\nstderr: ${stderr}`,
     };
   }
 
   let slicedParts: number;
   try {
-    slicedParts = countSlicedParts(input.outputFile);
+    slicedParts = countSlicedParts(staged);
   } catch (e) {
     return {
       success: false,
       outputFile: input.outputFile,
-      error: `Could not read the sliced parts from ${input.outputFile}: ${e instanceof Error ? e.message : String(e)}`,
+      error: `Could not read the sliced parts of the 3MF OrcaSlicer wrote for ${input.outputFile}: ${e instanceof Error ? e.message : String(e)}`,
     };
   }
   if (slicedParts !== input.inputFiles.length) {
@@ -143,5 +159,14 @@ export async function runSlicer(input: SliceInput): Promise<SliceResult> {
     };
   }
 
+  try {
+    renameSync(staged, input.outputFile);
+  } catch (e) {
+    return {
+      success: false,
+      outputFile: input.outputFile,
+      error: `Could not move the slice to ${input.outputFile}: ${e instanceof Error ? e.message : String(e)}`,
+    };
+  }
   return { success: true, outputFile: input.outputFile };
 }
