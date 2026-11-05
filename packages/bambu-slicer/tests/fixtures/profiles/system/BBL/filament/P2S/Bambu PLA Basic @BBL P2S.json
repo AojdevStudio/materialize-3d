@@ -1,0 +1,11 @@
+{
+  "type": "filament",
+  "name": "Bambu PLA Basic @BBL P2S",
+  "inherits": "Bambu PLA Basic @base",
+  "from": "system",
+  "setting_id": "GFSA00_11",
+  "instantiation": "true",
+  "include": ["fdm_filament_template_direct_dual_e3d"],
+  "nozzle_temperature": ["220"],
+  "compatible_printers": ["Bambu Lab P2S 0.4 nozzle"]
+}

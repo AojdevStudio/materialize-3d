@@ -6,6 +6,8 @@ use std::time::Instant;
 use serde::{Deserialize, Serialize};
 use tempfile::TempDir;
 
+use crate::fabrication::bambu::{resolve_presets_with_defaults, BambuError, JsonMap, PresetSelection};
+
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 /// OrcaSlicer is used instead of BambuStudio CLI because BambuStudio CLI has a
@@ -19,8 +21,7 @@ pub const ORCA_CLI: &str = r"C:\Program Files\OrcaSlicer\orca-slicer.exe";
 #[cfg(all(unix, not(target_os = "macos")))]
 pub const ORCA_CLI: &str = "/usr/bin/orca-slicer";
 
-
-const MACHINE_PROFILE: &str = "Bambu Lab P2S 0.4 nozzle.json";
+const MACHINE_PRESET: &str = "Bambu Lab P2S 0.4 nozzle";
 
 /// Simplified gcode templates compatible with OrcaSlicer's parser.
 /// BambuStudio profiles use variables like `min_vitrification_temperature` that
@@ -35,35 +36,27 @@ pub const ORCA_MACHINE_END_GCODE: &str =
 pub const ORCA_LAYER_CHANGE_GCODE: &str =
     "G92 E0\\n;LAYER_CHANGE\\n;Z:[layer_z]\\nM73 L[layer_num]\\n";
 
-/// Skip these keys when inlining template includes into the machine profile.
-const INCLUDE_SKIP_KEYS: &[&str] = &["name", "instantiation", "type", "from"];
-
 // ─── Profile Maps ─────────────────────────────────────────────────────────────
 
-/// Maps quality layer-height strings to process profile filenames.
-/// Ported exactly from TS `profiles.ts` `PROCESS_MAP`.
+/// Maps quality layer-height strings to process preset names in `BBL.json`.
 fn process_map() -> HashMap<&'static str, &'static str> {
     HashMap::from([
-        ("0.08", "0.08mm High Quality @BBL P2S.json"),
-        ("0.12", "0.12mm High Quality @BBL P2S.json"),
-        ("0.16", "0.16mm Standard @BBL P2S.json"),
-        ("0.20", "0.20mm Standard @BBL P2S.json"),
-        ("0.24", "0.24mm Standard @BBL P2S.json"),
+        ("0.08", "0.08mm High Quality @BBL P2S"),
+        ("0.12", "0.12mm High Quality @BBL P2S"),
+        ("0.16", "0.16mm Standard @BBL P2S"),
+        ("0.20", "0.20mm Standard @BBL P2S"),
+        ("0.24", "0.24mm Standard @BBL P2S"),
     ])
 }
 
-/// Maps filament display names to filament profile filenames.
-/// Ported exactly from TS `profiles.ts` `FILAMENT_MAP`.
+/// Maps filament display names to filament preset names in `BBL.json`.
 fn filament_map() -> HashMap<&'static str, &'static str> {
     HashMap::from([
-        ("Bambu PLA Basic", "Bambu PLA Basic @BBL P2S.json"),
-        ("Bambu PLA Matte", "Bambu PLA Matte @BBL P2S.json"),
-        (
-            "Bambu PETG Basic",
-            "Bambu PETG Basic @BBL P2S 0.4 nozzle.json",
-        ),
-        ("Generic PLA", "Generic PLA @BBL P2S.json"),
-        ("Generic PETG", "Generic PETG @BBL P2S.json"),
+        ("Bambu PLA Basic", "Bambu PLA Basic @BBL P2S"),
+        ("Bambu PLA Matte", "Bambu PLA Matte @BBL P2S"),
+        ("Bambu PETG Basic", "Bambu PETG Basic @BBL P2S 0.4 nozzle"),
+        ("Generic PLA", "Generic PLA @BBL P2S"),
+        ("Generic PETG", "Generic PETG @BBL P2S"),
     ])
 }
 
@@ -106,6 +99,12 @@ pub enum SlicerError {
     #[error("profile patching failed: {reason}")]
     PatchError { reason: String },
 
+    #[error("profile resolution failed: {0}")]
+    Preset(#[from] BambuError),
+
+    #[error("OrcaSlicer sliced {sliced} of {expected} input parts")]
+    PartsDropped { expected: usize, sliced: usize },
+
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -121,13 +120,6 @@ pub struct SliceInput {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ResolvedProfiles {
-    pub machine: PathBuf,
-    pub process: PathBuf,
-    pub filament: PathBuf,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProfileList {
     pub qualities: Vec<String>,
     pub filaments: Vec<String>,
@@ -138,6 +130,14 @@ pub struct SliceEstimates {
     pub time_seconds: u64,
     pub filament_meters: f64,
     pub filament_grams: f64,
+}
+
+/// What `Metadata/slice_info.config` in OrcaSlicer's output 3MF reports.
+#[derive(Debug, Clone)]
+pub struct SliceInfo {
+    pub estimates: SliceEstimates,
+    /// `<object>` entries across all plates that OrcaSlicer did not skip.
+    pub sliced_parts: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -184,16 +184,12 @@ impl SlicerService {
         Ok(())
     }
 
-    /// Resolve quality + filament names to absolute profile file paths.
-    pub fn resolve_profiles(
-        &self,
-        quality: &str,
-        filament: &str,
-    ) -> Result<ResolvedProfiles, SlicerError> {
+    /// Resolve quality + filament names to the P2S system presets they select.
+    pub fn preset_selection(quality: &str, filament: &str) -> Result<PresetSelection, SlicerError> {
         let pmap = process_map();
         let fmap = filament_map();
 
-        let process_file = pmap.get(quality).ok_or_else(|| {
+        let process = pmap.get(quality).ok_or_else(|| {
             let valid = {
                 let mut keys: Vec<&str> = pmap.keys().copied().collect();
                 keys.sort();
@@ -205,7 +201,7 @@ impl SlicerService {
             }
         })?;
 
-        let filament_file = fmap.get(filament).ok_or_else(|| {
+        let filament_preset = fmap.get(filament).ok_or_else(|| {
             let valid = {
                 let mut keys: Vec<&str> = fmap.keys().copied().collect();
                 keys.sort();
@@ -217,10 +213,10 @@ impl SlicerService {
             }
         })?;
 
-        Ok(ResolvedProfiles {
-            machine: self.profile_base_path.join("machine").join(MACHINE_PROFILE),
-            process: self.profile_base_path.join("process").join(process_file),
-            filament: self.profile_base_path.join("filament").join(filament_file),
+        Ok(PresetSelection {
+            machine: MACHINE_PRESET.to_string(),
+            process: process.to_string(),
+            filaments: vec![filament_preset.to_string()],
         })
     }
 
@@ -236,100 +232,24 @@ impl SlicerService {
         }
     }
 
-    /// Patch a BambuStudio machine profile to be OrcaSlicer-compatible.
+    /// Write a flattened BambuStudio machine preset as an OrcaSlicer-compatible file in `dir`.
     ///
-    /// - Inlines template `include` entries from sibling JSON files
     /// - Replaces the 3 gcode fields with OrcaSlicer-compatible constants
     /// - Adds `nozzle_volume_type` if missing
-    ///
-    /// Returns `(TempDir, PathBuf)` — the TempDir owns the patched file and
-    /// cleans up on drop. The PathBuf is the path to the patched JSON.
-    pub fn patch_machine_profile(
-        &self,
-        machine_path: &Path,
-    ) -> Result<(TempDir, PathBuf), SlicerError> {
-        let content = std::fs::read_to_string(machine_path).map_err(|e| {
-            SlicerError::PatchError {
-                reason: format!("failed to read machine profile {}: {e}", machine_path.display()),
-            }
-        })?;
+    pub fn patch_machine_profile(mut profile: JsonMap, dir: &Path) -> Result<PathBuf, SlicerError> {
+        profile.insert("machine_start_gcode".into(), ORCA_MACHINE_START_GCODE.into());
+        profile.insert("machine_end_gcode".into(), ORCA_MACHINE_END_GCODE.into());
+        profile.insert("layer_change_gcode".into(), ORCA_LAYER_CHANGE_GCODE.into());
+        profile
+            .entry("nozzle_volume_type")
+            .or_insert_with(|| serde_json::json!(["0"]));
 
-        let mut profile: serde_json::Value =
-            serde_json::from_str(&content).map_err(|e| SlicerError::PatchError {
-                reason: format!("failed to parse machine profile JSON: {e}"),
-            })?;
-
-        let profile_dir = machine_path
-            .parent()
-            .ok_or_else(|| SlicerError::PatchError {
-                reason: "machine profile has no parent directory".to_string(),
-            })?;
-
-        // Inline template includes
-        if let Some(includes) = profile.get("include").and_then(|v| v.as_array()).cloned() {
-            for inc in &includes {
-                if let Some(inc_name) = inc.as_str() {
-                    let tpath = profile_dir.join(format!("{inc_name}.json"));
-                    if tpath.exists() {
-                        let tpl_content = std::fs::read_to_string(&tpath).map_err(|e| {
-                            SlicerError::PatchError {
-                                reason: format!(
-                                    "failed to read template {}: {e}",
-                                    tpath.display()
-                                ),
-                            }
-                        })?;
-                        let template: serde_json::Value = serde_json::from_str(&tpl_content)
-                            .map_err(|e| SlicerError::PatchError {
-                                reason: format!(
-                                    "failed to parse template JSON {}: {e}",
-                                    tpath.display()
-                                ),
-                            })?;
-
-                        if let Some(obj) = template.as_object() {
-                            for (k, v) in obj {
-                                if !INCLUDE_SKIP_KEYS.contains(&k.as_str()) {
-                                    profile[k] = v.clone();
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            // Remove include array after inlining
-            if let Some(obj) = profile.as_object_mut() {
-                obj.remove("include");
-            }
-        }
-
-        // Replace gcode fields with OrcaSlicer-compatible versions
-        profile["machine_start_gcode"] =
-            serde_json::Value::String(ORCA_MACHINE_START_GCODE.to_string());
-        profile["machine_end_gcode"] =
-            serde_json::Value::String(ORCA_MACHINE_END_GCODE.to_string());
-        profile["layer_change_gcode"] =
-            serde_json::Value::String(ORCA_LAYER_CHANGE_GCODE.to_string());
-
-        // Ensure nozzle_volume_type exists
-        if profile.get("nozzle_volume_type").is_none() {
-            profile["nozzle_volume_type"] =
-                serde_json::Value::Array(vec![serde_json::Value::String("0".to_string())]);
-        }
-
-        // Write patched profile to temp directory
-        let tmp_dir = TempDir::new().map_err(|e| SlicerError::PatchError {
-            reason: format!("failed to create temp dir: {e}"),
-        })?;
-        let patched_path = tmp_dir.path().join("machine-patched.json");
-        let patched_json = serde_json::to_string_pretty(&profile).map_err(|e| {
-            SlicerError::PatchError {
-                reason: format!("failed to serialize patched profile: {e}"),
-            }
+        let patched_path = dir.join("machine-patched.json");
+        let patched_json = serde_json::to_string_pretty(&profile).map_err(|e| SlicerError::PatchError {
+            reason: format!("failed to serialize patched profile: {e}"),
         })?;
         std::fs::write(&patched_path, patched_json)?;
-
-        Ok((tmp_dir, patched_path))
+        Ok(patched_path)
     }
 
     /// Build the CLI argument array for OrcaSlicer.
@@ -379,8 +299,9 @@ impl SlicerService {
 
     /// Run OrcaSlicer on the given input, returning a SliceResult.
     ///
-    /// Validates prerequisites, resolves profiles, patches the machine profile,
-    /// runs the CLI subprocess, and extracts estimates from the output 3MF.
+    /// Validates prerequisites, flattens the selected presets' `inherits` chains and
+    /// includes, patches the machine preset, runs the CLI subprocess, checks that every
+    /// input part was sliced, and extracts estimates from the output 3MF.
     pub async fn run_slicer(&self, input: &SliceInput) -> Result<SliceResult, SlicerError> {
         let start = Instant::now();
 
@@ -409,8 +330,7 @@ impl SlicerService {
             std::env::current_dir()?.join(&input.output_file)
         };
 
-        // Resolve profiles
-        let profiles = self.resolve_profiles(&input.quality, &input.filament)?;
+        let selection = Self::preset_selection(&input.quality, &input.filament)?;
 
         log::info!(
             "slice start: model={:?}, quality={}, filament={}",
@@ -419,16 +339,25 @@ impl SlicerService {
             input.filament
         );
 
-        // Patch machine profile
-        let (_tmp_dir, patched_machine) = self.patch_machine_profile(&profiles.machine)?;
+        // The flattened presets live in this run's directory, which drops with it. OrcaSlicer
+        // has no compiled-defaults probe, so every include value applies.
+        let run_dir = TempDir::new()?;
+        let presets = resolve_presets_with_defaults(
+            &self.profile_base_path,
+            "orcaslicer",
+            JsonMap::new(),
+            &selection,
+            run_dir.path(),
+        )?;
+        let patched_machine = Self::patch_machine_profile(presets.machine.config, run_dir.path())?;
 
         // Build args with absolute paths
         let args = self.build_slice_args(
             &canonical_inputs,
             &output_abs,
             &patched_machine,
-            &profiles.process,
-            &profiles.filament,
+            &presets.process.path,
+            &presets.filaments[0].path,
         );
 
         // Run OrcaSlicer
@@ -464,30 +393,25 @@ impl SlicerService {
             });
         }
 
-        // Extract estimates from 3MF
-        let estimates = match parse_slice_info(&output_abs) {
-            Ok(est) => {
-                log::info!(
-                    "slice complete: duration={:?}, time_est={}s, filament={:.2}m / {:.1}g",
-                    start.elapsed(),
-                    est.time_seconds,
-                    est.filament_meters,
-                    est.filament_grams
-                );
-                Some(est)
-            }
-            Err(e) => {
-                log::warn!("failed to parse slice estimates: {e}");
-                None
-            }
-        };
-
-        // _tmp_dir drops here, cleaning up the patched profile
+        let SliceInfo { estimates, sliced_parts } = parse_slice_info(&output_abs)?;
+        if sliced_parts != canonical_inputs.len() {
+            return Err(SlicerError::PartsDropped {
+                expected: canonical_inputs.len(),
+                sliced: sliced_parts,
+            });
+        }
+        log::info!(
+            "slice complete: duration={:?}, time_est={}s, filament={:.2}m / {:.1}g",
+            start.elapsed(),
+            estimates.time_seconds,
+            estimates.filament_meters,
+            estimates.filament_grams
+        );
 
         Ok(SliceResult {
             success: true,
             output_file: output_abs,
-            estimates,
+            estimates: Some(estimates),
             error: None,
         })
     }
@@ -496,8 +420,8 @@ impl SlicerService {
 // ─── 3MF Parsing ──────────────────────────────────────────────────────────────
 
 /// Parse `Metadata/slice_info.config` from a 3MF (ZIP) file to extract
-/// print time and filament usage estimates.
-pub fn parse_slice_info(path_3mf: &Path) -> Result<SliceEstimates, SlicerError> {
+/// print time and filament usage estimates and the sliced part count.
+pub fn parse_slice_info(path_3mf: &Path) -> Result<SliceInfo, SlicerError> {
     let file = std::fs::File::open(path_3mf).map_err(|e| SlicerError::ParseError {
         reason: format!("failed to open 3MF: {e}"),
     })?;
@@ -521,18 +445,19 @@ pub fn parse_slice_info(path_3mf: &Path) -> Result<SliceEstimates, SlicerError> 
     parse_slice_info_xml(&xml_content)
 }
 
-/// Parse the XML content of `slice_info.config` to extract estimates.
+/// Parse the XML content of `slice_info.config` to extract estimates and sliced parts.
 ///
 /// Expected structure:
 /// ```xml
 /// <config>
 ///   <plate>
 ///     <metadata key="prediction" value="631"/>
+///     <object identify_id="7" name="part.stl" skipped="false"/>
 ///     <filament id="1" type="PLA" used_m="1.29" used_g="0.00"/>
 ///   </plate>
 /// </config>
 /// ```
-pub fn parse_slice_info_xml(xml: &str) -> Result<SliceEstimates, SlicerError> {
+pub fn parse_slice_info_xml(xml: &str) -> Result<SliceInfo, SlicerError> {
     use quick_xml::events::Event;
     use quick_xml::Reader;
 
@@ -541,6 +466,7 @@ pub fn parse_slice_info_xml(xml: &str) -> Result<SliceEstimates, SlicerError> {
     let mut time_seconds: u64 = 0;
     let mut filament_meters: f64 = 0.0;
     let mut filament_grams: f64 = 0.0;
+    let mut sliced_parts: usize = 0;
 
     loop {
         match reader.read_event() {
@@ -565,6 +491,14 @@ pub fn parse_slice_info_xml(xml: &str) -> Result<SliceEstimates, SlicerError> {
                     }
                     if is_prediction {
                         time_seconds = val.parse().unwrap_or(0);
+                    }
+                } else if tag_str == "object" {
+                    let skipped = e
+                        .attributes()
+                        .flatten()
+                        .any(|attr| attr.key.as_ref() == b"skipped" && attr.value.as_ref() == b"true");
+                    if !skipped {
+                        sliced_parts += 1;
                     }
                 } else if tag_str == "filament" {
                     // Look for <filament ... used_m="1.29" used_g="0.00"/>
@@ -591,17 +525,20 @@ pub fn parse_slice_info_xml(xml: &str) -> Result<SliceEstimates, SlicerError> {
         }
     }
 
-    Ok(SliceEstimates {
-        time_seconds,
-        filament_meters,
-        filament_grams,
+    Ok(SliceInfo {
+        estimates: SliceEstimates {
+            time_seconds,
+            filament_meters,
+            filament_grams,
+        },
+        sliced_parts,
     })
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn test_service() -> SlicerService {
@@ -665,71 +602,62 @@ mod tests {
         assert_eq!(args.last().unwrap(), "/tmp/multi.3mf");
     }
 
-    // ── resolve_profiles ──────────────────────────────────────────────
+    // ── preset_selection ──────────────────────────────────────────────
 
     #[test]
-    fn resolve_profiles_default() {
-        let svc = test_service();
-        let r = svc.resolve_profiles("0.20", "Bambu PLA Basic").unwrap();
-        assert!(r.machine.to_str().unwrap().contains("Bambu Lab P2S 0.4 nozzle.json"));
-        assert!(r.process.to_str().unwrap().contains("0.20mm Standard @BBL P2S.json"));
-        assert!(r.filament.to_str().unwrap().contains("Bambu PLA Basic @BBL P2S.json"));
+    fn preset_selection_default() {
+        let selection = SlicerService::preset_selection("0.20", "Bambu PLA Basic").unwrap();
+        assert_eq!(
+            selection,
+            PresetSelection {
+                machine: "Bambu Lab P2S 0.4 nozzle".to_string(),
+                process: "0.20mm Standard @BBL P2S".to_string(),
+                filaments: vec!["Bambu PLA Basic @BBL P2S".to_string()],
+            }
+        );
     }
 
     #[test]
-    fn resolve_profiles_all_qualities() {
-        let svc = test_service();
+    fn preset_selection_all_qualities() {
         let expected = vec![
-            ("0.08", "0.08mm High Quality @BBL P2S.json"),
-            ("0.12", "0.12mm High Quality @BBL P2S.json"),
-            ("0.16", "0.16mm Standard @BBL P2S.json"),
-            ("0.20", "0.20mm Standard @BBL P2S.json"),
-            ("0.24", "0.24mm Standard @BBL P2S.json"),
+            ("0.08", "0.08mm High Quality @BBL P2S"),
+            ("0.12", "0.12mm High Quality @BBL P2S"),
+            ("0.16", "0.16mm Standard @BBL P2S"),
+            ("0.20", "0.20mm Standard @BBL P2S"),
+            ("0.24", "0.24mm Standard @BBL P2S"),
         ];
-        for (quality, expected_file) in expected {
-            let r = svc.resolve_profiles(quality, "Bambu PLA Basic").unwrap();
-            assert!(
-                r.process.to_str().unwrap().contains(expected_file),
-                "quality {quality} should resolve to {expected_file}"
-            );
+        for (quality, expected_preset) in expected {
+            let selection = SlicerService::preset_selection(quality, "Bambu PLA Basic").unwrap();
+            assert_eq!(selection.process, expected_preset, "quality {quality}");
         }
     }
 
     #[test]
-    fn resolve_profiles_all_filaments() {
-        let svc = test_service();
+    fn preset_selection_all_filaments() {
         let expected = vec![
-            ("Bambu PLA Basic", "Bambu PLA Basic @BBL P2S.json"),
-            ("Bambu PLA Matte", "Bambu PLA Matte @BBL P2S.json"),
-            (
-                "Bambu PETG Basic",
-                "Bambu PETG Basic @BBL P2S 0.4 nozzle.json",
-            ),
-            ("Generic PLA", "Generic PLA @BBL P2S.json"),
-            ("Generic PETG", "Generic PETG @BBL P2S.json"),
+            ("Bambu PLA Basic", "Bambu PLA Basic @BBL P2S"),
+            ("Bambu PLA Matte", "Bambu PLA Matte @BBL P2S"),
+            ("Bambu PETG Basic", "Bambu PETG Basic @BBL P2S 0.4 nozzle"),
+            ("Generic PLA", "Generic PLA @BBL P2S"),
+            ("Generic PETG", "Generic PETG @BBL P2S"),
         ];
-        for (filament, expected_file) in expected {
-            let r = svc.resolve_profiles("0.20", filament).unwrap();
-            assert!(
-                r.filament.to_str().unwrap().contains(expected_file),
-                "filament {filament} should resolve to {expected_file}"
-            );
+        for (filament, expected_preset) in expected {
+            let selection = SlicerService::preset_selection("0.20", filament).unwrap();
+            assert_eq!(selection.filaments, vec![expected_preset.to_string()], "filament {filament}");
         }
     }
 
     #[test]
-    fn resolve_profiles_unknown_quality_errors() {
-        let svc = test_service();
-        let err = svc.resolve_profiles("0.99", "Bambu PLA Basic").unwrap_err();
+    fn preset_selection_unknown_quality_errors() {
+        let err = SlicerService::preset_selection("0.99", "Bambu PLA Basic").unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("unknown quality"), "error: {msg}");
         assert!(msg.contains("0.99"), "error should include bad quality: {msg}");
     }
 
     #[test]
-    fn resolve_profiles_unknown_filament_errors() {
-        let svc = test_service();
-        let err = svc.resolve_profiles("0.20", "Mystery").unwrap_err();
+    fn preset_selection_unknown_filament_errors() {
+        let err = SlicerService::preset_selection("0.20", "Mystery").unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("unknown filament"), "error: {msg}");
         assert!(msg.contains("Mystery"), "error should include bad filament: {msg}");
@@ -761,7 +689,7 @@ mod tests {
   </plate>
 </config>"#;
 
-        let est = super::parse_slice_info_xml(xml).unwrap();
+        let est = super::parse_slice_info_xml(xml).unwrap().estimates;
         assert_eq!(est.time_seconds, 631);
         assert!((est.filament_meters - 1.29).abs() < 0.001);
         assert!((est.filament_grams - 3.85).abs() < 0.001);
@@ -778,7 +706,7 @@ mod tests {
   </plate>
 </config>"#;
 
-        let est = super::parse_slice_info_xml(xml).unwrap();
+        let est = super::parse_slice_info_xml(xml).unwrap().estimates;
         assert_eq!(est.time_seconds, 420);
         assert!((est.filament_meters - 0.87).abs() < 0.001);
         assert!((est.filament_grams - 0.0).abs() < 0.001);
@@ -805,89 +733,43 @@ mod tests {
 
     // ── patch_machine_profile ─────────────────────────────────────────
 
-    #[test]
-    fn patch_machine_profile_inlines_includes_and_replaces_gcode() {
-        // Create a fake machine profile with includes
+    fn patched(profile: serde_json::Value) -> serde_json::Value {
+        let serde_json::Value::Object(profile) = profile else {
+            panic!("machine profile is an object");
+        };
         let tmp = TempDir::new().unwrap();
-        let machine_dir = tmp.path().join("machine");
-        std::fs::create_dir_all(&machine_dir).unwrap();
+        let patched_path = SlicerService::patch_machine_profile(profile, tmp.path()).unwrap();
+        serde_json::from_str(&std::fs::read_to_string(&patched_path).unwrap()).unwrap()
+    }
 
-        // Template file that gets included
-        let template = serde_json::json!({
-            "name": "should-be-skipped",
-            "instantiation": "also-skipped",
-            "type": "skipped",
-            "from": "skipped",
-            "retraction_length": ["0.8"],
-            "fan_max_speed": ["100"]
-        });
-        std::fs::write(
-            machine_dir.join("base_template.json"),
-            serde_json::to_string(&template).unwrap(),
-        )
-        .unwrap();
-
-        // Machine profile referencing the template
-        let machine = serde_json::json!({
+    #[test]
+    fn patch_machine_profile_replaces_gcode() {
+        let patched = patched(serde_json::json!({
             "name": "Test Machine",
-            "include": ["base_template"],
+            "retraction_length": ["0.8"],
             "machine_start_gcode": "old start gcode",
             "machine_end_gcode": "old end gcode",
             "layer_change_gcode": "old layer gcode"
-        });
-        let machine_path = machine_dir.join("machine.json");
-        std::fs::write(&machine_path, serde_json::to_string(&machine).unwrap()).unwrap();
+        }));
 
-        let svc = test_service();
-        let (_tmp_dir, patched_path) = svc.patch_machine_profile(&machine_path).unwrap();
-
-        let patched: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&patched_path).unwrap()).unwrap();
-
-        // Include was removed
-        assert!(patched.get("include").is_none(), "include should be removed");
-
-        // Skipped keys were not copied
         assert_eq!(patched["name"], "Test Machine");
-
-        // Template values were inlined
         assert_eq!(patched["retraction_length"], serde_json::json!(["0.8"]));
-        assert_eq!(patched["fan_max_speed"], serde_json::json!(["100"]));
-
-        // Gcode fields were replaced
         assert_eq!(patched["machine_start_gcode"], ORCA_MACHINE_START_GCODE);
         assert_eq!(patched["machine_end_gcode"], ORCA_MACHINE_END_GCODE);
         assert_eq!(patched["layer_change_gcode"], ORCA_LAYER_CHANGE_GCODE);
-
-        // nozzle_volume_type was added
-        assert_eq!(
-            patched["nozzle_volume_type"],
-            serde_json::json!(["0"])
-        );
+        assert_eq!(patched["nozzle_volume_type"], serde_json::json!(["0"]));
     }
 
     #[test]
     fn patch_machine_profile_preserves_existing_nozzle_volume_type() {
-        let tmp = TempDir::new().unwrap();
-        let machine_dir = tmp.path().join("machine");
-        std::fs::create_dir_all(&machine_dir).unwrap();
-
-        let machine = serde_json::json!({
+        let patched = patched(serde_json::json!({
             "name": "Test Machine",
             "machine_start_gcode": "old",
             "machine_end_gcode": "old",
             "layer_change_gcode": "old",
             "nozzle_volume_type": ["1"]
-        });
-        let machine_path = machine_dir.join("machine.json");
-        std::fs::write(&machine_path, serde_json::to_string(&machine).unwrap()).unwrap();
+        }));
 
-        let svc = test_service();
-        let (_tmp_dir, patched_path) = svc.patch_machine_profile(&machine_path).unwrap();
-        let patched: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&patched_path).unwrap()).unwrap();
-
-        // Existing value should be preserved, not overwritten
         assert_eq!(patched["nozzle_volume_type"], serde_json::json!(["1"]));
     }
 
@@ -898,6 +780,170 @@ mod tests {
         let svc = SlicerService::default();
         assert_eq!(svc.orca_cli_path, PathBuf::from(ORCA_CLI));
         assert!(svc.profile_base_path.to_str().unwrap().contains("BambuStudio/system/BBL"));
+    }
+
+    // ── run_slicer against a fake OrcaSlicer ──────────────────────────
+
+    /// A trimmed copy of the real P2S profile chain, laid out like `system/BBL`.
+    pub(crate) fn fixture_profiles() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/stl-slicer/profiles/system/BBL")
+    }
+
+    /// An OrcaSlicer output 3MF whose one plate lists `sliced` parts, then `skipped` parts
+    /// that OrcaSlicer marked `skipped="true"`.
+    pub(crate) fn write_sliced_3mf(path: &Path, sliced: usize, skipped: usize) {
+        use std::io::Write;
+
+        let parts: String = (1..=sliced + skipped)
+            .map(|id| {
+                let skipped = id > sliced;
+                format!(r#"<object identify_id="{id}" name="part{id}.stl" skipped="{skipped}"/>"#)
+            })
+            .collect();
+        let config = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?><config><plate><metadata key="prediction" value="631"/>{parts}<filament id="1" type="PLA" used_m="1.29" used_g="3.85"/></plate></config>"#
+        );
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(path).expect("create 3mf"));
+        zip.start_file("Metadata/slice_info.config", zip::write::SimpleFileOptions::default())
+            .expect("slice_info entry");
+        zip.write_all(config.as_bytes()).expect("write slice_info");
+        zip.finish().expect("finish 3mf");
+    }
+
+    /// A slice of `parts` input STLs by a fake OrcaSlicer that copies the presets it is handed
+    /// into `<dir>/received` and exports `<dir>/sliced.3mf`, which lists `sliced_objects` sliced
+    /// parts and `skipped_objects` skipped ones. The fake runs as
+    /// `/bin/sh <first STL>`, so the first STL is the script: exec'ing a freshly written file
+    /// races other test threads' forks (ETXTBSY).
+    fn fake_orca_slice(
+        dir: &Path,
+        parts: usize,
+        sliced_objects: usize,
+        skipped_objects: usize,
+    ) -> (SlicerService, SliceInput) {
+        let received = dir.join("received");
+        std::fs::create_dir(&received).expect("received dir");
+        let sliced = dir.join("sliced.3mf");
+        write_sliced_3mf(&sliced, sliced_objects, skipped_objects);
+        let script = format!(
+            r#"while [ $# -gt 0 ]; do
+  case "$1" in
+    --load-settings) machine=${{2%%;*}}; process=${{2#*;}}; shift ;;
+    --load-filaments) filament=$2; shift ;;
+    --export-3mf) out=$2; shift ;;
+  esac
+  shift
+done
+cp "$machine" '{received}/machine.json' && cp "$process" '{received}/process.json' && cp "$filament" '{received}/filament.json' && cp '{sliced}' "$out"
+"#,
+            received = received.display(),
+            sliced = sliced.display()
+        );
+        let input_files: Vec<PathBuf> = (1..=parts).map(|n| dir.join(format!("part{n}.stl"))).collect();
+        std::fs::write(&input_files[0], script).expect("fake OrcaSlicer");
+        for stl in &input_files[1..] {
+            std::fs::write(stl, "solid part\nendsolid part\n").expect("stl");
+        }
+        let service = SlicerService {
+            orca_cli_path: PathBuf::from("/bin/sh"),
+            profile_base_path: fixture_profiles(),
+        };
+        let input = SliceInput {
+            input_files,
+            output_file: dir.join("out.3mf"),
+            quality: "0.20".to_string(),
+            filament: "Bambu PLA Basic".to_string(),
+        };
+        (service, input)
+    }
+
+    fn received_preset(dir: &Path, file: &str) -> serde_json::Value {
+        let text = std::fs::read_to_string(dir.join("received").join(file)).expect("preset handed to OrcaSlicer");
+        serde_json::from_str(&text).expect("preset JSON")
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn orca_gets_presets_merged_with_their_inherited_parents() {
+        let dir = TempDir::new().unwrap();
+        let (svc, input) = fake_orca_slice(dir.path(), 1, 1, 0);
+        svc.run_slicer(&input).await.expect("slice succeeds");
+
+        let machine = received_preset(dir.path(), "machine.json");
+        assert_eq!(machine["gcode_flavor"], "marlin", "set only by fdm_machine_common");
+        assert_eq!(machine["extruder_type"], serde_json::json!(["Direct Drive"]), "set only by fdm_bbl_3dp_001_common");
+        assert_eq!(machine["extruder_clearance_radius"], "72", "the P2S preset overrides both parents");
+
+        let process = received_preset(dir.path(), "process.json");
+        assert_eq!(process["layer_height"], "0.2", "set only by fdm_process_single_0.20");
+        assert_eq!(process["travel_speed"], serde_json::json!(["1000", "1000", "1000"]), "the P2S process overrides its parent");
+
+        let filament = received_preset(dir.path(), "filament.json");
+        assert_eq!(filament["filament_type"], serde_json::json!(["PLA"]), "set only by Bambu PLA Basic @base");
+        assert_eq!(filament["nozzle_temperature"], serde_json::json!(["220", "220", "220"]), "the P2S filament overrides its parent");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_slice_fails_before_orca_runs_when_a_preset_parent_is_missing() {
+        let dir = TempDir::new().unwrap();
+        let (mut svc, input) = fake_orca_slice(dir.path(), 1, 1, 0);
+        let profiles = dir.path().join("profiles");
+        let copied = std::process::Command::new("cp")
+            .arg("-R")
+            .arg(fixture_profiles().parent().expect("system dir"))
+            .arg(&profiles)
+            .status()
+            .expect("cp");
+        assert!(copied.success(), "copy the fixture profiles");
+        let manifest_path = profiles.join("BBL.json");
+        let mut manifest: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&manifest_path).unwrap()).unwrap();
+        manifest["filament_list"]
+            .as_array_mut()
+            .expect("filament_list")
+            .retain(|entry| entry["name"] != "Bambu PLA Basic @base");
+        std::fs::write(&manifest_path, manifest.to_string()).unwrap();
+        svc.profile_base_path = profiles.join("BBL");
+
+        let err = svc.run_slicer(&input).await.expect_err("the filament parent is gone");
+        assert!(matches!(err, SlicerError::Preset(_)), "{err}");
+        assert_eq!(std::fs::read_dir(dir.path().join("received")).unwrap().count(), 0, "OrcaSlicer never ran");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn orca_gets_the_p2s_bed_from_the_machine_profile_chain() {
+        let dir = TempDir::new().unwrap();
+        let (svc, input) = fake_orca_slice(dir.path(), 1, 1, 0);
+        svc.run_slicer(&input).await.expect("slice succeeds");
+
+        let machine = received_preset(dir.path(), "machine.json");
+        assert_eq!(machine["printable_area"], serde_json::json!(["0x0", "256x0", "256x256", "0x256"]));
+        assert_eq!(machine["printable_height"], "256");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_slice_fails_when_orca_drops_an_input_part() {
+        let dropped = TempDir::new().unwrap();
+        let (svc, input) = fake_orca_slice(dropped.path(), 2, 1, 0);
+        let err = svc.run_slicer(&input).await.expect_err("one of two parts was not sliced");
+        assert!(err.to_string().contains("sliced 1 of 2 input parts"), "{err}");
+
+        let skipped = TempDir::new().unwrap();
+        let (svc, input) = fake_orca_slice(skipped.path(), 2, 1, 1);
+        let err = svc.run_slicer(&input).await.expect_err("OrcaSlicer skipped one of two parts");
+        assert!(err.to_string().contains("sliced 1 of 2 input parts"), "{err}");
+
+        let unreadable = TempDir::new().unwrap();
+        let (svc, input) = fake_orca_slice(unreadable.path(), 1, 1, 0);
+        std::fs::write(unreadable.path().join("sliced.3mf"), "OrcaSlicer crashed mid-export").unwrap();
+        svc.run_slicer(&input).await.expect_err("the exported 3MF is not a ZIP");
+
+        let complete = TempDir::new().unwrap();
+        let (svc, input) = fake_orca_slice(complete.path(), 2, 2, 0);
+        svc.run_slicer(&input).await.expect("both parts sliced");
     }
 
     // ── Integration test (requires OrcaSlicer installed) ──────────────
