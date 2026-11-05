@@ -24,6 +24,14 @@ const MAX_BACKOFF_SECS: u64 = 30;
 /// Bounds each FTPS connect, read, and write. An upload holds the print queue,
 /// so a printer that accepts and then goes silent must not hold it for good.
 const FTPS_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long a session waits for print state before it sends `pushall` again.
+const PUSHALL_RETRY_AFTER: Duration = if cfg!(test) {
+    Duration::from_millis(100)
+} else {
+    Duration::from_secs(10)
+};
+/// How many more times a session sends `pushall` while it has no print state.
+const PUSHALL_RETRIES: u32 = 3;
 
 /// Errors from the PrinterService.
 #[derive(Debug, thiserror::Error)]
@@ -3281,5 +3289,202 @@ mod tests {
             service.handle_publish(a, report, app.handle(), &app_state).await;
         }
         assert_eq!(history_rows(&app_state), [("Hook".into(), "success".into())]);
+    }
+
+    fn queue_job(app_state: &AppState, id: &str, grams: f64) {
+        app_state.print_queue.lock().unwrap().push(crate::state::QueuedJob {
+            id: id.into(),
+            model_path: String::new(),
+            threemf_path: String::new(),
+            model_name: id.into(),
+            created_at: chrono::Utc::now(),
+            status: QueueStatus::Pending,
+            filament_grams: Some(grams),
+            filament_meters: Some(grams / 3.0),
+            quality_profile: Some(format!("{id} quality")),
+            thumbnail_path: Some(format!("/tmp/{id}.png")),
+        });
+    }
+
+    /// Connects `printer` and sends it queued job `id` as `subtask_name`, as
+    /// an auto-send run does after its upload. The MQTT event loop is returned
+    /// so the publish has somewhere to go.
+    async fn send_job(
+        service: &PrinterService,
+        printer: BambuCredentials,
+        id: &str,
+        subtask_name: &str,
+        app: &tauri::App<tauri::test::MockRuntime>,
+        app_state: &Arc<AppState>,
+    ) -> (ConnectionId, rumqttc::EventLoop) {
+        let connection = connect_without_loop(service, printer.clone(), app, app_state).await;
+        let (client, event_loop) = mqtt::connect(&cloud::local_mqtt_config(&printer)).expect("mqtt client");
+        {
+            let mut inner = service.inner.lock().await;
+            inner.mqtt_client = Some(client);
+            inner.readiness = Readiness::Idle;
+        }
+        let job = app_state.print_queue.lock().unwrap().iter().find(|j| j.id == id).cloned().expect("queued job");
+        let cmd = BambuCommand::ProjectFile {
+            param: "Metadata/plate_1.gcode".into(),
+            subtask_name: subtask_name.into(),
+            url: format!("ftp:///cache/{subtask_name}"),
+            md5: String::new(),
+            use_ams: false,
+            ams_mapping: String::new(),
+        };
+        send_project_file(service, connection, app_state, &job, cmd).await.expect("the send step");
+        (connection, event_loop)
+    }
+
+    /// Runs and finishes `subtask_name` on connection `id`, and returns the
+    /// filament, quality, and thumbnail its history row took.
+    async fn finish_print(
+        service: &PrinterService,
+        id: ConnectionId,
+        subtask_name: &str,
+        app: &tauri::App<tauri::test::MockRuntime>,
+        app_state: &AppState,
+    ) -> (Option<f64>, Option<String>, Option<String>) {
+        for state in ["RUNNING", "FINISH"] {
+            let report = format!(
+                r#"{{"print":{{"gcode_state":"{state}","gcode_start_time":"1710500000","subtask_name":"{subtask_name}"}}}}"#
+            );
+            service.handle_publish(id, report.as_bytes(), app.handle(), app_state).await;
+        }
+        let rows = get_test_history(app_state);
+        assert_eq!(rows.len(), 1, "the print gets one row");
+        let row = rows.into_iter().next().unwrap();
+        (row.filament_grams, row.quality_profile, row.thumbnail_path)
+    }
+
+    #[tokio::test]
+    async fn a_history_row_takes_its_filament_from_the_job_that_started_the_print() {
+        let (app, app_state, service) = history_app();
+        queue_job(&app_state, "old", 5.0);
+        queue_job(&app_state, "cube", 12.5);
+        let (_, _old_loop) = send_job(&service, printer_a(), "old", "old.3mf", &app, &app_state).await;
+        let (a, _cube_loop) = send_job(&service, printer_a(), "cube", "cube.3mf", &app, &app_state).await;
+
+        assert_eq!(
+            finish_print(&service, a, "cube.3mf", &app, &app_state).await,
+            (Some(12.5), Some("cube quality".into()), Some("/tmp/cube.png".into())),
+            "the row describes the job sent as cube.3mf, not the older job"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_print_no_queued_job_started_gets_no_filament_or_thumbnail() {
+        let (app, app_state, service) = history_app();
+        queue_job(&app_state, "cube", 12.5);
+        queue_job(&app_state, "benchy", 9.0);
+        let (_, _a_loop) = send_job(&service, printer_a(), "cube", "cube.3mf", &app, &app_state).await;
+        service.disconnect(app.handle(), &app_state).await;
+        let b = loopback_printer("01P00B000000000");
+        let (_, _b_loop) = send_job(&service, b, "benchy", "benchy.3mf", &app, &app_state).await;
+        service.disconnect(app.handle(), &app_state).await;
+
+        let a = connect_without_loop(&service, printer_a(), &app, &app_state).await;
+        assert_eq!(
+            finish_print(&service, a, "benchy.3mf", &app, &app_state).await,
+            (None, None, None),
+            "printer A ran a file no job sent to it, so no job describes the print"
+        );
+    }
+
+    /// A broker on loopback that accepts one MQTT client and sends it a
+    /// status report without `gcode_state` every 50 ms, as a printer sends
+    /// deltas. When `answers_pushall`, it answers each `pushall` with a full
+    /// report. Returns how many `pushall` requests it read once the client
+    /// hangs up.
+    fn fake_broker(answers_pushall: bool) -> (u16, std::thread::JoinHandle<usize>) {
+        use std::io::{ErrorKind, Read, Write};
+
+        fn publish(topic: &str, payload: &str) -> Vec<u8> {
+            let mut remaining = 2 + topic.len() + payload.len();
+            let mut packet = vec![0x30];
+            loop {
+                let byte = (remaining % 128) as u8;
+                remaining /= 128;
+                packet.push(if remaining > 0 { byte | 0x80 } else { byte });
+                if remaining == 0 {
+                    break;
+                }
+            }
+            packet.extend((topic.len() as u16).to_be_bytes());
+            packet.extend(topic.as_bytes());
+            packet.extend(payload.as_bytes());
+            packet
+        }
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind broker");
+        let port = listener.local_addr().expect("broker addr").port();
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("client connects");
+            let topic = printer_a().report_topic();
+            let mut buf = [0u8; 4096];
+            let n = stream.read(&mut buf).expect("read CONNECT");
+            assert!(n > 0 && buf[0] == 0x10, "the client opens with CONNECT");
+            stream.write_all(&[0x20, 0x02, 0x00, 0x00]).expect("send CONNACK");
+            stream.set_read_timeout(Some(Duration::from_millis(50))).expect("read timeout");
+
+            let mut read = Vec::new();
+            let mut pushalls = 0;
+            loop {
+                match stream.read(&mut buf) {
+                    Ok(0) => return pushalls,
+                    Ok(n) => read.extend_from_slice(&buf[..n]),
+                    Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {}
+                    Err(_) => return pushalls,
+                }
+                let seen = read.windows(b"pushall".len()).filter(|w| w == b"pushall").count();
+                let report = if answers_pushall && seen > pushalls {
+                    r#"{"print":{"gcode_state":"RUNNING","nozzle_temper":210.0}}"#
+                } else {
+                    r#"{"print":{"nozzle_temper":210.0}}"#
+                };
+                pushalls = seen;
+                if stream.write_all(&publish(&topic, report)).is_err() {
+                    return pushalls;
+                }
+            }
+        });
+        (port, handle)
+    }
+
+    /// Runs one session of printer A against `fake_broker` for 1.5 s and
+    /// returns how many `pushall` requests the broker read.
+    async fn pushalls_in_one_session(answers_pushall: bool) -> usize {
+        let (port, broker) = fake_broker(answers_pushall);
+        let (app, app_state, service) = history_app();
+        service
+            .start(printer_a(), app.handle().clone(), Arc::clone(&app_state))
+            .await
+            .expect("printer A starts");
+        stop_connection_loop(&service).await;
+        let id = service.inner.lock().await.connection;
+        let (client, event_loop) =
+            AsyncClient::new(rumqttc::MqttOptions::new("m3d-test", "127.0.0.1", port), 10);
+
+        let session = service.run_event_loop(id, client, event_loop, ConnectionType::Mqtt, app.handle(), &app_state);
+        let ended = tokio::time::timeout(Duration::from_millis(1500), session).await;
+        assert!(ended.is_err(), "the session stays connected, got {ended:?}");
+        tokio::task::spawn_blocking(move || broker.join().expect("broker thread"))
+            .await
+            .expect("join the broker")
+    }
+
+    #[tokio::test]
+    async fn a_session_with_no_print_state_asks_for_the_full_state_again_a_bounded_number_of_times() {
+        assert_eq!(
+            pushalls_in_one_session(false).await,
+            1 + PUSHALL_RETRIES as usize,
+            "one pushall on ConnAck, then one per retry, then no more"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_session_whose_pushall_is_answered_asks_once() {
+        assert_eq!(pushalls_in_one_session(true).await, 1);
     }
 }
