@@ -1,5 +1,5 @@
-import { existsSync, writeFileSync, mkdtempSync } from 'fs';
-import { join } from 'path';
+import { existsSync, writeFileSync, mkdtempSync, renameSync, rmSync } from 'fs';
+import { dirname, join } from 'path';
 import { tmpdir } from 'os';
 import { detectOrcaSlicer, expectedOrcaCli, orcaInstallHint } from './platform';
 import type { PresetConfig, ResolvedProfiles } from './profiles';
@@ -93,9 +93,16 @@ export async function runSlicer(input: SliceInput): Promise<SliceResult> {
     return path;
   };
 
+  // OrcaSlicer exports into a directory this run owns, beside the output, and the 3MF
+  // moves into place only once it checks out. An earlier slice's 3MF at the output path
+  // can't pass as this one, and a failed slice leaves it untouched.
+  const stagingDir = mkdtempSync(join(dirname(input.outputFile), '.slice-'));
+  using _staging = { [Symbol.dispose]: () => rmSync(stagingDir, { recursive: true, force: true }) };
+  const staged = join(stagingDir, 'out.3mf');
+
   const args = buildSliceArgs({
     inputFiles: input.inputFiles,
-    outputFile: input.outputFile,
+    outputFile: staged,
     machine: writePreset('machine', machine),
     process: writePreset('process', input.process),
     filament: writePreset('filament', input.filament),
@@ -117,22 +124,22 @@ export async function runSlicer(input: SliceInput): Promise<SliceResult> {
     };
   }
 
-  if (!existsSync(input.outputFile)) {
+  if (!existsSync(staged)) {
     return {
       success: false,
       outputFile: input.outputFile,
-      error: `Slicing completed but output file not found at ${input.outputFile}\nstdout: ${stdout}\nstderr: ${stderr}`,
+      error: `Slicing completed but output file not found at ${staged}\nstdout: ${stdout}\nstderr: ${stderr}`,
     };
   }
 
   let slicedParts: number;
   try {
-    slicedParts = countSlicedParts(input.outputFile);
+    slicedParts = countSlicedParts(staged);
   } catch (e) {
     return {
       success: false,
       outputFile: input.outputFile,
-      error: `Could not read the sliced parts from ${input.outputFile}: ${e instanceof Error ? e.message : String(e)}`,
+      error: `Could not read the sliced parts from ${staged}: ${e instanceof Error ? e.message : String(e)}`,
     };
   }
   if (slicedParts !== input.inputFiles.length) {
@@ -143,5 +150,6 @@ export async function runSlicer(input: SliceInput): Promise<SliceResult> {
     };
   }
 
+  renameSync(staged, input.outputFile);
   return { success: true, outputFile: input.outputFile };
 }

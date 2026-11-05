@@ -301,7 +301,7 @@ impl SlicerService {
     ///
     /// Validates prerequisites, flattens the selected presets' `inherits` chains and
     /// includes, patches the machine preset, runs the CLI subprocess, checks that every
-    /// input part was sliced, and extracts estimates from the output 3MF.
+    /// input part was sliced, extracts estimates, and moves the new 3MF to the output path.
     pub async fn run_slicer(&self, input: &SliceInput) -> Result<SliceResult, SlicerError> {
         let start = Instant::now();
 
@@ -351,10 +351,19 @@ impl SlicerService {
         )?;
         let patched_machine = Self::patch_machine_profile(presets.machine.config, run_dir.path())?;
 
+        // OrcaSlicer exports into a directory this run owns, beside the output, and the 3MF
+        // moves into place only once it checks out. An earlier slice's 3MF at the output path
+        // can't pass as this one, and a failed slice leaves it untouched.
+        let output_dir = output_abs
+            .parent()
+            .ok_or_else(|| std::io::Error::other(format!("output path {} names no file", output_abs.display())))?;
+        let staging = tempfile::Builder::new().prefix(".slice-").tempdir_in(output_dir)?;
+        let staged = staging.path().join("out.3mf");
+
         // Build args with absolute paths
         let args = self.build_slice_args(
             &canonical_inputs,
-            &output_abs,
+            &staged,
             &patched_machine,
             &presets.process.path,
             &presets.filaments[0].path,
@@ -384,22 +393,23 @@ impl SlicerService {
         }
 
         // Verify output file exists (OrcaSlicer can exit 0 with no output on relative paths)
-        if !output_abs.exists() {
-            log::error!("slice error: output file missing at {}", output_abs.display());
+        if !staged.exists() {
+            log::error!("slice error: output file missing at {}", staged.display());
             return Err(SlicerError::OutputMissing {
-                path: output_abs.display().to_string(),
+                path: staged.display().to_string(),
                 stdout,
                 stderr,
             });
         }
 
-        let SliceInfo { estimates, sliced_parts } = parse_slice_info(&output_abs)?;
+        let SliceInfo { estimates, sliced_parts } = parse_slice_info(&staged)?;
         if sliced_parts != canonical_inputs.len() {
             return Err(SlicerError::PartsDropped {
                 expected: canonical_inputs.len(),
                 sliced: sliced_parts,
             });
         }
+        std::fs::rename(&staged, &output_abs)?;
         log::info!(
             "slice complete: duration={:?}, time_est={}s, filament={:.2}m / {:.1}g",
             start.elapsed(),
