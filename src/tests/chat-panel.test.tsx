@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import type { ComponentProps } from 'react'
 import type { Channel } from '@tauri-apps/api/core'
 import { clearMocks, mockIPC } from '@tauri-apps/api/mocks'
 import type { ChatModelRunOptions, ChatModelRunResult } from '@assistant-ui/react'
@@ -18,7 +19,7 @@ import { UI_DEFAULT_STATE, useUiStore } from '../stores/ui'
 vi.mock('@assistant-ui/react', async (importOriginal) => {
   const ui = await importOriginal<typeof import('@assistant-ui/react')>()
   const { createElement, forwardRef } = await import('react')
-  const Input = forwardRef<HTMLTextAreaElement, ui.ComposerPrimitive.Input.Props>((props, ref) =>
+  const Input = forwardRef<HTMLTextAreaElement, ComponentProps<typeof ui.ComposerPrimitive.Input>>((props, ref) =>
     createElement(ui.ComposerPrimitive.Input, { ...props, ref, render: createElement('textarea') }),
   )
   return { ...ui, ComposerPrimitive: { ...ui.ComposerPrimitive, Input } }

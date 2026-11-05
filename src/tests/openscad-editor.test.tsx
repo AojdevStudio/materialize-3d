@@ -193,8 +193,6 @@ describe('OpenScadEditor Component', () => {
   })
 
   it('renders loading state initially', () => {
-    // Lazy import to ensure mocks are applied
-
     render(<OpenScadEditor filePath="/test/valid.scad" onSave={vi.fn()} />)
     expect(screen.getByText('Loading…')).toBeTruthy()
   })
