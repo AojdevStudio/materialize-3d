@@ -15,13 +15,13 @@ export function readZipEntry(zipPath: string, entryName: string): Buffer {
   let end = zip.length - 22;
   const earliest = Math.max(0, end - 0xffff);
   while (end >= earliest && zip.readUInt32LE(end) !== END_OF_CENTRAL_DIR) end--;
-  if (end < earliest) throw new Error(`${zipPath}: not a ZIP archive`);
+  if (end < earliest) throw new Error('not a ZIP archive');
 
   const entryCount = zip.readUInt16LE(end + 10);
   let entry = zip.readUInt32LE(end + 16);
   for (let i = 0; i < entryCount; i++) {
     if (zip.readUInt32LE(entry) !== CENTRAL_DIR_ENTRY) {
-      throw new Error(`${zipPath}: corrupt central directory`);
+      throw new Error('corrupt central directory');
     }
     const method = zip.readUInt16LE(entry + 10);
     const compressedSize = zip.readUInt32LE(entry + 20);
@@ -33,16 +33,16 @@ export function readZipEntry(zipPath: string, entryName: string): Buffer {
 
     if (name === entryName) {
       if (zip.readUInt32LE(localHeader) !== LOCAL_FILE_HEADER) {
-        throw new Error(`${zipPath}: corrupt local header for ${entryName}`);
+        throw new Error(`corrupt local header for ${entryName}`);
       }
       const dataStart =
         localHeader + 30 + zip.readUInt16LE(localHeader + 26) + zip.readUInt16LE(localHeader + 28);
       const data = zip.subarray(dataStart, dataStart + compressedSize);
       if (method === STORED) return data;
       if (method === DEFLATED) return inflateRawSync(data);
-      throw new Error(`${zipPath}: ${entryName} uses unsupported compression method ${method}`);
+      throw new Error(`${entryName} uses unsupported compression method ${method}`);
     }
     entry += 46 + nameLength + extraLength + commentLength;
   }
-  throw new Error(`${zipPath}: no ${entryName} entry`);
+  throw new Error(`no ${entryName} entry`);
 }

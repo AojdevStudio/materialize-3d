@@ -962,10 +962,12 @@ cp "$machine" '{received}/machine.json' && cp "$process" '{received}/process.jso
         let dir = TempDir::new().unwrap();
         let (svc, input) = fake_orca_slice(dir.path(), 1, 1, 0);
         write_sliced_3mf(&input.output_file, 1, 0);
+        let earlier = std::fs::read(&input.output_file).expect("earlier slice");
         std::fs::write(&input.input_files[0], "exit 0\n").expect("OrcaSlicer that writes nothing");
 
         let err = svc.run_slicer(&input).await.expect_err("the earlier slice is not this one");
         assert!(matches!(err, SlicerError::OutputMissing { .. }), "{err}");
+        assert_eq!(std::fs::read(&input.output_file).expect("earlier slice kept"), earlier);
     }
 
     // ── Integration test (requires OrcaSlicer installed) ──────────────

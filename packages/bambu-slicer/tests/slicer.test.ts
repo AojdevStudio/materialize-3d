@@ -171,7 +171,10 @@ describe.skipIf(process.platform === 'win32')('runSlicer with the P2S profiles',
     const notZip = join(mkdtempSync(join(tmpdir(), 'not-zip-')), 'out.3mf');
     writeFileSync(notZip, 'OrcaSlicer crashed mid-export');
     const unreadable = await sliceWithFakeOrca(['box.stl'], notZip);
-    expect(unreadable.result).toMatchObject({ success: false });
+    expect(unreadable.result).toMatchObject({
+      success: false,
+      error: expect.stringContaining(`for ${unreadable.outputFile}: not a ZIP archive`),
+    });
 
     const complete = await sliceWithFakeOrca(['box.stl', 'cylinder.stl'], 'sliced-two-objects.3mf');
     expect(complete.result).toEqual({ success: true, outputFile: complete.outputFile });
@@ -179,13 +182,15 @@ describe.skipIf(process.platform === 'win32')('runSlicer with the P2S profiles',
 
   it('fails when OrcaSlicer exits 0 without writing over an earlier slice (#180)', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'fake-orca-'));
-    cpSync(join(FIXTURES, 'sliced-one-object.3mf'), join(dir, 'out.3mf'));
+    const earlier = join(FIXTURES, 'sliced-one-object.3mf');
+    cpSync(earlier, join(dir, 'out.3mf'));
 
     const stale = await sliceWithFakeOrca(['box.stl'], null, { dir });
     expect(stale.result).toMatchObject({
       success: false,
       error: expect.stringContaining('wrote no 3MF'),
     });
+    expect(readFileSync(stale.outputFile)).toEqual(readFileSync(earlier));
   });
 
   it('returns a failed slice when the output folder is missing', async () => {
