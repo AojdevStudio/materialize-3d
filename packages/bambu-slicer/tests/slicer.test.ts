@@ -122,6 +122,7 @@ describe.skipIf(process.platform === 'win32' || typeof Bun === 'undefined')('run
     expect(slice.filament()).toMatchObject({
       filament_type: ['PLA'],
       filament_extruder_variant: ['Direct Drive Standard', 'Direct Drive High Flow'],
+      filament_flow_ratio: ['0.98'],
       nozzle_temperature: ['220'],
     });
   });

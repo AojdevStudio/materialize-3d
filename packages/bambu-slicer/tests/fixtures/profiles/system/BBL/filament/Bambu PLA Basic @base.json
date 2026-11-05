@@ -4,6 +4,13 @@
   "from": "system",
   "filament_id": "GFA00",
   "instantiation": "false",
-  "filament_type": ["PLA"],
-  "nozzle_temperature": ["210"]
+  "filament_type": [
+    "PLA"
+  ],
+  "nozzle_temperature": [
+    "210"
+  ],
+  "filament_flow_ratio": [
+    "0.95"
+  ]
 }
