@@ -967,9 +967,10 @@ fn job_for_print<'a>(
 
 /// Closes every job sent to printer `serial` that no print has started,
 /// except the job `keep`. The app sends a job only while its printer is IDLE,
-/// and a printer runs one print at a time, so once the printer is sent
-/// another job or runs another print, those jobs never start. A printer
-/// therefore has at most one job waiting for its print.
+/// and a printer runs one print at a time, so once the printer runs a print,
+/// every other job sent to it before never starts. A job sent while the
+/// printer was still starting an earlier one stays open until a print shows
+/// which of them ran.
 fn close_unstarted_jobs(queue: &mut [crate::state::QueuedJob], serial: &str, keep: Option<&str>) {
     for job in queue.iter_mut() {
         if Some(job.id.as_str()) != keep && sent_to(job, serial).is_some_and(|p| p.start_time.is_none()) {
@@ -1316,9 +1317,8 @@ async fn send_project_file(
         match queue.iter_mut().find(|queued| queued.id == job.id && queued.status == QueueStatus::Pending) {
             Some(queued) => {
                 queued.status = QueueStatus::Submitted {
-                    print: Some(SentPrint { serial: serial.clone(), subtask_name: filename.clone(), start_time: None }),
+                    print: Some(SentPrint { serial, subtask_name: filename.clone(), start_time: None }),
                 };
-                close_unstarted_jobs(&mut queue, &serial, Some(&job.id));
                 true
             }
             None => false,
@@ -3669,6 +3669,28 @@ mod tests {
         assert_eq!(
             metadata_of_row_started_at(&app_state, "1710500000"),
             (Some(12.5), Some("cube quality".into()), Some("/tmp/cube.png".into()))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_job_sent_just_before_a_reconnect_describes_the_print_it_started() {
+        let (app, app_state, service) = history_app();
+        queue_job(&app_state, "cube", 12.5);
+        queue_job(&app_state, "benchy", 9.0);
+        let (a, _event_loop) = send_job(&service, printer_a(), "cube", "cube.3mf", &app, &app_state).await;
+        let a = return_to_printer_a(Return::Reconnect, &service, a, &app, &app_state).await;
+        service
+            .handle_publish(a, br#"{"print":{"gcode_state":"IDLE"}}"#, app.handle(), &app_state)
+            .await;
+        let benchy = app_state.print_queue.lock().unwrap().iter().find(|j| j.id == "benchy").cloned().unwrap();
+        send_project_file(&service, a, &app_state, &benchy, "benchy.3mf".into(), String::new())
+            .await
+            .expect("the send step");
+
+        assert_eq!(
+            finish_print(&service, a, "cube.3mf", &app, &app_state).await,
+            (Some(12.5), Some("cube quality".into()), Some("/tmp/cube.png".into())),
+            "the printer was still starting cube when benchy was sent, and cube ran"
         );
     }
 
