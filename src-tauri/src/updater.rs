@@ -434,7 +434,7 @@ mod tests {
         let slicer =
             SlicerService { orca_cli_path: "/bin/sh".into(), profile_base_path: crate::slicer::tests::fixture_profiles() };
         let sliced = dir.join("sliced.3mf");
-        crate::slicer::tests::write_sliced_3mf(&sliced, 1);
+        crate::slicer::tests::write_sliced_3mf(&sliced, 1, 0);
         let stl = dir.join("model.stl");
         let script = format!(
             "for arg; do out=$arg; done\ntouch '{dir}/started'\nwhile [ ! -e '{dir}/release' ] && [ -d '{dir}' ]; do sleep 0.02; done\ncp '{sliced}' \"$out\"\n",

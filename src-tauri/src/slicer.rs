@@ -789,12 +789,16 @@ pub(crate) mod tests {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/stl-slicer/profiles/system/BBL")
     }
 
-    /// An OrcaSlicer output 3MF whose one plate lists `objects` sliced parts.
-    pub(crate) fn write_sliced_3mf(path: &Path, objects: usize) {
+    /// An OrcaSlicer output 3MF whose one plate lists `sliced` parts, then `skipped` parts
+    /// that OrcaSlicer marked `skipped="true"`.
+    pub(crate) fn write_sliced_3mf(path: &Path, sliced: usize, skipped: usize) {
         use std::io::Write;
 
-        let parts: String = (1..=objects)
-            .map(|id| format!(r#"<object identify_id="{id}" name="part{id}.stl" skipped="false"/>"#))
+        let parts: String = (1..=sliced + skipped)
+            .map(|id| {
+                let skipped = id > sliced;
+                format!(r#"<object identify_id="{id}" name="part{id}.stl" skipped="{skipped}"/>"#)
+            })
             .collect();
         let config = format!(
             r#"<?xml version="1.0" encoding="UTF-8"?><config><plate><metadata key="prediction" value="631"/>{parts}<filament id="1" type="PLA" used_m="1.29" used_g="3.85"/></plate></config>"#
@@ -807,14 +811,20 @@ pub(crate) mod tests {
     }
 
     /// A slice of `parts` input STLs by a fake OrcaSlicer that copies the presets it is handed
-    /// into `<dir>/received` and exports a 3MF listing `sliced_objects` parts. The fake runs as
+    /// into `<dir>/received` and exports `<dir>/sliced.3mf`, which lists `sliced_objects` sliced
+    /// parts and `skipped_objects` skipped ones. The fake runs as
     /// `/bin/sh <first STL>`, so the first STL is the script: exec'ing a freshly written file
     /// races other test threads' forks (ETXTBSY).
-    fn fake_orca_slice(dir: &Path, parts: usize, sliced_objects: usize) -> (SlicerService, SliceInput) {
+    fn fake_orca_slice(
+        dir: &Path,
+        parts: usize,
+        sliced_objects: usize,
+        skipped_objects: usize,
+    ) -> (SlicerService, SliceInput) {
         let received = dir.join("received");
         std::fs::create_dir(&received).expect("received dir");
         let sliced = dir.join("sliced.3mf");
-        write_sliced_3mf(&sliced, sliced_objects);
+        write_sliced_3mf(&sliced, sliced_objects, skipped_objects);
         let script = format!(
             r#"while [ $# -gt 0 ]; do
   case "$1" in
@@ -856,7 +866,7 @@ cp "$machine" '{received}/machine.json' && cp "$process" '{received}/process.jso
     #[tokio::test]
     async fn orca_gets_presets_merged_with_their_inherited_parents() {
         let dir = TempDir::new().unwrap();
-        let (svc, input) = fake_orca_slice(dir.path(), 1, 1);
+        let (svc, input) = fake_orca_slice(dir.path(), 1, 1, 0);
         svc.run_slicer(&input).await.expect("slice succeeds");
 
         let machine = received_preset(dir.path(), "machine.json");
@@ -875,9 +885,37 @@ cp "$machine" '{received}/machine.json' && cp "$process" '{received}/process.jso
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn a_slice_fails_before_orca_runs_when_a_preset_parent_is_missing() {
+        let dir = TempDir::new().unwrap();
+        let (mut svc, input) = fake_orca_slice(dir.path(), 1, 1, 0);
+        let profiles = dir.path().join("profiles");
+        let copied = std::process::Command::new("cp")
+            .arg("-R")
+            .arg(fixture_profiles().parent().expect("system dir"))
+            .arg(&profiles)
+            .status()
+            .expect("cp");
+        assert!(copied.success(), "copy the fixture profiles");
+        let manifest_path = profiles.join("BBL.json");
+        let mut manifest: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&manifest_path).unwrap()).unwrap();
+        manifest["filament_list"]
+            .as_array_mut()
+            .expect("filament_list")
+            .retain(|entry| entry["name"] != "Bambu PLA Basic @base");
+        std::fs::write(&manifest_path, manifest.to_string()).unwrap();
+        svc.profile_base_path = profiles.join("BBL");
+
+        let err = svc.run_slicer(&input).await.expect_err("the filament parent is gone");
+        assert!(matches!(err, SlicerError::Preset(_)), "{err}");
+        assert_eq!(std::fs::read_dir(dir.path().join("received")).unwrap().count(), 0, "OrcaSlicer never ran");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn orca_gets_the_p2s_bed_from_the_machine_profile_chain() {
         let dir = TempDir::new().unwrap();
-        let (svc, input) = fake_orca_slice(dir.path(), 1, 1);
+        let (svc, input) = fake_orca_slice(dir.path(), 1, 1, 0);
         svc.run_slicer(&input).await.expect("slice succeeds");
 
         let machine = received_preset(dir.path(), "machine.json");
@@ -889,12 +927,22 @@ cp "$machine" '{received}/machine.json' && cp "$process" '{received}/process.jso
     #[tokio::test]
     async fn a_slice_fails_when_orca_drops_an_input_part() {
         let dropped = TempDir::new().unwrap();
-        let (svc, input) = fake_orca_slice(dropped.path(), 2, 1);
+        let (svc, input) = fake_orca_slice(dropped.path(), 2, 1, 0);
         let err = svc.run_slicer(&input).await.expect_err("one of two parts was not sliced");
         assert!(err.to_string().contains("sliced 1 of 2 input parts"), "{err}");
 
+        let skipped = TempDir::new().unwrap();
+        let (svc, input) = fake_orca_slice(skipped.path(), 2, 1, 1);
+        let err = svc.run_slicer(&input).await.expect_err("OrcaSlicer skipped one of two parts");
+        assert!(err.to_string().contains("sliced 1 of 2 input parts"), "{err}");
+
+        let unreadable = TempDir::new().unwrap();
+        let (svc, input) = fake_orca_slice(unreadable.path(), 1, 1, 0);
+        std::fs::write(unreadable.path().join("sliced.3mf"), "OrcaSlicer crashed mid-export").unwrap();
+        svc.run_slicer(&input).await.expect_err("the exported 3MF is not a ZIP");
+
         let complete = TempDir::new().unwrap();
-        let (svc, input) = fake_orca_slice(complete.path(), 2, 2);
+        let (svc, input) = fake_orca_slice(complete.path(), 2, 2, 0);
         svc.run_slicer(&input).await.expect("both parts sliced");
     }
 

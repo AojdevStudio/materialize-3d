@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { join } from 'path';
 import { resolveProfiles } from '../src/profiles.js';
 
-const profileBase = join(import.meta.dir, 'fixtures', 'profiles', 'system', 'BBL');
+const profileBase = join(import.meta.dirname, 'fixtures', 'profiles', 'system', 'BBL');
 
 describe('resolveProfiles', () => {
   it('resolves the P2S presets for default settings', () => {

@@ -1,16 +1,19 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { mkdtempSync, readFileSync, writeFileSync } from 'fs';
+import { cpSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { join, resolve } from 'path';
 import { ORCA_SLICER_CLI_ENV } from '../src/platform.js';
 import { resolveProfiles } from '../src/profiles.js';
 import { buildSliceArgs, runSlicer } from '../src/slicer.js';
 
-const FIXTURES = join(import.meta.dir, 'fixtures');
+const FIXTURES = join(import.meta.dirname, 'fixtures');
 const PROFILE_BASE = join(FIXTURES, 'profiles', 'system', 'BBL');
 
-async function sliceWithFakeOrca(parts: string[], sliced3mf: string) {
-  const dir = mkdtempSync(join(tmpdir(), 'fake-orca-'));
+async function sliceWithFakeOrca(
+  parts: string[],
+  sliced3mf: string,
+  { profileBase = PROFILE_BASE, dir = mkdtempSync(join(tmpdir(), 'fake-orca-')) } = {},
+) {
   const cli = join(dir, 'orca-slicer');
   writeFileSync(
     cli,
@@ -26,7 +29,7 @@ done
 cp "\${settings%%;*}" '${dir}/machine.json'
 cp "\${settings#*;}" '${dir}/process.json'
 cp "$filaments" '${dir}/filament.json'
-cp '${join(FIXTURES, sliced3mf)}' "$out"
+cp '${resolve(FIXTURES, sliced3mf)}' "$out"
 `,
     { mode: 0o755 },
   );
@@ -41,7 +44,7 @@ cp '${join(FIXTURES, sliced3mf)}' "$out"
   const profiles = resolveProfiles({
     quality: '0.20',
     filament: 'Bambu PLA Basic',
-    profileBase: PROFILE_BASE,
+    profileBase,
   });
   const result = await runSlicer({ inputFiles, outputFile, ...profiles });
   const received = (file: string) => JSON.parse(readFileSync(join(dir, file), 'utf-8'));
@@ -98,7 +101,8 @@ describe('buildSliceArgs', () => {
   });
 });
 
-describe.skipIf(process.platform === 'win32')('runSlicer with the P2S profiles', () => {
+// runSlicer spawns OrcaSlicer with Bun.spawn, so vitest under Node skips it.
+describe.skipIf(process.platform === 'win32' || typeof Bun === 'undefined')('runSlicer with the P2S profiles', () => {
   afterEach(() => {
     delete process.env[ORCA_SLICER_CLI_ENV];
   });
@@ -117,8 +121,29 @@ describe.skipIf(process.platform === 'win32')('runSlicer with the P2S profiles',
     });
     expect(slice.filament()).toMatchObject({
       filament_type: ['PLA'],
+      filament_extruder_variant: ['Direct Drive Standard', 'Direct Drive High Flow'],
       nozzle_temperature: ['220'],
     });
+  });
+
+  it('fails before slicing when a preset parent is missing from BBL.json (#177)', async () => {
+    const profiles = mkdtempSync(join(tmpdir(), 'profiles-'));
+    cpSync(join(FIXTURES, 'profiles'), profiles, { recursive: true });
+    const manifestPath = join(profiles, 'system', 'BBL.json');
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf-8'));
+    manifest.filament_list = manifest.filament_list.filter(
+      (entry: { name: string }) => entry.name !== 'Bambu PLA Basic @base',
+    );
+    writeFileSync(manifestPath, JSON.stringify(manifest));
+    const dir = mkdtempSync(join(tmpdir(), 'fake-orca-'));
+
+    await expect(
+      sliceWithFakeOrca(['box.stl'], 'sliced-one-object.3mf', {
+        profileBase: join(profiles, 'system', 'BBL'),
+        dir,
+      }),
+    ).rejects.toThrow('Bambu PLA Basic @base');
+    expect(readdirSync(dir)).not.toContain('filament.json');
   });
 
   it('hands OrcaSlicer the P2S bed, not a default one (#178)', async () => {
@@ -136,6 +161,17 @@ describe.skipIf(process.platform === 'win32')('runSlicer with the P2S profiles',
       success: false,
       error: expect.stringContaining('1 of 2'),
     });
+
+    const skipped = await sliceWithFakeOrca(['box.stl', 'cylinder.stl'], 'sliced-one-skipped-of-two.3mf');
+    expect(skipped.result).toMatchObject({
+      success: false,
+      error: expect.stringContaining('1 of 2'),
+    });
+
+    const notZip = join(mkdtempSync(join(tmpdir(), 'not-zip-')), 'out.3mf');
+    writeFileSync(notZip, 'OrcaSlicer crashed mid-export');
+    const unreadable = await sliceWithFakeOrca(['box.stl'], notZip);
+    expect(unreadable.result).toMatchObject({ success: false });
 
     const complete = await sliceWithFakeOrca(['box.stl', 'cylinder.stl'], 'sliced-two-objects.3mf');
     expect(complete.result).toEqual({ success: true, outputFile: complete.outputFile });
