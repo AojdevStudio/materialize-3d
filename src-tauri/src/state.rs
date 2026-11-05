@@ -140,11 +140,15 @@ pub enum QueueStatus {
 }
 
 /// Names a print the app started: the printer's serial and the
-/// `subtask_name` the printer reports while it runs that print.
+/// `subtask_name` the printer reports while it runs that print. The job is
+/// bound to the first such print the app sees, by its start time, so a
+/// later print under the same name is not taken for it.
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct SentPrint {
     pub serial: String,
     pub subtask_name: String,
+    #[serde(default)]
+    pub start_time: Option<String>,
 }
 
 /// A job waiting in the print queue.
@@ -628,6 +632,7 @@ mod tests {
                 print: Some(super::SentPrint {
                     serial: "01P00A000000000".into(),
                     subtask_name: "cube.3mf".into(),
+                    start_time: Some("1710500000".into()),
                 }),
             },
             QueueStatus::Failed {
