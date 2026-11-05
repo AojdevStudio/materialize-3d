@@ -14,8 +14,9 @@
 (*            queue is held asks the holder for a fresh run, which the     *)
 (*            model covers by letting any run spawn at any time.           *)
 (*   Upload   read the 3MF, upload_to_printer (FTPS)                       *)
-(*   Send     lock_for(id). Unless the readiness is still Idle and the job *)
-(*            is still Pending in the queue, leave the job as it is.       *)
+(*   Send     lock_for(id). Unless the connection is live, its readiness *)
+(*            is still Idle, and the job is still Pending in the queue,    *)
+(*            leave the job as it is.                                      *)
 (*            Otherwise mark it Submitted under the print queue lock,      *)
 (*            then publish ProjectFile, readiness Idle -> JobSent, all     *)
 (*            under the service lock. A Remove after the mark removes a    *)
@@ -68,7 +69,7 @@ Init ==
 Pending == {j \in Jobs : status[j] = "Pending"}
 First(s) == CHOOSE j \in s : \A k \in s : j <= k
 Current(r) == rconn[r] = conn
-Wanted(r) == readiness = "Idle" /\ status[job[r]] = "Pending"
+Wanted(r) == live /\ readiness = "Idle" /\ status[job[r]] = "Pending"
 SetStatus(j, s) == IF status[j] = "Removed" THEN status ELSE [status EXCEPT ![j] = s]
 
 Spawn(r) ==
@@ -164,8 +165,8 @@ Spec == Init /\ [][Next]_vars
 \* The app sends each queued job to the printer at most once.
 SentAtMostOnce == \A j \in Jobs : sent[j][0] + sent[j][1] <= 1
 
-\* A project_file goes out only to a printer that still reports IDLE, and
-\* only for a job still Pending in the queue.
+\* A project_file goes out only to a live printer that still reports IDLE,
+\* and only for a job still Pending in the queue.
 SentOnlyWhenWanted == ~unwanted
 
 Holding == {"upload", "send", "release"}

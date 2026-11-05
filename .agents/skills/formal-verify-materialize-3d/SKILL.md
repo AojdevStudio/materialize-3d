@@ -24,7 +24,7 @@ Two TLA+ models describe code where a bad order of events harms a user and tests
 | `update-not-starved` | A waiting update goes ahead even while builds keep starting. | **Update now** waits with no limit. | fails (F2) |
 | `job-sent-once` | The app sends each queued job to the printer at most once, across reconnects and a printer switch. | The printer gets one job twice. | holds |
 | `one-run-at-a-time` | At most one auto-send run works on the queue, across reconnects and a printer switch. | Two uploads of one job write the same file on the printer. | holds |
-| `send-only-when-wanted` | A `project_file` goes out only to a printer that still reports IDLE, and only for a job still Pending in the queue. | The printer gets a job while it runs another print, or a job the user removed during its upload. | holds |
+| `send-only-when-wanted` | A `project_file` goes out only to a live printer that still reports IDLE, and only for a job still Pending in the queue. | The printer gets a job while it runs another print or before it reports on a new session, or a job the user removed during its upload. | holds |
 
 ## Findings
 
@@ -59,7 +59,7 @@ Exit 0 means every verdict matches the recorded one. Exit 1 means at least one d
 | `guard-leaked` | An error path keeps the `Closed` guard alive. | `failed-update-reopens` |
 | `unguarded` | The claim in `auto_send_pending_job` no longer checks `queue_held`. | `one-run-at-a-time` |
 | `released-on-switch` | `end_connection` frees `queue_held`, so a new connection's run can start beside an old one still uploading. | `one-run-at-a-time` |
-| `no-recheck` | `send_project_file` publishes without rechecking the readiness and the job after the upload. | `send-only-when-wanted` |
+| `no-recheck` | `send_project_file` publishes without rechecking the connection, the readiness, and the job after the upload. | `send-only-when-wanted` |
 
 No single mutant fails `job-sent-once`. Two guards keep it: `queue_held`, and the recheck in `send_project_file`, which marks the job Submitted under the same lock as the publish. Before that recheck, `released-on-switch` sent one job twice.
 
