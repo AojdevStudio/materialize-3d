@@ -428,17 +428,18 @@ mod tests {
 
     /// An app whose OrcaSlicer is `/bin/sh`, so the STL it gets first is the slicer script. The
     /// script touches `started`, waits for `release` or for the test's folder to go, then writes
-    /// the 3MF. A script written moments ago and run as its own executable races other test
-    /// threads' forks (ETXTBSY).
+    /// a 3MF with the one part sliced. A script written moments ago and run as its own executable
+    /// races other test threads' forks (ETXTBSY).
     fn app_with_slow_slicer(dir: &Path) -> (tauri::App<MockRuntime>, PathBuf) {
-        let slicer = SlicerService { orca_cli_path: "/bin/sh".into(), profile_base_path: dir.join("profiles") };
-        let machine = slicer.resolve_profiles("0.20", "Bambu PLA Basic").expect("profiles").machine;
-        std::fs::create_dir_all(machine.parent().expect("machine dir")).expect("profile dir");
-        std::fs::write(&machine, "{}").expect("machine profile");
+        let slicer =
+            SlicerService { orca_cli_path: "/bin/sh".into(), profile_base_path: crate::slicer::tests::fixture_profiles() };
+        let sliced = dir.join("sliced.3mf");
+        crate::slicer::tests::write_sliced_3mf(&sliced, 1);
         let stl = dir.join("model.stl");
         let script = format!(
-            "for arg; do out=$arg; done\ntouch '{dir}/started'\nwhile [ ! -e '{dir}/release' ] && [ -d '{dir}' ]; do sleep 0.02; done\nprintf 3mf > \"$out\"\n",
-            dir = dir.display()
+            "for arg; do out=$arg; done\ntouch '{dir}/started'\nwhile [ ! -e '{dir}/release' ] && [ -d '{dir}' ]; do sleep 0.02; done\ncp '{sliced}' \"$out\"\n",
+            dir = dir.display(),
+            sliced = sliced.display()
         );
         std::fs::write(&stl, script).expect("slicer script");
         let app = mock_builder()
