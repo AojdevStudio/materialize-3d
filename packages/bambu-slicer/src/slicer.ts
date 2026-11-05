@@ -1,5 +1,6 @@
 import { existsSync, writeFileSync, mkdtempSync, renameSync, rmSync } from 'fs';
 import { dirname, join } from 'path';
+import { tmpdir } from 'os';
 import { detectOrcaSlicer, expectedOrcaCli, orcaInstallHint } from './platform';
 import type { PresetConfig, ResolvedProfiles } from './profiles';
 import { readZipEntry } from './zip';
@@ -85,11 +86,19 @@ export async function runSlicer(input: SliceInput): Promise<SliceResult> {
     layer_change_gcode: ORCA_LAYER_CHANGE_GCODE,
     nozzle_volume_type: input.machine.nozzle_volume_type ?? ['0'],
   };
+  // The presets stay out of the output's folder. `--load-settings` joins two preset paths
+  // with `;`, so a `;` in the output path would split them.
+  const presetDir = mkdtempSync(join(tmpdir(), 'bambu-slicer-'));
+  using _presets = { [Symbol.dispose]: () => rmSync(presetDir, { recursive: true, force: true }) };
+  const writePreset = (kind: keyof ResolvedProfiles, config: PresetConfig) => {
+    const path = join(presetDir, `${kind}.json`);
+    writeFileSync(path, JSON.stringify(config, null, 2));
+    return path;
+  };
 
-  // OrcaSlicer reads its presets from, and exports into, a directory this run owns beside
-  // the output, which the slice removes when it ends. The 3MF moves into place only once
-  // it checks out. An earlier slice's 3MF at the output path can't pass as this one, and
-  // a failed slice leaves it untouched.
+  // OrcaSlicer exports into a directory this run owns, beside the output, and the 3MF
+  // moves into place only once it checks out. An earlier slice's 3MF at the output path
+  // can't pass as this one, and a failed slice leaves it untouched.
   let stagingDir: string;
   try {
     stagingDir = mkdtempSync(join(dirname(input.outputFile), '.slice-'));
@@ -102,11 +111,6 @@ export async function runSlicer(input: SliceInput): Promise<SliceResult> {
   }
   using _staging = { [Symbol.dispose]: () => rmSync(stagingDir, { recursive: true, force: true }) };
   const staged = join(stagingDir, 'out.3mf');
-  const writePreset = (kind: keyof ResolvedProfiles, config: PresetConfig) => {
-    const path = join(stagingDir, `${kind}.json`);
-    writeFileSync(path, JSON.stringify(config, null, 2));
-    return path;
-  };
 
   const args = buildSliceArgs({
     inputFiles: input.inputFiles,
