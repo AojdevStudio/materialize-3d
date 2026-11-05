@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from 'bun:test';
-import { cpSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'fs';
+import { cpSync, existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
-import { join, resolve } from 'path';
+import { dirname, join, resolve } from 'path';
 import { ORCA_SLICER_CLI_ENV } from '../src/platform.js';
 import { resolveProfiles } from '../src/profiles.js';
 import { buildSliceArgs, runSlicer } from '../src/slicer.js';
@@ -29,6 +29,7 @@ done
 cp "\${settings%%;*}" '${dir}/machine.json'
 cp "\${settings#*;}" '${dir}/process.json'
 cp "$filaments" '${dir}/filament.json'
+printf '%s\n' "\${settings%%;*}" "\${settings#*;}" "$filaments" > '${dir}/preset-paths.txt'
 ${sliced3mf === null ? '' : `cp '${resolve(FIXTURES, sliced3mf)}' "$out"`}
 `,
     { mode: 0o755 },
@@ -54,6 +55,7 @@ ${sliced3mf === null ? '' : `cp '${resolve(FIXTURES, sliced3mf)}' "$out"`}
     machine: () => received('machine.json'),
     process: () => received('process.json'),
     filament: () => received('filament.json'),
+    presetPaths: () => readFileSync(join(dir, 'preset-paths.txt'), 'utf-8').trim().split('\n'),
   };
 }
 
@@ -191,6 +193,29 @@ describe.skipIf(process.platform === 'win32')('runSlicer with the P2S profiles',
       error: expect.stringContaining('wrote no 3MF'),
     });
     expect(readFileSync(stale.outputFile)).toEqual(readFileSync(earlier));
+  });
+
+  it('removes the presets it hands OrcaSlicer once the slice ends (#186)', async () => {
+    const ok = await sliceWithFakeOrca(['box.stl'], 'sliced-one-object.3mf');
+    const failed = await sliceWithFakeOrca(['box.stl'], null);
+    expect(ok.result.success).toBe(true);
+    expect(failed.result.success).toBe(false);
+
+    for (const slice of [ok, failed]) {
+      const presets = slice.presetPaths();
+      expect(presets).toHaveLength(3);
+      for (const preset of presets) expect(existsSync(dirname(preset))).toBe(false);
+    }
+  });
+
+  it('slices into a folder whose path holds a semicolon, the --load-settings separator', async () => {
+    const slice = await sliceWithFakeOrca(['box.stl'], 'sliced-one-object.3mf', {
+      dir: mkdtempSync(join(tmpdir(), 'prints;v2-')),
+    });
+
+    expect(slice.result).toEqual({ success: true, outputFile: slice.outputFile });
+    expect(slice.machine()).toMatchObject({ printable_height: '256' });
+    expect(slice.process()).toMatchObject({ layer_height: '0.2' });
   });
 
   it('returns a failed slice when the output folder is missing', async () => {

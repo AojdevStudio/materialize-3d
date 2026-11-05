@@ -86,9 +86,12 @@ export async function runSlicer(input: SliceInput): Promise<SliceResult> {
     layer_change_gcode: ORCA_LAYER_CHANGE_GCODE,
     nozzle_volume_type: input.machine.nozzle_volume_type ?? ['0'],
   };
-  const tmpDir = mkdtempSync(join(tmpdir(), 'bambu-slicer-'));
+  // The presets stay out of the output's folder. `--load-settings` joins two preset paths
+  // with `;`, so a `;` in the output path would split them.
+  const presetDir = mkdtempSync(join(tmpdir(), 'bambu-slicer-'));
+  using _presets = { [Symbol.dispose]: () => rmSync(presetDir, { recursive: true, force: true }) };
   const writePreset = (kind: keyof ResolvedProfiles, config: PresetConfig) => {
-    const path = join(tmpDir, `${kind}.json`);
+    const path = join(presetDir, `${kind}.json`);
     writeFileSync(path, JSON.stringify(config, null, 2));
     return path;
   };
