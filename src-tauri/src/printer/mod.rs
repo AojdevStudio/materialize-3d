@@ -92,7 +92,7 @@ struct PrinterServiceInner {
 impl PrinterServiceInner {
     /// Drops the print state a printer reported, so another printer does not
     /// start with it. The name stays until `start` names the next printer. A
-    /// print in progress stays in the `open_prints` table.
+    /// print in progress stays in the `seen_prints` table.
     fn drop_print_state(&mut self, app_state: &AppState) {
         if let Ok(mut printer) = app_state.printer.lock() {
             *printer = PrinterState {
@@ -707,7 +707,7 @@ impl PrinterService {
     /// Transition to a connected state with the appropriate connection type.
     /// The first status report after it advances the print queue, and is not
     /// judged against the print an earlier session showed. A print in progress
-    /// stays in the `open_prints` table. Does nothing once
+    /// stays in the `seen_prints` table. Does nothing once
     /// connection `id` ended, and holds the service lock, like `set_state`.
     async fn set_connected<R: Runtime>(
         &self,
@@ -748,16 +748,17 @@ impl PrinterService {
 
 // ─── Print End Recording ──────────────────────────────────────────────────────
 
-/// Keeps the open print of printer `serial` in step with its latest report,
+/// Keeps the seen print of printer `serial` in step with its latest report,
 /// and records a history row when a print the app saw in progress ends.
 ///
-/// The app saw a print when this connection's previous report showed it
-/// RUNNING or PAUSE, or when its start time matches the open print that an
-/// earlier connection or app run stored. A report that knows both the print
-/// state and the start time settles the open print: RUNNING or PAUSE stores
-/// that start time, and any other state closes it. A print with no known
-/// start time is not stored, because no later report could tell it from
-/// another print.
+/// A report that shows RUNNING or PAUSE with a known start time stores that
+/// print as seen. A FINISH or FAILED ends a seen print whose end is not
+/// recorded yet: one whose start time matches, or, when no other open print
+/// is stored, the one this connection's previous report showed RUNNING or
+/// PAUSE. A recorded print stays marked, so a repeated report never records
+/// it again. An open print that a report with a known start time does not
+/// continue is forgotten. A print with no known start time is not stored,
+/// because no later report could tell it from another print.
 fn settle_print<R: Runtime>(
     serial: &str,
     prev: Option<&str>,
@@ -768,16 +769,20 @@ fn settle_print<R: Runtime>(
 ) -> Result<(), String> {
     let Some(curr) = curr else { return Ok(()) };
     let in_progress = |state: &str| matches!(state, "RUNNING" | "PAUSE");
-    let open = with_db(app_state, |conn| crate::database::open_print(conn, serial))?;
+    let seen = with_db(app_state, |conn| crate::database::seen_print(conn, serial))?;
+    let is_seen = seen.as_ref().is_some_and(|seen| Some(seen.start_time.as_str()) == start_time);
+    let open = seen.as_ref().filter(|seen| !seen.recorded);
     let ended = match curr {
         "FINISH" => Some("success"),
         "FAILED" => Some("failed"),
         _ => None,
     };
-    let seen = prev.is_some_and(in_progress) || start_time.is_some_and(|start| open.as_deref() == Some(start));
 
     match (ended, start_time) {
-        (Some(status), _) if seen => {
+        (Some(status), _)
+            if open.is_some_and(|_| is_seen)
+                || prev.is_some_and(in_progress) && !is_seen && (open.is_none() || start_time.is_none()) =>
+        {
             let (model_name, fail_reason) = record_print_completion(app_state, serial, status)?;
             emit_history_changed(app_handle, app_state);
             send_print_notification(app_handle, &model_name, status, fail_reason.as_deref());
@@ -786,12 +791,14 @@ fn settle_print<R: Runtime>(
             Ok(())
         }
         (None, Some(start)) if in_progress(curr) => {
-            if open.as_deref() == Some(start) {
+            if is_seen {
                 return Ok(());
             }
-            with_db(app_state, |conn| crate::database::set_open_print(conn, serial, start))
+            with_db(app_state, |conn| crate::database::set_seen_print(conn, serial, start))
         }
-        (_, Some(_)) if open.is_some() => with_db(app_state, |conn| crate::database::close_open_print(conn, serial)),
+        (_, Some(_)) if open.is_some() => {
+            with_db(app_state, |conn| crate::database::forget_seen_print(conn, serial))
+        }
         _ => Ok(()),
     }
 }
@@ -805,7 +812,7 @@ fn with_db<T>(
 }
 
 /// Records the end of the print the printer state shows as a history row
-/// with `status`, and closes the open print of printer `serial`. Returns the
+/// with `status`, and marks the seen print of printer `serial` recorded. Returns the
 /// model name and, for a failed print, the fail reason.
 fn record_print_completion(
     app_state: &AppState,
@@ -886,7 +893,9 @@ fn record_print_completion(
         quality_profile,
     };
 
-    with_db(app_state, |conn| crate::database::record_print_end(conn, serial, &record))?;
+    with_db(app_state, |conn| {
+        crate::database::record_print_end(conn, serial, record.started_at.as_deref(), &record)
+    })?;
     log::info!("print history: recorded '{model_name}' as {status}");
     Ok((model_name, record.fail_reason))
 }
@@ -2810,6 +2819,7 @@ mod tests {
         for report in [
             BENCHY_RUNNING,
             BENCHY_FINISHED,
+            BENCHY_RUNNING,
             BENCHY_FINISHED,
             br#"{"print":{"gcode_state":"RUNNING","gcode_start_time":"1710510000","subtask_name":"Hook"}}"#,
             br#"{"print":{"gcode_state":"FINISH"}}"#,
@@ -2841,6 +2851,20 @@ mod tests {
         assert_eq!(history[0].fail_reason.as_deref(), Some("stopped by user"));
     }
 
+    #[tokio::test]
+    async fn a_paused_print_does_not_stand_in_for_the_end_of_another_print() {
+        let (app, app_state, service) = history_app();
+        let a = connect_without_loop(&service, printer_a(), &app, &app_state).await;
+        for report in [
+            BENCHY_RUNNING,
+            br#"{"print":{"gcode_state":"PAUSE"}}"#,
+            br#"{"print":{"gcode_state":"FAILED","gcode_start_time":"1710600000","subtask_name":"Unseen"}}"#,
+        ] {
+            service.handle_publish(a, report, app.handle(), &app_state).await;
+        }
+        assert_eq!(history_rows(&app_state), [], "the app never saw the print that failed");
+    }
+
     /// One run of the app on the database file `db`, connected to printer A.
     async fn app_run_on(
         db: &std::path::Path,
@@ -2869,7 +2893,9 @@ mod tests {
         crate::database::delete_history(app_state.db.lock().unwrap().as_ref().unwrap(), &row).unwrap();
         drop((app, app_state, service));
         let (app, app_state, service, a) = app_run_on(&db).await;
-        service.handle_publish(a, BENCHY_FINISHED, app.handle(), &app_state).await;
+        for report in [BENCHY_RUNNING, BENCHY_FINISHED] {
+            service.handle_publish(a, report, app.handle(), &app_state).await;
+        }
         assert_eq!(history_rows(&app_state), [], "the row the user deleted stays gone");
     }
 

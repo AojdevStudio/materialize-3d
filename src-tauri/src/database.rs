@@ -226,11 +226,12 @@ pub(crate) fn run_migrations(conn: &Connection) -> Result<(), InitError> {
     }
 
     if version < 7 {
-        log::info!("database: applying migration 007 — create open_prints table");
+        log::info!("database: applying migration 007 — create seen_prints table");
         conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS open_prints (
+            "CREATE TABLE IF NOT EXISTS seen_prints (
                 printer_serial TEXT PRIMARY KEY,
-                gcode_start_time TEXT NOT NULL
+                gcode_start_time TEXT NOT NULL,
+                recorded INTEGER NOT NULL DEFAULT 0
             );",
         )
         .map_err(|e| format!("migration 007 failed: {e}"))?;
@@ -501,44 +502,66 @@ pub fn delete_history(conn: &Connection, id: &str) -> Result<bool, String> {
     Ok(rows_affected > 0)
 }
 
-// ─── Open Prints ──────────────────────────────────────────────────────────────
+// ─── Seen Prints ──────────────────────────────────────────────────────────────
 
-/// The start time of the print printer `serial` showed RUNNING or PAUSE and
-/// whose end the app has not recorded yet.
-pub fn open_print(conn: &Connection, serial: &str) -> Result<Option<String>, String> {
+/// The print a printer last showed RUNNING or PAUSE, and whether the app
+/// recorded its end.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SeenPrint {
+    pub start_time: String,
+    pub recorded: bool,
+}
+
+pub fn seen_print(conn: &Connection, serial: &str) -> Result<Option<SeenPrint>, String> {
     conn.query_row(
-        "SELECT gcode_start_time FROM open_prints WHERE printer_serial = ?1",
+        "SELECT gcode_start_time, recorded FROM seen_prints WHERE printer_serial = ?1",
         params![serial],
-        |row| row.get(0),
+        |row| Ok(SeenPrint { start_time: row.get(0)?, recorded: row.get(1)? }),
     )
     .optional()
-    .map_err(|e| format!("failed to read the open print: {e}"))
+    .map_err(|e| format!("failed to read the seen print: {e}"))
 }
 
-pub fn set_open_print(conn: &Connection, serial: &str, start_time: &str) -> Result<(), String> {
+fn store_seen_print(conn: &Connection, serial: &str, start_time: &str, recorded: bool) -> Result<(), String> {
     conn.execute(
-        "INSERT INTO open_prints (printer_serial, gcode_start_time) VALUES (?1, ?2)
-         ON CONFLICT(printer_serial) DO UPDATE SET gcode_start_time = excluded.gcode_start_time",
-        params![serial, start_time],
+        "INSERT INTO seen_prints (printer_serial, gcode_start_time, recorded) VALUES (?1, ?2, ?3)
+         ON CONFLICT(printer_serial) DO UPDATE SET gcode_start_time = excluded.gcode_start_time, recorded = excluded.recorded",
+        params![serial, start_time, recorded],
     )
     .map(drop)
-    .map_err(|e| format!("failed to store the open print: {e}"))
+    .map_err(|e| format!("failed to store the seen print: {e}"))
 }
 
-pub fn close_open_print(conn: &Connection, serial: &str) -> Result<(), String> {
-    conn.execute("DELETE FROM open_prints WHERE printer_serial = ?1", params![serial])
+/// Stores the print `serial` shows in progress, with its end not yet recorded.
+pub fn set_seen_print(conn: &Connection, serial: &str, start_time: &str) -> Result<(), String> {
+    store_seen_print(conn, serial, start_time, false)
+}
+
+pub fn forget_seen_print(conn: &Connection, serial: &str) -> Result<(), String> {
+    conn.execute("DELETE FROM seen_prints WHERE printer_serial = ?1", params![serial])
         .map(drop)
-        .map_err(|e| format!("failed to close the open print: {e}"))
+        .map_err(|e| format!("failed to forget the seen print: {e}"))
 }
 
-/// Inserts `record` and closes the open print of `serial` in one transaction,
-/// so a print that ended gets one row, and a row the user deletes stays gone.
-pub fn record_print_end(conn: &Connection, serial: &str, record: &PrintHistoryRecord) -> Result<(), String> {
+/// Inserts `record` and marks the print of `serial` that started at
+/// `start_time` as recorded, in one transaction. The mark stays after the
+/// user deletes the row, so no later report records that print again. A
+/// print with no known start time leaves nothing to mark, and the seen print
+/// is forgotten.
+pub fn record_print_end(
+    conn: &Connection,
+    serial: &str,
+    start_time: Option<&str>,
+    record: &PrintHistoryRecord,
+) -> Result<(), String> {
     let tx = conn
         .unchecked_transaction()
         .map_err(|e| format!("failed to start the history write: {e}"))?;
     insert_history(&tx, record)?;
-    close_open_print(&tx, serial)?;
+    match start_time {
+        Some(start_time) => store_seen_print(&tx, serial, start_time, true)?,
+        None => forget_seen_print(&tx, serial)?,
+    }
     tx.commit().map_err(|e| format!("failed to commit the history write: {e}"))
 }
 
