@@ -130,8 +130,22 @@ pub struct LibraryModel {
 pub enum QueueStatus {
     #[default]
     Pending,
-    Submitted,
+    Submitted {
+        /// The print this job started. `None` once a history row used it, and
+        /// for a job submitted before the queue recorded it. No print matches
+        /// `None`.
+        #[serde(default)]
+        print: Option<SentPrint>,
+    },
     Failed { reason: String },
+}
+
+/// Names a print the app started: the printer's serial and the
+/// `subtask_name` the printer reports while it runs that print.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct SentPrint {
+    pub serial: String,
+    pub subtask_name: String,
 }
 
 /// A job waiting in the print queue.
@@ -611,7 +625,12 @@ mod tests {
     fn queue_status_serde_round_trip() {
         let statuses = vec![
             QueueStatus::Pending,
-            QueueStatus::Submitted,
+            QueueStatus::Submitted {
+                print: Some(super::SentPrint {
+                    serial: "01P00A000000000".into(),
+                    subtask_name: "cube.3mf".into(),
+                }),
+            },
             QueueStatus::Failed {
                 reason: "FTPS timeout".into(),
             },
@@ -622,6 +641,14 @@ mod tests {
             let back: QueueStatus = serde_json::from_str(&json).expect("deserialize");
             assert_eq!(status, back);
         }
+    }
+
+    #[test]
+    fn a_submitted_job_saved_before_jobs_named_their_print_still_loads() {
+        let saved = r#"{"id":"j1","modelPath":"","threemfPath":"/tmp/cube.3mf","modelName":"cube",
+            "createdAt":"2026-11-01T00:00:00Z","status":"submitted","filamentGrams":12.5}"#;
+        let job: QueuedJob = serde_json::from_str(saved).expect("an older queue file loads");
+        assert_eq!(job.status, QueueStatus::Submitted { print: None });
     }
 
     #[test]

@@ -186,8 +186,9 @@ Exit ==
   /\ UNCHANGED <<running, closed, unseen, build, starts, updates, qlock, queueFile>>
 
 ----------------------------------------------------------------------------
-(* persist_queue, called by add_job, remove_job, and update_job_status.    *)
-(* The printer's auto-send calls update_job_status at any time. It holds   *)
+(* persist_queue, called by add_job, remove_job, update_job_status,        *)
+(* send_project_file, and settle_print after a history row. The printer    *)
+(* calls the last three at any time. It holds                              *)
 (* the queue lock across fs::write, which truncates the file and then      *)
 (* writes it. A failed write returns through ? and drops the lock with    *)
 (* the file still partial.                                                 *)

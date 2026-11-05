@@ -15,6 +15,7 @@ use tokio::sync::{Mutex as TokioMutex, MutexGuard};
 
 use crate::state::{
     AppState, ConnectionState, ConnectionType, PrintHistoryRecord, PrinterState, QueueStatus,
+    SentPrint,
 };
 
 /// Maximum consecutive local MQTT failures before falling back to Cloud.
@@ -24,6 +25,14 @@ const MAX_BACKOFF_SECS: u64 = 30;
 /// Bounds each FTPS connect, read, and write. An upload holds the print queue,
 /// so a printer that accepts and then goes silent must not hold it for good.
 const FTPS_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long a session waits for print state before it sends `pushall` again.
+const PUSHALL_RETRY_AFTER: Duration = if cfg!(test) {
+    Duration::from_millis(100)
+} else {
+    Duration::from_secs(10)
+};
+/// How many more times a session sends `pushall` while it has no print state.
+const PUSHALL_RETRIES: u32 = 3;
 
 /// Errors from the PrinterService.
 #[derive(Debug, thiserror::Error)]
@@ -483,9 +492,11 @@ impl PrinterService {
         .await
     }
 
-    /// Run the MQTT event loop.  On first successful connect, sends `pushall`
-    /// and transitions to the connected state for `conn_type`.  Processes incoming
-    /// messages and merges them into `PrinterState`.
+    /// Run the MQTT event loop.  On first successful connect, transitions to the
+    /// connected state for `conn_type` and sends `pushall`, again every
+    /// `PUSHALL_RETRY_AFTER` up to `PUSHALL_RETRIES` times while no report has
+    /// carried a print state.  Processes incoming messages and merges them
+    /// into `PrinterState`.
     async fn run_event_loop<R: Runtime>(
         &self,
         id: ConnectionId,
@@ -511,6 +522,8 @@ impl PrinterService {
         };
 
         let mut connected = false;
+        // When this session next sends `pushall`, and how many sends it has left.
+        let mut pushall_due: Option<(tokio::time::Instant, u32)> = None;
 
         loop {
             if self.lock_for(id).await.is_none() {
@@ -527,14 +540,6 @@ impl PrinterService {
                         log::warn!("failed to subscribe to {report_topic}: {e}");
                     }
 
-                    // Send pushall to get initial full state
-                    let pushall_payload = BambuCommand::PushAll.to_json();
-                    if let Err(e) =
-                        mqtt::publish(&client, &request_topic, &pushall_payload).await
-                    {
-                        log::warn!("failed to send pushall: {e}");
-                    }
-
                     // Transition to connected
                     self.set_connected(
                         id,
@@ -544,6 +549,7 @@ impl PrinterService {
                         app_state,
                     )
                     .await;
+                    pushall_due = Some((tokio::time::Instant::now(), 1 + PUSHALL_RETRIES));
                 }
                 Ok(Event::Incoming(Incoming::Publish(publish))) => {
                     self.handle_publish(id, &publish.payload, app_handle, app_state)
@@ -564,6 +570,23 @@ impl PrinterService {
                     } else {
                         // Never connected — connection failed
                         return Err(PrinterError::Mqtt(e.to_string()));
+                    }
+                }
+            }
+
+            // Checked after each event, so on a quiet link the next keepalive
+            // ping is when a send that came due goes out.
+            if let Some((due, sends)) = pushall_due {
+                if tokio::time::Instant::now() >= due {
+                    pushall_due = None;
+                    let has_print_state = app_state.printer.lock().is_ok_and(|p| p.gcode_state.is_some());
+                    if !has_print_state {
+                        let payload = BambuCommand::PushAll.to_json();
+                        if let Err(e) = mqtt::try_publish(&client, &request_topic, &payload) {
+                            log::warn!("failed to send pushall: {e}");
+                        }
+                        pushall_due = (sends > 1)
+                            .then(|| (tokio::time::Instant::now() + PUSHALL_RETRY_AFTER, sends - 1));
                     }
                 }
             }
@@ -758,7 +781,8 @@ impl PrinterService {
 /// repeated report never records it again. An open print that a report with
 /// a known start time does not continue is forgotten. A print with no known
 /// start time is not stored, because no later report could tell it from
-/// another print.
+/// another print. The queue is saved after the history row, so a queue file
+/// that cannot be written never costs a row.
 fn settle_print<R: Runtime>(
     serial: &str,
     prev: Option<&str>,
@@ -786,7 +810,7 @@ fn settle_print<R: Runtime>(
             send_print_notification(app_handle, &model_name, status, fail_reason.as_deref());
             let event_type = if status == "success" { "print_complete" } else { "print_failed" };
             emit_proactive_notification(app_handle, app_state, &model_name, event_type);
-            Ok(())
+            crate::print_queue::persist_queue(app_state)
         }
         (None, Some(start)) if in_progress(curr) => {
             if is_seen {
@@ -812,21 +836,23 @@ fn with_db<T>(
 /// Records the end of the print the printer state shows as a history row
 /// with `status`, and marks the seen print of printer `serial` recorded. Returns the
 /// model name and, for a failed print, the fail reason.
+///
+/// The row takes filament, quality, and thumbnail from the latest job sent
+/// to printer `serial` under the print's subtask name that no earlier row
+/// used. A print no such job started gets none. The job is used up only once
+/// the row is written, so a write that fails leaves it for the retry.
 fn record_print_completion(
     app_state: &AppState,
     serial: &str,
     status: &str,
 ) -> Result<(String, Option<String>), String> {
-    let (model_name, gcode_file, gcode_start_time, fail_reason) = {
+    let (subtask_name, gcode_file, gcode_start_time, fail_reason) = {
         let printer = app_state
             .printer
             .lock()
             .map_err(|e| format!("failed to lock printer state: {e}"))?;
         (
-            printer
-                .subtask_name
-                .clone()
-                .unwrap_or_else(|| "Unknown".into()),
+            printer.subtask_name.clone(),
             printer.gcode_file.clone(),
             printer.gcode_start_time.clone(),
             printer.fail_reason.clone(),
@@ -856,25 +882,23 @@ fn record_print_completion(
         (None, None)
     };
 
-    // Try to get filament estimates from the first Submitted queue job
-    let (filament_grams, filament_meters, quality_profile, thumbnail_path) = {
-        let queue = app_state.print_queue.lock().ok();
-        queue
-            .and_then(|q| {
-                q.iter()
-                    .find(|j| j.status == QueueStatus::Submitted)
-                    .map(|j| {
-                        (
-                            j.filament_grams,
-                            j.filament_meters,
-                            j.quality_profile.clone(),
-                            j.thumbnail_path.clone(),
-                        )
-                    })
-            })
-            .unwrap_or((None, None, None, None))
-    };
+    let started_by = subtask_name.clone().map(|subtask_name| QueueStatus::Submitted {
+        print: Some(SentPrint { serial: serial.into(), subtask_name }),
+    });
+    let job = app_state
+        .print_queue
+        .lock()
+        .map_err(|e| format!("failed to lock print queue: {e}"))?
+        .iter()
+        .rev()
+        .find(|job| Some(&job.status) == started_by.as_ref())
+        .cloned();
+    let (filament_grams, filament_meters, quality_profile, thumbnail_path) = job
+        .as_ref()
+        .map(|j| (j.filament_grams, j.filament_meters, j.quality_profile.clone(), j.thumbnail_path.clone()))
+        .unwrap_or_default();
 
+    let model_name = subtask_name.unwrap_or_else(|| "Unknown".into());
     let completed_at = chrono::Utc::now().to_rfc3339();
     let record = PrintHistoryRecord {
         id: uuid::Uuid::new_v4().to_string(),
@@ -895,6 +919,16 @@ fn record_print_completion(
         crate::database::record_print_end(conn, serial, record.started_at.as_deref(), &record)
     })?;
     log::info!("print history: recorded '{model_name}' as {status}");
+
+    if let Some(job) = job {
+        let mut queue = app_state
+            .print_queue
+            .lock()
+            .map_err(|e| format!("failed to lock print queue: {e}"))?;
+        for used in queue.iter_mut().filter(|queued| queued.id == job.id) {
+            used.status = QueueStatus::Submitted { print: None };
+        }
+    }
     Ok((model_name, record.fail_reason))
 }
 
@@ -1187,31 +1221,23 @@ async fn submit_job(
         return fail_job(service, id, app_state, &job.id, err_msg).await;
     }
 
-    // Send MQTT project_file command
-    let ftp_url = format!("ftp:///cache/{filename}");
-    let cmd = BambuCommand::ProjectFile {
-        param: "Metadata/plate_1.gcode".into(),
-        subtask_name: filename.clone(),
-        url: ftp_url,
-        md5: md5_digest,
-        use_ams: false,
-        ams_mapping: String::new(),
-    };
-    send_project_file(service, id, app_state, job, cmd).await
+    send_project_file(service, id, app_state, job, filename, md5_digest).await
 }
 
-/// Publishes `cmd`, the `project_file` for `job`, whose 3MF the run uploaded.
-/// During the upload the printer may have started another print, or the user
-/// may have removed the job, so both are checked again under the lock that
-/// the publish holds. A printer that is busy or reconnecting leaves the job
-/// Pending for its next IDLE.
-/// A job that left the queue is not sent.
+/// Publishes the `project_file` that prints `filename`, the 3MF of `job` that
+/// the run uploaded. During the upload the printer may have started another
+/// print, or the user may have removed the job, so both are checked again
+/// under the lock that the publish holds. A printer that is busy or
+/// reconnecting leaves the job Pending for its next IDLE.
+/// A job that left the queue is not sent. A sent job names its printer and
+/// `filename`, the subtask name that printer reports for the print.
 async fn send_project_file(
     service: &PrinterService,
     id: ConnectionId,
     app_state: &AppState,
     job: &crate::state::QueuedJob,
-    cmd: BambuCommand,
+    filename: String,
+    md5: String,
 ) -> Result<(), String> {
     let Some(mut inner) = service.lock_for(id).await else {
         log::info!("auto-send: the connection ended, job {} stays Pending", job.id);
@@ -1227,6 +1253,13 @@ async fn send_project_file(
         log::info!("auto-send: the printer is not ready, job {} waits for its next IDLE", job.id);
         return Ok(());
     }
+    let serial = inner
+        .credentials
+        .as_ref()
+        .ok_or_else(|| PrinterError::NotConnected.to_string())?
+        .printer
+        .device_id
+        .clone();
     // `remove_from_queue` takes no service lock. Claiming the job before the
     // publish means a job removed after this point was already sent.
     let claimed = {
@@ -1236,7 +1269,9 @@ async fn send_project_file(
             .map_err(|e| format!("failed to lock print queue: {e}"))?;
         match queue.iter_mut().find(|queued| queued.id == job.id && queued.status == QueueStatus::Pending) {
             Some(queued) => {
-                queued.status = QueueStatus::Submitted;
+                queued.status = QueueStatus::Submitted {
+                    print: Some(SentPrint { serial, subtask_name: filename.clone() }),
+                };
                 true
             }
             None => false,
@@ -1246,6 +1281,14 @@ async fn send_project_file(
         log::info!("auto-send: job {} left the queue during its upload", job.id);
         return Ok(());
     }
+    let cmd = BambuCommand::ProjectFile {
+        param: "Metadata/plate_1.gcode".into(),
+        url: format!("ftp:///cache/{filename}"),
+        subtask_name: filename,
+        md5,
+        use_ams: false,
+        ams_mapping: String::new(),
+    };
     if let Err(e) = inner.publish(cmd).await {
         let reason = format!("MQTT command failed: {e}");
         log::error!("auto-send: {reason}");
@@ -1706,7 +1749,9 @@ mod tests {
                 threemf_path: "/tmp/benchy.3mf".into(),
                 model_name: "Benchy".into(),
                 created_at: chrono::Utc::now(),
-                status: QueueStatus::Submitted,
+                status: QueueStatus::Submitted {
+                    print: Some(SentPrint { serial: SERIAL_A.into(), subtask_name: "Benchy".into() }),
+                },
                 filament_grams: Some(12.5),
                 filament_meters: Some(4.2),
                 quality_profile: Some("0.20mm Standard".into()),
@@ -2570,17 +2615,6 @@ mod tests {
         (app, app_state, service, a, event_loop)
     }
 
-    fn project_file_for_cube() -> BambuCommand {
-        BambuCommand::ProjectFile {
-            param: "Metadata/plate_1.gcode".into(),
-            subtask_name: "cube.3mf".into(),
-            url: "ftp:///cache/cube.3mf".into(),
-            md5: String::new(),
-            use_ams: false,
-            ams_mapping: String::new(),
-        }
-    }
-
     #[tokio::test]
     async fn a_job_whose_printer_starts_another_print_during_its_upload_stays_pending() {
         let (app, app_state, service, a, _event_loop) = idle_printer_a_with_mqtt(1).await;
@@ -2589,7 +2623,7 @@ mod tests {
             .handle_publish(a, br#"{"print":{"gcode_state":"RUNNING"}}"#, app.handle(), &app_state)
             .await;
 
-        send_project_file(&service, a, &app_state, &job, project_file_for_cube())
+        send_project_file(&service, a, &app_state, &job, "cube.3mf".into(), String::new())
             .await
             .expect("the send step");
 
@@ -2612,7 +2646,7 @@ mod tests {
         let (client, _event_loop) = mqtt::connect(&cloud::local_mqtt_config(&printer_a())).expect("mqtt client");
         service.inner.lock().await.mqtt_client = Some(client);
 
-        send_project_file(&service, a, &app_state, &job, project_file_for_cube())
+        send_project_file(&service, a, &app_state, &job, "cube.3mf".into(), String::new())
             .await
             .expect("the send step");
 
@@ -2629,7 +2663,7 @@ mod tests {
         let job = app_state.print_queue.lock().unwrap()[0].clone();
         crate::print_queue::remove_job(&app_state, &job.id).expect("remove the job");
 
-        send_project_file(&service, a, &app_state, &job, project_file_for_cube())
+        send_project_file(&service, a, &app_state, &job, "cube.3mf".into(), String::new())
             .await
             .expect("the send step");
 
@@ -3281,5 +3315,355 @@ mod tests {
             service.handle_publish(a, report, app.handle(), &app_state).await;
         }
         assert_eq!(history_rows(&app_state), [("Hook".into(), "success".into())]);
+    }
+
+    fn queue_job(app_state: &AppState, id: &str, grams: f64) {
+        app_state.print_queue.lock().unwrap().push(crate::state::QueuedJob {
+            id: id.into(),
+            model_path: String::new(),
+            threemf_path: String::new(),
+            model_name: id.into(),
+            created_at: chrono::Utc::now(),
+            status: QueueStatus::Pending,
+            filament_grams: Some(grams),
+            filament_meters: Some(grams / 3.0),
+            quality_profile: Some(format!("{id} quality")),
+            thumbnail_path: Some(format!("/tmp/{id}.png")),
+        });
+    }
+
+    /// Connects `printer` and sends it queued job `id` as `subtask_name`, as
+    /// an auto-send run does after its upload. The MQTT event loop is returned
+    /// so the publish has somewhere to go.
+    async fn send_job(
+        service: &PrinterService,
+        printer: BambuCredentials,
+        id: &str,
+        subtask_name: &str,
+        app: &tauri::App<tauri::test::MockRuntime>,
+        app_state: &Arc<AppState>,
+    ) -> (ConnectionId, rumqttc::EventLoop) {
+        let connection = connect_without_loop(service, printer.clone(), app, app_state).await;
+        let (client, event_loop) = mqtt::connect(&cloud::local_mqtt_config(&printer)).expect("mqtt client");
+        {
+            let mut inner = service.inner.lock().await;
+            inner.mqtt_client = Some(client);
+            inner.readiness = Readiness::Idle;
+        }
+        let job = app_state.print_queue.lock().unwrap().iter().find(|j| j.id == id).cloned().expect("queued job");
+        send_project_file(service, connection, app_state, &job, subtask_name.into(), String::new())
+            .await
+            .expect("the send step");
+        (connection, event_loop)
+    }
+
+    /// Runs and finishes `subtask_name` on connection `id`, and returns the
+    /// filament, quality, and thumbnail its history row took.
+    async fn finish_print(
+        service: &PrinterService,
+        id: ConnectionId,
+        subtask_name: &str,
+        app: &tauri::App<tauri::test::MockRuntime>,
+        app_state: &AppState,
+    ) -> (Option<f64>, Option<String>, Option<String>) {
+        for state in ["RUNNING", "FINISH"] {
+            let report = format!(
+                r#"{{"print":{{"gcode_state":"{state}","gcode_start_time":"1710500000","subtask_name":"{subtask_name}"}}}}"#
+            );
+            service.handle_publish(id, report.as_bytes(), app.handle(), app_state).await;
+        }
+        let rows = get_test_history(app_state);
+        assert_eq!(rows.len(), 1, "the print gets one row");
+        let row = rows.into_iter().next().unwrap();
+        (row.filament_grams, row.quality_profile, row.thumbnail_path)
+    }
+
+    #[tokio::test]
+    async fn a_history_row_takes_its_filament_from_the_job_that_started_the_print() {
+        let (app, app_state, service) = history_app();
+        queue_job(&app_state, "old", 5.0);
+        queue_job(&app_state, "cube", 12.5);
+        let (_, _old_loop) = send_job(&service, printer_a(), "old", "old.3mf", &app, &app_state).await;
+        let (a, _cube_loop) = send_job(&service, printer_a(), "cube", "cube.3mf", &app, &app_state).await;
+
+        assert_eq!(
+            finish_print(&service, a, "cube.3mf", &app, &app_state).await,
+            (Some(12.5), Some("cube quality".into()), Some("/tmp/cube.png".into())),
+            "the row describes the job sent as cube.3mf, not the older job"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_print_no_queued_job_started_gets_no_filament_or_thumbnail() {
+        let (app, app_state, service) = history_app();
+        queue_job(&app_state, "cube", 12.5);
+        queue_job(&app_state, "benchy", 9.0);
+        let (_, _a_loop) = send_job(&service, printer_a(), "cube", "cube.3mf", &app, &app_state).await;
+        service.disconnect(app.handle(), &app_state).await;
+        let b = loopback_printer("01P00B000000000");
+        let (_, _b_loop) = send_job(&service, b, "benchy", "benchy.3mf", &app, &app_state).await;
+        service.disconnect(app.handle(), &app_state).await;
+
+        let a = connect_without_loop(&service, printer_a(), &app, &app_state).await;
+        assert_eq!(
+            finish_print(&service, a, "benchy.3mf", &app, &app_state).await,
+            (None, None, None),
+            "printer A ran a file no job sent to it, so no job describes the print"
+        );
+    }
+
+    fn metadata_of_row_started_at(app_state: &AppState, start: &str) -> (Option<f64>, Option<String>, Option<String>) {
+        let row = get_test_history(app_state)
+            .into_iter()
+            .find(|row| row.started_at.as_deref() == Some(start))
+            .expect("the print has a history row");
+        (row.filament_grams, row.quality_profile, row.thumbnail_path)
+    }
+
+    #[tokio::test]
+    async fn a_later_print_of_the_same_file_does_not_take_the_job_that_started_an_earlier_one() {
+        let (app, app_state, service) = history_app();
+        queue_job(&app_state, "cube", 12.5);
+        let (a, _event_loop) = send_job(&service, printer_a(), "cube", "cube.3mf", &app, &app_state).await;
+        finish_print(&service, a, "cube.3mf", &app, &app_state).await;
+
+        for report in [
+            br#"{"print":{"gcode_state":"RUNNING","gcode_start_time":"1710600000","subtask_name":"cube.3mf"}}"#.as_slice(),
+            br#"{"print":{"gcode_state":"FINISH"}}"#,
+        ] {
+            service.handle_publish(a, report, app.handle(), &app_state).await;
+        }
+        assert_eq!(
+            metadata_of_row_started_at(&app_state, "1710600000"),
+            (None, None, None),
+            "the job started only the first print of cube.3mf"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_job_whose_print_ends_without_a_start_time_does_not_describe_a_later_print() {
+        let (app, app_state, service) = history_app();
+        queue_job(&app_state, "cube", 12.5);
+        let (a, _event_loop) = send_job(&service, printer_a(), "cube", "cube.3mf", &app, &app_state).await;
+        for report in [
+            br#"{"print":{"gcode_state":"RUNNING","subtask_name":"cube.3mf"}}"#.as_slice(),
+            br#"{"print":{"gcode_state":"FINISH"}}"#,
+            br#"{"print":{"gcode_state":"RUNNING","gcode_start_time":"1710600000","subtask_name":"cube.3mf"}}"#,
+            br#"{"print":{"gcode_state":"FINISH"}}"#,
+        ] {
+            service.handle_publish(a, report, app.handle(), &app_state).await;
+        }
+        let first = get_test_history(&app_state).into_iter().find(|row| row.started_at.is_none()).expect("first row");
+        assert_eq!(first.filament_grams, Some(12.5), "the job describes the print it started");
+        assert_eq!(
+            metadata_of_row_started_at(&app_state, "1710600000"),
+            (None, None, None),
+            "the job's print already ended"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_print_gets_its_history_row_when_the_queue_file_cannot_be_written() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let queue_path = dir.path().join("print_queue.json");
+        let (app, mut app_state, service) = history_app();
+        Arc::get_mut(&mut app_state).unwrap().print_queue_file = Some(queue_path.clone());
+        queue_job(&app_state, "cube", 12.5);
+        let (a, _event_loop) = send_job(&service, printer_a(), "cube", "cube.3mf", &app, &app_state).await;
+        service
+            .handle_publish(a, br#"{"print":{"gcode_state":"RUNNING","subtask_name":"cube.3mf"}}"#, app.handle(), &app_state)
+            .await;
+        std::fs::set_permissions(&queue_path, std::fs::Permissions::from_mode(0o444)).unwrap();
+        let finished = br#"{"print":{"gcode_state":"FINISH","gcode_start_time":"1710500000"}}"#;
+        service.handle_publish(a, finished, app.handle(), &app_state).await;
+        assert!(crate::print_queue::persist_queue(&app_state).is_err(), "the queue file is read-only");
+
+        assert_eq!(
+            metadata_of_row_started_at(&app_state, "1710500000"),
+            (Some(12.5), Some("cube quality".into()), Some("/tmp/cube.png".into()))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_history_write_that_fails_keeps_the_job_for_the_retry() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("materialize.db");
+        let (app, app_state, service) = history_app();
+        let db = crate::database::init_db(&db_path).unwrap();
+        db.busy_timeout(Duration::from_millis(1)).unwrap();
+        *app_state.db.lock().unwrap() = Some(db);
+        queue_job(&app_state, "cube", 12.5);
+        let (a, _event_loop) = send_job(&service, printer_a(), "cube", "cube.3mf", &app, &app_state).await;
+        service
+            .handle_publish(
+                a,
+                br#"{"print":{"gcode_state":"RUNNING","gcode_start_time":"1710500000","subtask_name":"cube.3mf"}}"#,
+                app.handle(),
+                &app_state,
+            )
+            .await;
+
+        let writer = rusqlite::Connection::open(&db_path).unwrap();
+        writer.execute_batch("BEGIN IMMEDIATE").unwrap();
+        let finished = |prev| settle_print(SERIAL_A, Some(prev), Some("FINISH"), Some("1710500000"), app.handle(), &app_state);
+        assert!(finished("RUNNING").is_err(), "another writer holds the database");
+        writer.execute_batch("ROLLBACK").unwrap();
+        finished("FINISH").expect("the retry writes the row");
+
+        assert_eq!(
+            metadata_of_row_started_at(&app_state, "1710500000"),
+            (Some(12.5), Some("cube quality".into()), Some("/tmp/cube.png".into()))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_job_sent_just_before_a_reconnect_describes_the_print_it_started() {
+        let (app, app_state, service) = history_app();
+        queue_job(&app_state, "cube", 12.5);
+        queue_job(&app_state, "benchy", 9.0);
+        let (a, _event_loop) = send_job(&service, printer_a(), "cube", "cube.3mf", &app, &app_state).await;
+        let a = return_to_printer_a(Return::Reconnect, &service, a, &app, &app_state).await;
+        service
+            .handle_publish(a, br#"{"print":{"gcode_state":"IDLE"}}"#, app.handle(), &app_state)
+            .await;
+        let benchy = app_state.print_queue.lock().unwrap().iter().find(|j| j.id == "benchy").cloned().unwrap();
+        send_project_file(&service, a, &app_state, &benchy, "benchy.3mf".into(), String::new())
+            .await
+            .expect("the send step");
+
+        assert_eq!(
+            finish_print(&service, a, "cube.3mf", &app, &app_state).await,
+            (Some(12.5), Some("cube quality".into()), Some("/tmp/cube.png".into())),
+            "the printer was still starting cube when benchy was sent, and cube ran"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_print_whose_name_arrives_after_its_start_takes_its_job() {
+        let (app, app_state, service) = history_app();
+        queue_job(&app_state, "cube", 12.5);
+        let (a, _event_loop) = send_job(&service, printer_a(), "cube", "cube.3mf", &app, &app_state).await;
+        for report in [
+            br#"{"print":{"gcode_state":"RUNNING","gcode_start_time":"1710500000"}}"#.as_slice(),
+            br#"{"print":{"subtask_name":"cube.3mf"}}"#,
+            br#"{"print":{"gcode_state":"FINISH"}}"#,
+        ] {
+            service.handle_publish(a, report, app.handle(), &app_state).await;
+        }
+        assert_eq!(
+            metadata_of_row_started_at(&app_state, "1710500000"),
+            (Some(12.5), Some("cube quality".into()), Some("/tmp/cube.png".into()))
+        );
+    }
+
+    /// A broker on loopback that accepts one MQTT client and sends it a
+    /// status report without `gcode_state` every 50 ms, as a printer sends
+    /// deltas. When `answers_pushall`, it answers each `pushall` with a full
+    /// report. Returns how many `pushall` requests it read once the client
+    /// hangs up.
+    fn fake_broker(answers_pushall: bool) -> (u16, std::thread::JoinHandle<usize>) {
+        use std::io::{ErrorKind, Read, Write};
+
+        fn publish(topic: &str, payload: &str) -> Vec<u8> {
+            let mut remaining = 2 + topic.len() + payload.len();
+            let mut packet = vec![0x30];
+            loop {
+                let byte = (remaining % 128) as u8;
+                remaining /= 128;
+                packet.push(if remaining > 0 { byte | 0x80 } else { byte });
+                if remaining == 0 {
+                    break;
+                }
+            }
+            packet.extend((topic.len() as u16).to_be_bytes());
+            packet.extend(topic.as_bytes());
+            packet.extend(payload.as_bytes());
+            packet
+        }
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind broker");
+        let port = listener.local_addr().expect("broker addr").port();
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("client connects");
+            let topic = printer_a().report_topic();
+            let mut buf = [0u8; 4096];
+            let n = stream.read(&mut buf).expect("read CONNECT");
+            assert!(n > 0 && buf[0] == 0x10, "the client opens with CONNECT");
+            stream.write_all(&[0x20, 0x02, 0x00, 0x00]).expect("send CONNACK");
+            stream.set_read_timeout(Some(Duration::from_millis(50))).expect("read timeout");
+
+            let mut read = Vec::new();
+            let mut pushalls = 0;
+            loop {
+                match stream.read(&mut buf) {
+                    Ok(0) => return pushalls,
+                    Ok(n) => read.extend_from_slice(&buf[..n]),
+                    Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {}
+                    Err(_) => return pushalls,
+                }
+                let seen = read.windows(b"pushall".len()).filter(|w| w == b"pushall").count();
+                let report = if answers_pushall && seen > pushalls {
+                    r#"{"print":{"gcode_state":"RUNNING","nozzle_temper":210.0}}"#
+                } else {
+                    r#"{"print":{"nozzle_temper":210.0}}"#
+                };
+                pushalls = seen;
+                if stream.write_all(&publish(&topic, report)).is_err() {
+                    return pushalls;
+                }
+            }
+        });
+        (port, handle)
+    }
+
+    /// Runs one session of printer A against `fake_broker` for 1.5 s, with an
+    /// MQTT request queue of `capacity`. Returns how many `pushall` requests
+    /// the broker read, and the nozzle temperature the app last read.
+    async fn one_session(answers_pushall: bool, capacity: usize) -> (usize, Option<f32>) {
+        let (port, broker) = fake_broker(answers_pushall);
+        let (app, app_state, service) = history_app();
+        service
+            .start(printer_a(), app.handle().clone(), Arc::clone(&app_state))
+            .await
+            .expect("printer A starts");
+        stop_connection_loop(&service).await;
+        let id = service.inner.lock().await.connection;
+        let (client, event_loop) =
+            AsyncClient::new(rumqttc::MqttOptions::new("m3d-test", "127.0.0.1", port), capacity);
+
+        let session = service.run_event_loop(id, client, event_loop, ConnectionType::Mqtt, app.handle(), &app_state);
+        let ended = tokio::time::timeout(Duration::from_millis(1500), session).await;
+        assert!(ended.is_err(), "the session stays connected, got {ended:?}");
+        let pushalls = tokio::task::spawn_blocking(move || broker.join().expect("broker thread"))
+            .await
+            .expect("join the broker");
+        let nozzle_temp = app_state.printer.lock().unwrap().nozzle_temp;
+        (pushalls, nozzle_temp)
+    }
+
+    #[tokio::test]
+    async fn a_session_with_no_print_state_asks_for_the_full_state_again_a_bounded_number_of_times() {
+        assert_eq!(
+            one_session(false, 10).await.0,
+            1 + PUSHALL_RETRIES as usize,
+            "one pushall on ConnAck, then one per retry, then no more"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_session_whose_pushall_is_answered_asks_once() {
+        assert_eq!(one_session(true, 10).await.0, 1);
+    }
+
+    #[tokio::test]
+    async fn a_session_whose_request_queue_is_full_when_a_pushall_is_due_keeps_reading_reports() {
+        // With one slot, the subscribe sent on ConnAck fills the queue just as
+        // the first pushall comes due, and only this session's poll drains it.
+        let (pushalls, nozzle_temp) = one_session(false, 1).await;
+        assert_eq!(nozzle_temp, Some(210.0), "the session read the printer's reports");
+        assert_eq!(pushalls, PUSHALL_RETRIES as usize, "the pushall that found the queue full is one of the sends");
     }
 }
