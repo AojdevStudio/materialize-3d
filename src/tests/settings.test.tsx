@@ -2,10 +2,17 @@
 import React from 'react'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { SETTINGS_DEFAULT_STATE, hydrateSettings, useSettingsEvents, useSettingsStore } from '../stores/settings'
+import { useAgentStore } from '../stores/agent'
+import { SettingsPanel } from '../components/SettingsPanel'
+import { PRINTER_CONFIG_DEFAULT_STATE, usePrinterConfigStore } from '../stores/printerConfigs'
+import { PRINTER_DEFAULT_STATE, usePrinterStore } from '../stores/printer'
+import { UI_DEFAULT_STATE, useUiStore } from '../stores/ui'
+import { Toolbar } from '../components/Toolbar'
 
 type EventHandler<T = unknown> = (event: { payload: T }) => void
 
-const listenMock = vi.fn()
+const { listenMock } = vi.hoisted(() => ({ listenMock: vi.fn() }))
 const invokeMock = vi.fn()
 const unlistenMock = vi.fn()
 const eventHandlers = new Map<string, EventHandler>()
@@ -89,8 +96,7 @@ const MOCK_PROFILES = {
 }
 
 describe('useSettingsStore', () => {
-  beforeEach(async () => {
-    const { useSettingsStore, SETTINGS_DEFAULT_STATE } = await import('../stores/settings')
+  beforeEach(() => {
     useSettingsStore.setState(SETTINGS_DEFAULT_STATE)
   })
 
@@ -98,8 +104,7 @@ describe('useSettingsStore', () => {
     cleanup()
   })
 
-  it('initializes with empty settings and loaded=false', async () => {
-    const { useSettingsStore } = await import('../stores/settings')
+  it('initializes with empty settings and loaded=false', () => {
     const state = useSettingsStore.getState()
     expect(state.settings).toEqual({})
     expect(state.loaded).toBe(false)
@@ -107,7 +112,6 @@ describe('useSettingsStore', () => {
 
   it('hydrateSettings populates state from backend', async () => {
     invokeMock.mockResolvedValueOnce(structuredClone(DEFAULT_SETTINGS))
-    const { useSettingsStore, hydrateSettings } = await import('../stores/settings')
 
     await act(async () => {
       await hydrateSettings()
@@ -120,7 +124,7 @@ describe('useSettingsStore', () => {
     expect(invokeMock).toHaveBeenCalledWith('get_settings')
   })
 
-  it('settings:changed event updates store', async () => {
+  it('settings:changed event updates store', () => {
     eventHandlers.clear()
     listenMock.mockReset()
 
@@ -128,8 +132,6 @@ describe('useSettingsStore', () => {
       eventHandlers.set(name, handler)
       return () => { eventHandlers.delete(name) }
     })
-
-    const { useSettingsStore, useSettingsEvents } = await import('../stores/settings')
 
     function TestBridge() {
       useSettingsEvents()
@@ -147,29 +149,25 @@ describe('useSettingsStore', () => {
     expect(useSettingsStore.getState().loaded).toBe(true)
   })
 
-  it('getSetting returns value for existing key', async () => {
-    const { useSettingsStore } = await import('../stores/settings')
+  it('getSetting returns value for existing key', () => {
     useSettingsStore.getState().setSettings(DEFAULT_SETTINGS)
 
     expect(useSettingsStore.getState().getSetting('default.quality')).toBe('0.20mm')
   })
 
-  it('getSetting returns undefined for missing key', async () => {
-    const { useSettingsStore } = await import('../stores/settings')
+  it('getSetting returns undefined for missing key', () => {
     useSettingsStore.getState().setSettings(DEFAULT_SETTINGS)
 
     expect(useSettingsStore.getState().getSetting('nonexistent.key')).toBeUndefined()
   })
 
-  it('getSettingBool returns boolean true for "true"', async () => {
-    const { useSettingsStore } = await import('../stores/settings')
+  it('getSettingBool returns boolean true for "true"', () => {
     useSettingsStore.getState().setSettings(DEFAULT_SETTINGS)
 
     expect(useSettingsStore.getState().getSettingBool('notifications.print_complete')).toBe(true)
   })
 
-  it('getSettingBool returns false for non-"true" values', async () => {
-    const { useSettingsStore } = await import('../stores/settings')
+  it('getSettingBool returns false for non-"true" values', () => {
     useSettingsStore.getState().setSettings(DEFAULT_SETTINGS)
 
     expect(useSettingsStore.getState().getSettingBool('notifications.filament_low')).toBe(false)
@@ -178,13 +176,12 @@ describe('useSettingsStore', () => {
 })
 
 describe('SettingsPanel component', () => {
-  beforeEach(async () => {
+  beforeEach(() => {
     agentKeys = new Set()
     agentModel = { provider: 'anthropic', model: 'claude-opus-5-5' }
     agentBaseUrls = new Map()
     agentInvokeMock.mockReset()
     agentInvokeMock.mockImplementation(fakeAgent)
-    const { useAgentStore } = await import('../stores/agent')
     useAgentStore.setState({ status: null })
     eventHandlers.clear()
     listenMock.mockReset()
@@ -198,8 +195,6 @@ describe('SettingsPanel component', () => {
         eventHandlers.delete(name)
       }
     })
-
-    const { useSettingsStore, SETTINGS_DEFAULT_STATE } = await import('../stores/settings')
     useSettingsStore.setState({ ...SETTINGS_DEFAULT_STATE, settings: structuredClone(DEFAULT_SETTINGS), loaded: true })
   })
 
@@ -207,16 +202,14 @@ describe('SettingsPanel component', () => {
     cleanup()
   })
 
-  it('renders nothing when closed', async () => {
+  it('renders nothing when closed', () => {
     invokeMock.mockResolvedValue(MOCK_PROFILES)
-    const { SettingsPanel } = await import('../components/SettingsPanel')
     const { container } = render(React.createElement(SettingsPanel, { isOpen: false, onClose: vi.fn() }))
     expect(container.innerHTML).toBe('')
   })
 
-  it('renders all sections when open', async () => {
+  it('renders all sections when open', () => {
     invokeMock.mockResolvedValue(MOCK_PROFILES)
-    const { SettingsPanel } = await import('../components/SettingsPanel')
     render(React.createElement(SettingsPanel, { isOpen: true, onClose: vi.fn() }))
 
     expect(screen.getByText('Defaults')).toBeTruthy()
@@ -226,7 +219,6 @@ describe('SettingsPanel component', () => {
 
   it('populates quality and filament selects from list_profiles', async () => {
     invokeMock.mockResolvedValue(MOCK_PROFILES)
-    const { SettingsPanel } = await import('../components/SettingsPanel')
     render(React.createElement(SettingsPanel, { isOpen: true, onClose: vi.fn() }))
 
     await waitFor(() => {
@@ -245,7 +237,6 @@ describe('SettingsPanel component', () => {
 
   it('checkbox toggle invokes update_settings', async () => {
     invokeMock.mockResolvedValue(MOCK_PROFILES)
-    const { SettingsPanel } = await import('../components/SettingsPanel')
     render(React.createElement(SettingsPanel, { isOpen: true, onClose: vi.fn() }))
 
     // notifications.filament_low is currently false, toggle it on
@@ -260,21 +251,19 @@ describe('SettingsPanel component', () => {
     expect(invokeMock).toHaveBeenCalledWith('update_settings', { settings: { 'notifications.filament_low': 'true' } })
   })
 
-  it('panel closes on Escape', async () => {
+  it('panel closes on Escape', () => {
     invokeMock.mockResolvedValue(MOCK_PROFILES)
     const onClose = vi.fn()
-    const { SettingsPanel } = await import('../components/SettingsPanel')
     render(React.createElement(SettingsPanel, { isOpen: true, onClose }))
 
     fireEvent.keyDown(document, { key: 'Escape' })
     expect(onClose).toHaveBeenCalled()
   })
 
-  it('panel closes on outside click', async () => {
+  it('panel closes on outside click', () => {
     vi.useFakeTimers()
     invokeMock.mockResolvedValue(MOCK_PROFILES)
     const onClose = vi.fn()
-    const { SettingsPanel } = await import('../components/SettingsPanel')
     render(React.createElement('div', null,
       React.createElement('div', { 'data-testid': 'outside' }, 'Outside'),
       React.createElement(SettingsPanel, { isOpen: true, onClose }),
@@ -290,7 +279,6 @@ describe('SettingsPanel component', () => {
 
   it('stores and clears the agent API key without ever showing it', async () => {
     invokeMock.mockResolvedValue(MOCK_PROFILES)
-    const { SettingsPanel } = await import('../components/SettingsPanel')
     render(React.createElement(SettingsPanel, { isOpen: true, onClose: vi.fn() }))
 
     const input = (await screen.findByTestId('agent-api-key')) as HTMLInputElement
@@ -312,7 +300,6 @@ describe('SettingsPanel component', () => {
 
   it('provider and model selects call agent_set_model', async () => {
     invokeMock.mockResolvedValue(MOCK_PROFILES)
-    const { SettingsPanel } = await import('../components/SettingsPanel')
     render(React.createElement(SettingsPanel, { isOpen: true, onClose: vi.fn() }))
 
     fireEvent.change(await screen.findByTestId('agent-model'), { target: { value: 'claude-fable-5-1' } })
@@ -328,7 +315,6 @@ describe('SettingsPanel component', () => {
 
   it('a saved server address allows a typed model ID, and clearing it removes that choice', async () => {
     invokeMock.mockResolvedValue(MOCK_PROFILES)
-    const { SettingsPanel } = await import('../components/SettingsPanel')
     render(React.createElement(SettingsPanel, { isOpen: true, onClose: vi.fn() }))
 
     const address = (await screen.findByTestId('agent-base-url')) as HTMLInputElement
@@ -356,7 +342,6 @@ describe('SettingsPanel component', () => {
 
   it('an unsaved address does not follow a switch to a provider with the same saved address', async () => {
     invokeMock.mockResolvedValue(MOCK_PROFILES)
-    const { SettingsPanel } = await import('../components/SettingsPanel')
     render(React.createElement(SettingsPanel, { isOpen: true, onClose: vi.fn() }))
 
     const address = (await screen.findByTestId('agent-base-url')) as HTMLInputElement
@@ -371,7 +356,6 @@ describe('SettingsPanel component', () => {
   it('an unsaved model ID does not follow a switch to a provider on the same gateway', async () => {
     agentBaseUrls = new Map([['anthropic', 'https://gateway.example/v1'], ['openai', 'https://gateway.example/v1']])
     invokeMock.mockResolvedValue(MOCK_PROFILES)
-    const { SettingsPanel } = await import('../components/SettingsPanel')
     render(React.createElement(SettingsPanel, { isOpen: true, onClose: vi.fn() }))
 
     fireEvent.change(await screen.findByTestId('agent-model-id'), { target: { value: 'anthropic-draft-model' } })
@@ -385,7 +369,6 @@ describe('SettingsPanel component', () => {
   it('an unsaved API key does not follow a switch to another provider', async () => {
     agentKeys = new Set(['openai'])
     invokeMock.mockResolvedValue(MOCK_PROFILES)
-    const { SettingsPanel } = await import('../components/SettingsPanel')
     render(React.createElement(SettingsPanel, { isOpen: true, onClose: vi.fn() }))
 
     const input = (await screen.findByTestId('agent-api-key')) as HTMLInputElement
@@ -411,8 +394,6 @@ describe('SettingsPanel component', () => {
 
   it('an unsaved API key survives a model change and a status refresh', async () => {
     invokeMock.mockResolvedValue(MOCK_PROFILES)
-    const { SettingsPanel } = await import('../components/SettingsPanel')
-    const { useAgentStore } = await import('../stores/agent')
     render(React.createElement(SettingsPanel, { isOpen: true, onClose: vi.fn() }))
 
     const input = (await screen.findByTestId('agent-api-key')) as HTMLInputElement
@@ -434,7 +415,6 @@ describe('SettingsPanel component', () => {
 
   it('the model select lists exactly the models the agent status offers', async () => {
     invokeMock.mockResolvedValue(MOCK_PROFILES)
-    const { SettingsPanel } = await import('../components/SettingsPanel')
     render(React.createElement(SettingsPanel, { isOpen: true, onClose: vi.fn() }))
 
     const select = (await screen.findByTestId('agent-model')) as HTMLSelectElement
@@ -452,9 +432,8 @@ describe('SettingsPanel component', () => {
     )
   })
 
-  it('renders checkbox labels for all notification types', async () => {
+  it('renders checkbox labels for all notification types', () => {
     invokeMock.mockResolvedValue(MOCK_PROFILES)
-    const { SettingsPanel } = await import('../components/SettingsPanel')
     render(React.createElement(SettingsPanel, { isOpen: true, onClose: vi.fn() }))
 
     expect(screen.getByText('Print complete')).toBeTruthy()
@@ -465,7 +444,7 @@ describe('SettingsPanel component', () => {
 })
 
 describe('Toolbar with SettingsPanel', () => {
-  beforeEach(async () => {
+  beforeEach(() => {
     eventHandlers.clear()
     listenMock.mockReset()
     invokeMock.mockReset()
@@ -480,11 +459,6 @@ describe('Toolbar with SettingsPanel', () => {
     })
 
     invokeMock.mockResolvedValue(MOCK_PROFILES)
-
-    const { usePrinterConfigStore, PRINTER_CONFIG_DEFAULT_STATE } = await import('../stores/printerConfigs')
-    const { usePrinterStore, PRINTER_DEFAULT_STATE } = await import('../stores/printer')
-    const { useSettingsStore, SETTINGS_DEFAULT_STATE } = await import('../stores/settings')
-    const { useUiStore, UI_DEFAULT_STATE } = await import('../stores/ui')
     useUiStore.setState(UI_DEFAULT_STATE)
     usePrinterConfigStore.setState(PRINTER_CONFIG_DEFAULT_STATE)
     usePrinterStore.setState(PRINTER_DEFAULT_STATE)
@@ -495,8 +469,7 @@ describe('Toolbar with SettingsPanel', () => {
     cleanup()
   })
 
-  it('⚙ button toggles settings panel', async () => {
-    const { Toolbar } = await import('../components/Toolbar')
+  it('⚙ button toggles settings panel', () => {
     render(React.createElement(Toolbar))
 
     const settingsBtn = screen.getByLabelText('Settings')
@@ -509,8 +482,7 @@ describe('Toolbar with SettingsPanel', () => {
     expect(screen.queryByRole('dialog', { name: 'Settings' })).toBeNull()
   })
 
-  it('opening settings closes printer selector', async () => {
-    const { Toolbar } = await import('../components/Toolbar')
+  it('opening settings closes printer selector', () => {
     render(React.createElement(Toolbar))
 
     // Open printer selector first
@@ -526,8 +498,7 @@ describe('Toolbar with SettingsPanel', () => {
     expect(screen.queryByRole('dialog', { name: 'Printer selector' })).toBeNull()
   })
 
-  it('opening printer selector closes settings', async () => {
-    const { Toolbar } = await import('../components/Toolbar')
+  it('opening printer selector closes settings', () => {
     render(React.createElement(Toolbar))
 
     // Open settings first
@@ -545,7 +516,7 @@ describe('Toolbar with SettingsPanel', () => {
 })
 
 describe('Error recovery UI', () => {
-  beforeEach(async () => {
+  beforeEach(() => {
     eventHandlers.clear()
     listenMock.mockReset()
     invokeMock.mockReset()
@@ -560,10 +531,6 @@ describe('Error recovery UI', () => {
     })
 
     invokeMock.mockResolvedValue(MOCK_PROFILES)
-
-    const { usePrinterConfigStore, PRINTER_CONFIG_DEFAULT_STATE } = await import('../stores/printerConfigs')
-    const { usePrinterStore, PRINTER_DEFAULT_STATE } = await import('../stores/printer')
-    const { useSettingsStore, SETTINGS_DEFAULT_STATE } = await import('../stores/settings')
     usePrinterConfigStore.setState(PRINTER_CONFIG_DEFAULT_STATE)
     usePrinterStore.setState(PRINTER_DEFAULT_STATE)
     useSettingsStore.setState({ ...SETTINGS_DEFAULT_STATE, settings: structuredClone(DEFAULT_SETTINGS), loaded: true })
@@ -573,11 +540,8 @@ describe('Error recovery UI', () => {
     cleanup()
   })
 
-  it('shows error banner when offline with lastError', async () => {
-    const { usePrinterStore } = await import('../stores/printer')
+  it('shows error banner when offline with lastError', () => {
     usePrinterStore.setState({ connectionState: 'offline', lastError: 'MQTT timeout' })
-
-    const { Toolbar } = await import('../components/Toolbar')
     render(React.createElement(Toolbar))
 
     const alert = screen.getByRole('alert', { name: 'Connection error' })
@@ -586,11 +550,8 @@ describe('Error recovery UI', () => {
     expect(screen.getByLabelText('Retry connection')).toBeTruthy()
   })
 
-  it('shows error banner when disconnected with lastError', async () => {
-    const { usePrinterStore } = await import('../stores/printer')
+  it('shows error banner when disconnected with lastError', () => {
     usePrinterStore.setState({ connectionState: 'disconnected', lastError: 'Connection refused' })
-
-    const { Toolbar } = await import('../components/Toolbar')
     render(React.createElement(Toolbar))
 
     const alert = screen.getByRole('alert', { name: 'Connection error' })
@@ -598,35 +559,25 @@ describe('Error recovery UI', () => {
     expect(screen.getByText('Connection refused')).toBeTruthy()
   })
 
-  it('hides error banner when connected', async () => {
-    const { usePrinterStore } = await import('../stores/printer')
+  it('hides error banner when connected', () => {
     usePrinterStore.setState({ connectionState: 'connected_mqtt', lastError: null })
-
-    const { Toolbar } = await import('../components/Toolbar')
     render(React.createElement(Toolbar))
 
     expect(screen.queryByRole('alert', { name: 'Connection error' })).toBeNull()
   })
 
-  it('hides error banner when offline but no lastError', async () => {
-    const { usePrinterStore } = await import('../stores/printer')
+  it('hides error banner when offline but no lastError', () => {
     usePrinterStore.setState({ connectionState: 'offline', lastError: null })
-
-    const { Toolbar } = await import('../components/Toolbar')
     render(React.createElement(Toolbar))
 
     expect(screen.queryByRole('alert', { name: 'Connection error' })).toBeNull()
   })
 
   it('retry button calls connect_printer_by_config when selectedPrinterId set', async () => {
-    const { usePrinterStore } = await import('../stores/printer')
-    const { usePrinterConfigStore } = await import('../stores/printerConfigs')
     usePrinterStore.setState({ connectionState: 'offline', lastError: 'Timeout' })
     usePrinterConfigStore.setState({ selectedPrinterId: 'cfg-123' })
 
     invokeMock.mockResolvedValue(undefined)
-
-    const { Toolbar } = await import('../components/Toolbar')
     render(React.createElement(Toolbar))
 
     const retryBtn = screen.getByLabelText('Retry connection')
@@ -636,14 +587,10 @@ describe('Error recovery UI', () => {
   })
 
   it('retry button calls connect_printer when no selectedPrinterId', async () => {
-    const { usePrinterStore } = await import('../stores/printer')
-    const { usePrinterConfigStore } = await import('../stores/printerConfigs')
     usePrinterStore.setState({ connectionState: 'offline', lastError: 'Timeout' })
     usePrinterConfigStore.setState({ selectedPrinterId: null })
 
     invokeMock.mockResolvedValue(undefined)
-
-    const { Toolbar } = await import('../components/Toolbar')
     render(React.createElement(Toolbar))
 
     const retryBtn = screen.getByLabelText('Retry connection')
@@ -652,11 +599,8 @@ describe('Error recovery UI', () => {
     expect(invokeMock).toHaveBeenCalledWith('connect_printer', { credentialsPath: null })
   })
 
-  it('disconnect button visible during reconnecting state', async () => {
-    const { usePrinterStore } = await import('../stores/printer')
+  it('disconnect button visible during reconnecting state', () => {
     usePrinterStore.setState({ connectionState: 'reconnecting', lastError: 'Lost connection' })
-
-    const { Toolbar } = await import('../components/Toolbar')
     render(React.createElement(Toolbar))
 
     const disconnectBtn = screen.getByLabelText('Disconnect')
@@ -664,12 +608,9 @@ describe('Error recovery UI', () => {
   })
 
   it('disconnect button calls disconnect_printer', async () => {
-    const { usePrinterStore } = await import('../stores/printer')
     usePrinterStore.setState({ connectionState: 'reconnecting', lastError: 'Lost connection' })
 
     invokeMock.mockResolvedValue(undefined)
-
-    const { Toolbar } = await import('../components/Toolbar')
     render(React.createElement(Toolbar))
 
     const disconnectBtn = screen.getByLabelText('Disconnect')
@@ -678,22 +619,16 @@ describe('Error recovery UI', () => {
     expect(invokeMock).toHaveBeenCalledWith('disconnect_printer')
   })
 
-  it('disconnect button not visible when offline (not reconnecting)', async () => {
-    const { usePrinterStore } = await import('../stores/printer')
+  it('disconnect button not visible when offline (not reconnecting)', () => {
     usePrinterStore.setState({ connectionState: 'offline', lastError: 'Timeout' })
-
-    const { Toolbar } = await import('../components/Toolbar')
     render(React.createElement(Toolbar))
 
     expect(screen.queryByLabelText('Disconnect')).toBeNull()
   })
 
-  it('truncates long error messages', async () => {
-    const { usePrinterStore } = await import('../stores/printer')
+  it('truncates long error messages', () => {
     const longError = 'A'.repeat(100)
     usePrinterStore.setState({ connectionState: 'offline', lastError: longError })
-
-    const { Toolbar } = await import('../components/Toolbar')
     render(React.createElement(Toolbar))
 
     const msg = screen.getByText(/A{10,}…/)

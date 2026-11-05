@@ -2,11 +2,17 @@
 import React from 'react'
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { PRINTER_CONFIG_DEFAULT_STATE, usePrinterConfigEvents, usePrinterConfigStore } from '../stores/printerConfigs'
+import { PRINTER_DEFAULT_STATE, usePrinterStore } from '../stores/printer'
+import { PrinterSelector } from '../components/PrinterSelector'
+import { Toolbar } from '../components/Toolbar'
 
 type EventHandler<T = unknown> = (event: { payload: T }) => void
 
-const listenMock = vi.fn()
-const invokeMock = vi.fn()
+const { listenMock, invokeMock } = vi.hoisted(() => ({
+  listenMock: vi.fn(),
+  invokeMock: vi.fn(),
+}))
 const unlistenMock = vi.fn()
 const eventHandlers = new Map<string, EventHandler>()
 
@@ -29,8 +35,7 @@ function emitEvent<T>(name: string, payload: T) {
 }
 
 describe('printerConfigs store', () => {
-  beforeEach(async () => {
-    const { usePrinterConfigStore, PRINTER_CONFIG_DEFAULT_STATE } = await import('../stores/printerConfigs')
+  beforeEach(() => {
     usePrinterConfigStore.setState(PRINTER_CONFIG_DEFAULT_STATE)
   })
 
@@ -38,15 +43,13 @@ describe('printerConfigs store', () => {
     cleanup()
   })
 
-  it('initializes with empty configs and null selectedPrinterId', async () => {
-    const { usePrinterConfigStore } = await import('../stores/printerConfigs')
+  it('initializes with empty configs and null selectedPrinterId', () => {
     const state = usePrinterConfigStore.getState()
     expect(state.configs).toEqual([])
     expect(state.selectedPrinterId).toBeNull()
   })
 
-  it('setConfigs updates the configs array', async () => {
-    const { usePrinterConfigStore } = await import('../stores/printerConfigs')
+  it('setConfigs updates the configs array', () => {
     const mockConfigs = [
       { id: 'pc-1', name: 'Lab P2S', host: '192.0.2.136', serial: 'ABC123', isDefault: true, createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z' },
       { id: 'pc-2', name: 'Workshop X1C', host: '192.0.2.200', serial: 'DEF456', isDefault: false, createdAt: '2026-01-02T00:00:00Z', updatedAt: '2026-01-02T00:00:00Z' },
@@ -60,9 +63,7 @@ describe('printerConfigs store', () => {
     expect(usePrinterConfigStore.getState().configs[0].name).toBe('Lab P2S')
   })
 
-  it('setSelectedPrinterId tracks selected printer', async () => {
-    const { usePrinterConfigStore } = await import('../stores/printerConfigs')
-
+  it('setSelectedPrinterId tracks selected printer', () => {
     act(() => {
       usePrinterConfigStore.getState().setSelectedPrinterId('pc-1')
     })
@@ -76,7 +77,7 @@ describe('printerConfigs store', () => {
     expect(usePrinterConfigStore.getState().selectedPrinterId).toBeNull()
   })
 
-  it('usePrinterConfigEvents subscribes to printer-configs:changed', async () => {
+  it('usePrinterConfigEvents subscribes to printer-configs:changed', () => {
     eventHandlers.clear()
     listenMock.mockReset()
     unlistenMock.mockReset()
@@ -88,9 +89,6 @@ describe('printerConfigs store', () => {
         eventHandlers.delete(name)
       }
     })
-
-    const { usePrinterConfigStore } = await import('../stores/printerConfigs')
-    const { usePrinterConfigEvents } = await import('../stores/printerConfigs')
 
     function TestBridge() {
       usePrinterConfigEvents()
@@ -112,7 +110,7 @@ describe('printerConfigs store', () => {
 })
 
 describe('PrinterSelector component', () => {
-  beforeEach(async () => {
+  beforeEach(() => {
     eventHandlers.clear()
     listenMock.mockReset()
     invokeMock.mockReset()
@@ -125,9 +123,6 @@ describe('PrinterSelector component', () => {
         eventHandlers.delete(name)
       }
     })
-
-    const { usePrinterConfigStore, PRINTER_CONFIG_DEFAULT_STATE } = await import('../stores/printerConfigs')
-    const { usePrinterStore, PRINTER_DEFAULT_STATE } = await import('../stores/printer')
     usePrinterConfigStore.setState(PRINTER_CONFIG_DEFAULT_STATE)
     usePrinterStore.setState(PRINTER_DEFAULT_STATE)
   })
@@ -136,31 +131,25 @@ describe('PrinterSelector component', () => {
     cleanup()
   })
 
-  it('renders nothing when closed', async () => {
-    const { PrinterSelector } = await import('../components/PrinterSelector')
+  it('renders nothing when closed', () => {
     const { container } = render(React.createElement(PrinterSelector, { open: false, onClose: vi.fn() }))
     expect(container.innerHTML).toBe('')
   })
 
-  it('shows empty state when no configs exist', async () => {
-    const { PrinterSelector } = await import('../components/PrinterSelector')
+  it('shows empty state when no configs exist', () => {
     render(React.createElement(PrinterSelector, { open: true, onClose: vi.fn() }))
 
     expect(screen.getByText('No printers configured')).toBeTruthy()
     expect(screen.getByText('+ Add your first printer')).toBeTruthy()
   })
 
-  it('renders saved printer configs', async () => {
-    const { usePrinterConfigStore } = await import('../stores/printerConfigs')
-
+  it('renders saved printer configs', () => {
     act(() => {
       usePrinterConfigStore.getState().setConfigs([
         { id: 'pc-1', name: 'Lab P2S', host: '192.0.2.136', serial: 'ABC123', isDefault: true, createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z' },
         { id: 'pc-2', name: 'Workshop X1C', host: '192.0.2.200', serial: 'DEF456', isDefault: false, createdAt: '2026-01-02T00:00:00Z', updatedAt: '2026-01-02T00:00:00Z' },
       ])
     })
-
-    const { PrinterSelector } = await import('../components/PrinterSelector')
     render(React.createElement(PrinterSelector, { open: true, onClose: vi.fn() }))
 
     expect(screen.getByText('Lab P2S')).toBeTruthy()
@@ -171,8 +160,6 @@ describe('PrinterSelector component', () => {
   })
 
   it('switch action calls invoke with switch_printer', async () => {
-    const { usePrinterConfigStore } = await import('../stores/printerConfigs')
-
     act(() => {
       usePrinterConfigStore.getState().setConfigs([
         { id: 'pc-1', name: 'Lab P2S', host: '192.0.2.136', serial: 'ABC123', isDefault: true, createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z' },
@@ -180,8 +167,6 @@ describe('PrinterSelector component', () => {
     })
 
     invokeMock.mockResolvedValue({})
-
-    const { PrinterSelector } = await import('../components/PrinterSelector')
     render(React.createElement(PrinterSelector, { open: true, onClose: vi.fn() }))
 
     const switchBtn = screen.getByLabelText('Switch to Lab P2S')
@@ -193,8 +178,6 @@ describe('PrinterSelector component', () => {
   })
 
   it('delete action calls invoke with delete_printer_config', async () => {
-    const { usePrinterConfigStore } = await import('../stores/printerConfigs')
-
     act(() => {
       usePrinterConfigStore.getState().setConfigs([
         { id: 'pc-1', name: 'Lab P2S', host: '192.0.2.136', serial: 'ABC123', isDefault: true, createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z' },
@@ -202,8 +185,6 @@ describe('PrinterSelector component', () => {
     })
 
     invokeMock.mockResolvedValue(true)
-
-    const { PrinterSelector } = await import('../components/PrinterSelector')
     render(React.createElement(PrinterSelector, { open: true, onClose: vi.fn() }))
 
     const deleteBtn = screen.getByLabelText('Delete Lab P2S')
@@ -214,8 +195,7 @@ describe('PrinterSelector component', () => {
     expect(invokeMock).toHaveBeenCalledWith('delete_printer_config', { id: 'pc-1' })
   })
 
-  it('add form shows password input for access code', async () => {
-    const { PrinterSelector } = await import('../components/PrinterSelector')
+  it('add form shows password input for access code', () => {
     render(React.createElement(PrinterSelector, { open: true, onClose: vi.fn() }))
 
     // Click "Add your first printer" to reveal the form
@@ -237,8 +217,6 @@ describe('PrinterSelector component', () => {
       updatedAt: '2026-01-01T00:00:00Z',
     }
     invokeMock.mockResolvedValue(mockConfig)
-
-    const { PrinterSelector } = await import('../components/PrinterSelector')
     render(React.createElement(PrinterSelector, { open: true, onClose: vi.fn() }))
 
     // Open add form
@@ -265,7 +243,7 @@ describe('PrinterSelector component', () => {
 })
 
 describe('Toolbar with PrinterSelector', () => {
-  beforeEach(async () => {
+  beforeEach(() => {
     eventHandlers.clear()
     listenMock.mockReset()
     invokeMock.mockReset()
@@ -278,9 +256,6 @@ describe('Toolbar with PrinterSelector', () => {
         eventHandlers.delete(name)
       }
     })
-
-    const { usePrinterConfigStore, PRINTER_CONFIG_DEFAULT_STATE } = await import('../stores/printerConfigs')
-    const { usePrinterStore, PRINTER_DEFAULT_STATE } = await import('../stores/printer')
     usePrinterConfigStore.setState(PRINTER_CONFIG_DEFAULT_STATE)
     usePrinterStore.setState(PRINTER_DEFAULT_STATE)
   })
@@ -289,37 +264,28 @@ describe('Toolbar with PrinterSelector', () => {
     cleanup()
   })
 
-  it('shows active config name in toolbar badge', async () => {
-    const { usePrinterConfigStore } = await import('../stores/printerConfigs')
-
+  it('shows active config name in toolbar badge', () => {
     act(() => {
       usePrinterConfigStore.getState().setConfigs([
         { id: 'pc-1', name: 'Lab P2S', host: '192.0.2.136', serial: 'ABC123', isDefault: true, createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z' },
       ])
       usePrinterConfigStore.getState().setSelectedPrinterId('pc-1')
     })
-
-    const { Toolbar } = await import('../components/Toolbar')
     render(React.createElement(Toolbar))
 
     expect(screen.getByText('Lab P2S')).toBeTruthy()
   })
 
-  it('falls back to printer store name when no config selected', async () => {
-    const { usePrinterStore } = await import('../stores/printer')
-
+  it('falls back to printer store name when no config selected', () => {
     act(() => {
       usePrinterStore.getState().applySnapshot({ name: 'AOJDevStudio' })
     })
-
-    const { Toolbar } = await import('../components/Toolbar')
     render(React.createElement(Toolbar))
 
     expect(screen.getByText('AOJDevStudio')).toBeTruthy()
   })
 
-  it('opens selector popover on printer badge click', async () => {
-    const { Toolbar } = await import('../components/Toolbar')
+  it('opens selector popover on printer badge click', () => {
     render(React.createElement(Toolbar))
 
     const badge = screen.getByLabelText('printer connection status')
