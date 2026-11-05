@@ -1443,11 +1443,12 @@ mod tests {
     /// Races a swapper thread that keeps replacing a view with a symlink to an
     /// outside file, and the build directory with a symlink to an outside
     /// directory of views, and a view with a FIFO. Every read returns quickly,
-    /// and none returns an outside byte.
+    /// and none returns an outside byte. The race runs at least 3 s and until
+    /// both sides pass 100 rounds, so a loaded host only makes it slower.
     #[cfg(unix)]
     #[test]
     fn swapping_views_and_the_build_directory_for_symlinks_or_a_fifo_never_reads_outside() {
-        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
         use std::sync::Arc;
         let outside = tempfile::tempdir().expect("tempdir");
         fs::write(outside.path().join("secret.png"), OUTSIDE).expect("secret");
@@ -1459,8 +1460,9 @@ mod tests {
         let root = view_root(&[(View::Isometric, 10), (View::Front, 10), (View::Top, 10)]);
         let (root_path, outside_path) = (root.path().to_path_buf(), outside.path().to_path_buf());
         let stop = Arc::new(AtomicBool::new(false));
+        let swaps = Arc::new(AtomicU64::new(0));
         let swapper = std::thread::spawn({
-            let stop = stop.clone();
+            let (stop, swaps) = (stop.clone(), swaps.clone());
             move || {
                 let dir = root_path.join(BUILD);
                 let front = dir.join(View::Front.file_name());
@@ -1468,7 +1470,6 @@ mod tests {
                 let (staged_file, staged_link, staged_fifo) = (dir.join("staged.png"), dir.join("staged-link"), dir.join("staged-fifo"));
                 let (aside, link) = (root_path.join("aside"), root_path.join("link"));
                 let fifo = std::ffi::CString::new(staged_fifo.clone().into_os_string().into_encoded_bytes()).expect("path");
-                let mut swaps = 0u64;
                 while !stop.load(Ordering::SeqCst) {
                     // The front view: a file, then a symlink out, by atomic renames.
                     fs::write(&staged_file, [7u8; 10]).expect("staged");
@@ -1488,14 +1489,16 @@ mod tests {
                     fs::rename(&link, &dir).expect("link in place of the dir");
                     fs::remove_file(&dir).expect("link out");
                     fs::rename(&aside, &dir).expect("dir back");
-                    swaps += 1;
+                    swaps.fetch_add(1, Ordering::SeqCst);
                 }
-                swaps
             }
         });
         let mut reads = 0;
         let started = std::time::Instant::now();
-        while started.elapsed() < std::time::Duration::from_secs(3) {
+        while !swapper.is_finished()
+            && (started.elapsed() < std::time::Duration::from_secs(3) || reads <= 100 || swaps.load(Ordering::SeqCst) <= 100)
+        {
+            assert!(started.elapsed() < std::time::Duration::from_secs(120), "the race hung: {reads} reads, {} swaps", swaps.load(Ordering::SeqCst));
             let path = root.path().to_path_buf();
             let kept = within_five_seconds(move || read_view_files(&path, BUILD, &PART_VIEWS));
             no_outside_bytes(&kept);
@@ -1503,7 +1506,8 @@ mod tests {
             reads += 1;
         }
         stop.store(true, Ordering::SeqCst);
-        let swaps = swapper.join().expect("swapper");
+        swapper.join().expect("swapper");
+        let swaps = swaps.load(Ordering::SeqCst);
         println!("{reads} reads raced {swaps} swap rounds");
         assert!(reads > 100 && swaps > 100, "the race ran: {reads} reads, {swaps} swaps");
     }

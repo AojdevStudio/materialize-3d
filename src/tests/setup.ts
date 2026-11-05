@@ -16,3 +16,10 @@ if (typeof globalThis.ResizeObserver === 'undefined') {
 if (typeof Element !== 'undefined' && !Element.prototype.scrollTo) {
   Element.prototype.scrollTo = function scrollTo() {}
 }
+
+// jsdom parses its default stylesheet on the first getComputedStyle in each
+// test file, 0.3 to 0.7 s of CPU. Role queries call it, so pay it here, outside
+// any test's timeout, where host load cannot turn it into a timeout (#113).
+if (typeof window !== 'undefined') {
+  window.getComputedStyle(document.body)
+}

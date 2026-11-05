@@ -3,8 +3,10 @@ import React from 'react'
 import { act, cleanup, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-const listenMock = vi.fn()
-const invokeMock = vi.fn()
+const { listenMock, invokeMock } = vi.hoisted(() => ({
+  listenMock: vi.fn(),
+  invokeMock: vi.fn(),
+}))
 
 vi.mock('@tauri-apps/api/event', () => ({
   listen: listenMock,
@@ -14,7 +16,8 @@ vi.mock('@tauri-apps/api/core', () => ({
   invoke: invokeMock,
 }))
 
-import type { PrintHistoryRecord } from '../stores/printHistory'
+import { HISTORY_DEFAULT_STATE, usePrintHistoryStore, type PrintHistoryRecord } from '../stores/printHistory'
+import { PrintHistory, formatDate, formatDuration } from '../components/PrintHistory'
 
 const SAMPLE_RECORDS: PrintHistoryRecord[] = [
   {
@@ -62,11 +65,9 @@ const SAMPLE_RECORDS: PrintHistoryRecord[] = [
 ]
 
 describe('PrintHistory component', () => {
-  beforeEach(async () => {
+  beforeEach(() => {
     listenMock.mockImplementation(async () => () => {})
     invokeMock.mockReset()
-
-    const { usePrintHistoryStore, HISTORY_DEFAULT_STATE } = await import('../stores/printHistory')
     usePrintHistoryStore.setState(HISTORY_DEFAULT_STATE)
   })
 
@@ -74,8 +75,7 @@ describe('PrintHistory component', () => {
     cleanup()
   })
 
-  it('renders empty state with "No prints recorded yet"', async () => {
-    const { PrintHistory } = await import('../components/PrintHistory')
+  it('renders empty state with "No prints recorded yet"', () => {
     render(React.createElement(PrintHistory))
 
     expect(screen.getByTestId('print-history-empty')).toBeDefined()
@@ -83,10 +83,8 @@ describe('PrintHistory component', () => {
     expect(screen.getByText('Print history will appear here as prints complete')).toBeDefined()
   })
 
-  it('shows a load error instead of claiming history is empty, then clears it on a snapshot', async () => {
-    const { usePrintHistoryStore } = await import('../stores/printHistory')
+  it('shows a load error instead of claiming history is empty, then clears it on a snapshot', () => {
     usePrintHistoryStore.setState({ loadError: 'database not initialized' })
-    const { PrintHistory } = await import('../components/PrintHistory')
     render(React.createElement(PrintHistory))
 
     expect(screen.getByRole('alert').textContent).toContain('database not initialized')
@@ -97,14 +95,10 @@ describe('PrintHistory component', () => {
     expect(screen.getAllByTestId('history-card')).toHaveLength(3)
   })
 
-  it('renders cards in correct order with model names when populated', async () => {
-    const { usePrintHistoryStore } = await import('../stores/printHistory')
-
+  it('renders cards in correct order with model names when populated', () => {
     act(() => {
       usePrintHistoryStore.getState().applySnapshot(SAMPLE_RECORDS)
     })
-
-    const { PrintHistory } = await import('../components/PrintHistory')
     render(React.createElement(PrintHistory))
 
     const cards = screen.getAllByTestId('history-card')
@@ -116,14 +110,10 @@ describe('PrintHistory component', () => {
     expect(screen.getByText('Cable Clip')).toBeDefined()
   })
 
-  it('shows a green Success badge for the persisted backend success status', async () => {
-    const { usePrintHistoryStore } = await import('../stores/printHistory')
-
+  it('shows a green Success badge for the persisted backend success status', () => {
     act(() => {
       usePrintHistoryStore.getState().applySnapshot([SAMPLE_RECORDS[0]])
     })
-
-    const { PrintHistory } = await import('../components/PrintHistory')
     render(React.createElement(PrintHistory))
 
     const badge = screen.getByTestId('history-status')
@@ -131,14 +121,10 @@ describe('PrintHistory component', () => {
     expect(badge.classList.contains('history-status--success')).toBe(true)
   })
 
-  it('shows red failed badge with reason', async () => {
-    const { usePrintHistoryStore } = await import('../stores/printHistory')
-
+  it('shows red failed badge with reason', () => {
     act(() => {
       usePrintHistoryStore.getState().applySnapshot([SAMPLE_RECORDS[1]])
     })
-
-    const { PrintHistory } = await import('../components/PrintHistory')
     render(React.createElement(PrintHistory))
 
     const badge = screen.getByTestId('history-status')
@@ -146,9 +132,7 @@ describe('PrintHistory component', () => {
     expect(badge.classList.contains('history-status--failed')).toBe(true)
   })
 
-  it('formats duration correctly', async () => {
-    const { formatDuration } = await import('../components/PrintHistory')
-
+  it('formats duration correctly', () => {
     expect(formatDuration(null)).toBe('—')
     expect(formatDuration(-1)).toBe('—')
     expect(formatDuration(30)).toBe('<1m')
@@ -158,14 +142,10 @@ describe('PrintHistory component', () => {
     expect(formatDuration(60)).toBe('1m')
   })
 
-  it('has delete button on each card', async () => {
-    const { usePrintHistoryStore } = await import('../stores/printHistory')
-
+  it('has delete button on each card', () => {
     act(() => {
       usePrintHistoryStore.getState().applySnapshot(SAMPLE_RECORDS)
     })
-
-    const { PrintHistory } = await import('../components/PrintHistory')
     render(React.createElement(PrintHistory))
 
     const deleteButtons = screen.getAllByTestId('history-delete')
@@ -173,9 +153,7 @@ describe('PrintHistory component', () => {
     expect(deleteButtons[0].getAttribute('aria-label')).toBe('Delete Benchy')
   })
 
-  it('applySnapshot updates store records', async () => {
-    const { usePrintHistoryStore } = await import('../stores/printHistory')
-
+  it('applySnapshot updates store records', () => {
     expect(usePrintHistoryStore.getState().records).toHaveLength(0)
 
     act(() => {
@@ -186,9 +164,7 @@ describe('PrintHistory component', () => {
     expect(usePrintHistoryStore.getState().records[0].modelName).toBe('Benchy')
   })
 
-  it('formats dates in human-readable form', async () => {
-    const { formatDate } = await import('../components/PrintHistory')
-
+  it('formats dates in human-readable form', () => {
     // Should return a formatted string, not the raw ISO
     const result = formatDate('2026-03-15T09:15:00Z')
     expect(result).not.toBe('2026-03-15T09:15:00Z')
@@ -198,14 +174,10 @@ describe('PrintHistory component', () => {
     expect(formatDate('not-a-date')).toBe('not-a-date')
   })
 
-  it('displays filament usage when available', async () => {
-    const { usePrintHistoryStore } = await import('../stores/printHistory')
-
+  it('displays filament usage when available', () => {
     act(() => {
       usePrintHistoryStore.getState().applySnapshot([SAMPLE_RECORDS[0]])
     })
-
-    const { PrintHistory } = await import('../components/PrintHistory')
     render(React.createElement(PrintHistory))
 
     const filament = screen.getByTestId('history-filament')
@@ -213,14 +185,10 @@ describe('PrintHistory component', () => {
     expect(filament.textContent).toContain('4.2m')
   })
 
-  it('displays quality profile when available', async () => {
-    const { usePrintHistoryStore } = await import('../stores/printHistory')
-
+  it('displays quality profile when available', () => {
     act(() => {
       usePrintHistoryStore.getState().applySnapshot([SAMPLE_RECORDS[0]])
     })
-
-    const { PrintHistory } = await import('../components/PrintHistory')
     render(React.createElement(PrintHistory))
 
     expect(screen.getByTestId('history-quality').textContent).toBe('0.20mm Standard')

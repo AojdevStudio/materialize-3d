@@ -3,8 +3,10 @@ import React from 'react'
 import { act, cleanup, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-const listenMock = vi.fn()
-const invokeMock = vi.fn()
+const { listenMock, invokeMock } = vi.hoisted(() => ({
+  listenMock: vi.fn(),
+  invokeMock: vi.fn(),
+}))
 
 vi.mock('@tauri-apps/api/event', () => ({
   listen: listenMock,
@@ -14,7 +16,8 @@ vi.mock('@tauri-apps/api/core', () => ({
   invoke: invokeMock,
 }))
 
-import type { LibraryModel } from '../stores/libraryStore'
+import { LIBRARY_DEFAULT_STATE, useLibraryEvents, useLibraryStore, type LibraryModel } from '../stores/libraryStore'
+import { ModelLibrary, formatDownloads, formatImportDate, formatRating } from '../components/ModelLibrary'
 
 const SAMPLE_MODELS: LibraryModel[] = [
   {
@@ -59,11 +62,9 @@ const SAMPLE_MODELS: LibraryModel[] = [
 ]
 
 describe('ModelLibrary component', () => {
-  beforeEach(async () => {
+  beforeEach(() => {
     listenMock.mockImplementation(async () => () => {})
     invokeMock.mockResolvedValue([])
-
-    const { useLibraryStore, LIBRARY_DEFAULT_STATE } = await import('../stores/libraryStore')
     useLibraryStore.setState(LIBRARY_DEFAULT_STATE)
   })
 
@@ -71,8 +72,7 @@ describe('ModelLibrary component', () => {
     cleanup()
   })
 
-  it('renders empty state with "No models in library"', async () => {
-    const { ModelLibrary } = await import('../components/ModelLibrary')
+  it('renders empty state with "No models in library"', () => {
     render(React.createElement(ModelLibrary))
 
     expect(screen.getByTestId('model-library-empty')).toBeDefined()
@@ -80,14 +80,10 @@ describe('ModelLibrary component', () => {
     expect(screen.getByText('Download models from MakerWorld to build your library')).toBeDefined()
   })
 
-  it('renders grid with model cards when populated', async () => {
-    const { useLibraryStore } = await import('../stores/libraryStore')
-
+  it('renders grid with model cards when populated', () => {
     act(() => {
       useLibraryStore.getState().applySnapshot(SAMPLE_MODELS)
     })
-
-    const { ModelLibrary } = await import('../components/ModelLibrary')
     render(React.createElement(ModelLibrary))
 
     const cards = screen.getAllByTestId('library-card')
@@ -98,14 +94,10 @@ describe('ModelLibrary component', () => {
     expect(screen.getByText('Phone Stand')).toBeDefined()
   })
 
-  it('has search input when models exist', async () => {
-    const { useLibraryStore } = await import('../stores/libraryStore')
-
+  it('has search input when models exist', () => {
     act(() => {
       useLibraryStore.getState().applySnapshot(SAMPLE_MODELS)
     })
-
-    const { ModelLibrary } = await import('../components/ModelLibrary')
     render(React.createElement(ModelLibrary))
 
     const input = screen.getByTestId('library-search-input')
@@ -114,15 +106,11 @@ describe('ModelLibrary component', () => {
   })
 
   it('delete button calls invoke with model id', async () => {
-    const { useLibraryStore } = await import('../stores/libraryStore')
-
     act(() => {
       useLibraryStore.getState().applySnapshot([SAMPLE_MODELS[0]])
     })
 
     invokeMock.mockResolvedValue([])
-
-    const { ModelLibrary } = await import('../components/ModelLibrary')
     render(React.createElement(ModelLibrary))
 
     const deleteBtn = screen.getByTestId('library-delete')
@@ -137,8 +125,6 @@ describe('ModelLibrary component', () => {
   })
 
   it('re-slice button calls invoke with model id', async () => {
-    const { useLibraryStore } = await import('../stores/libraryStore')
-
     act(() => {
       useLibraryStore.getState().applySnapshot([SAMPLE_MODELS[0]])
     })
@@ -149,8 +135,6 @@ describe('ModelLibrary component', () => {
       if (cmd === 'get_library_models') return [SAMPLE_MODELS[0]]
       return []
     })
-
-    const { ModelLibrary } = await import('../components/ModelLibrary')
     render(React.createElement(ModelLibrary))
 
     const resliceBtn = screen.getByTestId('library-reslice')
@@ -164,56 +148,40 @@ describe('ModelLibrary component', () => {
     expect(invokeMock).toHaveBeenCalledWith('open_library_model', { id: 'lib-1' })
   })
 
-  it('shows placeholder thumbnail when no URL', async () => {
-    const { useLibraryStore } = await import('../stores/libraryStore')
-
+  it('shows placeholder thumbnail when no URL', () => {
     // Cable Organizer has thumbnailUrl: null
     act(() => {
       useLibraryStore.getState().applySnapshot([SAMPLE_MODELS[1]])
     })
-
-    const { ModelLibrary } = await import('../components/ModelLibrary')
     render(React.createElement(ModelLibrary))
 
     expect(screen.getByTestId('library-thumbnail-placeholder')).toBeDefined()
   })
 
-  it('displays author and date metadata', async () => {
-    const { useLibraryStore } = await import('../stores/libraryStore')
-
+  it('displays author and date metadata', () => {
     act(() => {
       useLibraryStore.getState().applySnapshot([SAMPLE_MODELS[0]])
     })
-
-    const { ModelLibrary } = await import('../components/ModelLibrary')
     render(React.createElement(ModelLibrary))
 
     expect(screen.getByTestId('library-author').textContent).toBe('DesignMaster')
     expect(screen.getByTestId('library-date')).toBeDefined()
   })
 
-  it('displays rating and download count', async () => {
-    const { useLibraryStore } = await import('../stores/libraryStore')
-
+  it('displays rating and download count', () => {
     act(() => {
       useLibraryStore.getState().applySnapshot([SAMPLE_MODELS[0]])
     })
-
-    const { ModelLibrary } = await import('../components/ModelLibrary')
     render(React.createElement(ModelLibrary))
 
     expect(screen.getByTestId('library-rating').textContent).toContain('4.7')
     expect(screen.getByTestId('library-downloads').textContent).toContain('12.5K')
   })
 
-  it('shows source link when sourceUrl is present', async () => {
-    const { useLibraryStore } = await import('../stores/libraryStore')
-
+  it('shows source link when sourceUrl is present', () => {
     act(() => {
       useLibraryStore.getState().applySnapshot([SAMPLE_MODELS[0]])
     })
-
-    const { ModelLibrary } = await import('../components/ModelLibrary')
     render(React.createElement(ModelLibrary))
 
     const link = screen.getByTestId('library-source-link')
@@ -222,8 +190,6 @@ describe('ModelLibrary component', () => {
 
   it('loads models on mount via invoke', async () => {
     invokeMock.mockResolvedValue(SAMPLE_MODELS)
-
-    const { ModelLibrary } = await import('../components/ModelLibrary')
     await act(async () => {
       render(React.createElement(ModelLibrary))
     })
@@ -234,8 +200,6 @@ describe('ModelLibrary component', () => {
   it('shows a model from a library:changed event without reloading', async () => {
     invokeMock.mockClear()
     listenMock.mockClear()
-    const { ModelLibrary } = await import('../components/ModelLibrary')
-    const { useLibraryEvents } = await import('../stores/libraryStore')
     function OpenLibrary() {
       useLibraryEvents()
       return React.createElement(ModelLibrary)
@@ -257,23 +221,20 @@ describe('ModelLibrary component', () => {
 })
 
 describe('ModelLibrary helpers', () => {
-  it('formatImportDate formats ISO date', async () => {
-    const { formatImportDate } = await import('../components/ModelLibrary')
+  it('formatImportDate formats ISO date', () => {
     const result = formatImportDate('2026-03-15T08:00:00Z')
     expect(result).not.toBe('2026-03-15T08:00:00Z')
     expect(result.length).toBeGreaterThan(5)
     expect(formatImportDate('not-a-date')).toBe('not-a-date')
   })
 
-  it('formatRating handles null and values', async () => {
-    const { formatRating } = await import('../components/ModelLibrary')
+  it('formatRating handles null and values', () => {
     expect(formatRating(null)).toBe('—')
     expect(formatRating(4.7)).toBe('4.7')
     expect(formatRating(3.0)).toBe('3.0')
   })
 
-  it('formatDownloads abbreviates large numbers', async () => {
-    const { formatDownloads } = await import('../components/ModelLibrary')
+  it('formatDownloads abbreviates large numbers', () => {
     expect(formatDownloads(null)).toBe('—')
     expect(formatDownloads(500)).toBe('500')
     expect(formatDownloads(12500)).toBe('12.5K')

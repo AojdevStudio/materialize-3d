@@ -12,8 +12,9 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, waitFor, cleanup, within } from '@testing-library/react'
-import { useOpenScadStore, OPENSCAD_DEFAULT_STATE, debouncedRender } from '../stores/openscadStore'
-import type { ScadParameter } from '../stores/openscadStore'
+import { useOpenScadStore, OPENSCAD_DEFAULT_STATE, debouncedRender, type ScadParameter } from '../stores/openscadStore'
+import DesignTab from '../components/DesignTab'
+import ParameterPanel from '../components/ParameterPanel'
 
 // ─── Mock Tauri invoke ────────────────────────────────────────────────────────
 
@@ -136,8 +137,7 @@ describe('DesignTab', () => {
     cleanup()
   })
 
-  it('shows empty state when no file is loaded', async () => {
-    const { default: DesignTab } = await import('../components/DesignTab')
+  it('shows empty state when no file is loaded', () => {
     render(<DesignTab />)
 
     expect(screen.getByTestId('design-tab-empty')).toBeTruthy()
@@ -145,8 +145,7 @@ describe('DesignTab', () => {
     expect(screen.getByText(/Open an OpenSCAD file/)).toBeTruthy()
   })
 
-  it('has an Open File button in empty state', async () => {
-    const { default: DesignTab } = await import('../components/DesignTab')
+  it('has an Open File button in empty state', () => {
     render(<DesignTab />)
 
     const button = screen.getByTestId('open-file-button')
@@ -162,8 +161,6 @@ describe('DesignTab', () => {
       lastStlPath: null,
       lastError: null,
     })
-
-    const { default: DesignTab } = await import('../components/DesignTab')
     render(<DesignTab />)
 
     await waitFor(() => {
@@ -181,8 +178,6 @@ describe('DesignTab', () => {
       lastStlPath: null,
       lastError: null,
     })
-
-    const { default: DesignTab } = await import('../components/DesignTab')
     render(<DesignTab />)
 
     await waitFor(() => {
@@ -198,8 +193,6 @@ describe('DesignTab', () => {
       lastStlPath: null,
       lastError: null,
     })
-
-    const { default: DesignTab } = await import('../components/DesignTab')
     render(<DesignTab />)
 
     await waitFor(() => {
@@ -216,8 +209,6 @@ describe('DesignTab', () => {
       lastStlPath: null,
       lastError: { line: 5, message: 'Expected ;', fullStderr: 'ERROR: Expected ;' },
     })
-
-    const { default: DesignTab } = await import('../components/DesignTab')
     render(<DesignTab />)
 
     await waitFor(() => {
@@ -234,8 +225,6 @@ describe('DesignTab', () => {
       lastStlPath: '/tmp/output.stl',
       lastError: null,
     })
-
-    const { default: DesignTab } = await import('../components/DesignTab')
     render(<DesignTab />)
 
     await waitFor(() => {
@@ -246,8 +235,6 @@ describe('DesignTab', () => {
 
   it('calls dialog open with scad filter when Open File clicked', async () => {
     mockDialogOpen.mockResolvedValue(null)
-
-    const { default: DesignTab } = await import('../components/DesignTab')
     render(<DesignTab />)
 
     const button = screen.getByTestId('open-file-button')
@@ -272,20 +259,17 @@ describe('ParameterPanel', () => {
     cleanup()
   })
 
-  it('shows empty state when no parameters', async () => {
-    const { default: ParameterPanel } = await import('../components/ParameterPanel')
+  it('shows empty state when no parameters', () => {
     render(<ParameterPanel />)
 
     expect(screen.getByText('No parameters')).toBeTruthy()
   })
 
-  it('renders sliders for number params with min/max', async () => {
+  it('renders sliders for number params with min/max', () => {
     useOpenScadStore.setState({
       ...OPENSCAD_DEFAULT_STATE,
       parameters: testParams,
     })
-
-    const { default: ParameterPanel } = await import('../components/ParameterPanel')
     render(<ParameterPanel />)
 
     // Width slider
@@ -303,13 +287,11 @@ describe('ParameterPanel', () => {
     expect(heightSlider.getAttribute('step')).toBe('0.5')
   })
 
-  it('renders text input for string params', async () => {
+  it('renders text input for string params', () => {
     useOpenScadStore.setState({
       ...OPENSCAD_DEFAULT_STATE,
       parameters: testParams,
     })
-
-    const { default: ParameterPanel } = await import('../components/ParameterPanel')
     render(<ParameterPanel />)
 
     const textInput = screen.getByRole('textbox', { name: 'Text' })
@@ -317,13 +299,11 @@ describe('ParameterPanel', () => {
     expect((textInput as HTMLInputElement).value).toBe('Hello')
   })
 
-  it('renders number input for numbers without range', async () => {
+  it('renders number input for numbers without range', () => {
     useOpenScadStore.setState({
       ...OPENSCAD_DEFAULT_STATE,
       parameters: testParams,
     })
-
-    const { default: ParameterPanel } = await import('../components/ParameterPanel')
     render(<ParameterPanel />)
 
     // wall_thickness has no min/max, so it should be a spinbutton (number input)
@@ -332,13 +312,11 @@ describe('ParameterPanel', () => {
     expect((numberInput as HTMLInputElement).value).toBe('2')
   })
 
-  it('groups parameters by group field', async () => {
+  it('groups parameters by group field', () => {
     useOpenScadStore.setState({
       ...OPENSCAD_DEFAULT_STATE,
       parameters: testParams,
     })
-
-    const { default: ParameterPanel } = await import('../components/ParameterPanel')
     render(<ParameterPanel />)
 
     // Should have group headers for Dimensions and Label (3 groups total, but
@@ -349,13 +327,11 @@ describe('ParameterPanel', () => {
     expect(screen.getAllByText('Parameters').length).toBeGreaterThanOrEqual(1)
   })
 
-  it('updates store parameter on slider change', async () => {
+  it('updates store parameter on slider change', () => {
     useOpenScadStore.setState({
       ...OPENSCAD_DEFAULT_STATE,
       parameters: testParams,
     })
-
-    const { default: ParameterPanel } = await import('../components/ParameterPanel')
     render(<ParameterPanel />)
 
     const widthSlider = screen.getByRole('slider', { name: 'Width' })
@@ -381,8 +357,6 @@ describe('ParameterPanel', () => {
       parameters: testParams,
       render: renderMock,
     })
-
-    const { default: ParameterPanel } = await import('../components/ParameterPanel')
     render(<ParameterPanel />)
 
     const widthSlider = screen.getByRole('slider', { name: 'Width' })

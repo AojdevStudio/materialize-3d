@@ -23,6 +23,7 @@ import {
   MATERIALIZE_THEME_ID,
   materializeDarkTheme,
 } from '../languages/materialize-theme'
+import OpenScadEditor from '../components/OpenScadEditor'
 
 // ─── Mock Tauri invoke ────────────────────────────────────────────────────────
 
@@ -191,17 +192,12 @@ describe('OpenScadEditor Component', () => {
     cleanup()
   })
 
-  it('renders loading state initially', async () => {
-    // Lazy import to ensure mocks are applied
-    const { default: OpenScadEditor } = await import('../components/OpenScadEditor')
-
+  it('renders loading state initially', () => {
     render(<OpenScadEditor filePath="/test/valid.scad" onSave={vi.fn()} />)
     expect(screen.getByText('Loading…')).toBeTruthy()
   })
 
   it('renders editor after file loads', async () => {
-    const { default: OpenScadEditor } = await import('../components/OpenScadEditor')
-
     render(<OpenScadEditor filePath="/test/valid.scad" onSave={vi.fn()} />)
 
     await waitFor(() => {
@@ -214,8 +210,6 @@ describe('OpenScadEditor Component', () => {
   })
 
   it('shows error when file load fails', async () => {
-    const { default: OpenScadEditor } = await import('../components/OpenScadEditor')
-
     render(<OpenScadEditor filePath="/test/missing.scad" onSave={vi.fn()} />)
 
     await waitFor(() => {
@@ -224,7 +218,6 @@ describe('OpenScadEditor Component', () => {
   })
 
   it('registers save action with Cmd+S keybinding on mount', async () => {
-    const { default: OpenScadEditor } = await import('../components/OpenScadEditor')
     const onSave = vi.fn()
 
     render(<OpenScadEditor filePath="/test/valid.scad" onSave={onSave} />)
@@ -254,8 +247,6 @@ describe('OpenScadEditor Component', () => {
   })
 
   it('registers OpenSCAD language and theme on mount', async () => {
-    const { default: OpenScadEditor } = await import('../components/OpenScadEditor')
-
     render(<OpenScadEditor filePath="/test/valid.scad" onSave={vi.fn()} />)
 
     await waitFor(() => {
@@ -287,8 +278,6 @@ describe('Error Marker Integration', () => {
   })
 
   it('sets error markers when store has lastError', async () => {
-    const { default: OpenScadEditor } = await import('../components/OpenScadEditor')
-
     render(<OpenScadEditor filePath="/test/valid.scad" onSave={vi.fn()} />)
 
     await waitFor(() => {
@@ -326,8 +315,6 @@ describe('Error Marker Integration', () => {
   })
 
   it('clears markers when error is null', async () => {
-    const { default: OpenScadEditor } = await import('../components/OpenScadEditor')
-
     // Start with an error
     useOpenScadStore.setState({
       lastError: {
