@@ -131,8 +131,9 @@ pub enum QueueStatus {
     #[default]
     Pending,
     Submitted {
-        /// The print this job started. `None` for a job submitted before the
-        /// queue recorded it, which no print matches.
+        /// The print this job started. `None` once that print ended or can no
+        /// longer start, and for a job submitted before the queue recorded
+        /// it. No print matches `None`.
         #[serde(default)]
         print: Option<SentPrint>,
     },

@@ -811,14 +811,17 @@ fn settle_print<R: Runtime>(
             send_print_notification(app_handle, &model_name, status, fail_reason.as_deref());
             let event_type = if status == "success" { "print_complete" } else { "print_failed" };
             emit_proactive_notification(app_handle, app_state, &model_name, event_type);
-            Ok(())
+            crate::print_queue::persist_queue(app_state)
         }
         (None, Some(start)) if in_progress(curr) => {
             if is_seen {
                 return Ok(());
             }
             with_db(app_state, |conn| crate::database::set_seen_print(conn, serial, start))?;
-            claim_job(app_state, serial, subtask_name, Some(start)).map(|_| ())
+            if claim_job(app_state, serial, subtask_name, Some(start), false)?.is_some() {
+                crate::print_queue::persist_queue(app_state)?;
+            }
+            Ok(())
         }
         (_, Some(_)) if open => {
             with_db(app_state, |conn| crate::database::forget_seen_print(conn, serial))
@@ -880,7 +883,7 @@ fn record_print_completion(
     };
 
     let (filament_grams, filament_meters, quality_profile, thumbnail_path) =
-        claim_job(app_state, serial, subtask_name.as_deref(), gcode_start_time.as_deref())?
+        claim_job(app_state, serial, subtask_name.as_deref(), gcode_start_time.as_deref(), true)?
             .map(|j| (j.filament_grams, j.filament_meters, j.quality_profile, j.thumbnail_path))
             .unwrap_or_default();
 
@@ -911,41 +914,48 @@ fn record_print_completion(
 /// Returns the queued job that started the print printer `serial` runs as
 /// `subtask_name` since `start`: the job already bound to that print, else
 /// the latest job sent to that printer under that name and bound to no print
-/// yet, which is then bound to this one. A print with no name, or no job
-/// sent under its name, gets `None`.
+/// yet. A print with no name, or no job sent under its name, gets `None`.
+///
+/// The found job is bound to `start`, or released once the print has
+/// `ended`, so it describes no other print. The app sends a job only while
+/// its printer is IDLE, so older jobs sent to that printer and never bound
+/// can no longer start, and they are released too. The caller saves the queue.
 fn claim_job(
     app_state: &AppState,
     serial: &str,
     subtask_name: Option<&str>,
     start: Option<&str>,
+    ended: bool,
 ) -> Result<Option<crate::state::QueuedJob>, String> {
     let Some(subtask_name) = subtask_name else { return Ok(None) };
-    let (job, bound) = {
-        let mut queue = app_state
-            .print_queue
-            .lock()
-            .map_err(|e| format!("failed to lock print queue: {e}"))?;
-        let bound_to = |job: &crate::state::QueuedJob| match &job.status {
-            QueueStatus::Submitted { print: Some(p) } if p.serial == serial && p.subtask_name == subtask_name => {
-                Some(p.start_time.clone())
-            }
-            _ => None,
-        };
-        let index = start
-            .and_then(|start| queue.iter().rposition(|j| bound_to(j) == Some(Some(start.into()))))
-            .or_else(|| queue.iter().rposition(|j| bound_to(j) == Some(None)));
-        let Some(job) = index.map(|i| &mut queue[i]) else { return Ok(None) };
-        let bound = match (&mut job.status, start) {
-            (QueueStatus::Submitted { print: Some(p) }, Some(start)) if p.start_time.is_none() => {
-                p.start_time = Some(start.into());
-                true
-            }
-            _ => false,
-        };
-        (job.clone(), bound)
+    let mut queue = app_state
+        .print_queue
+        .lock()
+        .map_err(|e| format!("failed to lock print queue: {e}"))?;
+    let sent_print = |job: &crate::state::QueuedJob| match &job.status {
+        QueueStatus::Submitted { print: Some(p) } if p.serial == serial => Some(p.clone()),
+        _ => None,
     };
-    if bound {
-        crate::print_queue::persist_queue(app_state)?;
+    let sent_as = |job: &crate::state::QueuedJob, start: Option<&str>| {
+        sent_print(job).is_some_and(|p| p.subtask_name == subtask_name && p.start_time.as_deref() == start)
+    };
+    let index = start
+        .and_then(|start| queue.iter().rposition(|j| sent_as(j, Some(start))))
+        .or_else(|| queue.iter().rposition(|j| sent_as(j, None)));
+    let Some(index) = index else { return Ok(None) };
+    let job = queue[index].clone();
+
+    for older in &mut queue[..index] {
+        if sent_print(older).is_some_and(|p| p.start_time.is_none()) {
+            older.status = QueueStatus::Submitted { print: None };
+        }
+    }
+    if let QueueStatus::Submitted { print: Some(p) } = &mut queue[index].status {
+        match (ended, start) {
+            (true, _) => queue[index].status = QueueStatus::Submitted { print: None },
+            (false, Some(start)) => p.start_time = Some(start.into()),
+            (false, None) => {}
+        }
     }
     Ok(Some(job))
 }
@@ -3487,6 +3497,78 @@ mod tests {
             metadata_of_row_started_at(&app_state, "1710600000"),
             (None, None, None),
             "the job is bound to the print that started at 1710500000"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_job_whose_print_ends_without_a_start_time_does_not_describe_a_later_print() {
+        let (app, app_state, service) = history_app();
+        queue_job(&app_state, "cube", 12.5);
+        let (a, _event_loop) = send_job(&service, printer_a(), "cube", "cube.3mf", &app, &app_state).await;
+        for report in [
+            br#"{"print":{"gcode_state":"RUNNING","subtask_name":"cube.3mf"}}"#.as_slice(),
+            br#"{"print":{"gcode_state":"FINISH"}}"#,
+            br#"{"print":{"gcode_state":"RUNNING","gcode_start_time":"1710600000","subtask_name":"cube.3mf"}}"#,
+            br#"{"print":{"gcode_state":"FINISH"}}"#,
+        ] {
+            service.handle_publish(a, report, app.handle(), &app_state).await;
+        }
+        let first = get_test_history(&app_state).into_iter().find(|row| row.started_at.is_none()).expect("first row");
+        assert_eq!(first.filament_grams, Some(12.5), "the job describes the print it started");
+        assert_eq!(
+            metadata_of_row_started_at(&app_state, "1710600000"),
+            (None, None, None),
+            "the job's print already ended"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_job_sent_before_the_job_that_printed_does_not_describe_a_later_print() {
+        let (app, app_state, service) = history_app();
+        queue_job(&app_state, "old", 5.0);
+        queue_job(&app_state, "cube", 12.5);
+        let (_, _old_loop) = send_job(&service, printer_a(), "old", "cube.3mf", &app, &app_state).await;
+        service.disconnect(app.handle(), &app_state).await;
+        let (a, _cube_loop) = send_job(&service, printer_a(), "cube", "cube.3mf", &app, &app_state).await;
+        assert_eq!(
+            finish_print(&service, a, "cube.3mf", &app, &app_state).await,
+            (Some(12.5), Some("cube quality".into()), Some("/tmp/cube.png".into()))
+        );
+        for report in [
+            br#"{"print":{"gcode_state":"RUNNING","gcode_start_time":"1710600000","subtask_name":"cube.3mf"}}"#.as_slice(),
+            br#"{"print":{"gcode_state":"FINISH"}}"#,
+        ] {
+            service.handle_publish(a, report, app.handle(), &app_state).await;
+        }
+        assert_eq!(
+            metadata_of_row_started_at(&app_state, "1710600000"),
+            (None, None, None),
+            "the old job can no longer start once a later job printed"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_print_gets_its_history_row_when_the_queue_file_cannot_be_written() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let queue_path = dir.path().join("print_queue.json");
+        let (app, mut app_state, service) = history_app();
+        Arc::get_mut(&mut app_state).unwrap().print_queue_file = Some(queue_path.clone());
+        queue_job(&app_state, "cube", 12.5);
+        let (a, _event_loop) = send_job(&service, printer_a(), "cube", "cube.3mf", &app, &app_state).await;
+        service
+            .handle_publish(a, br#"{"print":{"gcode_state":"RUNNING","subtask_name":"cube.3mf"}}"#, app.handle(), &app_state)
+            .await;
+        std::fs::set_permissions(&queue_path, std::fs::Permissions::from_mode(0o444)).unwrap();
+        let finished = br#"{"print":{"gcode_state":"FINISH","gcode_start_time":"1710500000"}}"#;
+        service.handle_publish(a, finished, app.handle(), &app_state).await;
+        assert!(crate::print_queue::persist_queue(&app_state).is_err(), "the queue file is read-only");
+
+        assert_eq!(
+            metadata_of_row_started_at(&app_state, "1710500000"),
+            (Some(12.5), Some("cube quality".into()), Some("/tmp/cube.png".into()))
         );
     }
 
