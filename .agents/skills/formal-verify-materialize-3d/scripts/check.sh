@@ -17,6 +17,7 @@ queue-file-at-restart   UpdateRestart UpdateRestart            INVARIANT QueueFi
 update-not-starved      UpdateRestart UpdateRestart            PROPERTY  UpdateGoesAhead         fails
 job-sent-once           AutoSend      AutoSend                 INVARIANT SentAtMostOnce          holds
 one-run-at-a-time       AutoSend      AutoSend                 INVARIANT OneRunAtATime           holds
+send-only-when-wanted   AutoSend      AutoSend                 INVARIANT SentOnlyWhenWanted      holds
 '
 
 # mutant | check it must fail
@@ -27,7 +28,8 @@ ungated-slice  no-build-cut-off
 guard-dropped  no-build-cut-off
 guard-leaked   failed-update-reopens
 unguarded          one-run-at-a-time
-released-on-switch job-sent-once
+released-on-switch one-run-at-a-time
+no-recheck         send-only-when-wanted
 '
 
 jar=${TLA2TOOLS_JAR:-}
