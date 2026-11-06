@@ -44,7 +44,8 @@ impl Turns {
 }
 
 /// The process groups that hold a process carrying one of these turn tags.
-/// `ps` shows the environment of the person's own processes.
+/// `ps` shows the environment of the person's own processes, except that macOS
+/// hides it for the system's own programs.
 #[cfg(unix)]
 fn tagged_groups(tags: &[String]) -> Vec<libc::pid_t> {
     let args: &[&str] = if cfg!(target_os = "macos") { &["-axE", "-ww", "-o", "pgid=,command="] } else { &["axeww", "-o", "pgid=,command="] };
@@ -121,8 +122,11 @@ fn tag_path(dir: &Path) -> PathBuf {
 }
 
 /// After a crash, an agent or its tools can outlive the app. The tag file names
-/// the turn, and every process still carrying that tag is stopped. A tool that
-/// clears its own environment carries no tag and is not found here.
+/// the turn, and every process still carrying that tag is stopped. Two kinds of
+/// tool are not found here: one that clears its own environment, and on macOS a
+/// group made only of the system's own programs (sh, sleep), whose environment
+/// macOS hides. The agent and the tools a job runs (python, uv, node, Bambu
+/// Studio) show their tag.
 fn stop_survivor(dir: &Path) {
     let path = tag_path(dir);
     // Only a whole tag counts. Anything else could match other turns' processes.
@@ -501,14 +505,21 @@ mod tests {
         use std::os::unix::process::CommandExt as _;
         let tag = uuid::Uuid::new_v4().to_string();
         let spawn = |tagged: bool| {
-            let mut command = std::process::Command::new("sleep");
-            command.arg("30").process_group(0);
+            // python3, not sleep: macOS hides the environment of its own system programs such as sleep.
+            let mut command = std::process::Command::new("python3");
+            command.args(["-c", "import time; time.sleep(30)"]).process_group(0);
             if tagged {
                 command.env(TAG_VAR, &tag);
             }
             command.spawn().expect("sleep")
         };
         let (mut tool, mut other) = (spawn(true), spawn(false));
+        // `ps` shows a new process's environment only once it has started, which can lag the spawn.
+        let seen = (0..50).any(|_| !tagged_groups(std::slice::from_ref(&tag)).is_empty() || {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            false
+        });
+        assert!(seen, "ps never showed the tagged process");
         end_tagged(&[tag.clone()]);
         assert!(tool.wait().expect("wait").code().is_none(), "the tagged tool was killed by a signal");
         assert!(other.try_wait().expect("try_wait").is_none(), "the untagged process still runs");
