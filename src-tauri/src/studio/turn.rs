@@ -5,7 +5,8 @@ use std::collections::HashMap;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use base64::Engine as _;
 use serde_json::{json, Value};
@@ -19,21 +20,52 @@ const SYSTEM_PROMPT: &str = include_str!("system_prompt.md");
 const MODEL: &str = "claude-opus-5-5";
 pub const EVENT: &str = "studio://event";
 
+/// A running turn: Stop cancels it, and quitting the app signals its process group.
+struct Turn {
+    token: CancellationToken,
+    /// The agent's process group, 0 until it starts.
+    group: Arc<AtomicU32>,
+}
+
 /// The running turn of each project, so a second send waits and Stop can end it.
 #[derive(Default)]
-pub struct Turns(Mutex<HashMap<String, CancellationToken>>);
+pub struct Turns(Mutex<HashMap<String, Turn>>);
+
+impl Turns {
+    /// Ends every running agent and its tools. Called as the app exits, when
+    /// there is no time left to wait on the turns' own tasks.
+    pub fn stop_all(&self) {
+        let Ok(running) = self.0.lock() else { return };
+        for turn in running.values() {
+            turn.token.cancel();
+            #[cfg(unix)]
+            if let Some(group) = std::num::NonZeroU32::new(turn.group.load(Ordering::SeqCst)) {
+                // SAFETY: killpg only sends a signal to the group the agent leads.
+                unsafe { libc::killpg(group.get() as libc::pid_t, libc::SIGTERM) };
+            }
+        }
+    }
+}
 
 fn transcript_path(dir: &Path) -> PathBuf {
     dir.join(META_DIR).join("transcript.jsonl")
 }
 
+/// Reads the transcript. A last line without its newline is a write the app
+/// did not finish when it stopped, so it is cut off before anything reads or
+/// appends. Every caller holds the `Turns` lock or owns the running turn.
 fn read_transcript(dir: &Path) -> Result<Vec<Value>, String> {
     let path = transcript_path(dir);
-    match std::fs::read_to_string(&path) {
-        Ok(text) => text.lines().map(|line| serde_json::from_str(line).map_err(|e| format!("{}: {e}", path.display()))).collect(),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
-        Err(e) => Err(format!("{}: {e}", path.display())),
+    let mut text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(format!("{}: {e}", path.display())),
+    };
+    if !text.is_empty() && !text.ends_with('\n') {
+        text.truncate(text.rfind('\n').map_or(0, |end| end + 1));
+        std::fs::write(&path, &text).map_err(|e| format!("{}: {e}", path.display()))?;
     }
+    text.lines().map(|line| serde_json::from_str(line).map_err(|e| format!("{}: {e}", path.display()))).collect()
 }
 
 /// The project's transcript, one JSON event per line. A line's index is its
@@ -173,12 +205,13 @@ pub fn studio_send(app: AppHandle, turns: State<'_, Turns>, project: String, tex
     let message = json!({ "type": "user", "message": { "role": "user", "content": content } });
 
     let token = CancellationToken::new();
+    let group = Arc::new(AtomicU32::new(0));
     {
         let mut running = turns.0.lock().map_err(|e| e.to_string())?;
         if running.contains_key(&project) {
             return Err("The agent is still working on the last message.".to_owned());
         }
-        running.insert(project.clone(), token.clone());
+        running.insert(project.clone(), Turn { token: token.clone(), group: group.clone() });
     }
     // A turn that cannot write its first line never started, so it gives its place back.
     let mut transcript = match Transcript::open(&dir)
@@ -214,7 +247,7 @@ pub fn studio_send(app: AppHandle, turns: State<'_, Turns>, project: String, tex
 
     tauri::async_runtime::spawn(async move {
         let before: HashMap<String, u64> = files::list(&dir).unwrap_or_default().into_iter().map(|f| (f.rel.clone(), f.modified_ms)).collect();
-        let outcome = run(&app, &project, &mut transcript, &started, command, message, token).await;
+        let outcome = run(&app, &project, &mut transcript, &started, command, message, token, &group).await;
         let changed: Vec<String> = files::list(&dir)
             .unwrap_or_default()
             .into_iter()
@@ -251,8 +284,10 @@ async fn run(
     mut command: tokio::process::Command,
     message: Value,
     token: CancellationToken,
+    group: &AtomicU32,
 ) -> Result<(), String> {
     let mut child = command.spawn().map_err(|e| format!("could not start the claude CLI: {e}. Install Claude Code and sign in."))?;
+    group.store(child.id().unwrap_or(0), Ordering::SeqCst);
     let mut stdin = child.stdin.take().expect("piped stdin");
     stdin.write_all(format!("{message}\n").as_bytes()).await.map_err(|e| format!("writing to claude: {e}"))?;
     drop(stdin);
@@ -314,8 +349,8 @@ async fn stop(child: &mut tokio::process::Child) {
 /// Stops the project's running turn.
 #[tauri::command]
 pub fn studio_cancel(turns: State<'_, Turns>, project: String) -> Result<(), String> {
-    if let Some(token) = turns.0.lock().map_err(|e| e.to_string())?.get(&project) {
-        token.cancel();
+    if let Some(turn) = turns.0.lock().map_err(|e| e.to_string())?.get(&project) {
+        turn.token.cancel();
     }
     Ok(())
 }
@@ -336,5 +371,15 @@ mod tests {
         assert!(has_open_turn(&read_transcript(dir.path()).expect("read")));
         assert_eq!(reopened.write(&json!({ "type": "m3d_turn_end", "ok": true })).expect("write"), 2);
         assert!(!has_open_turn(&read_transcript(dir.path()).expect("read")));
+    }
+
+    #[test]
+    fn a_write_cut_off_by_a_crash_is_dropped_and_the_next_line_numbers_on() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(dir.path().join(META_DIR)).expect("meta dir");
+        std::fs::write(transcript_path(dir.path()), "{\"type\":\"m3d_user\"}\n{\"type\":\"assi").expect("write");
+        let mut transcript = Transcript::open(dir.path()).expect("open");
+        assert_eq!(transcript.write(&json!({ "type": "m3d_turn_end", "ok": false })).expect("write"), 1);
+        assert_eq!(read_transcript(dir.path()).expect("read").len(), 2);
     }
 }

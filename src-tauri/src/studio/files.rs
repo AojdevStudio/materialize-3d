@@ -68,7 +68,7 @@ fn resolve(project: &str, rel: &str) -> Result<PathBuf, String> {
     }
     let full = dir.join(rel_path).canonicalize().map_err(|e| format!("{rel}: {e}"))?;
     let root = dir.canonicalize().map_err(|e| format!("{}: {e}", dir.display()))?;
-    if !full.starts_with(&root) {
+    if !full.starts_with(&root) || full.starts_with(root.join(META_DIR)) {
         return Err(format!("{rel} is outside the project"));
     }
     Ok(full)
@@ -76,8 +76,12 @@ fn resolve(project: &str, rel: &str) -> Result<PathBuf, String> {
 
 /// A file name for `refs/` that keeps the original name and never overwrites.
 fn free_ref_name(dir: &Path, name: &str) -> Result<(PathBuf, String), String> {
-    let refs = dir.join("refs");
-    std::fs::create_dir_all(&refs).map_err(|e| format!("creating {}: {e}", refs.display()))?;
+    std::fs::create_dir_all(dir.join("refs")).map_err(|e| format!("creating {}: {e}", dir.join("refs").display()))?;
+    // `refs` could be a symlink the agent made. Pictures land inside the project or nowhere.
+    let refs = dir.join("refs").canonicalize().map_err(|e| format!("refs: {e}"))?;
+    if !refs.starts_with(dir.canonicalize().map_err(|e| format!("{}: {e}", dir.display()))?) {
+        return Err("refs/ points outside the project".to_owned());
+    }
     let clean: String = Path::new(name)
         .file_name()
         .map(|n| n.to_string_lossy().chars().map(|c| if c.is_ascii_alphanumeric() || ".-_".contains(c) { c } else { '-' }).collect())
@@ -111,7 +115,8 @@ pub fn studio_save_bytes(request: tauri::ipc::Request<'_>) -> Result<String, Str
         request.headers().get(name).and_then(|v| v.to_str().ok()).map(str::to_owned).ok_or_else(|| format!("missing {name} header"))
     };
     let project = header("m3d-project")?;
-    let name = header("m3d-name")?;
+    // The name is percent-encoded, because a header holds only ASCII.
+    let name = percent_encoding::percent_decode_str(&header("m3d-name")?).decode_utf8_lossy().into_owned();
     let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
         return Err("expected raw bytes".to_owned());
     };
@@ -171,24 +176,34 @@ fn content_type(path: &Path) -> &'static str {
     }
 }
 
-/// Serves `m3dfile://localhost/<project>/<path>`. The preview frame loads pages
-/// from here so their relative links work, and the 3D viewer fetches models.
-fn serve(uri: &tauri::http::Uri) -> Response<Vec<u8>> {
+/// The app's own pages: the bundled UI on macOS and Linux, on Windows, and the dev server.
+const APP_ORIGINS: &[&str] = &["tauri://localhost", "http://tauri.localhost", "http://localhost:1420"];
+
+/// The project and the path inside it. Each project is its own host,
+/// `m3dfile://<project>/<path>`, so each is its own origin: a preview page
+/// reads its own project's files and no other's. Windows has no custom hosts,
+/// so there the project is the first path segment of `http://m3dfile.localhost/`.
+fn request_parts(uri: &tauri::http::Uri) -> Vec<String> {
+    let segments = uri.path().trim_start_matches('/').split('/').map(|part| percent_encoding::percent_decode_str(part).decode_utf8_lossy().into_owned());
+    match uri.host() {
+        Some(host) if host != "m3dfile.localhost" => std::iter::once(host.to_owned()).chain(segments).collect(),
+        _ => segments.collect(),
+    }
+}
+
+/// Serves project files. The preview frame loads pages from here so their
+/// relative links work, and the 3D viewer fetches models. Only the app's own
+/// window may read across projects.
+fn serve(request: &tauri::http::Request<Vec<u8>>) -> Response<Vec<u8>> {
+    let decoded = request_parts(request.uri());
+    let allow = request.headers().get(header::ORIGIN).and_then(|v| v.to_str().ok()).filter(|o| APP_ORIGINS.contains(o)).map(str::to_owned);
     let respond = |status: StatusCode, kind: &str, body: Vec<u8>| {
-        Response::builder()
-            .status(status)
-            .header(header::CONTENT_TYPE, kind)
-            .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-            .header(header::CACHE_CONTROL, "no-store")
-            .body(body)
-            .expect("valid response")
+        let mut response = Response::builder().status(status).header(header::CONTENT_TYPE, kind).header(header::CACHE_CONTROL, "no-store");
+        if let Some(origin) = &allow {
+            response = response.header(header::ACCESS_CONTROL_ALLOW_ORIGIN, origin.as_str());
+        }
+        response.body(body).expect("valid response")
     };
-    let decoded: Vec<String> = uri
-        .path()
-        .trim_start_matches('/')
-        .split('/')
-        .map(|part| percent_encoding::percent_decode_str(part).decode_utf8_lossy().into_owned())
-        .collect();
     let Some((project, rest)) = decoded.split_first() else {
         return respond(StatusCode::NOT_FOUND, "text/plain", b"no project".to_vec());
     };
@@ -201,14 +216,29 @@ fn serve(uri: &tauri::http::Uri) -> Response<Vec<u8>> {
 
 pub fn register_protocol<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> {
     builder.register_asynchronous_uri_scheme_protocol("m3dfile", |_ctx, request, responder| {
-        let uri = request.uri().clone();
-        std::thread::spawn(move || responder.respond(serve(&uri)));
+        std::thread::spawn(move || responder.respond(serve(&request)));
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn each_project_is_its_own_host() {
+        let parts = |uri: &str| request_parts(&uri.parse().expect("uri"));
+        assert_eq!(parts("m3dfile://2026-11-06-clip/print/a%20b.3mf"), ["2026-11-06-clip", "print", "a b.3mf"]);
+        assert_eq!(parts("http://m3dfile.localhost/2026-11-06-clip/guide.html"), ["2026-11-06-clip", "guide.html"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_refs_folder_cannot_take_a_picture_out() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let outside = tempfile::tempdir().expect("outside");
+        std::os::unix::fs::symlink(outside.path(), dir.path().join("refs")).expect("symlink");
+        assert!(free_ref_name(dir.path(), "photo.jpg").is_err());
+    }
 
     #[test]
     fn ref_names_never_overwrite_and_never_escape() {

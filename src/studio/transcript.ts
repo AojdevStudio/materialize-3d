@@ -122,6 +122,13 @@ export function buildChat(events: StudioEvent[], projectPath: string): Chat {
       }
       case 'm3d_turn_end':
         running = false
+        // A step with no result when its turn ends was stopped with it.
+        for (const tool of tools.values()) {
+          if (tool.result === undefined) {
+            tool.result = 'Stopped before it finished.'
+            tool.failed = true
+          }
+        }
         if (event.ok === false) items.push({ kind: 'error', text: str(event.error) })
         break
     }

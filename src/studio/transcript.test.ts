@@ -35,9 +35,17 @@ describe('buildChat', () => {
     ])
   })
 
-  it('ends the turn and shows its error', () => {
-    const chat = buildChat([{ type: 'm3d_user', text: 'hi' }, { type: 'm3d_turn_end', ok: false, error: 'Stopped.' }], project)
+  it('ends the turn, marks its unfinished step stopped, and shows its error', () => {
+    const chat = buildChat(
+      [
+        { type: 'm3d_user', text: 'hi' },
+        { type: 'assistant', message: { content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'python3 build/slice.py' } }] } },
+        { type: 'm3d_turn_end', ok: false, error: 'Stopped.' },
+      ],
+      project,
+    )
     expect(chat.running).toBe(false)
+    expect(chat.items[1]).toEqual(expect.objectContaining({ kind: 'tool', failed: true, result: 'Stopped before it finished.' }))
     expect(chat.items[chat.items.length - 1]).toEqual({ kind: 'error', text: 'Stopped.' })
   })
 })

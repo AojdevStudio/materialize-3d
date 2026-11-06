@@ -27,7 +27,8 @@ async function loadModel(url: string, ext: string): Promise<THREE.Object3D> {
     if (meshes === 0) throw new Error('This 3MF holds no shapes the viewer can read.')
     return zUp(group)
   }
-  const gltf = await new GLTFLoader().parseAsync(data, '')
+  // A glTF's buffers and textures sit beside it.
+  const gltf = await new GLTFLoader().parseAsync(data, url.slice(0, url.split('?')[0].lastIndexOf('/') + 1))
   return gltf.scene
 }
 
@@ -49,7 +50,13 @@ export default function ModelView({ url, ext }: { url: string; ext: string }) {
     const element = host.current
     if (!element) return
     setError(null)
-    const renderer = new THREE.WebGLRenderer({ antialias: true })
+    let renderer: THREE.WebGLRenderer
+    try {
+      renderer = new THREE.WebGLRenderer({ antialias: true })
+    } catch (err) {
+      setError(`This Mac could not start 3D drawing. ${err instanceof Error ? err.message : String(err)}`)
+      return
+    }
     renderer.setPixelRatio(window.devicePixelRatio)
     element.appendChild(renderer.domElement)
     const scene = new THREE.Scene()

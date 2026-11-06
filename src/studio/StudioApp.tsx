@@ -1,9 +1,11 @@
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { autoOpens, studio, type Project, type ProjectFile, type StudioEvent } from './api'
-import { ChatView, Composer, type Attachment } from './Chat'
+import { ChatView, Composer, releaseAttachment, type Attachment } from './Chat'
 import RightPanel, { type Tab } from './RightPanel'
 import { buildChat } from './transcript'
+import { UpdateBanner } from '../components/UpdateBanner'
+import { checkForUpdatesAtLaunch, useUpdateEvents } from '../stores/updates'
 import './studio.css'
 
 const SUGGESTIONS = [
@@ -42,6 +44,11 @@ export default function StudioApp() {
   const lastSeen = useRef(0)
 
   const chat = useMemo(() => buildChat(events, current?.path ?? ''), [events, current?.path])
+
+  useUpdateEvents()
+  useEffect(() => {
+    void checkForUpdatesAtLaunch()
+  }, [])
 
   useEffect(() => {
     studio.projects().then(setProjects).catch((err: unknown) => setError(String(err)))
@@ -133,10 +140,13 @@ export default function StudioApp() {
         show(project, [])
       }
       const id = project.id
+      const sending = attachments
       const images = await Promise.all(
-        attachments.map((a) => (a.kind === 'path' ? studio.importFile(id, a.path) : studio.saveBytes(id, a.name, a.bytes))),
+        sending.map((a) => (a.kind === 'path' ? studio.importFile(id, a.path) : studio.saveBytes(id, a.name, a.bytes))),
       )
-      setAttachments([])
+      // A picture added while these imported waits for the next message.
+      setAttachments((prev) => prev.filter((a) => !sending.includes(a)))
+      sending.forEach(releaseAttachment)
       await studio.send(id, text, images)
     } catch (err) {
       setError(String(err))
@@ -147,7 +157,10 @@ export default function StudioApp() {
     <Composer
       attachments={attachments}
       onAttach={(more) => setAttachments((prev) => [...prev, ...more])}
-      onRemove={(index) => setAttachments((prev) => prev.filter((_, i) => i !== index))}
+      onRemove={(index) => {
+        releaseAttachment(attachments[index])
+        setAttachments((prev) => prev.filter((_, i) => i !== index))
+      }}
       onSend={send}
       onStop={current ? () => void studio.cancel(current.id) : undefined}
       running={chat.running}
@@ -175,6 +188,7 @@ export default function StudioApp() {
       </nav>
 
       <main className="chat" aria-label="Chat">
+        <UpdateBanner />
         {error && (
           <div className="error-bar" role="alert">
             <span>{error}</span>

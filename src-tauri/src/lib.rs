@@ -335,8 +335,14 @@ pub fn run() {
             }
             Ok(())
         })
-        .run(app_context())
-        .expect("error while running tauri application");
+        .build(app_context())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            // A turn running when the app quits would keep changing its project with no window to show it.
+            if let tauri::RunEvent::Exit = event {
+                app.state::<studio::Turns>().stop_all();
+            }
+        });
 }
 
 #[cfg(test)]

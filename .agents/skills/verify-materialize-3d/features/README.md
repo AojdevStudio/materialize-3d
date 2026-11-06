@@ -8,6 +8,7 @@ For installed macOS release acceptance, use [Verify the installed Mac app](../..
 
 - `$S/m3d.sh up` printed `m3d: ready`, and `$S/m3d.sh doctor` exits 0.
 - `$S/wd.ts session` is open, and `$S/m3d.sh close-inspector` reports a 1440x900 viewport.
+- Since 2026-11-06 the app opens on the [studio](./studio.md) start screen. Wait for `[data-testid=start-screen]` instead of `nav[aria-label=Primary]`, and skip onboarding, which no longer shows. The rest of this list applies to the hidden screens.
 - A fresh run starts at onboarding. Every recipe except [onboarding](./onboarding.md) starts from the main UI, so complete onboarding first: `$S/wd.ts click "[data-testid=btn-get-started]"`, `$S/wd.ts click "[data-testid=btn-llm-skip]"`, `$S/wd.ts click "[data-testid=btn-bambu-skip]"`, `$S/wd.ts click "[data-testid=btn-launch-app]"`, `$S/wd.ts wait "nav[aria-label=Primary]"`.
 - `DB` means `$(readlink -f ~/m3d-verify/current)/xdg/data/com.aojdevstudio.materialize3d/materialize.db`. Read it with the bun one-liner in SKILL.md.
 

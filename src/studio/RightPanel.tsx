@@ -59,7 +59,7 @@ function Preview({ project, file, onError }: { project: string; file: ProjectFil
       </div>
       <div className="preview-body">
         {kind === 'html' && (
-          <iframe key={url} title={file.rel} src={url} sandbox="allow-scripts allow-popups allow-modals" data-testid="html-preview" />
+          <iframe key={url} title={file.rel} src={url} sandbox="allow-scripts allow-same-origin allow-popups allow-modals" data-testid="html-preview" />
         )}
         {kind === 'model' && <ModelView url={url} ext={file.rel.split('.').pop()!.toLowerCase()} />}
         {kind === 'image' && <img className="image-view" src={url} alt={file.rel} />}

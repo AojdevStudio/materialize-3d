@@ -14,6 +14,16 @@
   --s-user: #f1f0ec;
   --s-error: #b42318;
   --s-code: #f4f3f0;
+  /* The shared tokens the update banner reads, in light values. */
+  --bg-deep: var(--s-bg);
+  --bg-surface: var(--s-panel);
+  --bg-hover: var(--s-user);
+  --border: var(--s-line);
+  --text-primary: var(--s-text);
+  --text-secondary: var(--s-muted);
+  --accent-blue: #2563eb;
+  --accent-blue-dim: #2563eb1a;
+  --accent-red: var(--s-error);
 }
 
 * {

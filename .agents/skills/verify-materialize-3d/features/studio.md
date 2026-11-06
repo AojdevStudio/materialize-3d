@@ -19,7 +19,7 @@ The studio is the whole app. Each chat is a project folder in `~/Documents/Mater
 
 ## Driving it with wd.ts
 
-On macOS, drive it with `mac.ts` from an `e2e` build. Answer `Add picture` with `mac.ts dialog <png>` before the click.
+On macOS, drive it with `mac.ts` from an `e2e` build. Answer `Add picture` with `mac.ts dialog <png>` before the click. `PROJECT` is the one folder under `<run>/data/projects/`.
 
 ```bash
 bun $S/mac.ts wait '[data-testid=start-screen]' 30000
@@ -28,6 +28,9 @@ bun $S/mac.ts click 'text=Add picture'
 bun $S/mac.ts type '[data-testid=prompt]' 'Make a cable clip like in this sketch, then slice it to a 3MF'
 bun $S/mac.ts click '[data-testid=send]'
 bun $S/mac.ts wait '[data-testid=working]' 20000
+# A full job takes minutes. Wait for its end line in the transcript, then for the file card.
+until grep -q m3d_turn_end "$PROJECT/.m3d/transcript.jsonl"; do sleep 10; done
+bun $S/mac.ts wait '[data-testid=file-cards]' 30000
 bun $S/mac.ts click '[data-testid=files-tab]'
 bun $S/mac.ts click '[data-testid=files-list] button.primary'   # Open in Bambu Studio
 ```

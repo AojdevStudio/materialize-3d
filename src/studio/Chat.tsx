@@ -9,6 +9,11 @@ export type Attachment =
   | { kind: 'path'; name: string; path: string }
   | { kind: 'bytes'; name: string; bytes: Uint8Array; previewUrl: string }
 
+/** Frees a pasted picture's preview once it is sent or removed. */
+export function releaseAttachment(attachment: Attachment): void {
+  if (attachment.kind === 'bytes') URL.revokeObjectURL(attachment.previewUrl)
+}
+
 function inline(text: string): ReactNode[] {
   return text.split(/(`[^`\n]+`|\*\*[^*\n]+\*\*)/g).map((part, i) => {
     if (part.startsWith('`') && part.endsWith('`') && part.length > 1) return <code key={i}>{part.slice(1, -1)}</code>
