@@ -51,10 +51,11 @@ fn transcript_path(dir: &Path) -> PathBuf {
     dir.join(META_DIR).join("transcript.jsonl")
 }
 
-/// Reads the transcript. A last line without its newline is a write the app
-/// did not finish when it stopped, so it is cut off before anything reads or
-/// appends. Every caller holds the `Turns` lock or owns the running turn.
-fn read_transcript(dir: &Path) -> Result<Vec<Value>, String> {
+/// Reads the transcript. A last line without its newline is a write still in
+/// progress, or one the app never finished because it stopped. Readers skip it.
+/// The one writer (`repair`) cuts it off: the turn that owns the file, or the
+/// reconcile when no turn runs.
+fn read_transcript(dir: &Path, repair: bool) -> Result<Vec<Value>, String> {
     let path = transcript_path(dir);
     let mut text = match std::fs::read_to_string(&path) {
         Ok(text) => text,
@@ -63,7 +64,9 @@ fn read_transcript(dir: &Path) -> Result<Vec<Value>, String> {
     };
     if !text.is_empty() && !text.ends_with('\n') {
         text.truncate(text.rfind('\n').map_or(0, |end| end + 1));
-        std::fs::write(&path, &text).map_err(|e| format!("{}: {e}", path.display()))?;
+        if repair {
+            std::fs::write(&path, &text).map_err(|e| format!("{}: {e}", path.display()))?;
+        }
     }
     text.lines().map(|line| serde_json::from_str(line).map_err(|e| format!("{}: {e}", path.display()))).collect()
 }
@@ -78,7 +81,7 @@ struct Transcript {
 
 impl Transcript {
     fn open(dir: &Path) -> Result<Self, String> {
-        Ok(Self { dir: dir.to_owned(), next: read_transcript(dir)?.len() })
+        Ok(Self { dir: dir.to_owned(), next: read_transcript(dir, true)?.len() })
     }
 
     fn write(&mut self, event: &Value) -> Result<usize, String> {
@@ -112,8 +115,9 @@ fn has_open_turn(events: &[Value]) -> bool {
 pub fn studio_transcript(turns: State<'_, Turns>, project: String) -> Result<Vec<Value>, String> {
     let dir = project_dir(&project)?;
     let running = turns.0.lock().map_err(|e| e.to_string())?;
-    let mut events = read_transcript(&dir)?;
-    if !running.contains_key(&project) && has_open_turn(&events) {
+    let idle = !running.contains_key(&project);
+    let mut events = read_transcript(&dir, idle)?;
+    if idle && has_open_turn(&events) {
         let end = json!({ "type": "m3d_turn_end", "ok": false, "error": "This turn stopped when the app closed." });
         Transcript { dir, next: events.len() }.write(&end)?;
         events.push(end);
@@ -288,8 +292,18 @@ async fn run(
 ) -> Result<(), String> {
     let mut child = command.spawn().map_err(|e| format!("could not start the claude CLI: {e}. Install Claude Code and sign in."))?;
     group.store(child.id().unwrap_or(0), Ordering::SeqCst);
+    // Once this run ends its group id may belong to someone else, so quitting must not signal it.
+    let _clear = ClearOnDrop(group);
     let mut stdin = child.stdin.take().expect("piped stdin");
-    stdin.write_all(format!("{message}\n").as_bytes()).await.map_err(|e| format!("writing to claude: {e}"))?;
+    let line = format!("{message}\n");
+    // A Stop or a quit that came while the agent was starting ends it here.
+    tokio::select! {
+        () = token.cancelled() => {
+            stop(&mut child).await;
+            return Err("Stopped.".to_owned());
+        }
+        written = stdin.write_all(line.as_bytes()) => written.map_err(|e| format!("writing to claude: {e}"))?,
+    }
     drop(stdin);
 
     let mut stderr = child.stderr.take().expect("piped stderr");
@@ -332,6 +346,14 @@ async fn run(
     Ok(())
 }
 
+struct ClearOnDrop<'a>(&'a AtomicU32);
+
+impl Drop for ClearOnDrop<'_> {
+    fn drop(&mut self) {
+        self.0.store(0, Ordering::SeqCst);
+    }
+}
+
 /// Ends the agent and every tool it started: a polite signal first so Claude
 /// Code can stop its tools, then a kill for whatever is left.
 async fn stop(child: &mut tokio::process::Child) {
@@ -368,9 +390,9 @@ mod tests {
         assert_eq!(first.write(&json!({ "type": "assistant" })).expect("write"), 1);
 
         let mut reopened = Transcript::open(dir.path()).expect("reopen");
-        assert!(has_open_turn(&read_transcript(dir.path()).expect("read")));
+        assert!(has_open_turn(&read_transcript(dir.path(), false).expect("read")));
         assert_eq!(reopened.write(&json!({ "type": "m3d_turn_end", "ok": true })).expect("write"), 2);
-        assert!(!has_open_turn(&read_transcript(dir.path()).expect("read")));
+        assert!(!has_open_turn(&read_transcript(dir.path(), false).expect("read")));
     }
 
     #[test]
@@ -378,8 +400,10 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::create_dir_all(dir.path().join(META_DIR)).expect("meta dir");
         std::fs::write(transcript_path(dir.path()), "{\"type\":\"m3d_user\"}\n{\"type\":\"assi").expect("write");
+        assert_eq!(read_transcript(dir.path(), false).expect("read").len(), 1);
+        assert!(std::fs::read_to_string(transcript_path(dir.path())).expect("raw").ends_with("assi"), "a reader leaves a write in progress alone");
         let mut transcript = Transcript::open(dir.path()).expect("open");
         assert_eq!(transcript.write(&json!({ "type": "m3d_turn_end", "ok": false })).expect("write"), 1);
-        assert_eq!(read_transcript(dir.path()).expect("read").len(), 2);
+        assert_eq!(read_transcript(dir.path(), false).expect("read").len(), 2);
     }
 }

@@ -34,15 +34,12 @@ export const studio = {
     listen<{ project: string; seq: number; event: StudioEvent }>('studio://event', ({ payload }) => handler(payload.project, payload.seq, payload.event)),
 }
 
-const isWindows = navigator.userAgent.includes('Windows')
-
 /**
  * A project file as served by the app's `m3dfile://` protocol. Each project is its own host, so a preview page
  * can read only its own project. The version busts the cache when the file changes.
  */
 export function fileUrl(project: string, rel: string, version?: number): string {
-  const path = rel.split('/').map(encodeURIComponent).join('/')
-  const url = isWindows ? `http://m3dfile.localhost/${encodeURIComponent(project)}/${path}` : `m3dfile://${project}/${path}`
+  const url = `m3dfile://${project}/${rel.split('/').map(encodeURIComponent).join('/')}`
   return version === undefined ? url : `${url}?v=${version}`
 }
 

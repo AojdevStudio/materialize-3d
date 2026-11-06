@@ -176,26 +176,24 @@ fn content_type(path: &Path) -> &'static str {
     }
 }
 
-/// The app's own pages: the bundled UI on macOS and Linux, on Windows, and the dev server.
-const APP_ORIGINS: &[&str] = &["tauri://localhost", "http://tauri.localhost", "http://localhost:1420"];
+/// The app's own pages: the bundled UI and the dev server. Only these may read across projects.
+const APP_ORIGINS: &[&str] = &["tauri://localhost", "http://localhost:1420"];
 
 /// The project and the path inside it. Each project is its own host,
-/// `m3dfile://<project>/<path>`, so each is its own origin: a preview page
-/// reads its own project's files and no other's. Windows has no custom hosts,
-/// so there the project is the first path segment of `http://m3dfile.localhost/`.
-fn request_parts(uri: &tauri::http::Uri) -> Vec<String> {
-    let segments = uri.path().trim_start_matches('/').split('/').map(|part| percent_encoding::percent_decode_str(part).decode_utf8_lossy().into_owned());
-    match uri.host() {
-        Some(host) if host != "m3dfile.localhost" => std::iter::once(host.to_owned()).chain(segments).collect(),
-        _ => segments.collect(),
-    }
+/// `m3dfile://<project>/<path>`, so each is its own origin and a preview page
+/// reads only its own project's files. There is no shared host, so a page
+/// cannot move to one and read another project. The app ships for macOS.
+/// Windows has no custom hosts, so it gets no previews.
+fn request_parts(uri: &tauri::http::Uri) -> Option<(String, String)> {
+    let project = uri.host().filter(|host| host.starts_with(|c: char| c.is_ascii_digit()))?.to_owned();
+    let rel = uri.path().trim_start_matches('/').split('/').map(|part| percent_encoding::percent_decode_str(part).decode_utf8_lossy().into_owned()).collect::<Vec<_>>().join("/");
+    Some((project, rel))
 }
 
 /// Serves project files. The preview frame loads pages from here so their
 /// relative links work, and the 3D viewer fetches models. Only the app's own
 /// window may read across projects.
 fn serve(request: &tauri::http::Request<Vec<u8>>) -> Response<Vec<u8>> {
-    let decoded = request_parts(request.uri());
     let allow = request.headers().get(header::ORIGIN).and_then(|v| v.to_str().ok()).filter(|o| APP_ORIGINS.contains(o)).map(str::to_owned);
     let respond = |status: StatusCode, kind: &str, body: Vec<u8>| {
         let mut response = Response::builder().status(status).header(header::CONTENT_TYPE, kind).header(header::CACHE_CONTROL, "no-store");
@@ -204,10 +202,10 @@ fn serve(request: &tauri::http::Request<Vec<u8>>) -> Response<Vec<u8>> {
         }
         response.body(body).expect("valid response")
     };
-    let Some((project, rest)) = decoded.split_first() else {
+    let Some((project, rel)) = request_parts(request.uri()) else {
         return respond(StatusCode::NOT_FOUND, "text/plain", b"no project".to_vec());
     };
-    let found = resolve(project, &rest.join("/")).and_then(|path| std::fs::read(&path).map(|bytes| (path, bytes)).map_err(|e| e.to_string()));
+    let found = resolve(&project, &rel).and_then(|path| std::fs::read(&path).map(|bytes| (path, bytes)).map_err(|e| e.to_string()));
     match found {
         Ok((path, bytes)) => respond(StatusCode::OK, content_type(&path), bytes),
         Err(e) => respond(StatusCode::NOT_FOUND, "text/plain", e.into_bytes()),
@@ -225,10 +223,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn each_project_is_its_own_host() {
+    fn each_project_is_its_own_host_and_there_is_no_shared_one() {
         let parts = |uri: &str| request_parts(&uri.parse().expect("uri"));
-        assert_eq!(parts("m3dfile://2026-11-06-clip/print/a%20b.3mf"), ["2026-11-06-clip", "print", "a b.3mf"]);
-        assert_eq!(parts("http://m3dfile.localhost/2026-11-06-clip/guide.html"), ["2026-11-06-clip", "guide.html"]);
+        assert_eq!(parts("m3dfile://2026-11-06-clip/print/a%20b.3mf"), Some(("2026-11-06-clip".to_owned(), "print/a b.3mf".to_owned())));
+        assert_eq!(parts("m3dfile://m3dfile.localhost/2026-11-06-clip/guide.html"), None);
+        assert_eq!(parts("m3dfile://localhost/2026-11-06-clip/guide.html"), None);
     }
 
     #[cfg(unix)]
