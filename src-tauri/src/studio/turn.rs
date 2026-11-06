@@ -595,14 +595,19 @@ mod tests {
         assert_eq!(read_transcript(dir.path(), false).expect("read").len(), 2);
     }
 
-    /// The Stop path, with no tag: a shell (the agent) starts `sleep` in a group
-    /// of its own, as Claude Code does for each tool. `sleep` is a system program,
+    /// The Stop path, with no tag: the agent starts `sleep` in a group of its
+    /// own, as Claude Code does for each tool. `sleep` is a system program,
     /// so on macOS only the walk of the live process tree can find it.
     #[cfg(unix)]
     #[test]
     fn a_shell_tool_in_its_own_group_is_ended_through_the_live_tree() {
         use std::os::unix::process::CommandExt as _;
-        let mut agent = std::process::Command::new("sh").args(["-c", "set -m; sleep 30 & wait"]).process_group(0).spawn().expect("sh");
+        // perl, not `sh -c 'set -m'`: dash ignores job control without a terminal, so it never moves the tool.
+        let mut agent = std::process::Command::new("perl")
+            .args(["-e", r#"if (fork == 0) { setpgrp(0, 0); exec "sleep", "30" } wait"#])
+            .process_group(0)
+            .spawn()
+            .expect("perl");
         let leader = agent.id();
         let tool = (0..50)
             .find_map(|_| {
@@ -612,7 +617,7 @@ mod tests {
                 }
                 found
             })
-            .expect("the shell started its tool");
+            .expect("the agent started its tool");
         assert_ne!(tool.group, leader as i32, "the tool runs in a group of its own");
         end_turn(&[leader], &[], &BTreeSet::new());
         let _ = agent.wait();
