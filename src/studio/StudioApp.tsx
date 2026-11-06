@@ -118,7 +118,9 @@ export default function StudioApp() {
       pending.current = null
       setEvents(live.reduce((events, { seq, event }) => appendEvent(events, seq, event), history))
     } catch (err) {
-      if (request === loadRequest.current) setError(String(err))
+      if (request !== loadRequest.current) return
+      pending.current = null
+      setError(String(err))
     }
   }
 

@@ -180,8 +180,16 @@ pub fn studio_send(app: AppHandle, turns: State<'_, Turns>, project: String, tex
         }
         running.insert(project.clone(), token.clone());
     }
-    let mut transcript = Transcript::open(&dir)?;
-    transcript.record(&app, &project, json!({ "type": "m3d_user", "text": text, "images": images }))?;
+    // A turn that cannot write its first line never started, so it gives its place back.
+    let mut transcript = match Transcript::open(&dir)
+        .and_then(|mut t| t.record(&app, &project, json!({ "type": "m3d_user", "text": text, "images": images })).map(|()| t))
+    {
+        Ok(transcript) => transcript,
+        Err(e) => {
+            turns.0.lock().map_err(|e| e.to_string())?.remove(&project);
+            return Err(e);
+        }
+    };
 
     let started = dir.join(META_DIR).join("session-started");
     let session_flag = if started.exists() { "--resume" } else { "--session-id" };
