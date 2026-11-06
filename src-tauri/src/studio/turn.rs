@@ -5,7 +5,8 @@ use std::collections::HashMap;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use base64::Engine as _;
 use serde_json::{json, Value};
@@ -19,14 +20,17 @@ const SYSTEM_PROMPT: &str = include_str!("system_prompt.md");
 const MODEL: &str = "claude-opus-5-5";
 pub const EVENT: &str = "studio://event";
 
-/// The variable each agent runs with. Claude Code starts every tool in its own
-/// process group, so the groups are found by this tag, which children inherit.
+/// The variable each agent runs with, which its tools inherit. A reopen after a
+/// crash finds what a turn left by this tag, because the agent that started the
+/// tools is gone by then.
 const TAG_VAR: &str = "M3D_TURN";
 
 /// A running turn: Stop cancels it, and quitting the app ends its processes.
 struct Turn {
     token: CancellationToken,
     tag: String,
+    /// The agent's pid while it runs, 0 before it starts and after it ends.
+    leader: Arc<AtomicU32>,
 }
 
 /// The running turn of each project, so a second send waits and Stop can end it.
@@ -38,81 +42,115 @@ impl Turns {
     /// there is no time left to wait on the turns' own tasks.
     pub fn stop_all(&self) {
         let Ok(running) = self.0.lock() else { return };
-        let tags: Vec<String> = running.values().inspect(|turn| turn.token.cancel()).map(|turn| turn.tag.clone()).collect();
-        end_tagged(&tags);
+        let (leaders, tags): (Vec<u32>, Vec<String>) =
+            running.values().inspect(|turn| turn.token.cancel()).map(|turn| (turn.leader.load(Ordering::SeqCst), turn.tag.clone())).unzip();
+        end_turn(&leaders, &tags);
     }
 }
 
-/// The process groups that hold a process carrying one of these turn tags.
-/// `ps` shows the environment of the person's own processes, except that macOS
-/// hides it for the system's own programs.
+/// One process in a `ps` reading.
 #[cfg(unix)]
-fn tagged_groups(tags: &[String]) -> Vec<libc::pid_t> {
-    let args: &[&str] = if cfg!(target_os = "macos") { &["-axE", "-ww", "-o", "pgid=,command="] } else { &["axeww", "-o", "pgid=,command="] };
-    let Ok(out) = std::process::Command::new("ps").args(args).output() else { return Vec::new() };
-    let marks: Vec<String> = tags.iter().map(|tag| format!("{TAG_VAR}={tag}")).collect();
-    // SAFETY: getpgrp only reads this process's own group.
-    let own = unsafe { libc::getpgrp() };
-    let mut groups: Vec<libc::pid_t> = String::from_utf8_lossy(&out.stdout)
-        .lines()
-        // A whole word, as `ps` prints each variable, not any text that contains it.
-        .filter(|line| line.split_whitespace().any(|word| marks.iter().any(|mark| word == mark)))
-        .filter_map(|line| line.split_whitespace().next()?.parse().ok())
-        .filter(|&group| group > 1 && group != own)
-        .collect();
-    groups.sort_unstable();
-    groups.dedup();
-    groups
+struct Process {
+    pid: libc::pid_t,
+    parent: libc::pid_t,
+    group: libc::pid_t,
+    /// False for a process that has exited but is not yet reaped (a zombie).
+    running: bool,
 }
 
-/// Groups with a process that still runs. A process that has exited but is not
-/// yet reaped (a zombie) no longer counts, so a stopped agent is not waited on.
+/// Every process, with its parent and group. `ps` shows these for every process,
+/// the system's own programs included.
 #[cfg(unix)]
-fn running_groups() -> std::collections::BTreeSet<libc::pid_t> {
-    let Ok(out) = std::process::Command::new("ps").args(["-axo", "pgid=,stat="]).output() else { return Default::default() };
+fn processes() -> Vec<Process> {
+    let Ok(out) = std::process::Command::new("ps").args(["-axo", "pid=,ppid=,pgid=,stat="]).output() else { return Vec::new() };
     String::from_utf8_lossy(&out.stdout)
         .lines()
         .filter_map(|line| {
             let mut words = line.split_whitespace();
-            let group = words.next()?.parse().ok()?;
-            (!words.next()?.starts_with('Z')).then_some(group)
+            Some(Process {
+                pid: words.next()?.parse().ok()?,
+                parent: words.next()?.parse().ok()?,
+                group: words.next()?.parse().ok()?,
+                running: !words.next()?.starts_with('Z'),
+            })
         })
         .collect()
 }
 
-/// Asks every process of these turns to stop, waits up to three seconds, then
-/// kills what is left. Blocking: for Stop, the app's exit, and a reopen after a crash.
-fn end_tagged(tags: &[String]) {
+/// The process groups that hold a process carrying one of these turn tags.
+/// macOS hides the environment of its own programs (sh, bash, zsh, sleep), so
+/// only tools such as python, uv, node, and Bambu Studio are found this way.
+#[cfg(unix)]
+fn tagged_groups(tags: &[String]) -> Vec<libc::pid_t> {
+    if tags.is_empty() {
+        return Vec::new();
+    }
+    let args: &[&str] = if cfg!(target_os = "macos") { &["-axE", "-ww", "-o", "pgid=,command="] } else { &["axeww", "-o", "pgid=,command="] };
+    let Ok(out) = std::process::Command::new("ps").args(args).output() else { return Vec::new() };
+    let marks: Vec<String> = tags.iter().map(|tag| format!("{TAG_VAR}={tag}")).collect();
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        // A whole word, as `ps` prints each variable, not any text that contains it.
+        .filter(|line| line.split_whitespace().any(|word| marks.iter().any(|mark| word == mark)))
+        .filter_map(|line| line.split_whitespace().next()?.parse().ok())
+        .collect()
+}
+
+/// The groups a turn owns: the group of the agent and of every process under it,
+/// which covers a shell tool that Claude Code started in a group of its own, and
+/// every group that holds a process carrying the turn's tag.
+#[cfg(unix)]
+fn turn_groups(table: &[Process], leaders: &[u32], tags: &[String]) -> std::collections::BTreeSet<libc::pid_t> {
+    let mut tree: std::collections::BTreeSet<libc::pid_t> = leaders.iter().filter(|&&pid| pid > 0).map(|&pid| pid as libc::pid_t).collect();
+    loop {
+        let more: Vec<libc::pid_t> = table.iter().filter(|p| tree.contains(&p.parent) && !tree.contains(&p.pid)).map(|p| p.pid).collect();
+        if more.is_empty() {
+            break;
+        }
+        tree.extend(more);
+    }
+    // SAFETY: getpgrp only reads this process's own group.
+    let own = unsafe { libc::getpgrp() };
+    table
+        .iter()
+        .filter(|p| tree.contains(&p.pid))
+        .map(|p| p.group)
+        .chain(tagged_groups(tags))
+        .filter(|&group| group > 1 && group != own)
+        .collect()
+}
+
+/// Ends a turn's processes: SIGTERM to every group it owns, then SIGKILL after
+/// three seconds to whatever still runs. The groups are read before any signal,
+/// so tools that lose their agent stay on the list. Blocking: for Stop, the end
+/// of every turn, the app's exit, and a reopen after a crash.
+fn end_turn(leaders: &[u32], tags: &[String]) {
     #[cfg(unix)]
     {
-        if tags.is_empty() {
+        if leaders.iter().all(|&pid| pid == 0) && tags.is_empty() {
             return;
         }
         // A group that is already gone is the outcome we want, so the result is not read.
-        let signal = |groups: &[libc::pid_t], sig: libc::c_int| {
-            for &group in groups {
-                // SAFETY: killpg only signals a group that holds a process this app tagged.
+        let signal = |groups: &mut dyn Iterator<Item = libc::pid_t>, sig: libc::c_int| {
+            for group in groups {
+                // SAFETY: killpg only signals a group this turn owns.
                 let _ = unsafe { libc::killpg(group, sig) };
             }
         };
-        // Every group seen stays on the list: a child can outlive the tagged process it came from.
-        let mut known = std::collections::BTreeSet::new();
-        known.extend(tagged_groups(tags));
-        signal(&known.iter().copied().collect::<Vec<_>>(), libc::SIGTERM);
-        let alive = |known: &std::collections::BTreeSet<libc::pid_t>| {
-            let running = running_groups();
-            known.iter().copied().filter(|group| running.contains(group)).collect::<Vec<_>>()
-        };
+        let mut known = turn_groups(&processes(), leaders, tags);
+        signal(&mut known.iter().copied(), libc::SIGTERM);
         for _ in 0..30 {
-            let fresh = tagged_groups(tags);
-            signal(&fresh.iter().copied().filter(|group| !known.contains(group)).collect::<Vec<_>>(), libc::SIGTERM);
+            let table = processes();
+            let fresh = turn_groups(&table, leaders, tags);
+            signal(&mut fresh.difference(&known).copied(), libc::SIGTERM);
             known.extend(fresh);
-            if alive(&known).is_empty() {
+            if !table.iter().any(|p| p.running && known.contains(&p.group)) {
                 return;
             }
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
-        signal(&alive(&known), libc::SIGKILL);
+        let table = processes();
+        signal(&mut known.iter().copied().filter(|group| table.iter().any(|p| p.running && p.group == *group)), libc::SIGKILL);
     }
 }
 
@@ -122,18 +160,19 @@ fn tag_path(dir: &Path) -> PathBuf {
 }
 
 /// After a crash, an agent or its tools can outlive the app. The tag file names
-/// the turn, and every process still carrying that tag is stopped. Two kinds of
-/// tool are not found here: one that clears its own environment, and on macOS a
-/// group made only of the system's own programs (sh, sleep), whose environment
-/// macOS hides. The agent and the tools a job runs (python, uv, node, Bambu
-/// Studio) show their tag.
+/// the turn, and every process still carrying that tag is stopped. The agent is
+/// gone by then, so its process tree cannot be walked. Known limit: a tool that
+/// clears its environment, or on macOS a group made only of the system's own
+/// programs (sh, bash, zsh, sleep), shows no tag and survives a crash of both
+/// the app and the agent. Stop, the end of a turn, and quitting the app read the
+/// live tree instead, so they end those tools.
 fn stop_survivor(dir: &Path) {
     let path = tag_path(dir);
     // Only a whole tag counts. Anything else could match other turns' processes.
     let tag = std::fs::read_to_string(&path).ok().and_then(|text| uuid::Uuid::parse_str(text.trim()).ok());
     if let Some(tag) = tag {
         log::warn!("studio: stopping processes left from a turn before the app closed");
-        end_tagged(&[tag.to_string()]);
+        end_turn(&[], &[tag.to_string()]);
     }
     let _ = std::fs::remove_file(&path);
 }
@@ -304,12 +343,13 @@ pub fn studio_send(app: AppHandle, turns: State<'_, Turns>, project: String, tex
 
     let token = CancellationToken::new();
     let tag = uuid::Uuid::new_v4().to_string();
+    let leader = Arc::new(AtomicU32::new(0));
     {
         let mut running = turns.0.lock().map_err(|e| e.to_string())?;
         if running.contains_key(&project) {
             return Err("The agent is still working on the last message.".to_owned());
         }
-        running.insert(project.clone(), Turn { token: token.clone(), tag: tag.clone() });
+        running.insert(project.clone(), Turn { token: token.clone(), tag: tag.clone(), leader: leader.clone() });
     }
     // A turn that cannot write its first line never started, so it gives its place back.
     let mut transcript = match Transcript::open(&dir)
@@ -346,7 +386,7 @@ pub fn studio_send(app: AppHandle, turns: State<'_, Turns>, project: String, tex
 
     tauri::async_runtime::spawn(async move {
         let before: HashMap<String, u64> = files::list(&dir).unwrap_or_default().into_iter().map(|f| (f.rel.clone(), f.modified_ms)).collect();
-        let outcome = run(&app, &project, &mut transcript, &started, command, message, token, &tag).await;
+        let outcome = run(&app, &project, &mut transcript, &started, command, message, token, &tag, &leader).await;
         let changed: Vec<String> = files::list(&dir)
             .unwrap_or_default()
             .into_iter()
@@ -384,6 +424,7 @@ async fn run(
     message: Value,
     token: CancellationToken,
     tag: &str,
+    leader: &AtomicU32,
 ) -> Result<(), String> {
     // Written before the agent starts and removed when this run ends, so a crash leaves it behind.
     let tag_file = tag_path(&transcript.dir);
@@ -392,14 +433,33 @@ async fn run(
     std::fs::write(&staged, tag).and_then(|()| std::fs::rename(&staged, &tag_file)).map_err(|e| format!("{}: {e}", tag_file.display()))?;
     let _tag_file = RemoveOnDrop(tag_file);
     let mut child = command.spawn().map_err(|e| format!("could not start the claude CLI: {e}. Install Claude Code and sign in."))?;
+    let pid = child.id().unwrap_or(0);
+    leader.store(pid, Ordering::SeqCst);
+    let outcome = drive(app, project, transcript, started, &mut child, message, &token).await;
+    // However the turn ended, nothing of it keeps running, and this happens before the tag file goes.
+    let tags = vec![tag.to_owned()];
+    let _ = tauri::async_runtime::spawn_blocking(move || end_turn(&[pid], &tags)).await;
+    let _ = child.kill().await;
+    // Once the agent is reaped its pid may belong to someone else, so quitting must not use it.
+    leader.store(0, Ordering::SeqCst);
+    outcome
+}
+
+/// Sends the message and records the agent's events until it exits or is stopped.
+async fn drive(
+    app: &AppHandle,
+    project: &str,
+    transcript: &mut Transcript,
+    started: &Path,
+    child: &mut tokio::process::Child,
+    message: Value,
+    token: &CancellationToken,
+) -> Result<(), String> {
     let mut stdin = child.stdin.take().expect("piped stdin");
     let line = format!("{message}\n");
     // A Stop or a quit that came while the agent was starting ends it here.
     tokio::select! {
-        () = token.cancelled() => {
-            stop(&mut child, tag).await;
-            return Err("Stopped.".to_owned());
-        }
+        () = token.cancelled() => return Err("Stopped.".to_owned()),
         written = stdin.write_all(line.as_bytes()) => written.map_err(|e| format!("writing to claude: {e}"))?,
     }
     drop(stdin);
@@ -414,10 +474,7 @@ async fn run(
     let mut result_error: Option<String> = None;
     loop {
         let line = tokio::select! {
-            () = token.cancelled() => {
-                stop(&mut child, tag).await;
-                return Err("Stopped.".to_owned());
-            }
+            () = token.cancelled() => return Err("Stopped.".to_owned()),
             line = lines.next_line() => line.map_err(|e| format!("reading claude output: {e}"))?,
         };
         let Some(line) = line else { break };
@@ -450,14 +507,6 @@ impl Drop for RemoveOnDrop {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.0);
     }
-}
-
-/// Ends the agent and every tool it started: a polite signal first so Claude
-/// Code can stop its tools, then a kill for whatever still carries the turn's tag.
-async fn stop(child: &mut tokio::process::Child, tag: &str) {
-    let tags = vec![tag.to_owned()];
-    let _ = tauri::async_runtime::spawn_blocking(move || end_tagged(&tags)).await;
-    let _ = child.kill().await;
 }
 
 /// Stops the project's running turn.
@@ -499,9 +548,38 @@ mod tests {
         assert_eq!(read_transcript(dir.path(), false).expect("read").len(), 2);
     }
 
+    /// The Stop path, with no tag: a shell (the agent) starts `sleep` in a group
+    /// of its own, as Claude Code does for each tool. `sleep` is a system program,
+    /// so on macOS only the walk of the live process tree can find it.
     #[cfg(unix)]
     #[test]
-    fn a_tagged_tool_in_its_own_group_is_ended_and_an_untagged_one_is_not() {
+    fn a_shell_tool_in_its_own_group_is_ended_through_the_live_tree() {
+        use std::os::unix::process::CommandExt as _;
+        let mut agent = std::process::Command::new("sh").args(["-c", "set -m; sleep 30 & wait"]).process_group(0).spawn().expect("sh");
+        let leader = agent.id();
+        let tool = (0..50)
+            .find_map(|_| {
+                let found = processes().into_iter().find(|p| p.parent == leader as libc::pid_t);
+                if found.is_none() {
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+                found
+            })
+            .expect("the shell started its tool");
+        assert_ne!(tool.group, leader as libc::pid_t, "the tool runs in a group of its own");
+        end_turn(&[leader], &[]);
+        let _ = agent.wait();
+        // SAFETY: signal 0 only asks whether the process exists.
+        let gone = (0..30).any(|_| unsafe { libc::kill(tool.pid, 0) } != 0 || {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            false
+        });
+        assert!(gone, "the tool outside the agent's group was ended");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn after_a_crash_a_tagged_tool_is_ended_and_an_untagged_one_is_not() {
         use std::os::unix::process::CommandExt as _;
         let tag = uuid::Uuid::new_v4().to_string();
         let spawn = |tagged: bool| {
@@ -520,7 +598,7 @@ mod tests {
             false
         });
         assert!(seen, "ps never showed the tagged process");
-        end_tagged(&[tag.clone()]);
+        end_turn(&[], &[tag.clone()]);
         assert!(tool.wait().expect("wait").code().is_none(), "the tagged tool was killed by a signal");
         assert!(other.try_wait().expect("try_wait").is_none(), "the untagged process still runs");
         other.kill().expect("kill");

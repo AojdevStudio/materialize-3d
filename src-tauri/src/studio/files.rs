@@ -74,8 +74,10 @@ fn resolve(project: &str, rel: &str) -> Result<PathBuf, String> {
     Ok(full)
 }
 
-/// A file name for `refs/` that keeps the original name and never overwrites.
-fn free_ref_name(dir: &Path, name: &str) -> Result<(PathBuf, String), String> {
+/// Creates a new file in `refs/` that keeps the original name and never
+/// overwrites. Each name is created with `create_new`, which refuses an existing
+/// path, a dangling symlink included, so nothing can redirect the write.
+fn create_ref(dir: &Path, name: &str) -> Result<(std::fs::File, String), String> {
     std::fs::create_dir_all(dir.join("refs")).map_err(|e| format!("creating {}: {e}", dir.join("refs").display()))?;
     // `refs` could be a symlink the agent made. Pictures land inside the project or nowhere.
     let refs = dir.join("refs").canonicalize().map_err(|e| format!("refs: {e}"))?;
@@ -91,19 +93,24 @@ fn free_ref_name(dir: &Path, name: &str) -> Result<(PathBuf, String), String> {
         Some((stem, ext)) => (stem.to_owned(), format!(".{ext}")),
         None => (clean.clone(), String::new()),
     };
-    (1..)
-        .map(|n| if n == 1 { clean.clone() } else { format!("{stem}-{n}{ext}") })
-        .map(|file| (refs.join(&file), format!("refs/{file}")))
-        .find(|(path, _)| !path.exists())
-        .ok_or_else(|| "no free file name".to_owned())
+    for n in 1.. {
+        let file = if n == 1 { clean.clone() } else { format!("{stem}-{n}{ext}") };
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(refs.join(&file)) {
+            Ok(handle) => return Ok((handle, format!("refs/{file}"))),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(format!("creating refs/{file}: {e}")),
+        }
+    }
+    unreachable!("the name counter never ends")
 }
 
 /// Copies a dropped file into the project's `refs/` folder and returns its path there.
 #[tauri::command]
 pub fn studio_import_file(project: String, source: String) -> Result<String, String> {
     let dir = project_dir(&project)?;
-    let (target, rel) = free_ref_name(&dir, &source)?;
-    std::fs::copy(&source, &target).map_err(|e| format!("copying {source}: {e}"))?;
+    let mut from = std::fs::File::open(&source).map_err(|e| format!("opening {source}: {e}"))?;
+    let (mut target, rel) = create_ref(&dir, &source)?;
+    std::io::copy(&mut from, &mut target).map_err(|e| format!("copying {source}: {e}"))?;
     Ok(rel)
 }
 
@@ -120,8 +127,8 @@ pub fn studio_save_bytes(request: tauri::ipc::Request<'_>) -> Result<String, Str
     let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
         return Err("expected raw bytes".to_owned());
     };
-    let (target, rel) = free_ref_name(&project_dir(&project)?, &name)?;
-    std::fs::write(&target, bytes).map_err(|e| format!("writing {}: {e}", target.display()))?;
+    let (mut target, rel) = create_ref(&project_dir(&project)?, &name)?;
+    std::io::Write::write_all(&mut target, bytes).map_err(|e| format!("writing {rel}: {e}"))?;
     Ok(rel)
 }
 
@@ -244,18 +251,30 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let outside = tempfile::tempdir().expect("outside");
         std::os::unix::fs::symlink(outside.path(), dir.path().join("refs")).expect("symlink");
-        assert!(free_ref_name(dir.path(), "photo.jpg").is_err());
+        assert!(create_ref(dir.path(), "photo.jpg").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_dangling_symlink_in_refs_cannot_take_a_picture_out() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let outside = tempfile::tempdir().expect("outside");
+        std::fs::create_dir(dir.path().join("refs")).expect("refs");
+        let target = outside.path().join("stolen.jpg");
+        std::os::unix::fs::symlink(&target, dir.path().join("refs/photo.jpg")).expect("symlink");
+        let (_, rel) = create_ref(dir.path(), "photo.jpg").expect("create");
+        assert_eq!(rel, "refs/photo-2.jpg");
+        assert!(!target.exists(), "nothing was written outside the project");
     }
 
     #[test]
     fn ref_names_never_overwrite_and_never_escape() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let (first, rel) = free_ref_name(dir.path(), "/Users/x/Desktop/arm photo.JPG").expect("name");
+        let (_, rel) = create_ref(dir.path(), "/Users/x/Desktop/arm photo.JPG").expect("name");
         assert_eq!(rel, "refs/arm-photo.JPG");
-        std::fs::write(&first, b"x").expect("write");
-        let (_, second) = free_ref_name(dir.path(), "arm photo.JPG").expect("name");
+        let (_, second) = create_ref(dir.path(), "arm photo.JPG").expect("name");
         assert_eq!(second, "refs/arm-photo-2.JPG");
-        let (_, odd) = free_ref_name(dir.path(), "..").expect("name");
+        let (_, odd) = create_ref(dir.path(), "..").expect("name");
         assert_eq!(odd, "refs/picture.png");
     }
 }
