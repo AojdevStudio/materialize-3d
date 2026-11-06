@@ -54,13 +54,29 @@ fn tagged_groups(tags: &[String]) -> Vec<libc::pid_t> {
     let own = unsafe { libc::getpgrp() };
     let mut groups: Vec<libc::pid_t> = String::from_utf8_lossy(&out.stdout)
         .lines()
-        .filter(|line| marks.iter().any(|mark| line.contains(mark.as_str())))
+        // A whole word, as `ps` prints each variable, not any text that contains it.
+        .filter(|line| line.split_whitespace().any(|word| marks.iter().any(|mark| word == mark)))
         .filter_map(|line| line.split_whitespace().next()?.parse().ok())
         .filter(|&group| group > 1 && group != own)
         .collect();
     groups.sort_unstable();
     groups.dedup();
     groups
+}
+
+/// Groups with a process that still runs. A process that has exited but is not
+/// yet reaped (a zombie) no longer counts, so a stopped agent is not waited on.
+#[cfg(unix)]
+fn running_groups() -> std::collections::BTreeSet<libc::pid_t> {
+    let Ok(out) = std::process::Command::new("ps").args(["-axo", "pgid=,stat="]).output() else { return Default::default() };
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|line| {
+            let mut words = line.split_whitespace();
+            let group = words.next()?.parse().ok()?;
+            (!words.next()?.starts_with('Z')).then_some(group)
+        })
+        .collect()
 }
 
 /// Asks every process of these turns to stop, waits up to three seconds, then
@@ -78,14 +94,24 @@ fn end_tagged(tags: &[String]) {
                 let _ = unsafe { libc::killpg(group, sig) };
             }
         };
-        signal(&tagged_groups(tags), libc::SIGTERM);
+        // Every group seen stays on the list: a child can outlive the tagged process it came from.
+        let mut known = std::collections::BTreeSet::new();
+        known.extend(tagged_groups(tags));
+        signal(&known.iter().copied().collect::<Vec<_>>(), libc::SIGTERM);
+        let alive = |known: &std::collections::BTreeSet<libc::pid_t>| {
+            let running = running_groups();
+            known.iter().copied().filter(|group| running.contains(group)).collect::<Vec<_>>()
+        };
         for _ in 0..30 {
-            if tagged_groups(tags).is_empty() {
+            let fresh = tagged_groups(tags);
+            signal(&fresh.iter().copied().filter(|group| !known.contains(group)).collect::<Vec<_>>(), libc::SIGTERM);
+            known.extend(fresh);
+            if alive(&known).is_empty() {
                 return;
             }
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
-        signal(&tagged_groups(tags), libc::SIGKILL);
+        signal(&alive(&known), libc::SIGKILL);
     }
 }
 
@@ -95,12 +121,15 @@ fn tag_path(dir: &Path) -> PathBuf {
 }
 
 /// After a crash, an agent or its tools can outlive the app. The tag file names
-/// the turn, and every process still carrying that tag is stopped.
+/// the turn, and every process still carrying that tag is stopped. A tool that
+/// clears its own environment carries no tag and is not found here.
 fn stop_survivor(dir: &Path) {
     let path = tag_path(dir);
-    if let Ok(tag) = std::fs::read_to_string(&path) {
+    // Only a whole tag counts. Anything else could match other turns' processes.
+    let tag = std::fs::read_to_string(&path).ok().and_then(|text| uuid::Uuid::parse_str(text.trim()).ok());
+    if let Some(tag) = tag {
         log::warn!("studio: stopping processes left from a turn before the app closed");
-        end_tagged(&[tag.trim().to_owned()]);
+        end_tagged(&[tag.to_string()]);
     }
     let _ = std::fs::remove_file(&path);
 }
@@ -354,7 +383,9 @@ async fn run(
 ) -> Result<(), String> {
     // Written before the agent starts and removed when this run ends, so a crash leaves it behind.
     let tag_file = tag_path(&transcript.dir);
-    std::fs::write(&tag_file, tag).map_err(|e| format!("{}: {e}", tag_file.display()))?;
+    // Written whole or not at all, so a crash never leaves a partial tag.
+    let staged = tag_file.with_extension("turn.new");
+    std::fs::write(&staged, tag).and_then(|()| std::fs::rename(&staged, &tag_file)).map_err(|e| format!("{}: {e}", tag_file.display()))?;
     let _tag_file = RemoveOnDrop(tag_file);
     let mut child = command.spawn().map_err(|e| format!("could not start the claude CLI: {e}. Install Claude Code and sign in."))?;
     let mut stdin = child.stdin.take().expect("piped stdin");
