@@ -1,11 +1,10 @@
 //! One chat turn: a `claude -p` run in the project folder whose stream-json
 //! events go to the window and into the project's transcript.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use base64::Engine as _;
@@ -25,12 +24,21 @@ pub const EVENT: &str = "studio://event";
 /// tools is gone by then.
 const TAG_VAR: &str = "M3D_TURN";
 
+/// What a turn's agent owns, for ending it. The agent is reaped only after its
+/// turn has ended its processes, so while `leader` is set its pid cannot belong
+/// to anyone else. `groups` is the agent's live tree as last read, refreshed
+/// each second, so a tool still running when the agent exits stays known.
+#[derive(Default)]
+struct Owned {
+    leader: u32,
+    groups: BTreeSet<i32>,
+}
+
 /// A running turn: Stop cancels it, and quitting the app ends its processes.
 struct Turn {
     token: CancellationToken,
     tag: String,
-    /// The agent's pid while it runs, 0 before it starts and after it ends.
-    leader: Arc<AtomicU32>,
+    owned: Arc<Mutex<Owned>>,
 }
 
 /// The running turn of each project, so a second send waits and Stop can end it.
@@ -42,18 +50,36 @@ impl Turns {
     /// there is no time left to wait on the turns' own tasks.
     pub fn stop_all(&self) {
         let Ok(running) = self.0.lock() else { return };
-        let (leaders, tags): (Vec<u32>, Vec<String>) =
-            running.values().inspect(|turn| turn.token.cancel()).map(|turn| (turn.leader.load(Ordering::SeqCst), turn.tag.clone())).unzip();
-        end_turn(&leaders, &tags);
+        let (mut leaders, mut known, mut tags) = (Vec::new(), BTreeSet::new(), Vec::new());
+        for turn in running.values() {
+            turn.token.cancel();
+            tags.push(turn.tag.clone());
+            if let Ok(owned) = turn.owned.lock() {
+                leaders.push(owned.leader);
+                known.extend(&owned.groups);
+            }
+        }
+        end_turn(&leaders, known, &tags, &BTreeSet::new());
+    }
+
+    /// The groups of every running agent but this project's, which this turn must never signal.
+    fn other_agents(&self, project: &str) -> BTreeSet<i32> {
+        let Ok(running) = self.0.lock() else { return BTreeSet::new() };
+        running
+            .iter()
+            .filter(|(name, _)| name.as_str() != project)
+            .filter_map(|(_, turn)| turn.owned.lock().ok().map(|owned| owned.leader as i32))
+            .filter(|&group| group > 0)
+            .collect()
     }
 }
 
 /// One process in a `ps` reading.
 #[cfg(unix)]
 struct Process {
-    pid: libc::pid_t,
-    parent: libc::pid_t,
-    group: libc::pid_t,
+    pid: i32,
+    parent: i32,
+    group: i32,
     /// False for a process that has exited but is not yet reaped (a zombie).
     running: bool,
 }
@@ -78,10 +104,10 @@ fn processes() -> Vec<Process> {
 }
 
 /// The process groups that hold a process carrying one of these turn tags.
-/// macOS hides the environment of its own programs (sh, bash, zsh, sleep), so
-/// only tools such as python, uv, node, and Bambu Studio are found this way.
+/// macOS hides the environment of its own programs (sh, bash, zsh, sleep, tail),
+/// so there only tools such as python, uv, node, and Bambu Studio are found this way.
 #[cfg(unix)]
-fn tagged_groups(tags: &[String]) -> Vec<libc::pid_t> {
+fn tagged_groups(tags: &[String]) -> Vec<i32> {
     if tags.is_empty() {
         return Vec::new();
     }
@@ -96,52 +122,53 @@ fn tagged_groups(tags: &[String]) -> Vec<libc::pid_t> {
         .collect()
 }
 
-/// The groups a turn owns: the group of the agent and of every process under it,
-/// which covers a shell tool that Claude Code started in a group of its own, and
-/// every group that holds a process carrying the turn's tag.
+/// The groups of these agents and of every process under them. This covers a
+/// shell tool that Claude Code started in a group of its own, whose environment
+/// macOS hides. Only safe while each leader is unreaped.
 #[cfg(unix)]
-fn turn_groups(table: &[Process], leaders: &[u32], tags: &[String]) -> std::collections::BTreeSet<libc::pid_t> {
-    let mut tree: std::collections::BTreeSet<libc::pid_t> = leaders.iter().filter(|&&pid| pid > 0).map(|&pid| pid as libc::pid_t).collect();
+fn tree_groups(table: &[Process], leaders: &[u32]) -> BTreeSet<i32> {
+    let mut tree: BTreeSet<i32> = leaders.iter().filter(|&&pid| pid > 0).map(|&pid| pid as i32).collect();
     loop {
-        let more: Vec<libc::pid_t> = table.iter().filter(|p| tree.contains(&p.parent) && !tree.contains(&p.pid)).map(|p| p.pid).collect();
+        let more: Vec<i32> = table.iter().filter(|p| tree.contains(&p.parent) && !tree.contains(&p.pid)).map(|p| p.pid).collect();
         if more.is_empty() {
             break;
         }
         tree.extend(more);
     }
-    // SAFETY: getpgrp only reads this process's own group.
-    let own = unsafe { libc::getpgrp() };
-    table
-        .iter()
-        .filter(|p| tree.contains(&p.pid))
-        .map(|p| p.group)
-        .chain(tagged_groups(tags))
-        .filter(|&group| group > 1 && group != own)
-        .collect()
+    table.iter().filter(|p| tree.contains(&p.pid)).map(|p| p.group).collect()
 }
 
 /// Ends a turn's processes: SIGTERM to every group it owns, then SIGKILL after
-/// three seconds to whatever still runs. The groups are read before any signal,
-/// so tools that lose their agent stay on the list. Blocking: for Stop, the end
+/// three seconds to whatever still runs. A group counts as the turn's when it
+/// was in `known` (the agent's tree as last watched), is in the agent's live
+/// tree, or holds a process with the turn's tag. It never counts when it is the
+/// app's group or in `exclude` (other turns' agents). Blocking: for Stop, the end
 /// of every turn, the app's exit, and a reopen after a crash.
-fn end_turn(leaders: &[u32], tags: &[String]) {
+fn end_turn(leaders: &[u32], known: BTreeSet<i32>, tags: &[String], exclude: &BTreeSet<i32>) {
     #[cfg(unix)]
     {
-        if leaders.iter().all(|&pid| pid == 0) && tags.is_empty() {
-            return;
-        }
+        // SAFETY: getpgrp only reads this process's own group.
+        let own = unsafe { libc::getpgrp() };
+        let ours = |group: &i32| *group > 1 && *group != own && !exclude.contains(group);
+        let read = |table: &[Process]| -> BTreeSet<i32> { tree_groups(table, leaders).into_iter().chain(tagged_groups(tags)).filter(ours).collect() };
         // A group that is already gone is the outcome we want, so the result is not read.
-        let signal = |groups: &mut dyn Iterator<Item = libc::pid_t>, sig: libc::c_int| {
+        let signal = |groups: &mut dyn Iterator<Item = i32>, sig: libc::c_int| {
             for group in groups {
                 // SAFETY: killpg only signals a group this turn owns.
                 let _ = unsafe { libc::killpg(group, sig) };
             }
         };
-        let mut known = turn_groups(&processes(), leaders, tags);
+        let table = processes();
+        // A watched group counts only while it still runs, so an id freed and reused since is not touched.
+        let mut known: BTreeSet<i32> = known.into_iter().filter(ours).filter(|group| table.iter().any(|p| p.running && p.group == *group)).collect();
+        known.extend(read(&table));
+        if known.is_empty() {
+            return;
+        }
         signal(&mut known.iter().copied(), libc::SIGTERM);
         for _ in 0..30 {
             let table = processes();
-            let fresh = turn_groups(&table, leaders, tags);
+            let fresh = read(&table);
             signal(&mut fresh.difference(&known).copied(), libc::SIGTERM);
             known.extend(fresh);
             if !table.iter().any(|p| p.running && known.contains(&p.group)) {
@@ -151,6 +178,35 @@ fn end_turn(leaders: &[u32], tags: &[String]) {
         }
         let table = processes();
         signal(&mut known.iter().copied().filter(|group| table.iter().any(|p| p.running && p.group == *group)), libc::SIGKILL);
+    }
+}
+
+/// Keeps `owned.groups` current while the agent runs.
+async fn watch(owned: Arc<Mutex<Owned>>, leader: u32, done: CancellationToken) {
+    loop {
+        tokio::select! {
+            () = done.cancelled() => return,
+            () = tokio::time::sleep(std::time::Duration::from_secs(1)) => {}
+        }
+        #[cfg(unix)]
+        {
+            let groups = tauri::async_runtime::spawn_blocking(move || tree_groups(&processes(), &[leader])).await.unwrap_or_default();
+            if let Ok(mut owned) = owned.lock() {
+                owned.groups = groups;
+            }
+        }
+    }
+}
+
+/// Waits up to five seconds for an agent whose output ended to exit by itself,
+/// without reaping it, so its pid stays its own while the turn is ended.
+#[cfg(unix)]
+fn wait_for_exit(pid: u32) {
+    for _ in 0..50 {
+        if !processes().iter().any(|p| p.pid == pid as i32 && p.running) {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
     }
 }
 
@@ -172,7 +228,7 @@ fn stop_survivor(dir: &Path) {
     let tag = std::fs::read_to_string(&path).ok().and_then(|text| uuid::Uuid::parse_str(text.trim()).ok());
     if let Some(tag) = tag {
         log::warn!("studio: stopping processes left from a turn before the app closed");
-        end_turn(&[], &[tag.to_string()]);
+        end_turn(&[], BTreeSet::new(), &[tag.to_string()], &BTreeSet::new());
     }
     let _ = std::fs::remove_file(&path);
 }
@@ -343,13 +399,13 @@ pub fn studio_send(app: AppHandle, turns: State<'_, Turns>, project: String, tex
 
     let token = CancellationToken::new();
     let tag = uuid::Uuid::new_v4().to_string();
-    let leader = Arc::new(AtomicU32::new(0));
+    let owned = Arc::new(Mutex::new(Owned::default()));
     {
         let mut running = turns.0.lock().map_err(|e| e.to_string())?;
         if running.contains_key(&project) {
             return Err("The agent is still working on the last message.".to_owned());
         }
-        running.insert(project.clone(), Turn { token: token.clone(), tag: tag.clone(), leader: leader.clone() });
+        running.insert(project.clone(), Turn { token: token.clone(), tag: tag.clone(), owned: owned.clone() });
     }
     // A turn that cannot write its first line never started, so it gives its place back.
     let mut transcript = match Transcript::open(&dir)
@@ -386,7 +442,7 @@ pub fn studio_send(app: AppHandle, turns: State<'_, Turns>, project: String, tex
 
     tauri::async_runtime::spawn(async move {
         let before: HashMap<String, u64> = files::list(&dir).unwrap_or_default().into_iter().map(|f| (f.rel.clone(), f.modified_ms)).collect();
-        let outcome = run(&app, &project, &mut transcript, &started, command, message, token, &tag, &leader).await;
+        let outcome = run(&app, &project, &mut transcript, &started, command, message, token, &tag, owned).await;
         let changed: Vec<String> = files::list(&dir)
             .unwrap_or_default()
             .into_iter()
@@ -424,7 +480,7 @@ async fn run(
     message: Value,
     token: CancellationToken,
     tag: &str,
-    leader: &AtomicU32,
+    owned: Arc<Mutex<Owned>>,
 ) -> Result<(), String> {
     // Written before the agent starts and removed when this run ends, so a crash leaves it behind.
     let tag_file = tag_path(&transcript.dir);
@@ -434,18 +490,54 @@ async fn run(
     let _tag_file = RemoveOnDrop(tag_file);
     let mut child = command.spawn().map_err(|e| format!("could not start the claude CLI: {e}. Install Claude Code and sign in."))?;
     let pid = child.id().unwrap_or(0);
-    leader.store(pid, Ordering::SeqCst);
+    owned.lock().map_err(|e| e.to_string())?.leader = pid;
+    let watching = CancellationToken::new();
+    tauri::async_runtime::spawn(watch(owned.clone(), pid, watching.clone()));
+
+    let mut stderr = child.stderr.take().expect("piped stderr");
+    let stderr_task = tokio::spawn(async move {
+        let mut text = String::new();
+        let _ = stderr.read_to_string(&mut text).await;
+        text
+    });
     let outcome = drive(app, project, transcript, started, &mut child, message, &token).await;
-    // However the turn ended, nothing of it keeps running, and this happens before the tag file goes.
+    watching.cancel();
+
+    // However the turn ended, nothing of it keeps running, and this happens before
+    // the tag file goes. The agent is not reaped yet, so its pid is still its own.
+    let finished = matches!(outcome, Ok(_));
+    let known = owned.lock().map(|owned| owned.groups.clone()).unwrap_or_default();
+    let exclude = app.try_state::<Turns>().map(|turns| turns.other_agents(project)).unwrap_or_default();
     let tags = vec![tag.to_owned()];
-    let _ = tauri::async_runtime::spawn_blocking(move || end_turn(&[pid], &tags)).await;
-    let _ = child.kill().await;
-    // Once the agent is reaped its pid may belong to someone else, so quitting must not use it.
-    leader.store(0, Ordering::SeqCst);
-    outcome
+    let _ = tauri::async_runtime::spawn_blocking(move || {
+        #[cfg(unix)]
+        if finished {
+            wait_for_exit(pid);
+        }
+        end_turn(&[pid], known, &tags, &exclude);
+    })
+    .await;
+    let status = child.wait().await.map_err(|e| format!("waiting for claude: {e}"));
+    // Reaped: the pid may now belong to someone else, so quitting must not use it.
+    if let Ok(mut owned) = owned.lock() {
+        *owned = Owned::default();
+    }
+    let result_error = outcome?;
+    let status = status?;
+    let stderr = stderr_task.await.unwrap_or_default();
+    if let Some(error) = result_error {
+        return Err(error);
+    }
+    if !status.success() {
+        let tail: String = stderr.trim().chars().rev().take(600).collect::<Vec<_>>().into_iter().rev().collect();
+        return Err(if tail.is_empty() { format!("claude exited with {status}") } else { tail });
+    }
+    Ok(())
 }
 
-/// Sends the message and records the agent's events until it exits or is stopped.
+/// Sends the message and records the agent's events until its output ends or
+/// it is stopped. Returns the error the agent reported, if any. It never reaps
+/// the agent: `run` does that after the turn's processes are ended.
 async fn drive(
     app: &AppHandle,
     project: &str,
@@ -454,7 +546,7 @@ async fn drive(
     child: &mut tokio::process::Child,
     message: Value,
     token: &CancellationToken,
-) -> Result<(), String> {
+) -> Result<Option<String>, String> {
     let mut stdin = child.stdin.take().expect("piped stdin");
     let line = format!("{message}\n");
     // A Stop or a quit that came while the agent was starting ends it here.
@@ -464,12 +556,6 @@ async fn drive(
     }
     drop(stdin);
 
-    let mut stderr = child.stderr.take().expect("piped stderr");
-    let stderr_task = tokio::spawn(async move {
-        let mut text = String::new();
-        let _ = stderr.read_to_string(&mut text).await;
-        text
-    });
     let mut lines = BufReader::new(child.stdout.take().expect("piped stdout")).lines();
     let mut result_error: Option<String> = None;
     loop {
@@ -477,7 +563,7 @@ async fn drive(
             () = token.cancelled() => return Err("Stopped.".to_owned()),
             line = lines.next_line() => line.map_err(|e| format!("reading claude output: {e}"))?,
         };
-        let Some(line) = line else { break };
+        let Some(line) = line else { return Ok(result_error) };
         let Ok(event) = serde_json::from_str::<Value>(&line) else { continue };
         if event["type"] == "system" && event["subtype"] == "init" {
             let _ = std::fs::write(started, b"");
@@ -489,16 +575,6 @@ async fn drive(
             transcript.record(app, project, event)?;
         }
     }
-    let status = child.wait().await.map_err(|e| format!("waiting for claude: {e}"))?;
-    let stderr = stderr_task.await.unwrap_or_default();
-    if let Some(error) = result_error {
-        return Err(error);
-    }
-    if !status.success() {
-        let tail: String = stderr.trim().chars().rev().take(600).collect::<Vec<_>>().into_iter().rev().collect();
-        return Err(if tail.is_empty() { format!("claude exited with {status}") } else { tail });
-    }
-    Ok(())
 }
 
 struct RemoveOnDrop(PathBuf);
@@ -559,15 +635,15 @@ mod tests {
         let leader = agent.id();
         let tool = (0..50)
             .find_map(|_| {
-                let found = processes().into_iter().find(|p| p.parent == leader as libc::pid_t);
+                let found = processes().into_iter().find(|p| p.parent == leader as i32 && p.group == p.pid); // forked first, then moved to its own group
                 if found.is_none() {
                     std::thread::sleep(std::time::Duration::from_millis(100));
                 }
                 found
             })
             .expect("the shell started its tool");
-        assert_ne!(tool.group, leader as libc::pid_t, "the tool runs in a group of its own");
-        end_turn(&[leader], &[]);
+        assert_ne!(tool.group, leader as i32, "the tool runs in a group of its own");
+        end_turn(&[leader], BTreeSet::new(), &[], &BTreeSet::new());
         let _ = agent.wait();
         // SAFETY: signal 0 only asks whether the process exists.
         let gone = (0..30).any(|_| unsafe { libc::kill(tool.pid, 0) } != 0 || {
@@ -575,6 +651,45 @@ mod tests {
             false
         });
         assert!(gone, "the tool outside the agent's group was ended");
+    }
+
+    /// The natural end of a turn: the agent exits by itself and leaves a shell
+    /// tool running in a group of its own. The tool's parent is gone, so only the
+    /// groups watched while the agent ran can find it. Another turn's group is
+    /// left alone even when it was watched.
+    #[cfg(unix)]
+    #[test]
+    fn a_tool_left_when_the_agent_exits_is_ended_from_the_watched_groups() {
+        use std::os::unix::process::CommandExt as _;
+        let spawn = || std::process::Command::new("sh").args(["-c", "set -m; sleep 30 & sleep 1; exit 0"]).process_group(0).spawn().expect("sh");
+        let tool_of = |leader: u32| {
+            (0..50)
+                .find_map(|_| {
+                    let found = processes().into_iter().find(|p| p.parent == leader as i32 && p.group == p.pid); // forked first, then moved to its own group
+                    if found.is_none() {
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                    }
+                    found
+                })
+                .expect("the shell started its tool")
+        };
+        let (mut agent, mut other) = (spawn(), spawn());
+        let (tool, other_tool) = (tool_of(agent.id()), tool_of(other.id()));
+        let watched: BTreeSet<i32> = tree_groups(&processes(), &[agent.id(), other.id()]);
+        wait_for_exit(agent.id());
+        wait_for_exit(other.id());
+        end_turn(&[agent.id()], watched, &[], &BTreeSet::from([other_tool.group]));
+        let _ = (agent.wait(), other.wait());
+        // SAFETY: signal 0 only asks whether the process exists.
+        let exists = |pid: i32| unsafe { libc::kill(pid, 0) } == 0;
+        let gone = (0..30).any(|_| !exists(tool.pid) || {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            false
+        });
+        assert!(gone, "the tool left by the agent was ended");
+        assert!(exists(other_tool.pid), "the other turn's tool still runs");
+        // SAFETY: ends the other turn's test tool by its own pid.
+        unsafe { libc::kill(other_tool.pid, libc::SIGKILL) };
     }
 
     #[cfg(unix)]
@@ -598,7 +713,7 @@ mod tests {
             false
         });
         assert!(seen, "ps never showed the tagged process");
-        end_turn(&[], &[tag.clone()]);
+        end_turn(&[], BTreeSet::new(), &[tag.clone()], &BTreeSet::new());
         assert!(tool.wait().expect("wait").code().is_none(), "the tagged tool was killed by a signal");
         assert!(other.try_wait().expect("try_wait").is_none(), "the untagged process still runs");
         other.kill().expect("kill");
