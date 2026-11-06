@@ -29,8 +29,9 @@ export const studio = {
     invoke<string>('studio_save_bytes', bytes, { headers: { 'm3d-project': project, 'm3d-name': name } }),
   reveal: (project: string, rel: string) => invoke<void>('studio_reveal', { project, rel }),
   openInBambu: (project: string, rel: string) => invoke<void>('studio_open_in_bambu', { project, rel }),
-  onEvent: (handler: (project: string, event: StudioEvent) => void) =>
-    listen<{ project: string; event: StudioEvent }>('studio://event', ({ payload }) => handler(payload.project, payload.event)),
+  /** `seq` is the event's line in the project transcript, so history and live events join without gaps or repeats. */
+  onEvent: (handler: (project: string, seq: number, event: StudioEvent) => void) =>
+    listen<{ project: string; seq: number; event: StudioEvent }>('studio://event', ({ payload }) => handler(payload.project, payload.seq, payload.event)),
 }
 
 const isWindows = navigator.userAgent.includes('Windows')

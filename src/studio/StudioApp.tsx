@@ -14,6 +14,11 @@ const SUGGESTIONS = [
 
 const PICTURE = /\.(png|jpe?g|heic|heif|webp|gif)$/i
 
+/** Adds a live event at its transcript line. One the loaded history already holds is a repeat. */
+function appendEvent(events: StudioEvent[], seq: number, event: StudioEvent): StudioEvent[] {
+  return seq < events.length ? events : [...events, event]
+}
+
 function newestAutoOpen(files: ProjectFile[]): ProjectFile | undefined {
   return files.filter((f) => autoOpens(f.rel)).sort((a, b) => b.modifiedMs - a.modifiedMs)[0]
 }
@@ -29,6 +34,10 @@ export default function StudioApp() {
   const [error, setError] = useState<string | null>(null)
   const [draft, setDraft] = useState<string | undefined>(undefined)
   const currentId = useRef<string | null>(null)
+  /** Bumped on every switch, so a slow history load for a project already left is dropped. */
+  const loadRequest = useRef(0)
+  /** Live events that arrive while the open project's history is loading. */
+  const pending = useRef<{ seq: number; event: StudioEvent }[] | null>(null)
   /** The newest file time already shown, so only newer files take over the preview. */
   const lastSeen = useRef(0)
 
@@ -36,8 +45,10 @@ export default function StudioApp() {
 
   useEffect(() => {
     studio.projects().then(setProjects).catch((err: unknown) => setError(String(err)))
-    const unlisten = studio.onEvent((project, event) => {
-      if (project === currentId.current) setEvents((prev) => [...prev, event])
+    const unlisten = studio.onEvent((project, seq, event) => {
+      if (project !== currentId.current) return
+      if (pending.current) pending.current.push({ seq, event })
+      else setEvents((prev) => appendEvent(prev, seq, event))
     })
     return () => {
       void unlisten.then((stop) => stop())
@@ -84,6 +95,8 @@ export default function StudioApp() {
   }, [current, chat.running, refreshFiles])
 
   const show = (project: Project | null, history: StudioEvent[]) => {
+    loadRequest.current += 1
+    pending.current = null
     currentId.current = project?.id ?? null
     lastSeen.current = 0
     setCurrent(project)
@@ -95,10 +108,17 @@ export default function StudioApp() {
   }
 
   const openProject = async (project: Project) => {
+    show(project, [])
+    const request = loadRequest.current
+    pending.current = []
     try {
-      show(project, await studio.transcript(project.id))
+      const history = await studio.transcript(project.id)
+      if (request !== loadRequest.current) return
+      const live = pending.current
+      pending.current = null
+      setEvents(live.reduce((events, { seq, event }) => appendEvent(events, seq, event), history))
     } catch (err) {
-      setError(String(err))
+      if (request === loadRequest.current) setError(String(err))
     }
   }
 

@@ -27,21 +27,66 @@ fn transcript_path(dir: &Path) -> PathBuf {
     dir.join(META_DIR).join("transcript.jsonl")
 }
 
-fn append(dir: &Path, event: &Value) -> Result<(), String> {
+fn read_transcript(dir: &Path) -> Result<Vec<Value>, String> {
     let path = transcript_path(dir);
-    let mut file = std::fs::OpenOptions::new().create(true).append(true).open(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-    writeln!(file, "{event}").map_err(|e| format!("{}: {e}", path.display()))
-}
-
-/// Everything said in the project so far, in order.
-#[tauri::command]
-pub fn studio_transcript(project: String) -> Result<Vec<Value>, String> {
-    let path = transcript_path(&project_dir(&project)?);
     match std::fs::read_to_string(&path) {
-        Ok(text) => Ok(text.lines().filter_map(|line| serde_json::from_str(line).ok()).collect()),
+        Ok(text) => text.lines().map(|line| serde_json::from_str(line).map_err(|e| format!("{}: {e}", path.display()))).collect(),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
         Err(e) => Err(format!("{}: {e}", path.display())),
     }
+}
+
+/// The project's transcript, one JSON event per line. A line's index is its
+/// `seq`, which lets the window join a loaded history with live events without
+/// a gap or a repeat.
+struct Transcript {
+    dir: PathBuf,
+    next: usize,
+}
+
+impl Transcript {
+    fn open(dir: &Path) -> Result<Self, String> {
+        Ok(Self { dir: dir.to_owned(), next: read_transcript(dir)?.len() })
+    }
+
+    fn write(&mut self, event: &Value) -> Result<usize, String> {
+        let path = transcript_path(&self.dir);
+        let mut file = std::fs::OpenOptions::new().create(true).append(true).open(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        writeln!(file, "{event}").map_err(|e| format!("{}: {e}", path.display()))?;
+        self.next += 1;
+        Ok(self.next - 1)
+    }
+
+    /// Writes the event, then sends it to the window with its `seq`.
+    fn record(&mut self, app: &AppHandle, project: &str, event: Value) -> Result<(), String> {
+        let seq = self.write(&event)?;
+        let _ = app.emit(EVENT, json!({ "project": project, "seq": seq, "event": event }));
+        Ok(())
+    }
+}
+
+/// A turn whose user message has no end event was cut off when the app closed.
+fn has_open_turn(events: &[Value]) -> bool {
+    events.iter().fold(false, |open, event| match event["type"].as_str() {
+        Some("m3d_user") => true,
+        Some("m3d_turn_end") => false,
+        _ => open,
+    })
+}
+
+/// Everything said in the project so far, in order. A turn the app was closed
+/// during is ended here, so the chat never waits on a process that is gone.
+#[tauri::command]
+pub fn studio_transcript(turns: State<'_, Turns>, project: String) -> Result<Vec<Value>, String> {
+    let dir = project_dir(&project)?;
+    let running = turns.0.lock().map_err(|e| e.to_string())?;
+    let mut events = read_transcript(&dir)?;
+    if !running.contains_key(&project) && has_open_turn(&events) {
+        let end = json!({ "type": "m3d_turn_end", "ok": false, "error": "This turn stopped when the app closed." });
+        Transcript { dir, next: events.len() }.write(&end)?;
+        events.push(end);
+    }
+    Ok(events)
 }
 
 /// The PATH of the person's login shell. An app opened from Finder starts with
@@ -135,9 +180,8 @@ pub fn studio_send(app: AppHandle, turns: State<'_, Turns>, project: String, tex
         }
         running.insert(project.clone(), token.clone());
     }
-    let user = json!({ "type": "m3d_user", "text": text, "images": images });
-    append(&dir, &user)?;
-    let _ = app.emit(EVENT, json!({ "project": project, "event": user }));
+    let mut transcript = Transcript::open(&dir)?;
+    transcript.record(&app, &project, json!({ "type": "m3d_user", "text": text, "images": images }))?;
 
     let started = dir.join(META_DIR).join("session-started");
     let session_flag = if started.exists() { "--resume" } else { "--session-id" };
@@ -156,10 +200,13 @@ pub fn studio_send(app: AppHandle, turns: State<'_, Turns>, project: String, tex
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    // Its own process group, so Stop also ends the tools the agent started.
+    #[cfg(unix)]
+    command.process_group(0);
 
     tauri::async_runtime::spawn(async move {
         let before: HashMap<String, u64> = files::list(&dir).unwrap_or_default().into_iter().map(|f| (f.rel.clone(), f.modified_ms)).collect();
-        let outcome = run(&app, &project, &dir, &started, command, message, token).await;
+        let outcome = run(&app, &project, &mut transcript, &started, command, message, token).await;
         let changed: Vec<String> = files::list(&dir)
             .unwrap_or_default()
             .into_iter()
@@ -175,10 +222,9 @@ pub fn studio_send(app: AppHandle, turns: State<'_, Turns>, project: String, tex
             Err(error) => json!({ "type": "m3d_turn_end", "ok": false, "error": error }),
         });
         for event in events {
-            if let Err(e) = append(&dir, &event) {
+            if let Err(e) = transcript.record(&app, &project, event) {
                 log::error!("studio: transcript write failed: {e}");
             }
-            let _ = app.emit(EVENT, json!({ "project": project, "event": event }));
         }
         if let Some(turns) = app.try_state::<Turns>() {
             if let Ok(mut running) = turns.0.lock() {
@@ -192,7 +238,7 @@ pub fn studio_send(app: AppHandle, turns: State<'_, Turns>, project: String, tex
 async fn run(
     app: &AppHandle,
     project: &str,
-    dir: &Path,
+    transcript: &mut Transcript,
     started: &Path,
     mut command: tokio::process::Command,
     message: Value,
@@ -214,7 +260,7 @@ async fn run(
     loop {
         let line = tokio::select! {
             () = token.cancelled() => {
-                let _ = child.kill().await;
+                stop(&mut child).await;
                 return Err("Stopped.".to_owned());
             }
             line = lines.next_line() => line.map_err(|e| format!("reading claude output: {e}"))?,
@@ -228,8 +274,7 @@ async fn run(
             result_error = Some(event["result"].as_str().unwrap_or("The agent stopped with an error.").to_owned());
         }
         if keep(&event) {
-            append(dir, &event)?;
-            let _ = app.emit(EVENT, json!({ "project": project, "event": event }));
+            transcript.record(app, project, event)?;
         }
     }
     let status = child.wait().await.map_err(|e| format!("waiting for claude: {e}"))?;
@@ -244,6 +289,20 @@ async fn run(
     Ok(())
 }
 
+/// Ends the agent and every tool it started: a polite signal first so Claude
+/// Code can stop its tools, then a kill for whatever is left.
+async fn stop(child: &mut tokio::process::Child) {
+    #[cfg(unix)]
+    if let Some(pid) = child.id() {
+        let group = pid as libc::pid_t;
+        // SAFETY: killpg only sends a signal to the group the child leads.
+        unsafe { libc::killpg(group, libc::SIGTERM) };
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(3), child.wait()).await;
+        unsafe { libc::killpg(group, libc::SIGKILL) };
+    }
+    let _ = child.kill().await;
+}
+
 /// Stops the project's running turn.
 #[tauri::command]
 pub fn studio_cancel(turns: State<'_, Turns>, project: String) -> Result<(), String> {
@@ -251,4 +310,23 @@ pub fn studio_cancel(turns: State<'_, Turns>, project: String) -> Result<(), Str
         token.cancel();
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_reopened_transcript_numbers_lines_on_and_knows_an_unfinished_turn() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(dir.path().join(META_DIR)).expect("meta dir");
+        let mut first = Transcript::open(dir.path()).expect("open");
+        assert_eq!(first.write(&json!({ "type": "m3d_user", "text": "a clip" })).expect("write"), 0);
+        assert_eq!(first.write(&json!({ "type": "assistant" })).expect("write"), 1);
+
+        let mut reopened = Transcript::open(dir.path()).expect("reopen");
+        assert!(has_open_turn(&read_transcript(dir.path()).expect("read")));
+        assert_eq!(reopened.write(&json!({ "type": "m3d_turn_end", "ok": true })).expect("write"), 2);
+        assert!(!has_open_turn(&read_transcript(dir.path()).expect("read")));
+    }
 }
