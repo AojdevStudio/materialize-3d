@@ -9,6 +9,7 @@ pub mod fabrication;
 #[cfg(feature = "e2e")]
 mod e2e;
 mod mcp;
+mod studio;
 mod studio_commands;
 pub mod tools;
 mod makerworld;
@@ -56,7 +57,7 @@ fn app_context() -> tauri::Context<tauri::Wry> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    studio::register_protocol(tauri::Builder::default())
         .plugin(tauri_plugin_log::Builder::default().filter(agent::turn::app_log_keeps).build())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
@@ -72,6 +73,7 @@ pub fn run() {
         .manage(OpenScadService::default())
         .manage(agent::commands::AgentTurns::default())
         .manage(updater::PendingUpdate::default())
+        .manage(studio::Turns::default())
         .invoke_handler(tauri::generate_handler![
             get_app_state,
             set_active_view,
@@ -149,6 +151,16 @@ pub fn run() {
             studio_commands::clear_bambu_studio,
             updater::update_check,
             updater::update_install,
+            studio::studio_projects,
+            studio::studio_create_project,
+            studio::turn::studio_transcript,
+            studio::turn::studio_send,
+            studio::turn::studio_cancel,
+            studio::files::studio_files,
+            studio::files::studio_import_file,
+            studio::files::studio_save_bytes,
+            studio::files::studio_reveal,
+            studio::files::studio_open_in_bambu,
         ])
         .setup(|app| {
             // Initialize SQLite database
