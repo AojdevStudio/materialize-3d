@@ -65,6 +65,11 @@ export default function StudioApp() {
     }
   }, [])
 
+  // Pasted pictures still waiting when the studio closes give their previews back.
+  const unsent = useRef(attachments)
+  unsent.current = attachments
+  useEffect(() => () => unsent.current.forEach(releaseAttachment), [])
+
   // Pictures dropped anywhere on the window join the next message.
   useEffect(() => {
     const unlisten = getCurrentWebview().onDragDropEvent(({ payload }) => {

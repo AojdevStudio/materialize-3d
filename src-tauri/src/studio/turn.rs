@@ -36,15 +36,59 @@ impl Turns {
     /// there is no time left to wait on the turns' own tasks.
     pub fn stop_all(&self) {
         let Ok(running) = self.0.lock() else { return };
-        for turn in running.values() {
-            turn.token.cancel();
-            #[cfg(unix)]
-            if let Some(group) = std::num::NonZeroU32::new(turn.group.load(Ordering::SeqCst)) {
-                // SAFETY: killpg only sends a signal to the group the agent leads.
-                unsafe { libc::killpg(group.get() as libc::pid_t, libc::SIGTERM) };
-            }
+        let groups: Vec<u32> = running
+            .values()
+            .inspect(|turn| turn.token.cancel())
+            .filter_map(|turn| std::num::NonZeroU32::new(turn.group.load(Ordering::SeqCst)).map(std::num::NonZeroU32::get))
+            .collect();
+        #[cfg(unix)]
+        end_groups(&groups);
+    }
+}
+
+/// Asks each process group to stop, waits up to three seconds for them to go,
+/// then kills what is left. Blocking, for the app's exit and its reopen.
+#[cfg(unix)]
+fn end_groups(groups: &[u32]) {
+    // SAFETY: killpg only signals the given groups, which each lead an agent this app started.
+    let signal = |group: u32, sig: libc::c_int| unsafe { libc::killpg(group as libc::pid_t, sig) == 0 };
+    for &group in groups {
+        signal(group, libc::SIGTERM);
+    }
+    for _ in 0..30 {
+        if !groups.iter().any(|&group| signal(group, 0)) {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    for &group in groups {
+        signal(group, libc::SIGKILL);
+    }
+}
+
+fn pid_path(dir: &Path) -> PathBuf {
+    dir.join(META_DIR).join("agent.pid")
+}
+
+/// After a crash an agent can outlive the app. Its pid file names it. It is
+/// stopped only when that pid still runs our `claude -p` command, so a reused
+/// pid is left alone.
+fn stop_survivor(dir: &Path) {
+    let path = pid_path(dir);
+    let Some(pid) = std::fs::read_to_string(&path).ok().and_then(|text| text.trim().parse::<u32>().ok()) else { return };
+    #[cfg(unix)]
+    {
+        let command = std::process::Command::new("ps").args(["-o", "command=", "-p", &pid.to_string()]).output();
+        let ours = command.map(|out| {
+            let line = String::from_utf8_lossy(&out.stdout).into_owned();
+            line.contains("claude") && line.contains("--input-format")
+        });
+        if ours.unwrap_or(false) {
+            log::warn!("studio: stopping agent {pid} left from before the app closed");
+            end_groups(&[pid]);
         }
     }
+    let _ = std::fs::remove_file(&path);
 }
 
 fn transcript_path(dir: &Path) -> PathBuf {
@@ -57,17 +101,19 @@ fn transcript_path(dir: &Path) -> PathBuf {
 /// reconcile when no turn runs.
 fn read_transcript(dir: &Path, repair: bool) -> Result<Vec<Value>, String> {
     let path = transcript_path(dir);
-    let mut text = match std::fs::read_to_string(&path) {
-        Ok(text) => text,
+    // Bytes first: a write cut inside a multibyte character is not valid UTF-8 until it is cut off.
+    let mut bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(e) => return Err(format!("{}: {e}", path.display())),
     };
-    if !text.is_empty() && !text.ends_with('\n') {
-        text.truncate(text.rfind('\n').map_or(0, |end| end + 1));
+    if bytes.last().is_some_and(|&b| b != b'\n') {
+        bytes.truncate(bytes.iter().rposition(|&b| b == b'\n').map_or(0, |end| end + 1));
         if repair {
-            std::fs::write(&path, &text).map_err(|e| format!("{}: {e}", path.display()))?;
+            std::fs::write(&path, &bytes).map_err(|e| format!("{}: {e}", path.display()))?;
         }
     }
+    let text = String::from_utf8(bytes).map_err(|e| format!("{}: {e}", path.display()))?;
     text.lines().map(|line| serde_json::from_str(line).map_err(|e| format!("{}: {e}", path.display()))).collect()
 }
 
@@ -118,6 +164,7 @@ pub fn studio_transcript(turns: State<'_, Turns>, project: String) -> Result<Vec
     let idle = !running.contains_key(&project);
     let mut events = read_transcript(&dir, idle)?;
     if idle && has_open_turn(&events) {
+        stop_survivor(&dir);
         let end = json!({ "type": "m3d_turn_end", "ok": false, "error": "This turn stopped when the app closed." });
         Transcript { dir, next: events.len() }.write(&end)?;
         events.push(end);
@@ -291,9 +338,12 @@ async fn run(
     group: &AtomicU32,
 ) -> Result<(), String> {
     let mut child = command.spawn().map_err(|e| format!("could not start the claude CLI: {e}. Install Claude Code and sign in."))?;
-    group.store(child.id().unwrap_or(0), Ordering::SeqCst);
+    let pid = child.id().unwrap_or(0);
+    group.store(pid, Ordering::SeqCst);
+    let pid_file = pid_path(&transcript.dir);
+    let _ = std::fs::write(&pid_file, pid.to_string());
     // Once this run ends its group id may belong to someone else, so quitting must not signal it.
-    let _clear = ClearOnDrop(group);
+    let _clear = ClearOnDrop(group, pid_file);
     let mut stdin = child.stdin.take().expect("piped stdin");
     let line = format!("{message}\n");
     // A Stop or a quit that came while the agent was starting ends it here.
@@ -346,11 +396,12 @@ async fn run(
     Ok(())
 }
 
-struct ClearOnDrop<'a>(&'a AtomicU32);
+struct ClearOnDrop<'a>(&'a AtomicU32, PathBuf);
 
 impl Drop for ClearOnDrop<'_> {
     fn drop(&mut self) {
         self.0.store(0, Ordering::SeqCst);
+        let _ = std::fs::remove_file(&self.1);
     }
 }
 
@@ -405,5 +456,16 @@ mod tests {
         let mut transcript = Transcript::open(dir.path()).expect("open");
         assert_eq!(transcript.write(&json!({ "type": "m3d_turn_end", "ok": false })).expect("write"), 1);
         assert_eq!(read_transcript(dir.path(), false).expect("read").len(), 2);
+    }
+
+    #[test]
+    fn a_write_cut_inside_a_multibyte_character_is_dropped_too() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(dir.path().join(META_DIR)).expect("meta dir");
+        let mut bytes = b"{\"type\":\"m3d_user\"}\n{\"text\":\"".to_vec();
+        bytes.extend_from_slice(&"\u{8bbe}".as_bytes()[..2]);
+        std::fs::write(transcript_path(dir.path()), bytes).expect("write");
+        assert_eq!(read_transcript(dir.path(), false).expect("read").len(), 1);
+        assert_eq!(Transcript::open(dir.path()).expect("open").next, 1);
     }
 }
