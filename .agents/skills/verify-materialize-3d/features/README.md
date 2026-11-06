@@ -44,6 +44,7 @@ Each feature file has an H1 and one paragraph of user-visible behavior, followed
 
 ## Features
 
+- [Studio](./studio.md) is the app since 2026-11-06: chat with a local Claude Code agent, pictures, the preview and Files panel, and Open in Bambu Studio. It has no onboarding, so its recipe starts at the start screen. The recipes below describe screens the studio hides.
 - [Onboarding](./onboarding.md) covers the four-step first-run wizard, its skip paths, and the persisted completion flag.
 - [Navigation](./navigation.md) covers the sidebar, the workspace tabs, the Library and History views, the status bar, and the launch refusal for a newer database.
 - [MakerWorld](./makerworld.md) covers the embedded MakerWorld browser, model detection, Import to Library, and how downloads land in the Library.
