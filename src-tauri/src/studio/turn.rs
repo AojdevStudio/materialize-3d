@@ -5,8 +5,7 @@ use std::collections::HashMap;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock};
 
 use base64::Engine as _;
 use serde_json::{json, Value};
@@ -20,11 +19,14 @@ const SYSTEM_PROMPT: &str = include_str!("system_prompt.md");
 const MODEL: &str = "claude-opus-5-5";
 pub const EVENT: &str = "studio://event";
 
-/// A running turn: Stop cancels it, and quitting the app signals its process group.
+/// The variable each agent runs with. Claude Code starts every tool in its own
+/// process group, so the groups are found by this tag, which children inherit.
+const TAG_VAR: &str = "M3D_TURN";
+
+/// A running turn: Stop cancels it, and quitting the app ends its processes.
 struct Turn {
     token: CancellationToken,
-    /// The agent's process group, 0 until it starts.
-    group: Arc<AtomicU32>,
+    tag: String,
 }
 
 /// The running turn of each project, so a second send waits and Stop can end it.
@@ -36,57 +38,69 @@ impl Turns {
     /// there is no time left to wait on the turns' own tasks.
     pub fn stop_all(&self) {
         let Ok(running) = self.0.lock() else { return };
-        let groups: Vec<u32> = running
-            .values()
-            .inspect(|turn| turn.token.cancel())
-            .filter_map(|turn| std::num::NonZeroU32::new(turn.group.load(Ordering::SeqCst)).map(std::num::NonZeroU32::get))
-            .collect();
-        #[cfg(unix)]
-        end_groups(&groups);
+        let tags: Vec<String> = running.values().inspect(|turn| turn.token.cancel()).map(|turn| turn.tag.clone()).collect();
+        end_tagged(&tags);
     }
 }
 
-/// Asks each process group to stop, waits up to three seconds for them to go,
-/// then kills what is left. Blocking, for the app's exit and its reopen.
+/// The process groups that hold a process carrying one of these turn tags.
+/// `ps` shows the environment of the person's own processes.
 #[cfg(unix)]
-fn end_groups(groups: &[u32]) {
-    // SAFETY: killpg only signals the given groups, which each lead an agent this app started.
-    let signal = |group: u32, sig: libc::c_int| unsafe { libc::killpg(group as libc::pid_t, sig) == 0 };
-    for &group in groups {
-        signal(group, libc::SIGTERM);
-    }
-    for _ in 0..30 {
-        if !groups.iter().any(|&group| signal(group, 0)) {
-            return;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
-    for &group in groups {
-        signal(group, libc::SIGKILL);
-    }
+fn tagged_groups(tags: &[String]) -> Vec<libc::pid_t> {
+    let args: &[&str] = if cfg!(target_os = "macos") { &["-axE", "-ww", "-o", "pgid=,command="] } else { &["axeww", "-o", "pgid=,command="] };
+    let Ok(out) = std::process::Command::new("ps").args(args).output() else { return Vec::new() };
+    let marks: Vec<String> = tags.iter().map(|tag| format!("{TAG_VAR}={tag}")).collect();
+    // SAFETY: getpgrp only reads this process's own group.
+    let own = unsafe { libc::getpgrp() };
+    let mut groups: Vec<libc::pid_t> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter(|line| marks.iter().any(|mark| line.contains(mark.as_str())))
+        .filter_map(|line| line.split_whitespace().next()?.parse().ok())
+        .filter(|&group| group > 1 && group != own)
+        .collect();
+    groups.sort_unstable();
+    groups.dedup();
+    groups
 }
 
-fn pid_path(dir: &Path) -> PathBuf {
-    dir.join(META_DIR).join("agent.pid")
-}
-
-/// After a crash an agent can outlive the app. Its pid file names it. It is
-/// stopped only when that pid still runs our `claude -p` command, so a reused
-/// pid is left alone.
-fn stop_survivor(dir: &Path) {
-    let path = pid_path(dir);
-    let Some(pid) = std::fs::read_to_string(&path).ok().and_then(|text| text.trim().parse::<u32>().ok()) else { return };
+/// Asks every process of these turns to stop, waits up to three seconds, then
+/// kills what is left. Blocking: for Stop, the app's exit, and a reopen after a crash.
+fn end_tagged(tags: &[String]) {
     #[cfg(unix)]
     {
-        let command = std::process::Command::new("ps").args(["-o", "command=", "-p", &pid.to_string()]).output();
-        let ours = command.map(|out| {
-            let line = String::from_utf8_lossy(&out.stdout).into_owned();
-            line.contains("claude") && line.contains("--input-format")
-        });
-        if ours.unwrap_or(false) {
-            log::warn!("studio: stopping agent {pid} left from before the app closed");
-            end_groups(&[pid]);
+        if tags.is_empty() {
+            return;
         }
+        // A group that is already gone is the outcome we want, so the result is not read.
+        let signal = |groups: &[libc::pid_t], sig: libc::c_int| {
+            for &group in groups {
+                // SAFETY: killpg only signals a group that holds a process this app tagged.
+                let _ = unsafe { libc::killpg(group, sig) };
+            }
+        };
+        signal(&tagged_groups(tags), libc::SIGTERM);
+        for _ in 0..30 {
+            if tagged_groups(tags).is_empty() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        signal(&tagged_groups(tags), libc::SIGKILL);
+    }
+}
+
+/// Names the running turn's tag while it runs, so a reopen after a crash can find what it left.
+fn tag_path(dir: &Path) -> PathBuf {
+    dir.join(META_DIR).join("agent.turn")
+}
+
+/// After a crash, an agent or its tools can outlive the app. The tag file names
+/// the turn, and every process still carrying that tag is stopped.
+fn stop_survivor(dir: &Path) {
+    let path = tag_path(dir);
+    if let Ok(tag) = std::fs::read_to_string(&path) {
+        log::warn!("studio: stopping processes left from a turn before the app closed");
+        end_tagged(&[tag.trim().to_owned()]);
     }
     let _ = std::fs::remove_file(&path);
 }
@@ -256,13 +270,13 @@ pub fn studio_send(app: AppHandle, turns: State<'_, Turns>, project: String, tex
     let message = json!({ "type": "user", "message": { "role": "user", "content": content } });
 
     let token = CancellationToken::new();
-    let group = Arc::new(AtomicU32::new(0));
+    let tag = uuid::Uuid::new_v4().to_string();
     {
         let mut running = turns.0.lock().map_err(|e| e.to_string())?;
         if running.contains_key(&project) {
             return Err("The agent is still working on the last message.".to_owned());
         }
-        running.insert(project.clone(), Turn { token: token.clone(), group: group.clone() });
+        running.insert(project.clone(), Turn { token: token.clone(), tag: tag.clone() });
     }
     // A turn that cannot write its first line never started, so it gives its place back.
     let mut transcript = match Transcript::open(&dir)
@@ -288,17 +302,18 @@ pub fn studio_send(app: AppHandle, turns: State<'_, Turns>, project: String, tex
         .env("PATH", login_path())
         .env_remove("CLAUDECODE")
         .env_remove("CLAUDE_CODE_ENTRYPOINT")
+        .env(TAG_VAR, &tag)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
-    // Its own process group, so Stop also ends the tools the agent started.
+    // Its own process group, apart from the app's, so signals to it never reach the app.
     #[cfg(unix)]
     command.process_group(0);
 
     tauri::async_runtime::spawn(async move {
         let before: HashMap<String, u64> = files::list(&dir).unwrap_or_default().into_iter().map(|f| (f.rel.clone(), f.modified_ms)).collect();
-        let outcome = run(&app, &project, &mut transcript, &started, command, message, token, &group).await;
+        let outcome = run(&app, &project, &mut transcript, &started, command, message, token, &tag).await;
         let changed: Vec<String> = files::list(&dir)
             .unwrap_or_default()
             .into_iter()
@@ -335,21 +350,19 @@ async fn run(
     mut command: tokio::process::Command,
     message: Value,
     token: CancellationToken,
-    group: &AtomicU32,
+    tag: &str,
 ) -> Result<(), String> {
+    // Written before the agent starts and removed when this run ends, so a crash leaves it behind.
+    let tag_file = tag_path(&transcript.dir);
+    std::fs::write(&tag_file, tag).map_err(|e| format!("{}: {e}", tag_file.display()))?;
+    let _tag_file = RemoveOnDrop(tag_file);
     let mut child = command.spawn().map_err(|e| format!("could not start the claude CLI: {e}. Install Claude Code and sign in."))?;
-    let pid = child.id().unwrap_or(0);
-    group.store(pid, Ordering::SeqCst);
-    let pid_file = pid_path(&transcript.dir);
-    let _ = std::fs::write(&pid_file, pid.to_string());
-    // Once this run ends its group id may belong to someone else, so quitting must not signal it.
-    let _clear = ClearOnDrop(group, pid_file);
     let mut stdin = child.stdin.take().expect("piped stdin");
     let line = format!("{message}\n");
     // A Stop or a quit that came while the agent was starting ends it here.
     tokio::select! {
         () = token.cancelled() => {
-            stop(&mut child).await;
+            stop(&mut child, tag).await;
             return Err("Stopped.".to_owned());
         }
         written = stdin.write_all(line.as_bytes()) => written.map_err(|e| format!("writing to claude: {e}"))?,
@@ -367,7 +380,7 @@ async fn run(
     loop {
         let line = tokio::select! {
             () = token.cancelled() => {
-                stop(&mut child).await;
+                stop(&mut child, tag).await;
                 return Err("Stopped.".to_owned());
             }
             line = lines.next_line() => line.map_err(|e| format!("reading claude output: {e}"))?,
@@ -396,26 +409,19 @@ async fn run(
     Ok(())
 }
 
-struct ClearOnDrop<'a>(&'a AtomicU32, PathBuf);
+struct RemoveOnDrop(PathBuf);
 
-impl Drop for ClearOnDrop<'_> {
+impl Drop for RemoveOnDrop {
     fn drop(&mut self) {
-        self.0.store(0, Ordering::SeqCst);
-        let _ = std::fs::remove_file(&self.1);
+        let _ = std::fs::remove_file(&self.0);
     }
 }
 
 /// Ends the agent and every tool it started: a polite signal first so Claude
-/// Code can stop its tools, then a kill for whatever is left.
-async fn stop(child: &mut tokio::process::Child) {
-    #[cfg(unix)]
-    if let Some(pid) = child.id() {
-        let group = pid as libc::pid_t;
-        // SAFETY: killpg only sends a signal to the group the child leads.
-        unsafe { libc::killpg(group, libc::SIGTERM) };
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(3), child.wait()).await;
-        unsafe { libc::killpg(group, libc::SIGKILL) };
-    }
+/// Code can stop its tools, then a kill for whatever still carries the turn's tag.
+async fn stop(child: &mut tokio::process::Child, tag: &str) {
+    let tags = vec![tag.to_owned()];
+    let _ = tauri::async_runtime::spawn_blocking(move || end_tagged(&tags)).await;
     let _ = child.kill().await;
 }
 
@@ -456,6 +462,27 @@ mod tests {
         let mut transcript = Transcript::open(dir.path()).expect("open");
         assert_eq!(transcript.write(&json!({ "type": "m3d_turn_end", "ok": false })).expect("write"), 1);
         assert_eq!(read_transcript(dir.path(), false).expect("read").len(), 2);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_tagged_tool_in_its_own_group_is_ended_and_an_untagged_one_is_not() {
+        use std::os::unix::process::CommandExt as _;
+        let tag = uuid::Uuid::new_v4().to_string();
+        let spawn = |tagged: bool| {
+            let mut command = std::process::Command::new("sleep");
+            command.arg("30").process_group(0);
+            if tagged {
+                command.env(TAG_VAR, &tag);
+            }
+            command.spawn().expect("sleep")
+        };
+        let (mut tool, mut other) = (spawn(true), spawn(false));
+        end_tagged(&[tag.clone()]);
+        assert!(tool.wait().expect("wait").code().is_none(), "the tagged tool was killed by a signal");
+        assert!(other.try_wait().expect("try_wait").is_none(), "the untagged process still runs");
+        other.kill().expect("kill");
+        let _ = other.wait();
     }
 
     #[test]
