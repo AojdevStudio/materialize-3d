@@ -36,6 +36,21 @@ pub struct Project {
     path: PathBuf,
 }
 
+/// Whether the main window, or a preview frame in it, may go to `url`. The
+/// app's own pages and project files may load. The internet may not, so a
+/// preview page cannot carry project data out by navigating its frame there.
+pub fn may_navigate(url: &url::Url) -> bool {
+    let local = match url.scheme() {
+        "tauri" | "m3dfile" | "about" | "data" | "blob" => true,
+        "http" | "https" => matches!(url.host_str(), Some("localhost" | "tauri.localhost" | "127.0.0.1")),
+        _ => false,
+    };
+    if !local {
+        log::warn!("studio: blocked navigation to {}://{}", url.scheme(), url.host_str().unwrap_or(""));
+    }
+    local
+}
+
 /// Where projects live: `~/Documents/Materialize 3D`. A verification run keeps
 /// its projects in its own data folder.
 fn projects_root() -> Result<PathBuf, String> {
@@ -128,6 +143,16 @@ mod tests {
     fn slug_keeps_words_and_drops_the_rest() {
         assert_eq!(slug("A wall mount for my UGREEN dock!"), "a-wall-mount-for-my-ugreen-dock");
         assert_eq!(slug("   "), "project");
+    }
+
+    #[test]
+    fn the_window_stays_on_the_app_and_project_files() {
+        let may = |url: &str| may_navigate(&url.parse().expect("url"));
+        assert!(may("tauri://localhost/index.html"));
+        assert!(may("http://localhost:1420/"));
+        assert!(may("m3dfile://2026-11-06-clip/guide.html"));
+        assert!(!may("https://example.com/?leak=1"));
+        assert!(!may("http://192.168.1.5/"));
     }
 
     #[test]

@@ -211,7 +211,9 @@ pub fn run() {
             log::info!("setup: SQLite database initialized at {}", db_path.display());
             // tauri.conf.json leaves the window uncreated, so a refused database never shows the UI.
             let main_window = app.config().app.windows.iter().find(|w| w.label == "main").ok_or("tauri.conf.json has no main window")?;
-            tauri::WebviewWindowBuilder::from_config(app.handle(), main_window)?.build()?;
+            tauri::WebviewWindowBuilder::from_config(app.handle(), main_window)?
+                .on_navigation(studio::may_navigate)
+                .build()?;
 
             // A build that was running when the app stopped can never finish;
             // record it as failed and remove its directory.

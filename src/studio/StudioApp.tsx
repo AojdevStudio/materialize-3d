@@ -158,7 +158,8 @@ export default function StudioApp() {
         outgoing.map((a) => (a.kind === 'path' ? studio.importFile(id, a.path) : studio.saveBytes(id, a.name, a.bytes))),
       )
       await studio.send(id, message, images)
-      setText('')
+      // Text typed while this was sending is a new message, so only the sent text is cleared.
+      setText((now) => (now.trim() === message ? '' : now))
       // A picture added while these imported waits for the next message.
       setAttachments((prev) => prev.filter((a) => !outgoing.includes(a)))
       outgoing.forEach(releaseAttachment)
