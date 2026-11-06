@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useRef, type ReactNode } from 'react'
 import { pickFile } from '../lib/fileDialog'
 import { fileUrl, is3mf } from './api'
 import { FileActions } from './RightPanel'
@@ -102,33 +102,23 @@ export function ChatView({ project, items, running, onPreview, onError }: ChatVi
 }
 
 interface ComposerProps {
+  text: string
+  onText: (text: string) => void
   attachments: Attachment[]
   onAttach: (files: Attachment[]) => void
   onRemove: (index: number) => void
-  onSend: (text: string) => void
+  /** Sends the text and pictures. The owner clears them only once the send succeeds. */
+  onSend: () => void
   onStop?: () => void
+  /** A turn runs or a send is still being set up, so Send waits. */
+  busy: boolean
   running: boolean
   placeholder: string
-  draft?: string
   autoFocus?: boolean
 }
 
-export function Composer({ attachments, onAttach, onRemove, onSend, onStop, running, placeholder, draft, autoFocus }: ComposerProps) {
-  const [text, setText] = useState('')
-  const input = useRef<HTMLTextAreaElement>(null)
-  useEffect(() => {
-    if (draft !== undefined) {
-      setText(draft)
-      input.current?.focus()
-    }
-  }, [draft])
-
-  const submit = () => {
-    const trimmed = text.trim()
-    if ((!trimmed && attachments.length === 0) || running) return
-    onSend(trimmed)
-    setText('')
-  }
+export function Composer({ text, onText, attachments, onAttach, onRemove, onSend, onStop, busy, running, placeholder, autoFocus }: ComposerProps) {
+  const empty = !text.trim() && attachments.length === 0
 
   const paste = async (event: React.ClipboardEvent) => {
     const pictures = [...event.clipboardData.files].filter((f) => f.type.startsWith('image/'))
@@ -164,18 +154,17 @@ export function Composer({ attachments, onAttach, onRemove, onSend, onStop, runn
         </ul>
       )}
       <textarea
-        ref={input}
         value={text}
         rows={3}
         placeholder={placeholder}
         autoFocus={autoFocus}
         data-testid="prompt"
-        onChange={(e) => setText(e.target.value)}
+        onChange={(e) => onText(e.target.value)}
         onPaste={paste}
         onKeyDown={(e) => {
           if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
             e.preventDefault()
-            submit()
+            if (!empty && !busy) onSend()
           }
         }}
       />
@@ -185,7 +174,7 @@ export function Composer({ attachments, onAttach, onRemove, onSend, onStop, runn
         {running && onStop ? (
           <button type="button" onClick={onStop} data-testid="stop">Stop</button>
         ) : (
-          <button type="button" className="primary" onClick={submit} data-testid="send" disabled={!text.trim() && attachments.length === 0}>
+          <button type="button" className="primary" onClick={onSend} data-testid="send" disabled={empty || busy}>
             Send
           </button>
         )}

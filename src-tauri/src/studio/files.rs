@@ -179,6 +179,9 @@ fn content_type(path: &Path) -> &'static str {
 /// The app's own pages: the bundled UI and the dev server. Only these may read across projects.
 const APP_ORIGINS: &[&str] = &["tauri://localhost", "http://localhost:1420"];
 
+/// What a preview page may load: its own project, inline code, and data it makes. No network.
+const PREVIEW_CSP: &str = "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; form-action 'none'; base-uri 'self'";
+
 /// The project and the path inside it. Each project is its own host,
 /// `m3dfile://<project>/<path>`, so each is its own origin and a preview page
 /// reads only its own project's files. There is no shared host, so a page
@@ -196,7 +199,12 @@ fn request_parts(uri: &tauri::http::Uri) -> Option<(String, String)> {
 fn serve(request: &tauri::http::Request<Vec<u8>>) -> Response<Vec<u8>> {
     let allow = request.headers().get(header::ORIGIN).and_then(|v| v.to_str().ok()).filter(|o| APP_ORIGINS.contains(o)).map(str::to_owned);
     let respond = |status: StatusCode, kind: &str, body: Vec<u8>| {
-        let mut response = Response::builder().status(status).header(header::CONTENT_TYPE, kind).header(header::CACHE_CONTROL, "no-store");
+        let mut response = Response::builder()
+            .status(status)
+            .header(header::CONTENT_TYPE, kind)
+            .header(header::CACHE_CONTROL, "no-store")
+            // A preview page loads only its own project's files, so nothing it reads leaves the Mac.
+            .header(header::CONTENT_SECURITY_POLICY, PREVIEW_CSP);
         if let Some(origin) = &allow {
             response = response.header(header::ACCESS_CONTROL_ALLOW_ORIGIN, origin.as_str());
         }

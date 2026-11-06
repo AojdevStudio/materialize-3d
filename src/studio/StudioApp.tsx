@@ -34,7 +34,10 @@ export default function StudioApp() {
   const [tab, setTab] = useState<Tab>('preview')
   const [attachments, setAttachments] = useState<Attachment[]>([])
   const [error, setError] = useState<string | null>(null)
-  const [draft, setDraft] = useState<string | undefined>(undefined)
+  /** The unsent message. It belongs to the open project and stays until a send succeeds. */
+  const [text, setText] = useState('')
+  const [sending, setSending] = useState(false)
+  const sendingNow = useRef(false)
   const currentId = useRef<string | null>(null)
   /** Bumped on every switch, so a slow history load for a project already left is dropped. */
   const loadRequest = useRef(0)
@@ -101,7 +104,13 @@ export default function StudioApp() {
     return () => window.clearInterval(timer)
   }, [current, chat.running, refreshFiles])
 
-  const show = (project: Project | null, history: StudioEvent[]) => {
+  /** Opens a project, or the start screen. A move the person makes drops the unsent message, so it never lands in another project. */
+  const show = (project: Project | null, history: StudioEvent[], keepDraft = false) => {
+    if (!keepDraft) {
+      setText('')
+      attachments.forEach(releaseAttachment)
+      setAttachments([])
+    }
     loadRequest.current += 1
     pending.current = null
     currentId.current = project?.id ?? null
@@ -131,41 +140,51 @@ export default function StudioApp() {
     }
   }
 
-  const send = async (text: string) => {
+  const send = async () => {
+    const message = text.trim()
+    if ((!message && attachments.length === 0) || sendingNow.current || chat.running) return
+    sendingNow.current = true
+    setSending(true)
     try {
       let project = current
       if (!project) {
-        project = await studio.createProject(text || 'New part')
+        project = await studio.createProject(message || 'New part')
         setProjects((prev) => [project!, ...prev])
-        show(project, [])
+        show(project, [], true)
       }
       const id = project.id
-      const sending = attachments
+      const outgoing = attachments
       const images = await Promise.all(
-        sending.map((a) => (a.kind === 'path' ? studio.importFile(id, a.path) : studio.saveBytes(id, a.name, a.bytes))),
+        outgoing.map((a) => (a.kind === 'path' ? studio.importFile(id, a.path) : studio.saveBytes(id, a.name, a.bytes))),
       )
+      await studio.send(id, message, images)
+      setText('')
       // A picture added while these imported waits for the next message.
-      setAttachments((prev) => prev.filter((a) => !sending.includes(a)))
-      sending.forEach(releaseAttachment)
-      await studio.send(id, text, images)
+      setAttachments((prev) => prev.filter((a) => !outgoing.includes(a)))
+      outgoing.forEach(releaseAttachment)
     } catch (err) {
       setError(String(err))
+    } finally {
+      sendingNow.current = false
+      setSending(false)
     }
   }
 
   const composer = (placeholder: string, autoFocus: boolean) => (
     <Composer
+      text={text}
+      onText={setText}
       attachments={attachments}
       onAttach={(more) => setAttachments((prev) => [...prev, ...more])}
       onRemove={(index) => {
         releaseAttachment(attachments[index])
         setAttachments((prev) => prev.filter((_, i) => i !== index))
       }}
-      onSend={send}
+      onSend={() => void send()}
       onStop={current ? () => void studio.cancel(current.id) : undefined}
+      busy={sending || chat.running}
       running={chat.running}
       placeholder={placeholder}
-      draft={draft}
       autoFocus={autoFocus}
     />
   )
@@ -216,7 +235,7 @@ export default function StudioApp() {
             {composer('Describe the part. Paste a link or drop a photo if you have one.', true)}
             <div className="chips">
               {SUGGESTIONS.map((s) => (
-                <button type="button" key={s} onClick={() => setDraft(s)}>
+                <button type="button" key={s} onClick={() => setText(s)}>
                   {s}
                 </button>
               ))}
