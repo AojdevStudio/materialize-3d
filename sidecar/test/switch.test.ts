@@ -142,6 +142,46 @@ describe('the update gate', () => {
     await after.quit()
   }, 30_000)
 
+  test('after an install that failed, the work a crash cut off goes on once the gate opens again', async () => {
+    const where = scratch()
+    const first = spawnSidecar(where.data, where.projects, new Map(), { script: 'models', env: where.env })
+    await first.next()
+    await first.call('settings.set', { model: { provider: 'faux', modelId: 'faux-a' } })
+    const { id: project } = (await first.call('projects.create', { title: 'A cube' })) as { id: string }
+    await first.call('chat.send', { project, requestId: 'r1', text: 'please wait', attachments: [] })
+    const started = join(where.projects, project, 'started')
+    while (!existsSync(started)) await Bun.sleep(25)
+    first.child.kill('SIGKILL')
+    await first.child.exited
+    rmSync(started)
+
+    const app = spawnSidecar(where.data, where.projects, new Map(), { script: 'models', env: where.env })
+    app.gate.installing = true
+    await app.until((event) => event.type === 'ready')
+    await Bun.sleep(1_500)
+    expect(existsSync(started)).toBe(false)
+    app.gate.installing = false
+    while (!existsSync(started)) await Bun.sleep(25)
+    await app.quit()
+  }, 30_000)
+
+  test('a tool that waited on a sign-in goes on only with the pass, so an install that started meanwhile holds it', async () => {
+    const where = scratch()
+    const app = spawnSidecar(where.data, where.projects, new Map(), { script: 'astra', env: where.env })
+    await app.next()
+    await app.call('settings.set', { model: { provider: 'faux', modelId: 'faux-a' } })
+    const { id: project } = (await app.call('projects.create', { title: 'A cube' })) as { id: string }
+    await app.call('chat.send', { project, requestId: 'r1', text: 'go', attachments: [] })
+    await app.until((event) => event.type === 'chat' && event.waiting !== null)
+    app.gate.installing = true
+    await app.call('auth.setKey', { provider: 'openai-codex', key: 'astra-key' })
+    await Bun.sleep(2_000)
+    expect(existsSync(join(where.projects, project, 'astra.txt'))).toBe(false)
+    app.gate.installing = false
+    await app.until((event) => event.type === 'chat' && (event.entries as ChatEntry[]).some((entry) => entry.kind === 'assistant' && entry.text === 'parent saw: astra drew it'), 30_000)
+    await app.quit()
+  }, 40_000)
+
   test('gives the pass back while a turn waits on a sign-in, and takes it again when the turn goes on', async () => {
     const where = scratch()
     const app = spawnSidecar(where.data, where.projects, new Map(), { script: 'astra', env: where.env })

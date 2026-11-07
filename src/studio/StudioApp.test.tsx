@@ -227,6 +227,59 @@ describe('StudioApp', () => {
     expect(prompt().value).toBe('')
   })
 
+  it("keeps text typed while a new project is made as that project's draft", async () => {
+    let finishCreate: (project: unknown) => void = () => {}
+    mockSidecar({ 'projects.create': () => new Promise((resolve) => (finishCreate = resolve)) })
+    render(<StudioApp />)
+    await screen.findByText('Project B')
+    type('A clip for my desk')
+    fireEvent.click(screen.getByTestId('send'))
+    await waitFor(() => expect(sidecarCalls('projects.create')).toHaveLength(1))
+    type('second message')
+    await act(async () => finishCreate(projectA))
+    await waitFor(() => expect(sidecarCalls('chat.send')).toHaveLength(1))
+    fireEvent.click(screen.getByText('Project B'))
+    await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project B'))
+    fireEvent.click(screen.getByText('Project A'))
+    await waitFor(() => expect(prompt().value).toBe('second message'))
+  })
+
+  it('leaves the start screen empty when the person cleared it before the saved state arrived', async () => {
+    let finishState: (state: unknown) => void = () => {}
+    mockSidecar({ 'state.get': () => new Promise((resolve) => (finishState = resolve)) })
+    render(<StudioApp />)
+    type('A clip for my desk')
+    type('')
+    await act(async () => finishState({ setup: { step: 'ready', done: true }, settings, projects: [projectB], drafts: { new: { text: 'an older draft' } } }))
+    expect(prompt().value).toBe('')
+  })
+
+  it("keeps each project's unsent message, so sending it again after another project's send reuses its request id", async () => {
+    let sends = 0
+    mockSidecar(
+      { 'chat.send': () => (sends++ === 0 ? Promise.reject('The engine restarted before it answered. Try again.') : Promise.resolve(null)) },
+      [projectA, projectB],
+    )
+    render(<StudioApp />)
+    fireEvent.click(await screen.findByText('Project A'))
+    await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project A'))
+    type('A clip for my desk')
+    fireEvent.click(screen.getByTestId('send'))
+    await screen.findByRole('alert')
+    fireEvent.click(screen.getByText('Project B'))
+    await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project B'))
+    type('make it blue')
+    fireEvent.click(screen.getByTestId('send'))
+    await waitFor(() => expect(sidecarCalls('chat.send')).toHaveLength(2))
+    fireEvent.click(screen.getByText('Project A'))
+    await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project A'))
+    type('A clip for my desk')
+    fireEvent.click(screen.getByTestId('send'))
+    await waitFor(() => expect(sidecarCalls('chat.send')).toHaveLength(3))
+    const [first, , third] = sidecarCalls('chat.send')
+    expect(third?.requestId).toBe(first?.requestId)
+  })
+
   it('shows the code a device sign-in asks for, with its page', async () => {
     mockSidecar()
     render(<StudioApp />)

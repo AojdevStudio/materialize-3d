@@ -100,7 +100,17 @@ export async function runSidecar({ argv, addProviders }: SidecarOptions): Promis
   const resumable = await busy.watch(store.harness)
   host.emit({ type: 'ready', version })
   if (resumable) await chats.reconcile()
-  else console.error('an update is installing, so the work a crash cut off resumes after the restart')
+  else {
+    // The update restarts the app, and the work resumes then. If the install fails instead, the gate opens again.
+    console.error('an update is installing, so the work a crash cut off waits for it')
+    const quit = new AbortController()
+    const stop = () => quit.abort()
+    serving.then(stop, stop)
+    void busy
+      .pass(quit.signal)
+      .then((held) => (held ? chats.reconcile() : undefined))
+      .catch((error: unknown) => console.error(`resuming the work a crash cut off failed: ${String(error)}`))
+  }
   await serving
   await chats.close()
   await store.close()

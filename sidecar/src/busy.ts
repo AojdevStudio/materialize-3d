@@ -10,6 +10,9 @@ import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
 import type { Harness, TaskGraph } from '@earendil-works/pi-durable'
 import type { Host } from './host'
 
+/** How long a refused pass waits before it asks again. An installing update restarts the app, or it fails and the gate opens. */
+const PASS_RETRY_MS = 1000
+
 /** Whether any live task does work now or is about to. A blocked task never runs here. */
 function working(graph: TaskGraph, parked: ReadonlySet<string>): boolean {
   const idle = (id: string): boolean => {
@@ -66,6 +69,22 @@ export class Busy {
     })
   }
 
+  /**
+   * Asks for the pass until Rust gives it, for work that must not go on without it, and resolves true once it is held
+   * or no work needs it. While an update installs, it asks again each second. Resolves false once `stop` aborts.
+   */
+  async pass(stop?: AbortSignal): Promise<boolean> {
+    for (;;) {
+      if (stop?.aborted) return false
+      try {
+        await this.#settle()
+        return true
+      } catch {
+        await Bun.sleep(PASS_RETRY_MS)
+      }
+    }
+  }
+
   /** Brings Rust's pass in line with the work now. Rejects with Rust's refusal when this call asked and was refused. */
   #settle(): Promise<void> {
     const told = this.#told.then(async () => {
@@ -93,15 +112,23 @@ export class Busy {
     }
   }
 
-  /** Gives the pass back while the tool `task` waits on `wait` for a sign-in, and asks for it again when it goes on. */
+  /**
+   * Gives the pass back while the tool `task` waits on `wait` for a sign-in. Once the wait ends, the tool goes on only
+   * with the pass, so an update that started installing meanwhile holds it until the app restarts or the install fails.
+   */
   async parked<T>(task: string, wait: () => Promise<T>): Promise<T> {
     this.#parked.add(task)
     void this.#follow()
+    let result: T
     try {
-      return await wait()
-    } finally {
+      result = await wait()
+    } catch (error) {
       this.#parked.delete(task)
       await this.#follow()
+      throw error
     }
+    this.#parked.delete(task)
+    await this.pass()
+    return result
   }
 }

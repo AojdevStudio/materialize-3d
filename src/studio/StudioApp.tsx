@@ -69,10 +69,12 @@ export default function StudioApp() {
   /** Typed text not saved yet, and the timer that saves it. */
   const unsaved = useRef<{ key: string; text: string; timer: number } | null>(null)
   /**
-   * A message whose send has not gone through. Sending it again sends the same pictures under the same request id, so
-   * a send whose reply was lost never sends it twice.
+   * Messages whose send has not gone through, by project. Sending one again sends the same pictures under the same
+   * request id, so a send whose reply was lost never sends it twice.
    */
-  const pending = useRef<{ project: string; text: string; outgoing: Attachment[]; images: string[]; id: string } | null>(null)
+  const pending = useRef(new Map<string, { text: string; outgoing: Attachment[]; images: string[]; id: string }>())
+  /** Whether the person typed on the start screen, so the saved draft no longer fills it. */
+  const typedOnStart = useRef(false)
   /** The project whose chat view is loaded. Chat changes for the open project wait in `early` until it is. */
   const loaded = useRef<string | null>(null)
   const early = useRef<View[]>([])
@@ -94,7 +96,7 @@ export default function StudioApp() {
         // Drafts saved in this window since are newer, and text already typed stays.
         drafts.current = { ...state.drafts, ...drafts.current }
         setProjects(state.projects)
-        if (currentId.current === null) setText((now) => (now === '' ? (drafts.current[START]?.text ?? '') : now))
+        if (currentId.current === null && !typedOnStart.current) setText(drafts.current[START]?.text ?? '')
       })
       .catch((err: unknown) => setError(String(err)))
     const unlisten = onSidecarEvent((event) => {
@@ -147,6 +149,7 @@ export default function StudioApp() {
     if (unsaved.current !== null) window.clearTimeout(unsaved.current.timer)
     const timer = window.setTimeout(() => void saveDraft().catch((err: unknown) => setError(String(err))), DRAFT_PAUSE_MS)
     unsaved.current = { key: currentId.current ?? START, text: value, timer }
+    if (currentId.current === null) typedOnStart.current = true
   }
   useEffect(() => () => window.clearTimeout(unsaved.current?.timer), [])
 
@@ -252,6 +255,8 @@ export default function StudioApp() {
         // The sidecar moved the start screen's draft to the new project in the same commit.
         const { [START]: started, ...rest } = drafts.current
         drafts.current = started === undefined ? rest : { ...rest, [created.id]: started }
+        // Text typed while the project was made is its draft too.
+        if (unsaved.current?.key === START) unsaved.current.key = created.id
         setProjects((prev) => [created, ...prev])
         if (loadRequest.current === request) {
           show(created, true)
@@ -262,17 +267,15 @@ export default function StudioApp() {
       const id = project.id
       sentTo = id
       const outgoing = attachments
-      const last = pending.current
+      const last = pending.current.get(id)
       const again =
-        last !== null &&
-        last.project === id &&
+        last !== undefined &&
         last.text === message &&
         last.outgoing.length === outgoing.length &&
         last.outgoing.every((a, i) => a === outgoing[i])
       const sendable = again
         ? last
         : {
-            project: id,
             text: message,
             outgoing,
             images: await Promise.all(
@@ -280,9 +283,9 @@ export default function StudioApp() {
             ),
             id: crypto.randomUUID(),
           }
-      pending.current = sendable
+      pending.current.set(id, sendable)
       await sidecar('chat.send', { project: id, requestId: sendable.id, text: message, attachments: sendable.images })
-      pending.current = null
+      pending.current.delete(id)
       if (drafts.current[id]?.text.trim() === message) drafts.current = { ...drafts.current, [id]: { text: '' } }
       // Text typed while this was sending is a new message, so only the sent text is cleared,
       // and only in the view that sent it.
