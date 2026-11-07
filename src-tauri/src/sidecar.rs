@@ -270,14 +270,21 @@ fn shell_path(shell: &str, deadline: std::time::Duration) -> Option<String> {
     }
     let mut child = command.spawn().ok()?;
     let mut stdout = child.stdout.take()?;
-    let (sent, said) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let mut out = Vec::new();
-        let _ = std::io::Read::read_to_end(&mut stdout, &mut out);
-        let _ = sent.send(out);
+    // What the shell printed so far. A program its startup files started, such as an agent, can keep stdout open long
+    // after the shell ends, so the reader is not waited on for its end.
+    let printed = std::sync::Arc::new(Mutex::new(Vec::new()));
+    let (closed, eof) = std::sync::mpsc::channel::<()>();
+    std::thread::spawn({
+        let printed = printed.clone();
+        move || {
+            let mut chunk = [0u8; 4096];
+            while let Ok(n @ 1..) = std::io::Read::read(&mut stdout, &mut chunk) {
+                printed.lock().unwrap_or_else(|e| e.into_inner()).extend_from_slice(&chunk[..n]);
+            }
+            let _ = closed.send(());
+        }
     });
-    let out = said.recv_timeout(deadline).ok();
-    // Startup files can send stdout elsewhere and go on running, so the shell's end has the same deadline.
+    // Startup files can send stdout elsewhere and go on running, so the shell's end has the deadline too.
     let ended = loop {
         match child.try_wait() {
             Ok(Some(_)) => break true,
@@ -285,6 +292,9 @@ fn shell_path(shell: &str, deadline: std::time::Duration) -> Option<String> {
             _ => break false,
         }
     };
+    // The shell has ended, so all it printed is in the pipe: a short wait lets the reader take it.
+    let _ = eof.recv_timeout(std::time::Duration::from_millis(100));
+    let out = ended.then(|| std::mem::take(&mut *printed.lock().unwrap_or_else(|e| e.into_inner())));
     if !ended {
         #[cfg(unix)]
         if let Ok(group) = i32::try_from(child.id()) {
@@ -572,9 +582,12 @@ async fn answer(app: &AppHandle, run: u64, method: &str, params: Value) -> Resul
         "slice" => {
             let SliceCall { operation, request } = parse(method, params)?;
             let cache = app.path().app_cache_dir().map_err(|e| format!("finding the app's cache folder: {e}"))?.join("bambu-presets");
+            // The pass comes first, so a refusal while an update installs is not kept as the operation's result, and
+            // the same slice can run once the gate opens.
             let state = app.state::<Arc<AppState>>().inner().clone();
-            once_per_operation(&app.state::<Sidecar>().slices, operation, || {
-                with_own_pass(state, || async move {
+            let sidecar = app.state::<Sidecar>();
+            with_own_pass(state, || {
+                once_per_operation(&sidecar.slices, operation, || async move {
                     let sliced = tauri::async_runtime::spawn_blocking(move || studio::slice::slice(&request, &cache))
                         .await
                         .map_err(|e| format!("the slice task failed: {e}"))??;
@@ -633,6 +646,23 @@ mod tests {
         assert_eq!(shell_path(shell.to_str().unwrap(), std::time::Duration::from_millis(300)), None);
         assert!(started.elapsed() < std::time::Duration::from_secs(5), "took {:?}", started.elapsed());
         assert!(shell_path("/bin/sh", std::time::Duration::from_secs(5)).is_some_and(|path| !path.is_empty()));
+    }
+
+    #[test]
+    fn a_login_shell_that_leaves_a_program_holding_its_output_still_gives_its_path_at_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let shell = dir.path().join("agent-shell");
+        // Startup files that start an agent, which keeps the shell's stdout open after the shell ends.
+        std::fs::write(&shell, "#!/bin/sh
+sleep 30 &
+printf '__M3D_PATH__/opt/tools/bin'
+").unwrap();
+        let mut perms = std::fs::metadata(&shell).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+        std::fs::set_permissions(&shell, perms).unwrap();
+        let started = std::time::Instant::now();
+        assert_eq!(shell_path(shell.to_str().unwrap(), std::time::Duration::from_secs(5)).as_deref(), Some("/opt/tools/bin"));
+        assert!(started.elapsed() < std::time::Duration::from_secs(2), "took {:?}", started.elapsed());
     }
 
     #[test]
