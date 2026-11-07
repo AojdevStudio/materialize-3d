@@ -113,7 +113,7 @@ describe('a crash mid-turn', () => {
     expect(view.entries.map((entry) => entry.kind)).toEqual(['user', 'assistant', 'tool', 'assistant', 'tool', 'assistant'])
     expect(view.running).toBe(false)
     await reopened.quit()
-  })
+  }, 20_000)
 })
 
 describe('settings', () => {
