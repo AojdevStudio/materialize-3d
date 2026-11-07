@@ -147,6 +147,22 @@ describe('the file tools', () => {
   })
 })
 
+describe('a picture sent with a message', () => {
+  test('never reads a file outside the project through a link', async () => {
+    const where = scratch()
+    const app = start(where, 'models')
+    await app.next()
+    const project = await newProject(app)
+    writeFileSync(join(where.dir, 'secret.jpg'), 'secret')
+    mkdirSync(join(where.projects, project, 'refs'), { recursive: true })
+    symlinkSync(join(where.dir, 'secret.jpg'), join(where.projects, project, 'refs', 'photo.jpg'))
+    await expect(app.call('chat.send', { project, requestId: 'r1', text: 'like this', attachments: ['refs/photo.jpg'] })).rejects.toThrow(
+      'is not a file in the project folder',
+    )
+    await app.quit()
+  })
+})
+
 describe('Astra', () => {
   test('without its sign-in, the turn waits with the fix named, and goes on once the person signs in', async () => {
     const where = scratch()

@@ -3,7 +3,7 @@
  * draft's removal together. A turn that stops before its answer waits with the fix named, and continues once it is
  * fixed. The window sees committed entries only.
  */
-import { mkdirSync, readFileSync, statSync } from 'node:fs'
+import { mkdirSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { extname, isAbsolute, join, relative } from 'node:path'
 import type { Context } from '@earendil-works/chord'
 import { awaitWithContext, BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
@@ -42,10 +42,10 @@ export interface ChatsOptions {
   emit(event: SidecarEvent): void
 }
 
-/** A path the window named for an attachment, inside the project folder. */
+/** A path the window named for an attachment, inside the project folder where it really leads, links followed. */
 function inside(folder: string, rel: string): string {
   const path = join(folder, rel)
-  const back = relative(folder, path)
+  const back = relative(realpathSync.native(folder), realpathSync.native(path))
   if (back === '' || back.startsWith('..') || isAbsolute(back)) throw new Error(`${rel} is not a file in the project folder`)
   return path
 }
