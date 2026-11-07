@@ -107,6 +107,7 @@ describe('a crash mid-turn', () => {
     const log = join(where.projects, project, 'ops.log')
     await waitForFile(log)
     while (!readFileSync(log, 'utf8').includes('op2')) await Bun.sleep(25)
+    const before = ((await first.call('chat.open', { project })) as ChatView).seq
     first.child.kill('SIGKILL')
     await first.child.exited
     // The watch on op2 ends it within a second of the crash, before `go` would let it finish.
@@ -114,7 +115,8 @@ describe('a crash mid-turn', () => {
 
     const reopened = start(where, 'ops')
     await reopened.next()
-    await reopened.call('chat.open', { project })
+    // The window still holds the views the crashed sidecar sent, so the new one's must come after them.
+    expect(((await reopened.call('chat.open', { project })) as ChatView).seq).toBeGreaterThan(before)
     writeFileSync(join(where.projects, project, 'go'), '')
     await answered(reopened, project, 'done')
 

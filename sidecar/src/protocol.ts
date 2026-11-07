@@ -79,8 +79,9 @@ export type Turn = {
 
 /** A chat as the window shows it: committed entries, and whether a turn runs, waits, or neither. */
 /**
- * A chat as read at one point. `seq` grows with each read of a chat's state, so a view read earlier, such as a change
- * that arrives after `chat.open` answered, never takes the place of a newer one's `running`, `waiting`, and `turn`.
+ * A chat as read at one point. `seq` grows with each read of a chat's state, across sidecar runs too, so a view read
+ * earlier, such as a change that arrives after `chat.open` answered, never takes the place of a newer one's `running`,
+ * `waiting`, and `turn`.
  */
 export type ChatView = { project: string; entries: ChatEntry[]; running: boolean; waiting: Waiting | null; turn: Turn | null; seq: number }
 
