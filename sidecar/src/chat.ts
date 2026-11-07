@@ -152,8 +152,9 @@ export class Chats {
 
   /**
    * Reads why a run stopped: a provider with no login, or a refused one, waits for a sign-in; anything else for a retry.
-   * A login refused after a newer one was saved, while the request was out, goes on with the newer one at once, since
-   * the sign-in that saved it found no wait to let go. A turn from another version of the app is left to wait.
+   * A login missing or refused when a newer one was saved since the turn went out goes on with the newer one at once,
+   * since the sign-in that saved it found no wait to let go. The login read here may be older than that save, so only
+   * the save count, read in the commit, decides. A turn from another version of the app is left to wait.
    */
   async #read(conversation: Conversation, failure: RunFailure, turn: Turn | null): Promise<void> {
     const { models, store, version } = this.#o
@@ -161,9 +162,9 @@ export class Chats {
     const name = models.getProvider(provider)?.name ?? provider
     const auth = await models.getAuth(provider).catch(() => undefined)
     const detail = typeof failure.detail === 'string' ? failure.detail : failure.reason
-    const refused = failure.reason === 'model_error' && isLoginFailure(detail)
+    const login = auth === undefined || (failure.reason === 'model_error' && isLoginFailure(detail))
     const waiting: Waiting =
-      auth === undefined || refused
+      login
         ? { kind: 'login', provider, name, fix: `Sign in to ${name}. The message picks up where it stopped.` }
         : { kind: 'error', detail, fix: 'Try again' }
     await store.harness.commit(async (tx) => {
@@ -172,7 +173,7 @@ export class Chats {
       record.tool = false
       // Read in this commit, so a sign-in either lands before it and is seen here, or after it and finds this wait.
       const saves = (await tx.doc(LoginSavesDoc, store.root.id)).saves[provider] ?? 0
-      if (refused && auth !== undefined && record.saves !== null && saves > record.saves && turn?.app === version) {
+      if (login && record.saves !== null && saves > record.saves && turn?.app === version) {
         await conversation.submit(tx, { type: 'continue' })
         record.waiting = null
         record.saves = saves

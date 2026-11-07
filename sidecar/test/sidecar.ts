@@ -3,13 +3,14 @@ type Message = Record<string, unknown>
 /**
  * The sidecar as Rust runs it: a child process spoken to over stdin and stdout, one JSON object per line. The test
  * plays Rust. Like Rust, it reads stdout all the time, since the sidecar stops when no one drains it, and it answers
- * the sidecar's Keychain requests from `keychain`, which stands in for the macOS Keychain.
+ * the sidecar's Keychain requests from `keychain`, which stands in for the macOS Keychain. `gate` may hold a request's
+ * answer, read when the request came, until it calls `answer`, as a slow Keychain does.
  */
 export function spawnSidecar(
   dataDir: string,
   projectsDir: string,
   keychain = new Map<string, string>(),
-  options: { script?: string; env?: Record<string, string>; version?: string } = {},
+  options: { script?: string; env?: Record<string, string>; version?: string; gate?: (request: Message, answer: () => void) => void } = {},
 ) {
   const entry = options.script === undefined ? 'src/main.ts' : 'test/fixtures/scripted-sidecar.ts'
   const child = Bun.spawn(['bun', entry, '--app-version', options.version ?? '9.9.9', '--data', dataDir, '--projects', projectsDir], {
@@ -21,7 +22,8 @@ export function spawnSidecar(
   })
   const send = (message: unknown) => child.stdin.write(`${JSON.stringify(message)}\n`)
 
-  function answer(request: Message) {
+  /** Reads the Keychain now, and returns how to send that answer, now or later. */
+  function answer(request: Message): () => void {
     const params = request.params as { account: string; secret?: string }
     const value =
       request.method === 'keychain.get'
@@ -31,11 +33,12 @@ export function spawnSidecar(
           : request.method === 'keychain.delete'
             ? (keychain.delete(params.account), null)
             : undefined
-    send(
-      value === undefined
-        ? { kind: 'answer', id: request.id, ok: false, error: `no ${String(request.method)} here` }
-        : { kind: 'answer', id: request.id, ok: true, value },
-    )
+    return () =>
+      send(
+        value === undefined
+          ? { kind: 'answer', id: request.id, ok: false, error: `no ${String(request.method)} here` }
+          : { kind: 'answer', id: request.id, ok: true, value },
+      )
   }
 
   // Every line the sidecar writes, but its requests, waits here until a test reads it. `undefined` marks the end.
@@ -48,7 +51,11 @@ export function spawnSidecar(
       for (let end = buffered.indexOf('\n'); end >= 0; end = buffered.indexOf('\n')) {
         const message = JSON.parse(buffered.slice(0, end)) as Message
         buffered = buffered.slice(end + 1)
-        if (message.kind === 'request') answer(message)
+        if (message.kind === 'request') {
+          const reply = answer(message)
+          if (options.gate === undefined) reply()
+          else options.gate(message, reply)
+        }
         else inbox.push(message)
       }
       wake?.()

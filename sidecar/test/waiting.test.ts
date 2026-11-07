@@ -100,6 +100,40 @@ describe('a turn whose provider is not signed in', () => {
     proxy.stop()
   }, 20_000)
 
+  test('a turn that failed with no login goes on when one is saved while the failure is read', async () => {
+    const proxy = anthropicProxy('Hello after the slow read')
+    const dir = mkdtempSync(join(tmpdir(), 'm3d-wait-'))
+    // While `holding`, each Keychain read waits in `held` until the test answers it.
+    let holding = true
+    const held: (() => void)[] = []
+    const app = spawnSidecar(join(dir, 'state'), join(dir, 'projects'), new Map(), {
+      gate: (request, answer) => (holding && request.method === 'keychain.get' ? held.push(answer) : answer()),
+    })
+    await app.next()
+    const { id: project } = (await app.call('projects.create', { title: 'A cube' })) as { id: string }
+    await app.call('chat.open', { project })
+    const nextRead = async (count: number) => {
+      while (held.length < count) await Bun.sleep(10)
+    }
+    // The turn's request finds no login and fails. Its failure is read, and that read asks the Keychain again.
+    await app.call('chat.send', { project, requestId: 'r1', text: 'A 20 mm cube', attachments: [] })
+    await nextRead(1)
+    held[0]?.()
+    await nextRead(2)
+    // A key is saved, and its sign-in looks for waits, while the failure's read still waits on the Keychain.
+    holding = false
+    await app.call('auth.setKey', { provider: 'anthropic', key: 'new-token', baseUrl: proxy.url })
+    await Bun.sleep(200)
+    for (const answer of held.slice(1)) answer()
+    const answered = await app.until(
+      (event) => event.type === 'chat' && (event.entries as ChatEntry[]).some((entry) => entry.kind === 'assistant'),
+      10_000,
+    )
+    expect((answered.entries as ChatEntry[]).find((entry) => entry.kind === 'assistant')).toMatchObject({ text: 'Hello after the slow read' })
+    await app.quit()
+    proxy.stop()
+  }, 20_000)
+
   test('a refused login with no newer one saved waits for a sign-in, and is not tried again', async () => {
     const proxy = anthropicProxy('never', { token: 'old-token', release: Promise.resolve() })
     const dir = mkdtempSync(join(tmpdir(), 'm3d-wait-'))
