@@ -88,6 +88,19 @@ describe('the run tool', () => {
     expect(existsSync(join(where.projects, project, 'finished'))).toBe(false)
     await app.quit()
   }, 20_000)
+
+  test('ends with its sidecar, so a command a crash cut off never runs on beside the rerun', async () => {
+    const where = scratch()
+    const app = start(where, 'orphan')
+    await app.next()
+    const project = await newProject(app)
+    await send(app, project, 'r1')
+    while (!existsSync(join(where.projects, project, 'started'))) await Bun.sleep(25)
+    app.child.kill('SIGKILL')
+    await app.child.exited
+    await Bun.sleep(5000)
+    expect(existsSync(join(where.projects, project, 'finished'))).toBe(false)
+  }, 20_000)
 })
 
 describe('the file tools', () => {

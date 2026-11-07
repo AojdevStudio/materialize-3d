@@ -41,6 +41,21 @@ const OUTPUT_TAIL = 20_000
 /** The only variables a command the agent runs gets. */
 const COMMAND_ENV = ['PATH', 'HOME', 'USER', 'LANG', 'TMPDIR'] as const
 
+/**
+ * Runs a command under a watch on the sidecar. Pi starts each command in a process group of its own, so it can end the
+ * whole tree on a timeout or a stop, but a sidecar killed outright ends nothing. The watch ends the group, command and
+ * all, once the sidecar is gone: a command a crash cut off must not run on beside the copy the resumed turn runs.
+ */
+const GUARD = [
+  'sidecar=$1; shift',
+  '(while kill -0 "$sidecar" 2>/dev/null; do sleep 1; done; kill -KILL 0) </dev/null >/dev/null 2>&1 &',
+  'watch=$!',
+  '"$@"',
+  'status=$?',
+  'kill "$watch" 2>/dev/null',
+  'exit "$status"',
+].join('\n')
+
 /** How many symbolic links a path may pass through before it is refused, as the system refuses a loop. */
 const MAX_LINKS = 40
 
@@ -162,7 +177,7 @@ export function agentTools({ host, projectOf, signedIn }: AgentHost) {
       const receipt = await once(op.memo, op.receipt, async () => {
         let output = ''
         const ran = await env.exec(
-          ['uv', ...args],
+          ['/bin/sh', '-c', GUARD, 'm3d-run', String(process.pid), 'uv', ...args],
           {
             env: vars,
             inheritEnv: false,

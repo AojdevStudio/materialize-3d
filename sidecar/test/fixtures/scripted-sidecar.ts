@@ -48,6 +48,12 @@ const scripts: Record<string, (messages: Message[], model: Model<string>) => Ass
     if (results.length === 0) return run('echo "secret=${M3D_SECRET:-none} op=${M3D_OPERATION_ID:+set}"')
     return fauxAssistantMessage(fauxText(resultText(results[0])))
   },
+  /** A command that marks its start, then runs for three seconds, long enough for a test to kill the sidecar first. */
+  orphan: (messages) => {
+    const { results } = sinceUser(messages)
+    if (results.length === 0) return run('touch started; sleep 3; touch finished')
+    return fauxAssistantMessage(fauxText('ran'))
+  },
   /** A command that runs past its one-second timeout. */
   slow: (messages) => {
     const { results } = sinceUser(messages)
