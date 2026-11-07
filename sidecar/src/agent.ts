@@ -44,17 +44,22 @@ const COMMAND_ENV = ['PATH', 'HOME', 'USER', 'LANG', 'TMPDIR'] as const
 /**
  * Runs a command under a watch on the sidecar. Pi starts each command in a process group of its own, so it can end the
  * whole tree on a timeout or a stop, but a sidecar killed outright ends nothing. The watch ends the group, command and
- * all, once the sidecar is gone: a command a crash cut off must not run on beside the copy the resumed turn runs.
+ * all, within a second of the sidecar's end, and a command that ends first leaves its receipt with its exit code. So
+ * a command a crash cut off either finished, and a resumed turn takes its receipt, or was ended.
  */
 const GUARD = [
-  'sidecar=$1; shift',
+  'sidecar=$1; receipt=$2; shift 2',
   '(while kill -0 "$sidecar" 2>/dev/null; do sleep 1; done; kill -KILL 0) </dev/null >/dev/null 2>&1 &',
   'watch=$!',
   '"$@"',
   'status=$?',
   'kill "$watch" 2>/dev/null',
+  `printf '{"exitCode":%d,"output":""}' "$status" > "$receipt.new" && mv -f "$receipt.new" "$receipt"`,
   'exit "$status"',
 ].join('\n')
+
+/** Longer than the watch takes to end a command after its sidecar ends. */
+const GUARD_GRACE_MS = 2000
 
 /** How many symbolic links a path may pass through before it is refused, as the system refuses a loop. */
 const MAX_LINKS = 40
@@ -176,10 +181,14 @@ export function agentTools({ host, projectOf, signedIn, loginSaves }: AgentHost)
         const value = process.env[name]
         if (value !== undefined) vars[name] = value
       }
+      // A command a crash cut off may still be ending: wait until its watch has ended it or it left its receipt.
+      if ((await api.memo<boolean>('started', context)) === true && !existsSync(op.receipt)) await Bun.sleep(GUARD_GRACE_MS)
       const receipt = await once(op.memo, op.receipt, async () => {
         let output = ''
+        mkdirSync(dirname(op.receipt), { recursive: true })
+        await api.memo('started', true, context)
         const ran = await env.exec(
-          ['/bin/sh', '-c', GUARD, 'm3d-run', String(process.pid), 'uv', ...args],
+          ['/bin/sh', '-c', GUARD, 'm3d-run', String(process.pid), op.receipt, 'uv', ...args],
           {
             env: vars,
             inheritEnv: false,

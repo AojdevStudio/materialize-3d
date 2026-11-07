@@ -101,6 +101,23 @@ describe('the run tool', () => {
     await Bun.sleep(5000)
     expect(existsSync(join(where.projects, project, 'finished'))).toBe(false)
   }, 20_000)
+
+  test('runs once when the sidecar restarts at once while a command cut off by its crash still ends', async () => {
+    const where = scratch()
+    const first = start(where, 'quick')
+    await first.next()
+    const project = await newProject(first)
+    await send(first, project, 'r1')
+    while (!existsSync(join(where.projects, project, 'started'))) await Bun.sleep(10)
+    first.child.kill('SIGKILL')
+    await first.child.exited
+    const second = start(where, 'quick')
+    await second.next()
+    await answered(second, project, 'ran')
+    await Bun.sleep(1500)
+    expect(readFileSync(join(where.projects, project, 'ran.log'), 'utf8')).toBe('ran\n')
+    await second.quit()
+  }, 30_000)
 })
 
 describe('the file tools', () => {

@@ -56,6 +56,12 @@ const scripts: Record<string, (messages: Message[], model: Model<string>) => Ass
     if (results.length === 0) return run('touch started; sleep 3; touch finished')
     return fauxAssistantMessage(fauxText('ran'))
   },
+  /** A command that ends a moment after it starts, so a sidecar killed at its start restarts while it still runs. */
+  quick: (messages) => {
+    const { results } = sinceUser(messages)
+    if (results.length === 0) return run('touch started; sleep 0.5; echo ran >> ran.log')
+    return fauxAssistantMessage(fauxText('ran'))
+  },
   /** A command that runs past its one-second timeout. */
   slow: (messages) => {
     const { results } = sinceUser(messages)

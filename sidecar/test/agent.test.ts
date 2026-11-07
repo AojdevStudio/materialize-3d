@@ -98,6 +98,8 @@ describe('a crash mid-turn', () => {
     while (!readFileSync(log, 'utf8').includes('op2')) await Bun.sleep(25)
     first.child.kill('SIGKILL')
     await first.child.exited
+    // The watch on op2 ends it within a second of the crash, before `go` would let it finish.
+    await Bun.sleep(1500)
 
     const reopened = start(where, 'ops')
     await reopened.next()
