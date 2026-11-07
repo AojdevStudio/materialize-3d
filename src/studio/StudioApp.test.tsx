@@ -212,6 +212,38 @@ describe('StudioApp', () => {
     expect(screen.queryByTestId('working')).toBeNull()
   })
 
+  it('reads the open chat again when the engine starts again, so a turn that ended before the crash shows as ended', async () => {
+    let opens = 0
+    mockSidecar({
+      'chat.open': (params) => {
+        opens += 1
+        return Promise.resolve(view(String(params.project), opens === 1 ? { running: true, seq: 1 } : { running: false, seq: 5 }))
+      },
+    })
+    render(<StudioApp />)
+    fireEvent.click(await screen.findByText('Project B'))
+    await screen.findByTestId('working')
+    await emit({ type: 'engine', state: 'restarting' })
+    await emit({ type: 'ready', version: '1.2.3' })
+    await waitFor(() => expect(screen.queryByTestId('working')).toBeNull())
+    expect(sidecarCalls('chat.open')).toHaveLength(2)
+  })
+
+  it('keeps text typed during a send as the next message, even when it reads the same as the sent one', async () => {
+    let finishSend: (value: unknown) => void = () => {}
+    mockSidecar({ 'chat.send': () => new Promise((resolve) => (finishSend = resolve)) })
+    render(<StudioApp />)
+    fireEvent.click(await screen.findByText('Project B'))
+    await screen.findByRole('banner')
+    type('Make it red')
+    fireEvent.click(screen.getByTestId('send'))
+    await waitFor(() => expect(sidecarCalls('chat.send')).toHaveLength(1))
+    type('Make it blue')
+    type('Make it red')
+    await act(async () => finishSend(null))
+    expect(prompt().value).toBe('Make it red')
+  })
+
   it('never shows a turn as working again when a change read before the open chat arrives after it', async () => {
     let finishOpen: (view: unknown) => void = () => {}
     mockSidecar({ 'chat.open': () => new Promise((resolve) => (finishOpen = resolve)) })

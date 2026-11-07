@@ -60,5 +60,8 @@ describe('buildChat', () => {
     ]
     expect(buildChat(entries, false)[1]).toMatchObject({ kind: 'tool', id: 'c1', result: 'It stopped before it finished.', failed: true })
     expect(buildChat(entries, true)[1]).not.toHaveProperty('result')
+    // A later message starts a new turn, which cannot run the earlier step again.
+    const later = [...entries, { id: 3, kind: 'user' as const, text: 'Thinner', images: [] }]
+    expect(buildChat(later, true)[1]).toMatchObject({ kind: 'tool', id: 'c1', result: 'It stopped before it finished.', failed: true })
   })
 })

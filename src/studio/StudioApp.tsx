@@ -84,6 +84,8 @@ export default function StudioApp() {
   const composerText = useRef('')
   /** The project whose chat view is loaded. Chat changes for the open project wait in `early` until it is. */
   const loaded = useRef<string | null>(null)
+  /** Counts the person's edits to the composer, so a send clears only the text it sent, not a later edit that reads the same. */
+  const edits = useRef(0)
   const early = useRef<View[]>([])
 
   composerText.current = text
@@ -110,10 +112,19 @@ export default function StudioApp() {
     let engineChanged = false
     const unlisten = onSidecarEvent((event) => {
       switch (event.type) {
-        case 'ready':
+        case 'ready': {
           engineChanged = true
           setEngine(`Engine ${event.version}`)
+          // An engine that started again holds what a crash cut off from the window, such as a turn's last entry, so
+          // the open chat is read again. The changes that arrive meanwhile are kept, as when it first opened.
+          const project = currentId.current
+          if (project !== null) {
+            loaded.current = null
+            early.current = []
+            void load(project, loadRequest.current).catch((err: unknown) => setError(String(err)))
+          }
           break
+        }
         case 'engine':
           engineChanged = true
           setEngine(event.state === 'stopped' ? event.detail : 'Engine restarting')
@@ -160,6 +171,7 @@ export default function StudioApp() {
   }
 
   const type = (value: string) => {
+    edits.current += 1
     setText(value)
     if (unsaved.current !== null) window.clearTimeout(unsaved.current.timer)
     const timer = window.setTimeout(() => void saveDraft().catch((err: unknown) => setError(String(err))), DRAFT_PAUSE_MS)
@@ -263,6 +275,7 @@ export default function StudioApp() {
     let sentTo: string | null = null
     try {
       await saveDraft()
+      const sentEdits = edits.current
       let project = current
       if (!project) {
         const created = await sidecar('projects.create', { title: message || 'New part' })
@@ -311,10 +324,12 @@ export default function StudioApp() {
       await sidecar('chat.send', { project: id, requestId: sendable.id, text: message, attachments: sendable.images })
       pending.current.delete(id)
       setSendErrors(({ [id]: _, ...rest }) => rest)
-      if (drafts.current[id]?.text.trim() === message) drafts.current = { ...drafts.current, [id]: { text: '' } }
-      // Text typed while this was sending is a new message, so only the sent text is cleared,
-      // and only in the view that sent it.
-      if (loadRequest.current === request) setText((now) => (now.trim() === message ? '' : now))
+      // Text typed while this was sending is a new message, even one that reads the same, so the sent text is cleared
+      // only when nothing was typed since, and only in the view that sent it.
+      if (edits.current === sentEdits) {
+        if (drafts.current[id]?.text.trim() === message) drafts.current = { ...drafts.current, [id]: { text: '' } }
+        if (loadRequest.current === request) setText((now) => (now.trim() === message ? '' : now))
+      }
       // A picture added while these imported waits for the next message.
       setAttachments((prev) => prev.filter((a) => !outgoing.includes(a)))
       outgoing.forEach(releaseAttachment)

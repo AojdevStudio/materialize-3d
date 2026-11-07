@@ -46,13 +46,22 @@ function written(name: string, args: Record<string, unknown>): string | undefine
 
 /**
  * Committed chat entries as chat items: one line per tool step with its result attached, and after each turn a card
- * of the files it wrote that open in the preview, print files first. Once the turn no longer `running`, a step left
- * without a result, as a stop or a crash leaves it, shows as stopped.
+ * of the files it wrote that open in the preview, print files first. A step left without a result, as a stop or a
+ * crash leaves it, shows as stopped once a later message starts a new turn, or once its own turn no longer `running`.
  */
 export function buildChat(entries: ChatEntry[], running = true): ChatItem[] {
   const items: ChatItem[] = []
   const tools = new Map<string, { item: ToolItem; writes: string | undefined }>()
   let files: string[] = []
+  // A step with no result that a later message or the end of its turn leaves behind was stopped, as a stop or a crash
+  // leaves it. It cannot run again.
+  const stopUnfinished = () => {
+    for (const { item } of tools.values()) {
+      if (item.result !== undefined) continue
+      item.result = 'It stopped before it finished.'
+      item.failed = true
+    }
+  }
   const endTurn = () => {
     const shown = [...new Set(files)].filter(autoOpens).sort((a, b) => Number(is3mf(b)) - Number(is3mf(a)))
     if (shown.length > 0) items.push({ kind: 'files', files: shown })
@@ -62,6 +71,7 @@ export function buildChat(entries: ChatEntry[], running = true): ChatItem[] {
     switch (entry.kind) {
       case 'user':
         endTurn()
+        stopUnfinished()
         items.push({ kind: 'user', text: entry.text, images: entry.images })
         break
       case 'assistant':
@@ -84,6 +94,7 @@ export function buildChat(entries: ChatEntry[], running = true): ChatItem[] {
       case 'imported':
         if (entry.role === 'user') {
           endTurn()
+          stopUnfinished()
           items.push({ kind: 'user', text: entry.text, images: entry.images })
         } else if (entry.role === 'assistant') {
           items.push({ kind: 'text', text: entry.text })
@@ -94,12 +105,6 @@ export function buildChat(entries: ChatEntry[], running = true): ChatItem[] {
     }
   }
   endTurn()
-  if (!running) {
-    for (const { item } of tools.values()) {
-      if (item.result !== undefined) continue
-      item.result = 'It stopped before it finished.'
-      item.failed = true
-    }
-  }
+  if (!running) stopUnfinished()
   return items
 }

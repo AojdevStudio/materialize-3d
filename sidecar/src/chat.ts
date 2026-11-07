@@ -434,6 +434,13 @@ export class Chats {
       if (state.turn !== null && state.turn.app !== version) await this.#outdated(conversation.id)
       else if (record.failure !== null && (await this.#savedSince(record, waiting.provider))) this.#resume(project.id, record.failure)
     }
+    // The window may have read a chat before this, and what was set right here, such as a wait, reaches no watch. So
+    // each chat's state as reconciled goes to the window, an idle chat's too.
+    for (const project of projects) {
+      const conversation = await this.#conversation(project.id)
+      const { running, waiting, turn } = await this.#state(conversation)
+      this.#o.emit({ type: 'chat', project: project.id, entries: [], running, waiting, turn, seq: this.#nextSeq() })
+    }
   }
 
   /**

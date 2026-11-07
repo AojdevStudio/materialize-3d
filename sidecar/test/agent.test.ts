@@ -97,6 +97,24 @@ describe('a send', () => {
   })
 })
 
+describe('a restart', () => {
+  test("sends each chat's state once it has reconciled, even a chat that is idle", async () => {
+    const where = scratch()
+    const first = start(where, 'models')
+    await first.next()
+    const project = await newProject(first)
+    await send(first, project, 'r1', 'hello')
+    await first.until((event) => event.type === 'chat' && event.project === project && event.running === false && (event.entries as ChatEntry[]).some((e) => e.kind === 'assistant'), 20_000)
+    first.child.kill('SIGKILL')
+    await first.child.exited
+    const reopened = start(where, 'models')
+    await reopened.next()
+    const state = await reopened.until((event) => event.type === 'chat' && event.project === project, 5_000)
+    expect(state.running).toBe(false)
+    await reopened.quit()
+  }, 30_000)
+})
+
 describe('a crash mid-turn', () => {
   test('the reopened sidecar finishes the turn and never repeats a finished tool call', async () => {
     const where = scratch()
@@ -115,7 +133,10 @@ describe('a crash mid-turn', () => {
 
     const reopened = start(where, 'ops')
     await reopened.next()
-    // The window still holds the views the crashed sidecar sent, so the new one's must come after them.
+    // The window still holds the views the crashed sidecar sent, so the new one's must come after them, and the
+    // reopened sidecar sends each chat's state once it has reconciled, as the window may have read it before that.
+    const reconciled = await reopened.until((event) => event.type === 'chat' && event.project === project)
+    expect(reconciled.seq).toBeGreaterThan(before)
     expect(((await reopened.call('chat.open', { project })) as ChatView).seq).toBeGreaterThan(before)
     writeFileSync(join(where.projects, project, 'go'), '')
     await answered(reopened, project, 'done')
