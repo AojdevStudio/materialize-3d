@@ -33,7 +33,7 @@ describe('one writer', () => {
 
     const second = spawnSidecar(data, projects)
     expect(await second.child.exited).toBe(EXIT.storeInUse)
-    expect(await new Response(second.child.stderr).text()).toContain('Another copy of Materialize 3D owns the store.')
+    expect(await second.stderr()).toContain('Another copy of Materialize 3D owns the store.')
 
     first.child.kill('SIGKILL')
     await first.child.exited

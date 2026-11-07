@@ -1,0 +1,255 @@
+/**
+ * Chats: one Pi conversation per project. A send commits the message, the settings its turn runs with, and the
+ * draft's removal together. A turn that stops before its answer waits with the fix named, and continues once it is
+ * fixed. The window sees committed entries only.
+ */
+import { mkdirSync, readFileSync, statSync } from 'node:fs'
+import { extname, isAbsolute, join, relative } from 'node:path'
+import type { Context } from '@earendil-works/chord'
+import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
+import type { ImageContent, Models, TextContent } from '@earendil-works/pi-ai'
+import {
+  type Conversation,
+  ConversationBusy,
+  type ConversationId,
+  configure,
+  type EntryRecord,
+  type Extension,
+  LiveDoc,
+  type RunFailure,
+  type ToolRegistration,
+  type WatchHandle,
+} from '@earendil-works/pi-durable'
+import type { ConversationView } from '@earendil-works/pi-durable'
+import { WORKFLOW, WORKFLOW_VERSION } from './agent'
+import type { ChatEntry, ChatView, SidecarEvent, Turn, Waiting } from './protocol'
+import { DraftsDoc, SettingsDoc, type Store, TurnDoc, WaitingDoc } from './store'
+import { chatEntry } from './transcript'
+
+const context: Context = BACKGROUND_CONTEXT
+
+const IMAGE_TYPES: Record<string, string> = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp' }
+/** Models read pictures up to about 5 MB. Larger ones, and HEIC photos, go as a smaller JPEG on macOS. */
+const MAX_IMAGE_BYTES = 3_500_000
+
+/** A failure the provider gave because the login was refused, not missing. */
+const REFUSED_LOGIN = /\b(401|403)\b|unauthori[sz]ed|authentication|invalid (api )?(key|token)|expired/i
+
+export interface ChatsOptions {
+  store: Store
+  models: Models
+  extension: Extension
+  tools: readonly ToolRegistration[]
+  version: string
+  emit(event: SidecarEvent): void
+}
+
+/** A path the window named for an attachment, inside the project folder. */
+function inside(folder: string, rel: string): string {
+  const path = join(folder, rel)
+  const back = relative(folder, path)
+  if (back === '' || back.startsWith('..') || isAbsolute(back)) throw new Error(`${rel} is not a file in the project folder`)
+  return path
+}
+
+/** A picture the model can read: as it is, or on macOS as a JPEG made with `sips`. Undefined when neither works. */
+function picture(folder: string, rel: string): ImageContent | undefined {
+  const path = inside(folder, rel)
+  const type = IMAGE_TYPES[extname(rel).toLowerCase()]
+  if (type !== undefined && statSync(path).size <= MAX_IMAGE_BYTES) {
+    return { type: 'image', data: readFileSync(path).toString('base64'), mimeType: type }
+  }
+  if (process.platform !== 'darwin') return undefined
+  const out = join(folder, '.m3d', 'send', `${rel.replaceAll('/', '_')}.jpg`)
+  mkdirSync(join(folder, '.m3d', 'send'), { recursive: true })
+  const converted = Bun.spawnSync(['sips', '-s', 'format', 'jpeg', '-Z', '2000', path, '--out', out])
+  if (converted.exitCode !== 0) return undefined
+  return { type: 'image', data: readFileSync(out).toString('base64'), mimeType: 'image/jpeg' }
+}
+
+function userContent(folder: string, text: string, attachments: string[]): string | (TextContent | ImageContent)[] {
+  if (attachments.length === 0) return text
+  const images = attachments.flatMap((rel) => picture(folder, rel) ?? [])
+  const note = `\n\n(Pictures attached, saved in this folder as: ${attachments.join(', ')})`
+  return [{ type: 'text', text: `${text}${note}` }, ...images]
+}
+
+export class Chats {
+  readonly #o: ChatsOptions
+  readonly #watches = new Map<string, WatchHandle<ConversationView>>()
+  /** The newest entry each watched chat has sent the window. */
+  readonly #sent = new Map<string, number>()
+
+  constructor(options: ChatsOptions) {
+    this.#o = options
+  }
+
+  async #conversation(project: string): Promise<Conversation> {
+    const { conversation } = await this.#o.store.project(project)
+    const found = await this.#o.store.harness.conversation(conversation as ConversationId, context)
+    if (found === undefined) throw new Error(`project ${project} has no conversation`)
+    return found
+  }
+
+  async #entries(conversation: Conversation, after = 0): Promise<ChatEntry[]> {
+    const entries: ChatEntry[] = []
+    let cursor: Parameters<Conversation['entries']>[2]
+    do {
+      const page = await conversation.entries({ order: 'ascending', minEntryId: (after + 1) as EntryRecord['id'] }, 500, cursor, context)
+      entries.push(...page.items.flatMap((entry) => chatEntry(entry) ?? []))
+      cursor = page.next
+    } while (cursor !== undefined)
+    return entries
+  }
+
+  async #state(conversation: Conversation): Promise<{ running: boolean; waiting: Waiting | null; turn: Turn | null; failure: RunFailure | undefined }> {
+    const { harness } = this.#o.store
+    const [live, waiting, turn] = await Promise.all([
+      harness.snapshot(LiveDoc, conversation.id, context),
+      harness.snapshot(WaitingDoc, conversation.id, context),
+      harness.snapshot(TurnDoc, conversation.id, context),
+    ])
+    return { running: live?.run !== undefined, waiting: waiting?.waiting ?? null, turn: turn?.turn ?? null, failure: live?.runFailure }
+  }
+
+  /** The whole chat, and from now on its changes as `chat` events. */
+  async open(project: string): Promise<ChatView> {
+    const conversation = await this.#conversation(project)
+    await this.#watch(project, conversation)
+    const entries = await this.#entries(conversation)
+    this.#sent.set(project, Math.max(this.#sent.get(project) ?? 0, entries.at(-1)?.id ?? 0))
+    const { running, waiting, turn } = await this.#state(conversation)
+    return { project, entries, running, waiting, turn }
+  }
+
+  async #watch(project: string, conversation: Conversation): Promise<void> {
+    if (this.#watches.has(project)) return
+    const watch = await conversation.watch(context)
+    this.#watches.set(project, watch)
+    watch.start(async (call) => {
+      if (call.kind === 'value') await this.#changed(project, conversation)
+    })
+  }
+
+  async #changed(project: string, conversation: Conversation): Promise<void> {
+    let state = await this.#state(conversation)
+    const recorded = (await this.#o.store.harness.snapshot(WaitingDoc, conversation.id, context))?.failure ?? null
+    if (state.failure !== undefined && state.failure.reason !== 'aborted' && state.failure.taskId !== recorded) {
+      // The waiting document is not part of the view a watch follows, so its commit wakes no one: read it here.
+      await this.#read(conversation, state.failure, state.turn)
+      state = await this.#state(conversation)
+    }
+    const entries = await this.#entries(conversation, this.#sent.get(project) ?? 0)
+    if (entries.length > 0) this.#sent.set(project, entries.at(-1)?.id ?? 0)
+    this.#o.emit({ type: 'chat', project, entries, running: state.running, waiting: state.waiting, turn: state.turn })
+  }
+
+  /** Reads why a run stopped: a provider with no login, or a refused one, waits for a sign-in; anything else for a retry. */
+  async #read(conversation: Conversation, failure: RunFailure, turn: Turn | null): Promise<void> {
+    const { models, store } = this.#o
+    const provider = turn?.model.provider ?? 'anthropic'
+    const name = models.getProvider(provider)?.name ?? provider
+    const auth = await models.getAuth(provider).catch(() => undefined)
+    const detail = typeof failure.detail === 'string' ? failure.detail : failure.reason
+    const waiting: Waiting =
+      auth === undefined || (failure.reason === 'model_error' && REFUSED_LOGIN.test(detail))
+        ? { kind: 'login', provider, name, fix: `Sign in to ${name}. The message picks up where it stopped.` }
+        : { kind: 'error', detail, fix: 'Try again' }
+    await store.harness.commit(async (tx) => {
+      const record = await tx.doc(WaitingDoc, conversation.id)
+      record.waiting = waiting
+      record.failure = failure.taskId
+    }, context)
+  }
+
+  /**
+   * Sends a message. The message, the settings its turn runs with, and the draft's removal commit together. A send
+   * whose `requestId` was already committed changes nothing, so the window can send again after any failure.
+   */
+  async send(project: string, requestId: string, text: string, attachments: string[]): Promise<void> {
+    const { store, extension, tools, version } = this.#o
+    const conversation = await this.#conversation(project)
+    const folder = store.projectFolder(project)
+    const content = userContent(folder, text, attachments)
+    try {
+      await store.harness.commit(async (tx) => {
+        if ((await tx.submissionByRequest(conversation.id, requestId)) !== undefined) return
+        const settings = await tx.doc(SettingsDoc, store.root.id)
+        const model = { provider: settings.model.provider, modelId: settings.model.modelId }
+        const thinking = settings.thinking
+        await conversation.submit(tx, {
+          type: 'input',
+          content,
+          requestId,
+          whenBusy: 'reject',
+          entry: { kind: 'm3d.user', data: { text, images: attachments } },
+        })
+        await configure(tx, conversation.id, { model, thinkingLevel: thinking, extensions: [extension], tools, instructions: WORKFLOW, cwd: folder })
+        const turn: Turn = { requestId, model, thinking, tools: tools.map((t) => t.name), instructions: WORKFLOW_VERSION, app: version, startedMs: Date.now() }
+        ;(await tx.doc(TurnDoc, conversation.id)).turn = turn
+        delete (await tx.doc(DraftsDoc, store.root.id)).drafts[project]
+        ;(await tx.doc(WaitingDoc, conversation.id)).waiting = null
+      }, context)
+    } catch (error) {
+      if (error instanceof ConversationBusy) throw new Error('The agent is still working on the last message.')
+      throw error
+    }
+    await this.#watch(project, conversation)
+  }
+
+  /** Goes on from where the turn stopped, with the settings it started with, and clears what it waited on. */
+  async #continue(project: string): Promise<void> {
+    const conversation = await this.#conversation(project)
+    await this.#o.store.harness.commit(async (tx) => {
+      await conversation.submit(tx, { type: 'continue' })
+      ;(await tx.doc(WaitingDoc, conversation.id)).waiting = null
+    }, context)
+    await this.#watch(project, conversation)
+  }
+
+  async retry(project: string): Promise<void> {
+    await this.#continue(project)
+  }
+
+  async tools(project: string): Promise<string[]> {
+    const agent = await (await this.#conversation(project)).agent(context)
+    return agent.tools.map((tool) => tool.name)
+  }
+
+  async stop(project: string): Promise<void> {
+    await (await this.#conversation(project)).abort(context)
+  }
+
+  /** After a sign-in: every turn that waited on that provider goes on. */
+  async signedIn(provider: string): Promise<void> {
+    for (const project of await this.#o.store.projects()) {
+      const waiting = await this.#o.store.harness.snapshot(WaitingDoc, project.conversation as ConversationId, context)
+      if (waiting?.waiting?.kind === 'login' && waiting.waiting.provider === provider) await this.#continue(project.id)
+    }
+  }
+
+  /**
+   * At start: runs a crash cut off go on from their last committed step, failures not yet read are read, and turns
+   * that waited on a login that is now there go on.
+   */
+  async reconcile(): Promise<void> {
+    const { store, models } = this.#o
+    store.harness.resume()
+    for (const project of await store.projects()) {
+      const conversation = await this.#conversation(project.id)
+      const state = await this.#state(conversation)
+      const recorded = (await store.harness.snapshot(WaitingDoc, conversation.id, context))?.failure ?? null
+      if (state.failure !== undefined && state.failure.reason !== 'aborted' && state.failure.taskId !== recorded) {
+        await this.#read(conversation, state.failure, state.turn)
+      }
+      const waiting = (await store.harness.snapshot(WaitingDoc, conversation.id, context))?.waiting
+      if (waiting?.kind === 'login' && (await models.getAuth(waiting.provider).catch(() => undefined)) !== undefined) {
+        await this.#continue(project.id)
+      }
+    }
+  }
+
+  async close(): Promise<void> {
+    await Promise.all([...this.#watches.values()].map((watch) => watch.stop()))
+  }
+}

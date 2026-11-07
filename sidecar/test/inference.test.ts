@@ -21,7 +21,7 @@ describe('logins', () => {
     expect(JSON.parse(keychain.get('anthropic') ?? '{}')).toEqual({ type: 'api_key', key: TOKEN, env: { ANTHROPIC_BASE_URL: 'http://127.0.0.1:8317' } })
     await app.quit()
 
-    const stderr = await new Response(app.child.stderr).text()
+    const stderr = await app.stderr()
     expect(stderr).not.toContain(TOKEN)
     const files = readdirSync(join(dir, 'state'))
     expect(files).toContain('store.sqlite')
