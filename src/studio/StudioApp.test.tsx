@@ -2,10 +2,15 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 
-const { invokeMock } = vi.hoisted(() => ({ invokeMock: vi.fn() }))
+const { invokeMock, listeners } = vi.hoisted(() => ({ invokeMock: vi.fn(), listeners: [] as ((event: { payload: unknown }) => void)[] }))
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: invokeMock }))
-vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn().mockResolvedValue(() => {}) }))
+vi.mock('@tauri-apps/api/event', () => ({
+  listen: (_name: string, handler: (event: { payload: unknown }) => void) => {
+    listeners.push(handler)
+    return Promise.resolve(() => {})
+  },
+}))
 vi.mock('@tauri-apps/api/webview', () => ({
   getCurrentWebview: () => ({ onDragDropEvent: vi.fn().mockResolvedValue(() => {}) }),
 }))
@@ -20,6 +25,7 @@ const projectB = { id: '2026-11-06-b', title: 'Project B', createdMs: 1, path: '
 afterEach(() => {
   cleanup()
   invokeMock.mockReset()
+  listeners.length = 0
 })
 
 function mockStudio(overrides: Record<string, () => Promise<unknown>>) {
@@ -47,6 +53,16 @@ describe('StudioApp', () => {
     render(<StudioApp />)
     expect((await screen.findByText('Engine 1.2.3')).dataset.testid).toBe('engine')
     expect(invokeMock).toHaveBeenCalledWith('sidecar', { method: 'app.ping', params: {} })
+  })
+
+  it('keeps an engine stop that arrives while its version is still on the way', async () => {
+    let answerPing: (value: unknown) => void = () => {}
+    mockStudio({ sidecar: () => new Promise((resolve) => (answerPing = resolve)) })
+    render(<StudioApp />)
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('sidecar', { method: 'app.ping', params: {} }))
+    await act(async () => listeners.forEach((listener) => listener({ payload: { type: 'engine', state: 'stopped', detail: 'The engine stopped.' } })))
+    await act(async () => answerPing({ version: '1.2.3' }))
+    expect(screen.getByTestId('engine').textContent).toBe('The engine stopped.')
   })
 
   it('leaves the project the person moved to alone when a slow send from the start screen finishes', async () => {

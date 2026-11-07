@@ -305,6 +305,9 @@ fn app_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
     app.path().app_data_dir().map_err(|e| format!("app data folder: {e}"))
 }
 
+/// How long the login shell may take to tell its PATH before the app goes on without it.
+const LOGIN_SHELL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// The PATH of the person's login shell. An app opened from Finder starts with
 /// only the system folders, where `claude`, `codex`, and `uv` are not.
 pub(crate) fn login_path() -> &'static str {
@@ -312,21 +315,39 @@ pub(crate) fn login_path() -> &'static str {
     PATH.get_or_init(|| {
         let current = std::env::var("PATH").unwrap_or_default();
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_owned());
-        let marker = "__M3D_PATH__";
-        let from_shell = std::process::Command::new(shell)
-            .args(["-ilc", &format!("printf '{marker}%s' \"$PATH\"")])
-            .stdin(Stdio::null())
-            .stderr(Stdio::null())
-            .output()
-            .ok()
-            .and_then(|out| String::from_utf8_lossy(&out.stdout).rsplit_once(marker).map(|(_, path)| path.trim().to_owned()))
-            .filter(|path| !path.is_empty());
-        match from_shell {
+        match shell_path(&shell, LOGIN_SHELL_DEADLINE) {
             Some(path) if current.is_empty() => path,
             Some(path) => format!("{path}:{current}"),
             None => current,
         }
     })
+}
+
+/// The PATH `shell` reports as a login shell, or none when it fails, says nothing, or takes longer than `deadline`.
+/// A shell whose startup files hang is ended, so the sidecar and the runner still start.
+fn shell_path(shell: &str, deadline: std::time::Duration) -> Option<String> {
+    let marker = "__M3D_PATH__";
+    let mut child = std::process::Command::new(shell)
+        .args(["-ilc", &format!("printf '{marker}%s' \"$PATH\"")])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let mut stdout = child.stdout.take()?;
+    let (sent, said) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut out = Vec::new();
+        let _ = std::io::Read::read_to_end(&mut stdout, &mut out);
+        let _ = sent.send(out);
+    });
+    let out = said.recv_timeout(deadline);
+    if out.is_err() {
+        let _ = child.kill();
+    }
+    let _ = child.wait();
+    let out = out.ok()?;
+    String::from_utf8_lossy(&out).rsplit_once(marker).map(|(_, path)| path.trim().to_owned()).filter(|path| !path.is_empty())
 }
 
 /// The image the model gets for a picture in `refs/`. Claude reads JPEG, PNG,
@@ -639,6 +660,21 @@ pub fn studio_cancel(turns: State<'_, Turns>, project: String) -> Result<(), Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn a_login_shell_that_hangs_is_ended_at_its_deadline() {
+        let dir = tempfile::tempdir().unwrap();
+        let shell = dir.path().join("slow-shell");
+        std::fs::write(&shell, "#!/bin/sh\nsleep 30\n").unwrap();
+        let mut perms = std::fs::metadata(&shell).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+        std::fs::set_permissions(&shell, perms).unwrap();
+        let started = std::time::Instant::now();
+        assert_eq!(shell_path(shell.to_str().unwrap(), std::time::Duration::from_millis(300)), None);
+        assert!(started.elapsed() < std::time::Duration::from_secs(5), "took {:?}", started.elapsed());
+        assert!(shell_path("/bin/sh", std::time::Duration::from_secs(5)).is_some_and(|path| !path.is_empty()));
+    }
 
     const SETTLE: std::time::Duration = std::time::Duration::from_millis(50);
 

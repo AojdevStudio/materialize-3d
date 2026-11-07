@@ -3,10 +3,11 @@
 # bundle.externalBin. Tauri finds it by the name it ships with plus the Rust target triple,
 # so the triple decides both the file name and the Bun target. tauri-build refuses to build
 # the app crate, tests included, until the file exists, so run this before any cargo build.
+# The triple is the one Tauri builds for, as its build commands pass it, else this machine's.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-triple="$(rustc -vV | sed -n 's/^host: //p')"
+triple="${TAURI_ENV_TARGET_TRIPLE:-$(rustc -vV | sed -n 's/^host: //p')}"
 case "$triple" in
   aarch64-apple-darwin) target=bun-darwin-arm64 ;;
   x86_64-apple-darwin) target=bun-darwin-x64 ;;
