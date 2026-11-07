@@ -292,7 +292,7 @@ export class Chats {
             await hold({ kind: 'login', provider, name, fix })
             await this.#show(project)
           }
-          await this.#o.busy.parked(task, () => awaitWithContext(promise, waiting))
+          await this.#o.busy.parked(task, () => awaitWithContext(promise, waiting), waiting.abortSignal)
         } finally {
           waiters.delete(resolve)
         }

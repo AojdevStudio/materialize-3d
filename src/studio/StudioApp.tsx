@@ -75,10 +75,13 @@ export default function StudioApp() {
   const pending = useRef(new Map<string, { text: string; outgoing: Attachment[]; images: string[]; id: string }>())
   /** Whether the person typed on the start screen, so the saved draft no longer fills it. */
   const typedOnStart = useRef(false)
+  /** The composer's text as it is now, for a send that finishes after the person typed more. */
+  const composerText = useRef('')
   /** The project whose chat view is loaded. Chat changes for the open project wait in `early` until it is. */
   const loaded = useRef<string | null>(null)
   const early = useRef<View[]>([])
 
+  composerText.current = text
   const items = useMemo(() => buildChat(view?.entries ?? []), [view?.entries])
   const running = view?.running ?? false
 
@@ -252,13 +255,22 @@ export default function StudioApp() {
       if (!project) {
         const created = await sidecar('projects.create', { title: message || 'New part' })
         project = created
-        // The sidecar moved the start screen's draft to the new project in the same commit.
+        // The sidecar moved the start screen's draft to the new project in the same commit, when it held this message.
         const { [START]: started, ...rest } = drafts.current
-        drafts.current = started === undefined ? rest : { ...rest, [created.id]: started }
-        // Text typed while the project was made is its draft too.
-        if (unsaved.current?.key === START) unsaved.current.key = created.id
+        if (started?.text.trim() === message) drafts.current = { ...rest, [created.id]: started }
         setProjects((prev) => [created, ...prev])
         if (loadRequest.current === request) {
+          // The person stayed on the screen this was sent from, so text typed while the project was made follows them
+          // to it, and the start screen is empty again.
+          const typed = composerText.current
+          if (typed.trim() !== message) {
+            if (unsaved.current !== null) window.clearTimeout(unsaved.current.timer)
+            unsaved.current = null
+            drafts.current = { ...drafts.current, [created.id]: { text: typed }, [START]: { text: '' } }
+            for (const [key, value] of [[created.id, typed], [START, '']]) {
+              void sidecar('drafts.set', { key, text: value, attachments: [] }).catch((err: unknown) => setError(String(err)))
+            }
+          }
           show(created, true)
           request = loadRequest.current
           await load(created.id, request)

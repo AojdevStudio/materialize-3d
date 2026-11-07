@@ -236,12 +236,36 @@ describe('StudioApp', () => {
     fireEvent.click(screen.getByTestId('send'))
     await waitFor(() => expect(sidecarCalls('projects.create')).toHaveLength(1))
     type('second message')
+    // The pause saves it as the start screen's draft before the project is there.
+    await waitFor(() => expect(sidecarCalls('drafts.set')).toContainEqual({ key: 'new', text: 'second message', attachments: [] }))
     await act(async () => finishCreate(projectA))
     await waitFor(() => expect(sidecarCalls('chat.send')).toHaveLength(1))
+    expect(sidecarCalls('drafts.set')).toContainEqual({ key: projectA.id, text: 'second message', attachments: [] })
+    expect(sidecarCalls('drafts.set').at(-1)).toEqual({ key: 'new', text: '', attachments: [] })
     fireEvent.click(screen.getByText('Project B'))
     await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project B'))
     fireEvent.click(screen.getByText('Project A'))
     await waitFor(() => expect(prompt().value).toBe('second message'))
+  })
+
+  it('leaves a start screen draft typed after leaving and coming back alone when the earlier project is made', async () => {
+    let finishCreate: (project: unknown) => void = () => {}
+    mockSidecar({ 'projects.create': () => new Promise((resolve) => (finishCreate = resolve)) })
+    render(<StudioApp />)
+    await screen.findByText('Project B')
+    type('A clip for my desk')
+    fireEvent.click(screen.getByTestId('send'))
+    await waitFor(() => expect(sidecarCalls('projects.create')).toHaveLength(1))
+    fireEvent.click(screen.getByText('Project B'))
+    await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project B'))
+    fireEvent.click(screen.getByTestId('new-project'))
+    type('A shelf bracket')
+    await act(async () => finishCreate(projectA))
+    await waitFor(() => expect(sidecarCalls('chat.send')).toHaveLength(1))
+    expect(prompt().value).toBe('A shelf bracket')
+    // Once typing pauses, the bracket is the start screen's draft, never the new project's.
+    await waitFor(() => expect(sidecarCalls('drafts.set')).toContainEqual({ key: 'new', text: 'A shelf bracket', attachments: [] }))
+    expect(sidecarCalls('drafts.set')).not.toContainEqual(expect.objectContaining({ key: projectA.id, text: 'A shelf bracket' }))
   })
 
   it('leaves the start screen empty when the person cleared it before the saved state arrived', async () => {

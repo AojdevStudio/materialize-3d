@@ -220,9 +220,10 @@ export class Store implements LoginIndex {
   }
 
   /**
-   * Makes a project: its conversation, its place in the index, and the start screen's draft moved to it, in one commit.
-   * Its folder is made inside that commit, before anything is kept, so a folder that cannot be made keeps nothing and
-   * the draft stays on the start screen. A crash after the folder leaves an empty folder, which the next id skips.
+   * Makes a project: its conversation, its place in the index, and the start screen's draft moved to it when that
+   * draft holds the project's first message, in one commit. A start screen draft with other text is the person's next
+   * idea, so it stays. The folder is made inside that commit, before anything is kept, so a folder that cannot be made
+   * keeps nothing. A crash after the folder leaves an empty folder, which the next id skips.
    */
   async createProject(title: string): Promise<Project> {
     const firstLine = (title.split('\n')[0] ?? '').trim().slice(0, 80) || 'New part'
@@ -242,7 +243,7 @@ export class Store implements LoginIndex {
       index.projects.push(created)
       const { drafts } = await tx.doc(DraftsDoc, this.root.id)
       const draft = drafts.new
-      if (draft !== undefined) {
+      if (draft !== undefined && draft.text.trim() === title.trim()) {
         drafts[id] = draft
         delete drafts.new
       }

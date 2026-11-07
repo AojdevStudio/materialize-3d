@@ -103,15 +103,13 @@ export async function runSidecar({ argv, addProviders }: SidecarOptions): Promis
   else {
     // The update restarts the app, and the work resumes then. If the install fails instead, the gate opens again.
     console.error('an update is installing, so the work a crash cut off waits for it')
-    const quit = new AbortController()
-    const stop = () => quit.abort()
-    serving.then(stop, stop)
     void busy
-      .pass(quit.signal)
+      .pass()
       .then((held) => (held ? chats.reconcile() : undefined))
       .catch((error: unknown) => console.error(`resuming the work a crash cut off failed: ${String(error)}`))
   }
   await serving
+  busy.close()
   await chats.close()
   await store.close()
   process.exit(EXIT.done)

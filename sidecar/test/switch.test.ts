@@ -130,8 +130,10 @@ describe('the update gate', () => {
     const installing = spawnSidecar(where.data, where.projects, new Map(), { script: 'models', env: where.env })
     installing.gate.installing = true
     await installing.until((event) => event.type === 'ready')
-    expect(installing.gate.requests).toEqual([true])
     await Bun.sleep(1_500)
+    // It asks for the pass again each second while the update installs, and never starts the work without it.
+    expect(installing.gate.requests.length).toBeGreaterThan(0)
+    expect(installing.gate.requests.every((busy) => busy)).toBe(true)
     expect(existsSync(started)).toBe(false)
     await installing.quit()
 
@@ -181,6 +183,45 @@ describe('the update gate', () => {
     await app.until((event) => event.type === 'chat' && (event.entries as ChatEntry[]).some((entry) => entry.kind === 'assistant' && entry.text === 'parent saw: astra drew it'), 30_000)
     await app.quit()
   }, 40_000)
+
+  /** A turn whose Astra tool signed in while an update installs, so it waits for the pass. */
+  async function waitingForPass() {
+    const where = scratch()
+    const keychain = new Map<string, string>()
+    const app = spawnSidecar(where.data, where.projects, keychain, { script: 'astra', env: where.env })
+    await app.next()
+    await app.call('settings.set', { model: { provider: 'faux', modelId: 'faux-a' } })
+    const { id: project } = (await app.call('projects.create', { title: 'A cube' })) as { id: string }
+    await app.call('chat.send', { project, requestId: 'r1', text: 'go', attachments: [] })
+    await app.until((event) => event.type === 'chat' && event.waiting !== null)
+    app.gate.installing = true
+    await app.call('auth.setKey', { provider: 'openai-codex', key: 'astra-key' })
+    await Bun.sleep(1_500)
+    return { where, keychain, app, project }
+  }
+
+  test('a stop ends a tool that waits for the pass after its sign-in', async () => {
+    const { where, app, project } = await waitingForPass()
+    await app.call('chat.stop', { project })
+    await app.until((event) => event.type === 'chat' && event.project === project && event.running === false, 5_000)
+    expect(existsSync(join(where.projects, project, 'astra.txt'))).toBe(false)
+    await app.quit()
+  }, 40_000)
+
+  test('a quit leaves a tool that waits for the pass unfinished, so it goes on after the restart', async () => {
+    const { where, keychain, app, project } = await waitingForPass()
+    const quit = await Promise.race([app.quit().then(() => 'exited'), Bun.sleep(5_000).then(() => 'still running')])
+    expect(quit).toBe('exited')
+    expect(existsSync(join(where.projects, project, 'astra.txt'))).toBe(false)
+
+    const after = spawnSidecar(where.data, where.projects, keychain, { script: 'astra', env: where.env })
+    await after.next()
+    const done = (entries: ChatEntry[]) => entries.some((entry) => entry.kind === 'assistant' && entry.text === 'parent saw: astra drew it')
+    if (!done(((await after.call('chat.open', { project })) as ChatView).entries)) {
+      await after.until((event) => event.type === 'chat' && done(event.entries as ChatEntry[]), 30_000)
+    }
+    await after.quit()
+  }, 60_000)
 
   test('gives the pass back while a turn waits on a sign-in, and takes it again when the turn goes on', async () => {
     const where = scratch()

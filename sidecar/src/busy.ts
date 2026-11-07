@@ -13,6 +13,19 @@ import type { Host } from './host'
 /** How long a refused pass waits before it asks again. An installing update restarts the app, or it fails and the gate opens. */
 const PASS_RETRY_MS = 1000
 
+/** Waits `ms`, or less once `stop` aborts. */
+function pause(ms: number, stop: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    const done = () => {
+      clearTimeout(timer)
+      stop.removeEventListener('abort', done)
+      resolve()
+    }
+    const timer = setTimeout(done, ms)
+    stop.addEventListener('abort', done)
+  })
+}
+
 /** Whether any live task does work now or is about to. A blocked task never runs here. */
 function working(graph: TaskGraph, parked: ReadonlySet<string>): boolean {
   const idle = (id: string): boolean => {
@@ -33,6 +46,8 @@ export class Busy {
   /** The ids of running tool tasks parked on a sign-in, which do no work until the person signs in. */
   readonly #parked = new Set<string>()
   #sends = 0
+  /** Ends every wait for the pass once the sidecar closes. */
+  readonly #closing = new AbortController()
   /** Changes reach Rust one at a time, in order. */
   #told: Promise<unknown> = Promise.resolve()
 
@@ -71,18 +86,25 @@ export class Busy {
 
   /**
    * Asks for the pass until Rust gives it, for work that must not go on without it, and resolves true once it is held
-   * or no work needs it. While an update installs, it asks again each second. Resolves false once `stop` aborts.
+   * or no work needs it. While an update installs, it asks again each second. Resolves false once `stop` aborts or
+   * the sidecar closes.
    */
   async pass(stop?: AbortSignal): Promise<boolean> {
+    const ended = stop === undefined ? this.#closing.signal : AbortSignal.any([stop, this.#closing.signal])
     for (;;) {
-      if (stop?.aborted) return false
+      if (ended.aborted) return false
       try {
         await this.#settle()
         return true
       } catch {
-        await Bun.sleep(PASS_RETRY_MS)
+        await pause(PASS_RETRY_MS, ended)
       }
     }
+  }
+
+  /** Ends every wait for the pass, as the sidecar closes. */
+  close(): void {
+    this.#closing.abort()
   }
 
   /** Brings Rust's pass in line with the work now. Rejects with Rust's refusal when this call asked and was refused. */
@@ -115,8 +137,9 @@ export class Busy {
   /**
    * Gives the pass back while the tool `task` waits on `wait` for a sign-in. Once the wait ends, the tool goes on only
    * with the pass, so an update that started installing meanwhile holds it until the app restarts or the install fails.
+   * A stop through `stop`, or the sidecar closing, ends that wait too.
    */
-  async parked<T>(task: string, wait: () => Promise<T>): Promise<T> {
+  async parked<T>(task: string, wait: () => Promise<T>, stop: AbortSignal | undefined): Promise<T> {
     this.#parked.add(task)
     void this.#follow()
     let result: T
@@ -128,7 +151,10 @@ export class Busy {
       throw error
     }
     this.#parked.delete(task)
-    await this.pass()
-    return result
+    if (await this.pass(stop)) return result
+    // A stop ends the tool. A sidecar that closes leaves it unfinished until Pi ends it as the store closes, so it
+    // resumes after the restart.
+    stop?.throwIfAborted()
+    return new Promise<never>((_, reject) => stop?.addEventListener('abort', () => reject(stop.reason), { once: true }))
   }
 }
