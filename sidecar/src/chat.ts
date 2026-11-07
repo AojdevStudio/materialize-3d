@@ -263,7 +263,7 @@ export class Chats {
    * named on its chat, and goes on once they sign in. A stop ends the wait. A wait the tool held before a restart is
    * let go once the sign-in is there.
    */
-  async loginFor(conversation: number, provider: string, waiting: Context, after: number | undefined): Promise<void> {
+  async loginFor(conversation: number, task: string, provider: string, waiting: Context, after: number | undefined): Promise<void> {
     const { models, store } = this.#o
     const id = conversation as ConversationId
     const name = models.getProvider(provider)?.name ?? provider
@@ -292,7 +292,7 @@ export class Chats {
             await hold({ kind: 'login', provider, name, fix })
             await this.#show(project)
           }
-          await this.#o.busy.parked(() => awaitWithContext(promise, waiting))
+          await this.#o.busy.parked(task, () => awaitWithContext(promise, waiting))
         } finally {
           waiters.delete(resolve)
         }

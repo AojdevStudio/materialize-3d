@@ -46,7 +46,7 @@ export async function runSidecar({ argv, addProviders }: SidecarOptions): Promis
   const tools = agentTools({
     host,
     projectOf: (conversation) => store.projectOf(conversation),
-    signedIn: (conversation, provider, context, after) => chats.loginFor(conversation, provider, context, after),
+    signedIn: (conversation, task, provider, context, after) => chats.loginFor(conversation, task, provider, context, after),
     loginSaves: (provider) => store.loginSaves(provider),
   })
   const extension = agentExtension(tools)
