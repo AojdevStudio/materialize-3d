@@ -36,7 +36,15 @@ export type Login = { provider: ProviderId; name: string; login: LoginKind | nul
 /** A sign-in's progress: a page to open (with a code to enter there, for some), a question, and its end. */
 export type LoginEvent =
   | { type: 'login'; provider: ProviderId; step: 'open'; url: string; code?: string }
-  | { type: 'login'; provider: ProviderId; step: 'ask'; message: string }
+  | {
+      type: 'login'
+      provider: ProviderId
+      step: 'ask'
+      /** `select` answers with one option's id. The others answer with text the person types or pastes. */
+      kind: 'text' | 'secret' | 'select' | 'manual_code'
+      message: string
+      options?: { id: string; label: string }[]
+    }
   | { type: 'login'; provider: ProviderId; step: 'done' }
   | { type: 'login'; provider: ProviderId; step: 'failed'; detail: string }
 

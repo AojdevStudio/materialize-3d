@@ -5,7 +5,7 @@
  */
 import {
   type ApiKeyAuth,
-  type AuthEvent,
+  type AuthInteraction,
   type AuthContext,
   type Credential,
   type CredentialInfo,
@@ -129,20 +129,29 @@ export function keyCredential(key: string, baseUrl: string | undefined): Credent
   return baseUrl === undefined ? { type: 'api_key', key } : { type: 'api_key', key, env: { [BASE_URL]: baseUrl } }
 }
 
+/** One subscription sign-in in progress: it can be cancelled, and it may be waiting for the person's answer. */
+type Attempt = { abort: AbortController; answer: ((text: string) => void) | undefined }
+
 /**
- * Sign-ins in progress. A provider's OAuth flow tells the window the page to open, and may ask for a code the person
- * pastes back, which `answer` hands over.
+ * Sign-ins in progress, at most one per provider. A provider's OAuth flow tells the window the page to open, and may
+ * ask for a choice or a code, which `answer` hands over. A newer sign-in, a key, or a sign-out cancels an older one, so
+ * a sign-in left unfinished can never bring a login back.
  */
 export class Logins {
   readonly #models: MutableModels
   readonly #credentials: CredentialStore
   readonly #emit: (event: LoginEvent) => void
-  readonly #asking = new Map<ProviderId, (text: string) => void>()
+  readonly #attempts = new Map<ProviderId, Attempt>()
 
   constructor(models: MutableModels, credentials: CredentialStore, emit: (event: LoginEvent) => void) {
     this.#models = models
     this.#credentials = credentials
     this.#emit = emit
+  }
+
+  #cancel(provider: ProviderId): void {
+    this.#attempts.get(provider)?.abort.abort()
+    this.#attempts.delete(provider)
   }
 
   async status(): Promise<Login[]> {
@@ -158,39 +167,60 @@ export class Logins {
   }
 
   async setKey(provider: ProviderId, key: string, baseUrl: string | undefined): Promise<void> {
+    this.#cancel(provider)
     await this.#credentials.modify(provider, async () => keyCredential(key, baseUrl))
     this.#emit({ type: 'login', provider, step: 'done' })
   }
 
   /** Starts a subscription sign-in. Its progress arrives as events; it ends with `done` or `failed`. */
   login(provider: ProviderId): void {
-    const interaction = {
-      prompt: (prompt: { message: string }) =>
-        new Promise<string>((resolve) => {
-          this.#asking.set(provider, resolve)
-          this.#emit({ type: 'login', provider, step: 'ask', message: prompt.message })
+    this.#cancel(provider)
+    const attempt: Attempt = { abort: new AbortController(), answer: undefined }
+    this.#attempts.set(provider, attempt)
+    const { signal } = attempt.abort
+    const interaction: AuthInteraction = {
+      signal,
+      prompt: (prompt) =>
+        new Promise<string>((resolve, reject) => {
+          signal.addEventListener('abort', () => reject(new Error('the sign-in was cancelled')), { once: true })
+          attempt.answer = resolve
+          const options = prompt.type === 'select' ? { options: prompt.options.map(({ id, label }) => ({ id, label })) } : {}
+          this.#emit({ type: 'login', provider, step: 'ask', kind: prompt.type, message: prompt.message, ...options })
         }),
-      notify: (event: AuthEvent) => {
+      notify: (event) => {
         if (event.type === 'auth_url') this.#emit({ type: 'login', provider, step: 'open', url: event.url })
         if (event.type === 'device_code') {
           this.#emit({ type: 'login', provider, step: 'open', url: event.verificationUri, code: event.userCode })
         }
       },
     }
-    this.#models.login(provider, 'oauth', interaction).then(
-      () => this.#emit({ type: 'login', provider, step: 'done' }),
-      (error: unknown) => this.#emit({ type: 'login', provider, step: 'failed', detail: error instanceof Error ? error.message : String(error) }),
-    ).finally(() => this.#asking.delete(provider))
+    const name = this.#models.getProvider(provider)?.name ?? provider
+    this.#models
+      .login(provider, 'oauth', interaction)
+      .then(
+        () => {
+          if (!signal.aborted) this.#emit({ type: 'login', provider, step: 'done' })
+        },
+        () => {
+          // A provider's error can carry what its server sent back, tokens included, so its text never leaves here.
+          if (!signal.aborted) this.#emit({ type: 'login', provider, step: 'failed', detail: `Signing in to ${name} did not finish. Try again.` })
+        },
+      )
+      .finally(() => {
+        if (this.#attempts.get(provider) === attempt) this.#attempts.delete(provider)
+      })
   }
 
   answer(provider: ProviderId, text: string): void {
-    const waiting = this.#asking.get(provider)
-    if (waiting === undefined) throw new Error(`${provider} is not asking for anything`)
-    this.#asking.delete(provider)
-    waiting(text)
+    const attempt = this.#attempts.get(provider)
+    const answer = attempt?.answer
+    if (attempt === undefined || answer === undefined) throw new Error(`${provider} is not asking for anything`)
+    attempt.answer = undefined
+    answer(text)
   }
 
   async logout(provider: ProviderId): Promise<void> {
+    this.#cancel(provider)
     await this.#models.logout(provider)
   }
 }
