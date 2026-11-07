@@ -1,5 +1,5 @@
 import { describe, expect, it, test } from 'bun:test'
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
@@ -98,6 +98,18 @@ describe('app state', () => {
         made ? { made, onProject: `Knob ${round}`, onStart: undefined } : { made, onProject: undefined, onStart: `Knob ${round}` },
       )
     }
+    await app.quit()
+  })
+
+  test('a project whose folder cannot be made is not made at all, and the start screen keeps its draft', async () => {
+    const { data, projects } = scratch()
+    // A file where the projects folder goes, so no project folder can be made.
+    writeFileSync(projects, '')
+    const app = spawnSidecar(data, projects)
+    await app.next()
+    await app.call('drafts.set', { key: 'new', text: 'A knob', attachments: [] })
+    await expect(app.call('projects.create', { title: 'A knob' })).rejects.toThrow()
+    expect(await app.call('state.get')).toMatchObject({ projects: [], drafts: { new: { text: 'A knob', attachments: [] } } })
     await app.quit()
   })
 

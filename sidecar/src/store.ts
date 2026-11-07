@@ -168,7 +168,8 @@ export class Store {
 
   /**
    * Makes a project: its conversation, its place in the index, and the start screen's draft moved to it, in one commit.
-   * Its folder is made after, and again whenever it is used, so a crash between the two loses nothing.
+   * Its folder is made inside that commit, before anything is kept, so a folder that cannot be made keeps nothing and
+   * the draft stays on the start screen. A crash after the folder leaves an empty folder, which the next id skips.
    */
   async createProject(title: string): Promise<Project> {
     const firstLine = (title.split('\n')[0] ?? '').trim().slice(0, 80) || 'New part'
@@ -182,6 +183,7 @@ export class Store {
       let id = base
       // A folder already on disk, which the store may not list, is never taken over.
       for (let n = 2; taken.has(id) || existsSync(join(this.projectsDir, id)); n++) id = `${base}-${n}`
+      this.projectFolder(id)
       const conversation = await tx.createConversation({ ownership: { kind: 'ownerless' } })
       const created: Project = { id, conversation: conversation.id, title: firstLine, createdMs: now.getTime() }
       index.projects.push(created)
@@ -193,7 +195,6 @@ export class Store {
       }
       return created
     }, context)
-    this.projectFolder(project.id)
     return project
   }
 
