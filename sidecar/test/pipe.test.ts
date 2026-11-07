@@ -47,6 +47,17 @@ describe('the pipe to Rust', () => {
     expect(await child.exited).not.toBe(0)
   })
 
+  test('a call the sidecar accepted finishes and replies before the closed pipe ends it', async () => {
+    const input = new PassThrough()
+    const written: string[] = []
+    const host = new Host((line) => written.push(line))
+    const slow = { params: compile(obj({})), run: async () => Bun.sleep(50).then(() => ({ version: 'late' })) }
+    const serving = host.serve({ 'app.ping': slow }, input)
+    input.end(`${JSON.stringify({ kind: 'call', id: 1, method: 'app.ping', params: {} })}\n`)
+    await serving
+    expect(written.map((line) => JSON.parse(line))).toEqual([{ kind: 'reply', id: 1, ok: true, value: { version: 'late' } }])
+  })
+
   test('a request to Rust resolves with its answer, and an open request fails when the pipe closes', async () => {
     const input = new PassThrough()
     const written: string[] = []

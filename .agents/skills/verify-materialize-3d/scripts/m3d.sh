@@ -81,6 +81,10 @@ up() {
   ln -sfn "$RUN" "$CURRENT"
 
   ensure_deps
+  # tauri-build refuses to build the app until the bundled sidecar exists.
+  echo "m3d: building the sidecar"
+  "$ROOT/scripts/build-sidecar.sh" >"$RUN/logs/sidecar-build.log" 2>&1 \
+    || die "the sidecar build failed; see $RUN/logs/sidecar-build.log"
   echo "m3d: cargo build (incremental; first build takes several minutes)"
   cargo build --manifest-path "$ROOT/src-tauri/Cargo.toml" >"$RUN/logs/cargo.log" 2>&1 \
     || die "cargo build failed; see $RUN/logs/cargo.log"

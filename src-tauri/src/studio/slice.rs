@@ -57,20 +57,31 @@ fn inside(dir: &Path, rel: &str) -> Result<PathBuf, String> {
     Ok(dir.join(path))
 }
 
-fn slice_in(studio: &BambuStudio, dir: &Path, inputs: &[String], output: &str, cache_root: &Path) -> Result<Sliced, String> {
+/// The real paths of the inputs and the output. A path is read and written where it really is, so one that leads
+/// out of the project through a symbolic link is refused like one that names a place outside it.
+fn resolve(dir: &Path, inputs: &[String], output: &str) -> Result<(Vec<PathBuf>, PathBuf), String> {
     if inputs.is_empty() {
         return Err("name at least one STL file to slice".to_owned());
-    }
-    let inputs = inputs.iter().map(|rel| inside(dir, rel)).collect::<Result<Vec<_>, _>>()?;
-    if let Some(missing) = inputs.iter().find(|path| !path.is_file()) {
-        return Err(format!("{} does not exist", missing.display()));
     }
     if !output.ends_with(".3mf") {
         return Err(format!("{output:?} must end in .3mf"));
     }
+    let root = dir.canonicalize().map_err(|e| format!("{}: {e}", dir.display()))?;
+    let real = |path: &Path, rel: &str| -> Result<PathBuf, String> {
+        let path = path.canonicalize().map_err(|_| format!("{rel} does not exist"))?;
+        if path.starts_with(&root) { Ok(path) } else { Err(format!("{rel} leads outside the project folder")) }
+    };
+    let inputs = inputs.iter().map(|rel| real(&inside(dir, rel)?, rel)).collect::<Result<Vec<_>, _>>()?;
     let target = inside(dir, output)?;
     let parent = target.parent().expect("a path inside the project has a parent");
     std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+    let parent = real(parent, output)?;
+    Ok((inputs, parent.join(target.file_name().expect("a path inside the project names a file"))))
+}
+
+fn slice_in(studio: &BambuStudio, dir: &Path, inputs: &[String], output: &str, cache_root: &Path) -> Result<Sliced, String> {
+    let (inputs, target) = resolve(dir, inputs, output)?;
+    let parent = target.parent().expect("the output has a folder");
 
     let selection = PresetSelection { machine: MACHINE.to_owned(), process: PROCESS.to_owned(), filaments: vec![FILAMENT.to_owned()] };
     std::fs::create_dir_all(cache_root).map_err(|e| format!("{}: {e}", cache_root.display()))?;
@@ -126,6 +137,25 @@ fn slice_in(studio: &BambuStudio, dir: &Path, inputs: &[String], output: &str, c
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symbolic_link_out_of_the_project_is_refused() {
+        let outside = tempfile::tempdir().expect("outside");
+        let project = tempfile::tempdir().expect("project");
+        std::fs::write(outside.path().join("secret.stl"), "solid x\nendsolid x\n").expect("stl");
+        std::os::unix::fs::symlink(outside.path(), project.path().join("print")).expect("link");
+        std::os::unix::fs::symlink(outside.path().join("secret.stl"), project.path().join("part.stl")).expect("link");
+        std::fs::write(project.path().join("cube.stl"), "solid x\nendsolid x\n").expect("stl");
+
+        let output = resolve(project.path(), &["cube.stl".to_owned()], "print/cube.3mf").expect_err("output through a link");
+        assert!(output.contains("leads outside the project folder"), "{output}");
+        let input = resolve(project.path(), &["part.stl".to_owned()], "out/cube.3mf").expect_err("input through a link");
+        assert!(input.contains("leads outside the project folder"), "{input}");
+        let (inputs, target) = resolve(project.path(), &["cube.stl".to_owned()], "out/cube.3mf").expect("inside");
+        let root = project.path().canonicalize().expect("root");
+        assert_eq!((inputs, target), (vec![root.join("cube.stl")], root.join("out/cube.3mf")));
+    }
 
     #[test]
     fn the_agent_can_name_only_paths_inside_its_project() {

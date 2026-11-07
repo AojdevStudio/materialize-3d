@@ -17,7 +17,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::sync::{mpsc, oneshot, watch};
+use tokio::sync::{mpsc, oneshot, watch, Notify};
 
 use crate::credentials;
 use crate::studio;
@@ -47,8 +47,10 @@ pub struct Sidecar {
     calls: Mutex<HashMap<u64, oneshot::Sender<Result<Value, String>>>>,
     next_call: AtomicU64,
     quitting: AtomicBool,
-    /// The running process, so quitting can wait for it and end it if it hangs.
-    pid: watch::Sender<Option<u32>>,
+    /// Whether a sidecar process runs, so quitting can wait for it to exit.
+    alive: watch::Sender<bool>,
+    /// Ends the running sidecar through its process handle, which never signals a reused pid.
+    kill: Notify,
 }
 
 impl Default for Sidecar {
@@ -58,7 +60,8 @@ impl Default for Sidecar {
             calls: Mutex::default(),
             next_call: AtomicU64::new(1),
             quitting: AtomicBool::new(false),
-            pid: watch::Sender::new(None),
+            alive: watch::Sender::new(false),
+            kill: Notify::new(),
         }
     }
 }
@@ -82,19 +85,16 @@ impl Sidecar {
     /// seconds before ending it. Its store keeps every commit, so a forced end loses nothing committed.
     pub fn shutdown(&self) {
         self.quitting.store(true, Ordering::SeqCst);
+        // The link holds the only lasting handle to stdin: calls drop theirs once their line is queued.
         self.link.send_replace(Link::Stopped("Materialize 3D is quitting.".to_owned()));
-        let mut pid = self.pid.subscribe();
-        let exited = tauri::async_runtime::block_on(async {
-            tokio::time::timeout(Duration::from_secs(5), pid.wait_for(Option::is_none)).await.is_ok()
-        });
-        #[cfg(unix)]
-        if !exited {
-            if let Some(pid) = *self.pid.borrow() {
+        let mut alive = self.alive.subscribe();
+        tauri::async_runtime::block_on(async {
+            if tokio::time::timeout(Duration::from_secs(5), alive.wait_for(|alive| !alive)).await.is_err() {
                 log::warn!("sidecar: still running five seconds after quit, ending it");
-                // SAFETY: kill only signals the sidecar this app started and has not yet reaped.
-                unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+                self.kill.notify_one();
+                let _ = tokio::time::timeout(Duration::from_secs(2), alive.wait_for(|alive| !alive)).await;
             }
-        }
+        });
     }
 }
 
@@ -104,11 +104,12 @@ pub fn start(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         let mut crashes = 0;
         loop {
+            if app.state::<Sidecar>().quitting.load(Ordering::SeqCst) {
+                return;
+            }
             let started = Instant::now();
             let outcome = run(&app).await;
             let sidecar = app.state::<Sidecar>();
-            sidecar.pid.send_replace(None);
-            sidecar.drop_calls();
             if sidecar.quitting.load(Ordering::SeqCst) {
                 return;
             }
@@ -126,7 +127,6 @@ pub fn start(app: AppHandle) {
                 return;
             }
             log::error!("sidecar: {why}, starting it again");
-            sidecar.link.send_replace(Link::Starting);
             let _ = app.emit(EVENT, json!({ "type": "engine", "state": "restarting", "detail": why }));
             tokio::time::sleep(Duration::from_millis(500 * u64::from(crashes))).await;
         }
@@ -166,7 +166,7 @@ async fn run(app: &AppHandle) -> Result<std::process::ExitStatus, String> {
         .spawn()
         .map_err(|e| format!("starting {}: {e}", exe.display()))?;
     let sidecar = app.state::<Sidecar>();
-    sidecar.pid.send_replace(child.id());
+    sidecar.alive.send_replace(true);
 
     let mut stdin = child.stdin.take().expect("piped stdin");
     let (input, mut lines_in) = mpsc::unbounded_channel::<String>();
@@ -189,13 +189,36 @@ async fn run(app: &AppHandle) -> Result<std::process::ExitStatus, String> {
     });
 
     let mut lines = BufReader::new(child.stdout.take().expect("piped stdout")).lines();
-    while let Some(line) = lines.next_line().await.map_err(|e| format!("reading the engine's output: {e}"))? {
-        dispatch(app, &answers, &line);
-    }
-    let status = child.wait().await.map_err(|e| format!("waiting for the engine: {e}"))?;
+    let read = loop {
+        tokio::select! {
+            line = lines.next_line() => match line {
+                Ok(Some(line)) => dispatch(app, &answers, &line),
+                Ok(None) => break Ok(()),
+                Err(e) => break Err(format!("reading the engine's output: {e}")),
+            },
+            () = sidecar.kill.notified() => {
+                let _ = child.start_kill();
+            }
+        }
+    };
+    // No new call reaches this sidecar once the link is withdrawn, and none can queue a line once its writer is
+    // gone. Only then are the calls it never answered failed, so no call is left waiting.
+    sidecar.link.send_if_modified(|link| {
+        let withdraw = matches!(link, Link::Up(_));
+        if withdraw {
+            *link = Link::Starting;
+        }
+        withdraw
+    });
     writer.abort();
-    let _ = logger.await;
-    Ok(status)
+    let _ = writer.await;
+    sidecar.drop_calls();
+    let status = child.wait().await.map_err(|e| format!("waiting for the engine: {e}"));
+    sidecar.alive.send_replace(false);
+    // A tool the sidecar started may hold its stderr open, so the last lines are not waited on for long.
+    let _ = tokio::time::timeout(Duration::from_secs(1), logger).await;
+    read?;
+    status
 }
 
 #[derive(Deserialize)]
@@ -328,7 +351,10 @@ pub async fn sidecar(sidecar: State<'_, Sidecar>, method: String, params: Value)
     let (reply, replied) = oneshot::channel();
     sidecar.calls.lock().unwrap_or_else(|e| e.into_inner()).insert(id, reply);
     let line = json!({ "kind": "call", "id": id, "method": method, "params": params });
-    if input.send(format!("{line}\n")).is_err() {
+    let queued = input.send(format!("{line}\n")).is_ok();
+    // Holding the sender while the reply is awaited would keep stdin open after quit.
+    drop(input);
+    if !queued {
         sidecar.calls.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
         return Err("The engine restarted before it answered. Try again.".to_owned());
     }

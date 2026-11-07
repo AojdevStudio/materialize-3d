@@ -47,10 +47,11 @@ export class Host {
   }
 
   /**
-   * Reads stdin until it closes. A line that is not a message of the protocol is a bug in Rust, so it fails the
-   * process loudly rather than being skipped.
+   * Reads stdin until it closes, then lets every call it accepted finish. A line that is not a message of the
+   * protocol is a bug in Rust, so it fails the process loudly rather than being skipped.
    */
   async serve(handlers: Handlers, input: NodeJS.ReadableStream): Promise<void> {
+    const accepted = new Set<Promise<void>>()
     for await (const line of createInterface({ input, crlfDelay: Infinity })) {
       if (line.trim() === '') continue
       const message: unknown = JSON.parse(line)
@@ -63,10 +64,14 @@ export class Host {
         else waiting.reject(new Error(message.error ?? 'the app refused the request'))
         continue
       }
-      void this.#call(handlers, message.id, message.method, message.params)
+      const call = this.#call(handlers, message.id, message.method, message.params)
+      accepted.add(call)
+      void call.finally(() => accepted.delete(call))
     }
+    // Rust answers nothing more, so a call waiting on it fails now instead of never.
     for (const waiting of this.#waiting.values()) waiting.reject(new Error('the app closed the pipe'))
     this.#waiting.clear()
+    await Promise.allSettled(accepted)
   }
 
   async #call(handlers: Handlers, id: number, method: string, params: unknown): Promise<void> {
