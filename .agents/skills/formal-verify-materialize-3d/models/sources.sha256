@@ -4,4 +4,4 @@ bfdae9bc19239959afa97b28ed24be9289b35a988fb59ee657e5086babce1665  src-tauri/src/
 581b0e828a547528a87785cd366c6e57252dea85823cc1402fcaf7b113a2255c  src-tauri/src/printer/mod.rs
 dc6f6f11328e5f422b59be488099f9203bcfe352a1fadcc3f523debca4a7bbd8  src-tauri/src/commands.rs
 dc1709c75444259b23f19d9210b730ba014074dcffc42453537d1f3a16cd5430  src-tauri/src/fabrication/pipeline.rs
-c1b2b2d50ee4d7cab430679a64b6f3507d5d8d6ac46273196730ad6d24fb9307  src-tauri/src/studio/turn.rs
+4f0043e3879381fa66274cf36312bd0a1d9147440dc7ddf30856f7b39b2e394a  src-tauri/src/studio/turn.rs

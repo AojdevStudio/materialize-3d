@@ -455,11 +455,14 @@ pub fn studio_send(app: AppHandle, turns: State<'_, Turns>, project: String, tex
             .and_then(|made| made)
             .unwrap_or_else(|error| {
                 log::warn!("studio: {error}, so Astra cannot reach a model this turn");
-                lean::AstraHome { dir: astra_dir, env: Vec::new() }
+                lean::AstraHome { dir: astra_dir, env: Vec::new(), secrets: Vec::new() }
             });
         let mut command = command;
         // Astra, the codex helper, finds its home through the agent's environment, plus the variables its provider reads.
-        command.env("CODEX_HOME", &astra.dir).envs(astra.env.iter().filter_map(|key| std::env::var_os(key).map(|value| (key, value))));
+        command
+            .env("CODEX_HOME", &astra.dir)
+            .envs(astra.env.iter().filter_map(|key| std::env::var_os(key).map(|value| (key, value))))
+            .envs(astra.secrets.iter().map(|(key, value)| (key, value)));
         let outcome = run(&app, &project, &mut transcript, &started, command, message, token, &tag, &leader).await;
         let changed: Vec<String> = files::list(&dir)
             .unwrap_or_default()

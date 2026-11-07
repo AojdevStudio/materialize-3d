@@ -135,7 +135,7 @@ pub fn astra_home(home: &Path, app_data: &Path) -> Result<AstraHome, String> {
             toml::Table::new()
         }
     };
-    let config = astra_config(&user, &host_skills(home));
+    let AstraConfig { config, secrets } = astra_config(&user, &host_skills(home));
     if !config.contains_key("model_providers") {
         log::warn!("studio: ~/.codex/config.toml has no cliproxy provider, so Astra cannot reach a model");
     }
@@ -150,7 +150,7 @@ pub fn astra_home(home: &Path, app_data: &Path) -> Result<AstraHome, String> {
         let _ = std::fs::remove_file(&staged);
         return Err(format!("{}: {e}", dir.display()));
     }
-    Ok(AstraHome { dir, env })
+    Ok(AstraHome { dir, env, secrets })
 }
 
 /// Removes staged configs a stopped app left before it could rename them. One
@@ -171,7 +171,10 @@ fn remove_abandoned(dir: &Path) {
 /// agent's process keeps when the app has them.
 pub struct AstraHome {
     pub dir: PathBuf,
+    /// Variables the provider reads, passed from the app's own environment when it has them.
     pub env: Vec<String>,
+    /// Inline credentials from the person's config, passed by value and never written.
+    pub secrets: Vec<(String, String)>,
 }
 
 /// The copied provider can name a key command's arguments, so the file is the
@@ -189,24 +192,49 @@ fn provider_env_names(config: &toml::Table) -> Vec<String> {
     let Some(provider) = config.get("model_providers").and_then(|p| p.get("cliproxy")) else { return Vec::new() };
     let key = provider.get("env_key").and_then(toml::Value::as_str).map(str::to_owned);
     let headers = provider.get("env_http_headers").and_then(toml::Value::as_table).into_iter().flat_map(|table| table.values().filter_map(toml::Value::as_str).map(str::to_owned));
-    key.into_iter().chain(headers).collect()
+    key.into_iter().chain(headers).filter(|name| !name.starts_with("M3D_ASTRA_")).collect()
 }
 
-fn astra_config(user: &toml::Table, skills: &[PathBuf]) -> toml::Table {
+/// Astra's config, and the values of any inline credentials the provider had.
+/// A credential written into the person's config (`experimental_bearer_token`,
+/// or `http_headers`) is never copied. The new config names an environment
+/// variable for it, and the value reaches Astra only through the process.
+struct AstraConfig {
+    config: toml::Table,
+    secrets: Vec<(String, String)>,
+}
+
+fn astra_config(user: &toml::Table, skills: &[PathBuf]) -> AstraConfig {
     let keep = |table: &toml::Table, keys: &[&str]| -> toml::Table {
         table.iter().filter(|(key, _)| keys.contains(&key.as_str())).map(|(key, value)| (key.clone(), value.clone())).collect()
     };
     let mut config = toml::Table::new();
+    let mut secrets = Vec::new();
     if let Some(model) = user.get("model") {
         config.insert("model".to_owned(), model.clone());
     }
     // No AGENTS.md from the project folder or any folder above it.
     config.insert("project_doc_max_bytes".to_owned(), 0.into());
     if let Some(provider) = user.get("model_providers").and_then(|p| p.get("cliproxy")).and_then(toml::Value::as_table) {
-        let mut provider = keep(provider, &PROVIDER_KEYS);
+        let source = provider;
+        let mut provider = keep(source, &PROVIDER_KEYS);
         if let Some(auth) = provider.get("auth").and_then(toml::Value::as_table) {
             let auth = keep(auth, &PROVIDER_AUTH_KEYS);
             provider.insert("auth".to_owned(), auth.into());
+        }
+        if let Some(token) = source.get("experimental_bearer_token").and_then(toml::Value::as_str) {
+            provider.insert("env_key".to_owned(), ASTRA_BEARER_VAR.into());
+            secrets.push((ASTRA_BEARER_VAR.to_owned(), token.to_owned()));
+        }
+        if let Some(headers) = source.get("http_headers").and_then(toml::Value::as_table) {
+            let mut named = provider.get("env_http_headers").and_then(toml::Value::as_table).cloned().unwrap_or_default();
+            for (index, (header, value)) in headers.iter().enumerate() {
+                let Some(value) = value.as_str() else { continue };
+                let var = format!("{ASTRA_HEADER_VAR}{index}");
+                named.insert(header.clone(), var.clone().into());
+                secrets.push((var, value.to_owned()));
+            }
+            provider.insert("env_http_headers".to_owned(), named.into());
         }
         config.insert("model_provider".to_owned(), "cliproxy".into());
         config.insert("model_providers".to_owned(), toml::Table::from_iter([("cliproxy".to_owned(), provider.into())]).into());
@@ -216,8 +244,12 @@ fn astra_config(user: &toml::Table, skills: &[PathBuf]) -> toml::Table {
         .map(|path| toml::Table::from_iter([("path".to_owned(), path.display().to_string().into()), ("enabled".to_owned(), false.into())]).into())
         .collect();
     config.insert("skills".to_owned(), toml::Table::from_iter([("config".to_owned(), toml::Value::Array(off))]).into());
-    config
+    AstraConfig { config, secrets }
 }
+
+/// The variables that carry an inline provider credential to Astra's process.
+const ASTRA_BEARER_VAR: &str = "M3D_ASTRA_BEARER_TOKEN";
+const ASTRA_HEADER_VAR: &str = "M3D_ASTRA_HEADER_";
 
 /// Every `SKILL.md` under `~/.agents/skills`, at any depth, as codex finds them.
 fn host_skills(home: &Path) -> Vec<PathBuf> {
@@ -281,14 +313,20 @@ mod tests {
         "#
         .parse()
         .expect("toml");
-        let config = astra_config(&user, &[PathBuf::from("/home/o/.agents/skills/a/SKILL.md")]);
+        let AstraConfig { config, secrets } = astra_config(&user, &[PathBuf::from("/home/o/.agents/skills/a/SKILL.md")]);
         assert_eq!(config["model"].as_str(), Some("gpt-6.1-sol"));
         assert_eq!(config["model_providers"]["cliproxy"]["auth"]["command"].as_str(), Some("cat"));
         assert!(!toml::to_string(&config).expect("toml").contains("secret-token"), "no inline secret is copied");
+        // The credentials still reach Astra, by value through its process.
+        let cliproxy = &config["model_providers"]["cliproxy"];
+        let bearer = cliproxy["env_key"].as_str().expect("env_key");
+        let header = cliproxy["env_http_headers"]["Authorization"].as_str().expect("header var");
+        assert!(secrets.contains(&(bearer.to_owned(), "secret-token".to_owned())));
+        assert!(secrets.contains(&(header.to_owned(), "Bearer secret-token".to_owned())));
         assert!(config.get("mcp_servers").is_none(), "the person's MCP servers stay out");
         assert_eq!(config["project_doc_max_bytes"].as_integer(), Some(0));
         assert_eq!(config["skills"]["config"][0]["enabled"].as_bool(), Some(false));
-        let no_proxy = astra_config(&"model = \"gpt\"".parse().expect("toml"), &[]);
+        let no_proxy = astra_config(&"model = \"gpt\"".parse().expect("toml"), &[]).config;
         assert!(no_proxy.get("model_providers").is_none(), "with no cliproxy provider Astra reaches no model");
     }
 }
