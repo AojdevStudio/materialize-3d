@@ -97,7 +97,10 @@ export class KeychainCredentials implements CredentialStore {
     return Object.entries(await this.#index.logins()).map(([providerId, type]) => ({ providerId, type }))
   }
 
-  /** A sign-in that was cancelled, by a newer one or a sign-out, writes nothing, even once its turn in line comes. */
+  /**
+   * A sign-in that was cancelled, by a newer one or a sign-out, writes nothing, even once its turn in line comes, and
+   * one cancelled while the Keychain wrote it leaves the earlier login in place.
+   */
   modify(provider: string, change: (current: Credential | undefined) => Promise<Credential | undefined>, options?: AuthOperationOptions) {
     return this.#serial(provider, async () => {
       options?.signal?.throwIfAborted()
@@ -106,6 +109,12 @@ export class KeychainCredentials implements CredentialStore {
       options?.signal?.throwIfAborted()
       if (next === undefined) return current
       await this.#host.request('keychain.set', { account: provider, secret: JSON.stringify(next) })
+      if (options?.signal?.aborted) {
+        // Cancelled while the Keychain wrote it: the earlier login goes back before anything else reads this one.
+        if (current === undefined) await this.#host.request('keychain.delete', { account: provider })
+        else await this.#host.request('keychain.set', { account: provider, secret: JSON.stringify(current) })
+        options.signal.throwIfAborted()
+      }
       await this.#index.setLogin(provider, next.type)
       return next
     })

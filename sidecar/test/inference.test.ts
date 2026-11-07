@@ -169,4 +169,44 @@ describe('the Keychain credential store', () => {
     await store.modify('anthropic', async () => credential)
     expect(JSON.parse(keychain.get('anthropic') ?? '{}')).toEqual(credential)
   })
+
+  test('a save cancelled while the Keychain wrote it puts the earlier login back', async () => {
+    const keychain = new Map<string, string>()
+    const written = Promise.withResolvers<void>()
+    const finish = Promise.withResolvers<void>()
+    let gate = false
+    const request = async (method: string, params: { account: string; secret?: string }) => {
+      if (method === 'keychain.get') return { secret: keychain.get(params.account) ?? null }
+      if (method === 'keychain.set') {
+        keychain.set(params.account, params.secret ?? '')
+        if (gate) {
+          gate = false
+          written.resolve()
+          await finish.promise
+        }
+      }
+      if (method === 'keychain.delete') keychain.delete(params.account)
+      return null
+    }
+    const logins: Record<string, LoginKind> = {}
+    const store = new KeychainCredentials({ request } as never, {
+      logins: async () => logins,
+      setLogin: async (provider, kind) => {
+        if (kind === undefined) delete logins[provider]
+        else logins[provider] = kind
+      },
+    })
+    const earlier = { type: 'api_key' as const, key: 'earlier' }
+    await store.modify('openai-codex', async () => earlier)
+
+    const cancel = new AbortController()
+    gate = true
+    const save = store.modify('openai-codex', async () => ({ type: 'oauth' as const, refresh: 'r', access: 'a', expires: 1 }), { signal: cancel.signal })
+    await written.promise
+    cancel.abort()
+    finish.resolve()
+    await expect(save).rejects.toThrow()
+    expect(JSON.parse(keychain.get('openai-codex') ?? '{}')).toEqual(earlier)
+    expect(logins).toEqual({ 'openai-codex': 'api_key' })
+  })
 })
