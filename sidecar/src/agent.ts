@@ -61,10 +61,17 @@ function commandEnv(): Record<string, string> {
   return vars
 }
 
-/** Whether `command` runs to a zero exit in the environment the agent's commands get. A missing program does not. */
-function succeeds(command: string[]): boolean {
+/** How long one toolchain check may run. A check still running then, as one stuck on a lock, counts as failed. */
+const CHECK_MS = 5_000
+
+/**
+ * Whether `command` runs to a zero exit, within `CHECK_MS`, in the environment the agent's commands get. A missing
+ * program does not. It runs beside the sidecar's other work, so a stuck check holds up no chat.
+ */
+async function succeeds(command: string[]): Promise<boolean> {
   try {
-    return Bun.spawnSync(command, { env: commandEnv(), stdout: 'ignore', stderr: 'ignore' }).exitCode === 0
+    const child = Bun.spawn(command, { env: commandEnv(), stdout: 'ignore', stderr: 'ignore', timeout: CHECK_MS })
+    return (await child.exited) === 0
   } catch {
     return false
   }
@@ -75,11 +82,11 @@ function succeeds(command: string[]): boolean {
  * that uv can run them with. A Python uv would have to download first counts as missing, as a turn could not count on
  * the network for it.
  */
-export function toolchainNeeds(): Need[] {
-  if (!succeeds(['uv', '--version'])) {
+export async function toolchainNeeds(): Promise<Need[]> {
+  if (!(await succeeds(['uv', '--version']))) {
     return [{ kind: 'uv', fix: 'Install uv, the tool the agent runs its build scripts with (docs.astral.sh/uv), then check again.' }]
   }
-  if (!succeeds(['uv', 'python', 'find'])) {
+  if (!(await succeeds(['uv', 'python', 'find']))) {
     return [{ kind: 'python', fix: 'Install a Python for uv: run "uv python install" in Terminal, then check again.' }]
   }
   return []

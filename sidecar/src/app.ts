@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, rmSync, statSync } from 'node:fs'
+import { existsSync, lstatSync, readdirSync, rmSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { parseArgs } from 'node:util'
 import type { MutableModels } from '@earendil-works/pi-ai'
@@ -109,7 +109,10 @@ export async function runSidecar({ argv, addProviders }: SidecarOptions): Promis
   const dayAgo = Date.now() - 86_400_000
   for (const folder of existsSync(pictures) ? readdirSync(pictures) : []) {
     const path = join(pictures, folder)
-    if (statSync(path).mtimeMs > dayAgo) continue
+    // Each pasted picture has a folder of its own. Anything else here, as a file Finder leaves or a link, is not the
+    // sidecar's, so it is read without following it.
+    const stat = lstatSync(path)
+    if (!stat.isDirectory() || stat.mtimeMs > dayAgo) continue
     if (!readdirSync(path).some((file) => named.has(join(path, file)))) rmSync(path, { recursive: true, force: true })
   }
   const legacy = {

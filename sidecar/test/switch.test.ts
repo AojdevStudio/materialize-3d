@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import type { ChatEntry, ChatView } from '../src/protocol'
@@ -73,6 +73,27 @@ describe('a picture pasted into a draft', () => {
     expect(existsSync(kept)).toBe(true)
     expect(existsSync(dropped)).toBe(false)
     await third.quit()
+  })
+
+  test('the cleanup at start passes over a file beside the picture folders, such as one Finder leaves', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'm3d-picture-'))
+    mkdirSync(join(dir, 'pictures'))
+    const stray = join(dir, 'pictures', '.DS_Store')
+    writeFileSync(stray, '')
+    utimesSync(stray, new Date(Date.now() - 2 * 86_400_000), new Date(Date.now() - 2 * 86_400_000))
+    const app = spawnSidecar(join(dir, 'state'), join(dir, 'projects'))
+    expect(await app.next()).toMatchObject({ kind: 'event', event: { type: 'ready' } })
+    expect(existsSync(stray)).toBe(true)
+    await app.quit()
+  })
+
+  test('the cleanup at start passes over a link to nothing in the pictures folder', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'm3d-picture-'))
+    mkdirSync(join(dir, 'pictures'))
+    symlinkSync(join(dir, 'gone'), join(dir, 'pictures', 'broken'))
+    const app = spawnSidecar(join(dir, 'state'), join(dir, 'projects'))
+    expect(await app.next()).toMatchObject({ kind: 'event', event: { type: 'ready' } })
+    await app.quit()
   })
 })
 

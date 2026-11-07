@@ -59,7 +59,7 @@ export function handlers({ store, logins, chats, version, legacy, pictures }: Se
             : login.login === null
               ? [{ kind: 'login', provider: login.provider, name: login.name, fix: `Sign in to ${login.name} before you send.` }]
               : []
-        return [...needs, ...toolchainNeeds()]
+        return [...needs, ...(await toolchainNeeds())]
       },
     },
     'legacy.import': { params: compile(obj({})), run: () => legacy.retry() },

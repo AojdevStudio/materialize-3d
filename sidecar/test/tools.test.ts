@@ -157,6 +157,23 @@ describe('the check before a send', () => {
     expect(await check('/usr/bin:/bin', true, home)).toEqual([])
   })
 
+  test('a check that hangs ends at its limit, and names what it could not find', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'm3d-uv-'))
+    writeFileSync(join(dir, 'uv'), '#!/bin/sh\n[ "$1" = --version ] && { echo "uv 0.9.0"; exit 0; }\nexec sleep 60\n')
+    chmodSync(join(dir, 'uv'), 0o755)
+    const state = mkdtempSync(join(tmpdir(), 'm3d-check-'))
+    const app = spawnSidecar(join(state, 'state'), join(state, 'projects'), new Map(), {
+      env: { PATH: `${dir}:/usr/bin:/bin`, HOME: mkdtempSync(join(tmpdir(), 'm3d-home-')) },
+    })
+    await app.next()
+    await app.call('auth.setKey', { provider: 'anthropic', key: 'token' })
+    const started = Date.now()
+    const needs = (await app.call('setup.check', {})) as { kind: string }[]
+    expect(Date.now() - started).toBeLessThan(10_000)
+    expect(needs.map((need) => need.kind)).toEqual(['python'])
+    await app.quit()
+  }, 30_000)
+
   test('names a missing Python once uv is there', async () => {
     expect((await check(toolchain(false), true)).map((need) => need.kind)).toEqual(['python'])
   })
