@@ -746,6 +746,54 @@ describe('StudioApp', () => {
     expect(prompt().value).toBe('')
   })
 
+  it('saves text typed during a slow send at once when the app quits, before the send is done', async () => {
+    const sending = held()
+    mockSidecar({ 'chat.send': sending.call }, [projectA, projectB])
+    render(<StudioApp />)
+    fireEvent.click(await screen.findByText('Project A'))
+    await screen.findByRole('banner')
+    type('A clip for my desk')
+    fireEvent.click(screen.getByTestId('send'))
+    await waitFor(() => expect(sends()).toHaveLength(1))
+    type('A clip for my desk, and one for the shelf')
+    await act(async () => listeners.flush.forEach((listener) => listener({ payload: null })))
+    // The quit holds for 1.5 s at most, so the newer text must reach the store before the send answers.
+    await waitFor(() => expect(last(saves(projectA.id))).toMatchObject({ text: 'A clip for my desk, and one for the shelf' }))
+    await sending.release()
+  })
+
+  it('never brings back a sent start picture from a saved state that was read before the send', async () => {
+    let reads = 0
+    let answerLate: () => void = () => {}
+    const store = mockSidecar(
+      {
+        'state.get': (_, real) => {
+          // macOS keeps the old chats from the app at first, so the window offers to import them again.
+          if (++reads === 1) return real().then((state) => ({ ...(state as object), importBlocked: '/Users/me/Documents/Materialize 3D' }))
+          if (reads !== 2) return real()
+          // The state the import retry reads now, answered only after the send went through.
+          const before = real()
+          return new Promise((resolve) => (answerLate = () => resolve(before)))
+        },
+        'legacy.import': () => Promise.resolve({ imported: 0, blocked: null }),
+      },
+      [projectB],
+      { new: { text: '', attachments: ['/Users/me/pic.jpg'] } },
+    )
+    render(<StudioApp />)
+    await waitFor(() => expect(screen.getByTestId('attachments').textContent).toContain('pic.jpg'))
+    fireEvent.click(await screen.findByText('Try again'))
+    await waitFor(() => expect(reads).toBe(2))
+    fireEvent.click(screen.getByTestId('send'))
+    await waitFor(() => expect(store.sent).toHaveLength(1))
+    await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('New part'))
+    await act(async () => answerLate())
+    await pause(500)
+    expect(store.drafts.new).toBeUndefined()
+    fireEvent.click(screen.getByTestId('new-project'))
+    expect(screen.queryByTestId('attachments')).toBeNull()
+  })
+
   it('waits for a draft save already on its way before it says a quit may go on', async () => {
     const save = held()
     mockSidecar({ 'drafts.set': save.call })

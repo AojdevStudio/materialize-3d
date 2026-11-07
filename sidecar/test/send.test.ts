@@ -2,7 +2,10 @@ import { describe, expect, test } from 'bun:test'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { createModels, InMemoryCredentialStore } from '@earendil-works/pi-ai'
+import { createRegistry } from '@earendil-works/pi-durable'
 import type { ChatEntry, ChatView, SavedDraft, StoredState } from '../src/protocol'
+import { Store } from '../src/store'
 import { spawnSidecar } from './sidecar'
 
 type App = ReturnType<typeof spawnSidecar>
@@ -39,6 +42,33 @@ async function answered(app: App, project: string, text: string) {
 }
 
 describe('a send from the start screen', () => {
+  test('cut off after its project was made, goes on with what it went out as, and leaves a newer project draft alone', async () => {
+    const where = scratch()
+    const first = await start(where)
+    const rev = await save(first, 'new', 'A knob')
+    await first.quit()
+    // The sidecar stopped right after it made the project and moved the draft there, before the message.
+    const store = await Store.open({
+      dataDir: where.data,
+      projectsDir: where.projects,
+      models: createModels({ credentials: new InMemoryCredentialStore() }),
+      registry: createRegistry(),
+      env: () => {
+        throw new Error('no conversation runs here')
+      },
+    })
+    const { project: made } = await store.startProject(rev)
+    await store.close()
+    const app = await start(where)
+    // The person found the project and saved a newer draft there before sending from the start screen again.
+    const newer = await save(app, made.id, 'A knob, in black')
+    expect((await send(app, 'new', rev)).id).toBe(made.id)
+    expect((await asked(app, made.id)).map((entry) => entry.text)).toEqual(['A knob'])
+    expect((await drafts(app))[made.id]).toEqual({ text: 'A knob, in black', attachments: [], rev: newer })
+    await answered(app, made.id, 'answered by faux-a')
+    await app.quit()
+  }, 30_000)
+
   test('makes the project, sends the draft, and leaves no draft behind', async () => {
     const where = scratch()
     const app = await start(where)

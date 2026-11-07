@@ -47,8 +47,12 @@ export const SettingsDoc = defineDoc<Settings>({
   checkpointWhen: always,
 })
 
-/** The projects, and the project each start screen draft revision made, so a send of it again makes no other. */
-const ProjectsDoc = defineDoc<{ projects: Project[]; madeFor?: Record<string, string> }>({
+/**
+ * The projects, and for each start screen draft revision that made one, that project and the draft it moved there, so
+ * a send of that revision again makes no other project and still sends what went out, even after the project's draft
+ * changed.
+ */
+const ProjectsDoc = defineDoc<{ projects: Project[]; madeFor?: Record<string, { project: string; draft: SavedDraft }> }>({
   kind: 'm3d.projects',
   version: 1,
   scope: 'conversation',
@@ -245,18 +249,19 @@ export class Store implements LoginIndex {
    * draft's first line, and moves that draft to it, in one commit. Only the draft saved as `rev` moves, so a newer
    * start screen draft is never sent in its place. The folder is made inside that commit, before anything is kept, so a
    * folder that cannot be made keeps nothing. A crash after the folder leaves an empty folder, which the next id skips.
-   * Asked again for the same revision, as after a lost answer, it answers the project that revision made and changes
-   * nothing.
+   * Asked again for the same revision, as after a lost answer or a crash before the message, it answers the project
+   * that revision made and the draft it moved, and changes nothing.
    */
-  async startProject(rev: number): Promise<Project> {
+  async startProject(rev: number): Promise<{ project: Project; draft: SavedDraft }> {
     const now = new Date()
     // The person's own date, as the folder name shows it.
     const today = new Date(now.getTime() - now.getTimezoneOffset() * 60_000).toISOString().slice(0, 10)
     return this.harness.commit(async (tx) => {
       const index = await tx.doc(ProjectsDoc, this.root.id)
-      const made = index.projects.find((p) => p.id === index.madeFor?.[rev])
+      const before = index.madeFor?.[rev]
+      const made = index.projects.find((p) => p.id === before?.project)
       // A plain copy, since the documents a commit hands out are only valid inside it.
-      if (made !== undefined) return { ...made }
+      if (before !== undefined && made !== undefined) return JSON.parse(JSON.stringify({ project: made, draft: before.draft }))
       const { drafts } = await tx.doc(DraftsDoc, this.root.id)
       const draft = drafts[START]
       if (draft?.rev !== rev) throw new Error(DRAFT_CHANGED)
@@ -270,10 +275,11 @@ export class Store implements LoginIndex {
       const conversation = await tx.createConversation({ ownership: { kind: 'ownerless' } })
       const created: Project = { id, conversation: conversation.id, title, createdMs: now.getTime() }
       index.projects.push(created)
-      index.madeFor = { ...index.madeFor, [rev]: id }
+      const moved: SavedDraft = { text: draft.text, attachments: [...draft.attachments], rev }
+      index.madeFor = { ...index.madeFor, [rev]: { project: id, draft: moved } }
       drafts[id] = draft
       delete drafts[START]
-      return { ...created }
+      return JSON.parse(JSON.stringify({ project: created, draft: moved }))
     }, context)
   }
 

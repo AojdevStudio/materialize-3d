@@ -250,14 +250,17 @@ export class Chats {
    */
   async send(key: string, rev: number): Promise<Project> {
     const { store, extension, tools, version, busy } = this.#o
-    const project = key === START ? await store.startProject(rev) : await store.project(key)
+    // A start screen send goes out as the draft its project took, even if the project's draft changed since, as after a
+    // crash before the message. A project's own send goes out as its draft, only while that is still this revision.
+    const started = key === START ? await store.startProject(rev) : undefined
+    const project = started?.project ?? (await store.project(key))
     const conversation = await this.#conversation(project.id)
     const requestId = `draft-${rev}`
     if ((await store.harness.commit((tx) => tx.submissionByRequest(conversation.id, requestId), context)) !== undefined) {
       await this.#watch(project.id, conversation)
       return project
     }
-    const draft = await store.draft(project.id)
+    const draft = started?.draft ?? (await store.draft(project.id))
     if (draft?.rev !== rev) throw new Error(DRAFT_CHANGED)
     const folder = store.projectFolder(project.id)
     const attachments = copyPictures(folder, rev, draft.attachments)
