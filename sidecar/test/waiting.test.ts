@@ -100,7 +100,7 @@ describe('a turn whose provider is not signed in', () => {
     proxy.stop()
   }, 20_000)
 
-  test('a turn refused after a newer login was saved goes on with it only with the update pass', async () => {
+  test('a turn refused after a newer login was saved goes on with it only with the update pass, and once a failed install opens the gate', async () => {
     const release = Promise.withResolvers<void>()
     const proxy = anthropicProxy('Hello after the update', { token: 'old-token', release: release.promise })
     const dir = mkdtempSync(join(tmpdir(), 'm3d-wait-'))
@@ -119,9 +119,17 @@ describe('a turn whose provider is not signed in', () => {
     expect(waiting.waiting).toMatchObject({ kind: 'login', provider: 'anthropic' })
     await Bun.sleep(500)
     expect(proxy.seen).toHaveLength(1)
+    // The install fails and the gate opens: the turn goes on by itself, with no new sign-in.
+    app.gate.installing = false
+    const answered = await app.until(
+      (event) => event.type === 'chat' && (event.entries as ChatEntry[]).some((entry) => entry.kind === 'assistant'),
+      10_000,
+    )
+    expect((answered.entries as ChatEntry[]).find((entry) => entry.kind === 'assistant')).toMatchObject({ text: 'Hello after the update' })
+    expect(proxy.seen.map((call) => call.authorization)).toEqual(['Bearer old-token', 'Bearer new-token'])
     await app.quit()
     proxy.stop()
-  }, 20_000)
+  }, 30_000)
 
   test('a turn that failed with no login goes on when one is saved while the failure is read', async () => {
     const proxy = anthropicProxy('Hello after the slow read')

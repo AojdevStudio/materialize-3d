@@ -138,6 +138,22 @@ export class Busy {
   }
 
   /**
+   * `during` for work that goes on by itself, such as a turn a sign-in lets go: while an update installs it asks again
+   * each second instead of failing, so an install that fails does not leave the work waiting. Resolves undefined, with
+   * nothing committed, once the sidecar closes. An install that succeeds restarts the app, and the work goes on then.
+   */
+  async duringWhenAllowed<T>(commit: () => Promise<T>): Promise<T | undefined> {
+    this.#sends += 1
+    try {
+      if (!(await this.pass())) return undefined
+      return await commit()
+    } finally {
+      this.#sends -= 1
+      await this.#follow()
+    }
+  }
+
+  /**
    * Gives the pass back while the tool `task` waits on `wait` for a sign-in. Once the wait ends, the tool goes on only
    * with the pass, so an update that started installing meanwhile holds it until the app restarts or the install fails.
    * A stop through `stop`, or the sidecar closing, ends that wait too.

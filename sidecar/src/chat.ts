@@ -147,10 +147,11 @@ export class Chats {
     const recorded = (await this.#o.store.harness.snapshot(WaitingDoc, conversation.id, context))?.failure ?? null
     if (state.failure !== undefined && state.failure.reason !== 'aborted' && state.failure.taskId !== recorded) {
       // The waiting document is not part of the view a watch follows, so its commit wakes no one: read it here.
-      // A login saved since the turn went out lets it go on now: the sign-in that saved it found no wait to let go.
-      // If an update is installing, the pass is refused and the wait stays, to go on after the restart.
+      // A login saved since the turn went out lets it go on now: the sign-in that saved it found no wait to let go. It
+      // waits out an update that is installing without holding up this chat's other changes. The wait stays recorded
+      // until it goes on, so a failure here leaves the fix shown.
       if (await this.#read(conversation, state.failure, state.turn)) {
-        await this.#continue(project, 'login').catch((error: unknown) => console.error(`going on with a newer login failed: ${String(error)}`))
+        void this.#continue(project, 'login').catch((error: unknown) => console.error(`going on with a newer login failed: ${String(error)}`))
       }
       state = await this.#state(conversation)
     }
@@ -238,12 +239,13 @@ export class Chats {
    * Goes on from where the turn stopped, with the model, tools, and instructions it started with, and clears what it
    * waited on. The turn records the app version that goes on with it. With `only: 'login'`, it goes on only while the
    * turn still waits on a sign-in, so when two paths let one wait go, as a sign-in and the read of a failure that
-   * crossed it, the turn goes on once.
+   * crossed it, the turn goes on once. Such a turn goes on by itself, so it waits for the pass while an update
+   * installs, instead of failing and being left waiting when the install fails.
    */
   async #continue(project: string, only?: 'login'): Promise<void> {
     const { store, version } = this.#o
     const conversation = await this.#conversation(project)
-    await this.#o.busy.during(() =>
+    const commit = () =>
       store.harness.commit(async (tx) => {
         const waiting = await tx.doc(WaitingDoc, conversation.id)
         if (only === 'login' && waiting.waiting?.kind !== 'login') return
@@ -254,8 +256,9 @@ export class Chats {
           turn.app = version
           waiting.saves = (await tx.doc(LoginSavesDoc, store.root.id)).saves[turn.model.provider] ?? 0
         }
-      }, context),
-    )
+      }, context)
+    if (only === 'login') await this.#o.busy.duringWhenAllowed(commit)
+    else await this.#o.busy.during(commit)
     await this.#watch(project, conversation)
   }
 
