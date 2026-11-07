@@ -8,8 +8,8 @@
  * action run exactly once. `run` passes the id on as `M3D_OPERATION_ID`, for a script that wants to check for itself.
  */
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs'
-import { basename, dirname, isAbsolute, join, relative } from 'node:path'
+import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, renameSync, writeFileSync } from 'node:fs'
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import type { Context, JsonValue } from '@earendil-works/chord'
 import {
   AssistantEntry,
@@ -41,20 +41,29 @@ const OUTPUT_TAIL = 20_000
 /** The only variables a command the agent runs gets. */
 const COMMAND_ENV = ['PATH', 'HOME', 'USER', 'LANG', 'TMPDIR'] as const
 
+/** How many symbolic links a path may pass through before it is refused, as the system refuses a loop. */
+const MAX_LINKS = 40
+
 /**
- * Where `path` really is: the real path of its nearest folder that exists, with the rest of the path after it. A
- * symbolic link on the way is followed, so a path that leads out of the project through one is seen to.
+ * Where `path` really leads. Every symbolic link on the way is followed, a link whose target does not exist yet
+ * included, so a path that leads out of the project through one is seen to. A part that does not exist yet is
+ * where its folder really is.
  */
-function realPath(path: string): string {
-  const rest: string[] = []
-  let at = path
-  while (!existsSync(at)) {
-    rest.unshift(basename(at))
-    const up = dirname(at)
-    if (up === at) break
-    at = up
+function realPath(path: string, links = 0): string {
+  if (links > MAX_LINKS) throw new Error(`${path} passes through too many links`)
+  try {
+    return realpathSync(path)
+  } catch {
+    let link = false
+    try {
+      link = lstatSync(path).isSymbolicLink()
+    } catch {
+      // Nothing is at this path yet.
+    }
+    if (link) return realPath(resolve(dirname(path), readlinkSync(path)), links + 1)
+    const up = dirname(path)
+    return up === path ? path : join(realPath(up, links), basename(path))
   }
-  return join(realpathSync(at), ...rest)
 }
 
 /** One project's files and processes. A path that leads out of the project folder is refused, for every file tool. */
@@ -62,7 +71,13 @@ export class ProjectEnv extends NodeExecutionEnv {
   override async absolutePath(path: string, context: Context): Promise<Result<string, FileError>> {
     const resolved = await super.absolutePath(path, context)
     if (!resolved.ok) return resolved
-    const inside = relative(realpathSync(this.cwd), realPath(resolved.value))
+    let real: string
+    try {
+      real = realPath(resolved.value)
+    } catch (error) {
+      return err(new FileError('permission_denied', error instanceof Error ? error.message : String(error), path))
+    }
+    const inside = relative(realpathSync(this.cwd), real)
     if (inside.startsWith('..') || isAbsolute(inside)) {
       return err(new FileError('permission_denied', `${path} is outside the project folder`, path))
     }
@@ -95,22 +110,30 @@ const text = (value: string) => [{ type: 'text' as const, text: value }]
 
 export interface AgentHost {
   host: Host
-  /** The project a conversation belongs to, and its folder. */
-  projectOf(conversation: number): Promise<{ id: string; folder: string }>
-  /** Holds a tool until the person signs in to `provider`, with the fix named on the chat. A stop ends the wait. */
-  waitForLogin(conversation: number, provider: string, context: Context): Promise<void>
+  /** The project a conversation belongs to. */
+  projectOf(conversation: number): Promise<string>
+  /**
+   * Resolves once the person is signed in to `provider`: at once when they are, after holding the turn with the fix
+   * named on its chat when they are not. A stop ends the wait.
+   */
+  signedIn(conversation: number, provider: string, context: Context): Promise<void>
 }
 
+/** A call's operation id: a hash of the call id, since an id the model made can hold any character, and no two may share a receipt. */
+export const operationId = (callId: string) => createHash('sha256').update(callId).digest('hex').slice(0, 32)
+
 /** A tool call's operation: its id, its receipt file in the project's hidden folder, and Pi's memo of it. */
-async function operation<T extends JsonValue>(api: ToolExecutionApi, context: Context, projectOf: AgentHost['projectOf']) {
-  const project = await projectOf(api.conversationId)
-  const id = api.callId.replace(/[^A-Za-z0-9_-]/g, '_')
+function operation<T extends JsonValue>(api: ToolExecutionApi, context: Context) {
+  const env = api.env
+  // Astra's conversation is not a project, so the folder is the one its tools work in, which it shares.
+  if (!(env instanceof ProjectEnv)) throw new Error('this conversation has no project folder')
+  const id = operationId(api.callId)
   const memo: Memo<T> = { get: () => api.memo<T>('receipt', context), set: (value) => api.memo('receipt', value, context) }
-  return { id, project, memo, receipt: join(project.folder, '.m3d', 'ops', `${id}.json`) }
+  return { env, id, memo, receipt: join(env.cwd, '.m3d', 'ops', `${id}.json`) }
 }
 
 /** The agent's tools, in the order the model is offered them. */
-export function agentTools({ host, projectOf, waitForLogin }: AgentHost) {
+export function agentTools({ host, projectOf, signedIn }: AgentHost) {
   const read = createReadTool()
   const write = { ...createWriteTool(), replay: 'safe' as const }
   const edit = createEditTool()
@@ -123,9 +146,8 @@ export function agentTools({ host, projectOf, waitForLogin }: AgentHost) {
     parameters: obj({ args: arr(str(), { minItems: 1 }), timeoutSeconds: opt(int({ minimum: 1, maximum: 3600 })) }),
     replay: 'safe',
     execute: async ({ args, timeoutSeconds }, api, context) => {
-      const env = api.env
-      if (env === undefined) throw new Error('this conversation has no project folder')
-      const op = await operation<{ exitCode: number; output: string }>(api, context, projectOf)
+      const op = operation<{ exitCode: number; output: string }>(api, context)
+      const { env } = op
       const vars: Record<string, string> = { M3D_OPERATION_ID: op.id }
       for (const name of COMMAND_ENV) {
         const value = process.env[name]
@@ -161,10 +183,11 @@ export function agentTools({ host, projectOf, waitForLogin }: AgentHost) {
     replay: 'safe',
     execute: async ({ inputs, output }, api, context) => {
       type Sliced = { ok: true; parts: number; printSeconds: number; filamentGrams: number } | { ok: false; error: string }
-      const op = await operation<Sliced>(api, context, projectOf)
+      const op = operation<Sliced>(api, context)
+      const project = await projectOf(api.conversationId)
       const sliced = await once<Sliced>(op.memo, op.receipt, async () => {
         try {
-          const { parts, printSeconds, filamentGrams } = await host.request('slice', { project: op.project.id, inputs, output })
+          const { parts, printSeconds, filamentGrams } = await host.request('slice', { project, inputs, output })
           return { ok: true, parts, printSeconds, filamentGrams }
         } catch (error) {
           return { ok: false, error: error instanceof Error ? error.message : String(error) }
@@ -184,7 +207,6 @@ export function agentTools({ host, projectOf, waitForLogin }: AgentHost) {
     parameters: obj({ task: str({ minLength: 1 }) }),
     replay: 'safe',
     execute: async ({ task }, api, context) => {
-      const signedIn = async () => (await api.models.getAuth(ASTRA_MODEL.provider).catch(() => undefined)) !== undefined
       // Astra's conversation is owned by this call, so a rerun finds the same one and the same request.
       const child = await api.commit(async (tx) => {
         const existing = (await tx.scanConversations({ ownerTaskId: api.taskId }, 1)).items[0]
@@ -197,9 +219,10 @@ export function agentTools({ host, projectOf, waitForLogin }: AgentHost) {
       const conversation = await api.conversation(child, context)
       if (conversation === undefined) throw new Error("Astra's conversation is gone")
       // Astra runs on the person's ChatGPT sign-in. Without it the turn waits here, with the fix named, and goes on.
-      if (!(await signedIn())) await waitForLogin(api.conversationId, ASTRA_MODEL.provider, context)
+      await signedIn(api.conversationId, ASTRA_MODEL.provider, context)
       let submission = await conversation.submit({ type: 'input', content: task, requestId: `astra:${api.taskId}` }, context)
-      for (;;) {
+      // Each continue has its own request id, so a rerun after a crash finds the same one instead of sending another.
+      for (let resumed = 0; ; resumed++) {
         const settled = await submission.wait(context)
         if (settled.status === 'done' && settled.type !== 'write') {
           const { answer } = settled
@@ -207,12 +230,12 @@ export function agentTools({ host, projectOf, waitForLogin }: AgentHost) {
           return { output: text(textOf(entry?.model?.[0]?.content) || 'Astra finished without a message.') }
         }
         const detail = typeof settled.detail === 'string' ? settled.detail : ''
-        if (settled.reason !== 'model_error' || !(isLoginFailure(detail) || !(await signedIn()))) {
+        if (settled.reason !== 'model_error' || !isLoginFailure(detail)) {
           return { output: text(`Astra did not answer (${settled.reason}${detail === '' ? '' : `: ${detail}`}).`), isError: true }
         }
-        // The sign-in was missing or refused: wait for it, then Astra goes on from where it stopped.
-        await waitForLogin(api.conversationId, ASTRA_MODEL.provider, context)
-        submission = await conversation.submit({ type: 'continue' }, context)
+        // The sign-in was missing or refused: once it is there, Astra goes on from where it stopped.
+        await signedIn(api.conversationId, ASTRA_MODEL.provider, context)
+        submission = await conversation.submit({ type: 'continue', requestId: `astra:${api.taskId}:continue:${resumed}` }, context)
       }
     },
   })

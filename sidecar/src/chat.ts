@@ -159,6 +159,7 @@ export class Chats {
       const record = await tx.doc(WaitingDoc, conversation.id)
       record.waiting = waiting
       record.failure = failure.taskId
+      record.tool = false
     }, context)
   }
 
@@ -188,7 +189,9 @@ export class Chats {
         const turn: Turn = { requestId, model, thinking, tools: tools.map((t) => t.name), instructions: WORKFLOW_VERSION, app: version, startedMs: Date.now() }
         ;(await tx.doc(TurnDoc, conversation.id)).turn = turn
         delete (await tx.doc(DraftsDoc, store.root.id)).drafts[project]
-        ;(await tx.doc(WaitingDoc, conversation.id)).waiting = null
+        const waiting = await tx.doc(WaitingDoc, conversation.id)
+        waiting.waiting = null
+        waiting.tool = false
       }, context)
     } catch (error) {
       if (error instanceof ConversationBusy) throw new Error('The agent is still working on the last message.')
@@ -214,10 +217,11 @@ export class Chats {
   }
 
   /**
-   * Holds a running tool until the person signs in to `provider`, with the fix named on its chat. The turn stays where
-   * it is and goes on once the sign-in is done. A stop ends the wait.
+   * Resolves once the person is signed in to `provider`, for a running tool. When they are not, it holds the turn where
+   * it is, with the fix named on its chat, and goes on once they sign in. A stop ends the wait. A wait the tool held
+   * before a restart is let go once the sign-in is there.
    */
-  async waitForLogin(conversation: number, provider: string, waiting: Context): Promise<void> {
+  async loginFor(conversation: number, provider: string, waiting: Context): Promise<void> {
     const { models, store } = this.#o
     const id = conversation as ConversationId
     const name = models.getProvider(provider)?.name ?? provider
@@ -228,6 +232,13 @@ export class Chats {
         record.waiting = wait
         record.tool = wait !== null
       }, context)
+    if ((await models.getAuth(provider).catch(() => undefined)) !== undefined) {
+      if ((await store.harness.snapshot(WaitingDoc, id, context))?.tool) {
+        await hold(null)
+        await this.#show(project)
+      }
+      return
+    }
     const { promise, resolve } = Promise.withResolvers<void>()
     const waiters = this.#signIns.get(provider) ?? new Set()
     this.#signIns.set(provider, waiters.add(resolve))
@@ -260,12 +271,33 @@ export class Chats {
     await (await this.#conversation(project)).abort(context)
   }
 
-  /** After a sign-in: every tool and every turn that waited on that provider goes on. */
+  /** A turn that started on another version of the app waits for the person to go on with this one. */
+  async #outdated(conversation: ConversationId): Promise<void> {
+    await this.#o.store.harness.commit(async (tx) => {
+      const record = await tx.doc(WaitingDoc, conversation)
+      record.waiting = { kind: 'error', detail: `Materialize 3D was updated to ${this.#o.version} while this turn ran.`, fix: 'Go on' }
+      record.tool = false
+    }, context)
+  }
+
+  /**
+   * After a sign-in: every tool and every turn that waited on that provider goes on, except a turn that started on
+   * another version of the app, which waits for the person to go on with this one.
+   */
   async signedIn(provider: string): Promise<void> {
+    const { store, version } = this.#o
     for (const resolve of this.#signIns.get(provider) ?? []) resolve()
-    for (const project of await this.#o.store.projects()) {
-      const waiting = await this.#o.store.harness.snapshot(WaitingDoc, project.conversation as ConversationId, context)
-      if (waiting?.waiting?.kind === 'login' && waiting.waiting.provider === provider && !waiting.tool) await this.#continue(project.id)
+    for (const project of await store.projects()) {
+      const conversation = project.conversation as ConversationId
+      const waiting = await store.harness.snapshot(WaitingDoc, conversation, context)
+      if (waiting?.waiting?.kind !== 'login' || waiting.waiting.provider !== provider || waiting.tool) continue
+      const turn = (await store.harness.snapshot(TurnDoc, conversation, context))?.turn
+      if (turn !== null && turn !== undefined && turn.app !== version) {
+        await this.#outdated(conversation)
+        await this.#show(project.id)
+      } else {
+        await this.#continue(project.id)
+      }
     }
   }
 
@@ -287,11 +319,7 @@ export class Chats {
     await Promise.all(
       outdated.map(async (conversation) => {
         await conversation.abort(context)
-        await store.harness.commit(async (tx) => {
-          const record = await tx.doc(WaitingDoc, conversation.id)
-          record.waiting = { kind: 'error', detail: `Materialize 3D was updated to ${version} while this turn ran.`, fix: 'Go on' }
-          record.tool = false
-        }, context)
+        await this.#outdated(conversation.id)
       }),
     )
     store.harness.resume()
@@ -304,10 +332,20 @@ export class Chats {
         await this.#read(conversation, state.failure, state.turn)
       }
       const record = await store.harness.snapshot(WaitingDoc, conversation.id, context)
-      const waiting = record?.waiting
-      if (waiting?.kind === 'login' && !record?.tool && (await models.getAuth(waiting.provider).catch(() => undefined)) !== undefined) {
-        await this.#continue(project.id)
+      const running = (await this.#state(conversation)).running
+      if (record?.tool && !running) {
+        // A tool held this wait, and its run is gone: nothing will let it go but this.
+        await store.harness.commit(async (tx) => {
+          const stale = await tx.doc(WaitingDoc, conversation.id)
+          stale.waiting = null
+          stale.tool = false
+        }, context)
+        continue
       }
+      const waiting = record?.waiting
+      if (waiting?.kind !== 'login' || record?.tool || running) continue
+      if (state.turn !== null && state.turn.app !== version) await this.#outdated(conversation.id)
+      else if ((await models.getAuth(waiting.provider).catch(() => undefined)) !== undefined) await this.#continue(project.id)
     }
   }
 

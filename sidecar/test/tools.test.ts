@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { once } from '../src/agent'
+import { once, operationId } from '../src/agent'
 import type { ChatEntry, ChatView } from '../src/protocol'
 import { spawnSidecar } from './sidecar'
 
@@ -57,6 +57,11 @@ describe('an outside action', () => {
     expect(await memo.get()).toEqual({ n: 1 })
     expect(acted).toBe(1)
   })
+
+  test('calls whose ids differ only in characters a file name cannot hold keep separate receipts', () => {
+    expect(operationId('call/a')).not.toBe(operationId('call:a'))
+    expect(operationId('call/a')).toBe(operationId('call/a'))
+  })
 })
 
 describe('the run tool', () => {
@@ -95,13 +100,16 @@ describe('the file tools', () => {
     await app.next()
     const project = await newProject(app)
     symlinkSync(outside, join(where.projects, project, 'linked'))
+    // A link to a file that does not exist yet: writing through it would make the file outside.
+    symlinkSync(join(outside, 'made-outside.txt'), join(where.projects, project, 'dangling'))
     await send(app, project, 'r1')
     await answered(app, project, 'tried')
     const results = await toolResults(app, project)
-    expect(results.map((r) => [r.name, r.failed])).toEqual([['read', true], ['write', true], ['edit', true]])
+    expect(results.map((r) => [r.name, r.failed])).toEqual([['read', true], ['write', true], ['edit', true], ['write', true]])
     for (const result of results) expect(result.text).toContain('outside the project folder')
     expect(readFileSync(join(outside, 'secret.txt'), 'utf8')).toBe('secret')
     expect(existsSync(join(outside, 'new.txt'))).toBe(false)
+    expect(existsSync(join(outside, 'made-outside.txt'))).toBe(false)
     await app.quit()
   })
 })
@@ -124,7 +132,28 @@ describe('Astra', () => {
     await app.call('auth.setKey', { provider: 'openai-codex', key: 'astra-key' })
     await answered(app, project, 'parent saw: astra drew it')
     expect(((await app.call('chat.open', { project })) as ChatView).waiting).toBeNull()
+    expect(readFileSync(join(where.projects, project, 'astra.txt'), 'utf8')).toBe('astra-ran\n')
     await app.quit()
+  })
+
+  test('a wait a crash cut off is let go once the sign-in is there, and the turn finishes', async () => {
+    const where = scratch()
+    const keychain = new Map<string, string>()
+    const first = spawnSidecar(where.data, where.projects, keychain, { script: 'astra', env: where.env })
+    await first.next()
+    const project = await newProject(first)
+    await send(first, project, 'r1')
+    await first.until((event) => event.type === 'chat' && event.waiting !== null)
+    first.child.kill('SIGKILL')
+    await first.child.exited
+
+    // The sign-in lands in the Keychain while the app is closed.
+    keychain.set('openai-codex', JSON.stringify({ type: 'api_key', key: 'astra-key' }))
+    const second = spawnSidecar(where.data, where.projects, keychain, { script: 'astra', env: where.env })
+    await second.next()
+    await answered(second, project, 'parent saw: astra drew it')
+    expect(((await second.call('chat.open', { project })) as ChatView).waiting).toBeNull()
+    await second.quit()
   })
 })
 
@@ -144,6 +173,24 @@ describe('a restart', () => {
     writeFileSync(join(where.projects, project, 'go'), '')
     const waiting = await second.until((event) => event.type === 'chat' && event.waiting !== null, 60_000)
     expect(waiting).toMatchObject({ project, running: false, waiting: { kind: 'error', fix: 'Try again' } })
+    await second.quit()
+  })
+
+  test('after an update, a turn that waited on a sign-in from the old version waits for the person to go on', async () => {
+    const where = scratch()
+    const first = start(where, 'models', '1.0.0')
+    await first.next()
+    await first.call('settings.set', { model: { provider: 'anthropic', modelId: 'claude-opus-5-5' } })
+    const { id: project } = (await first.call('projects.create', { title: 'A cube' })) as { id: string }
+    await first.call('chat.open', { project })
+    await send(first, project, 'r1')
+    await first.until((event) => event.type === 'chat' && event.waiting !== null)
+    await first.quit()
+
+    const second = start(where, 'models', '2.0.0')
+    await second.next()
+    const view = (await second.call('chat.open', { project })) as ChatView
+    expect(view.waiting).toEqual({ kind: 'error', detail: 'Materialize 3D was updated to 2.0.0 while this turn ran.', fix: 'Go on' })
     await second.quit()
   })
 
