@@ -110,8 +110,12 @@ export interface HostRequests {
 
 export type HostRequest = keyof HostRequests
 
-/** Paths are relative to the project folder, which Rust resolves from the project id. */
+/**
+ * Paths are relative to the project folder, which Rust resolves from the project id. Rust slices once per operation:
+ * a request that repeats one waits for the first and gets its result.
+ */
 export interface SliceParams {
+  operation: string
   project: string
   inputs: string[]
   output: string

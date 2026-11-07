@@ -232,7 +232,7 @@ export function agentTools({ host, projectOf, signedIn, loginSaves }: AgentHost)
       const project = await projectOf(api.conversationId)
       const sliced = await once<Sliced>(op.memo, op.receipt, async () => {
         try {
-          const { parts, printSeconds, filamentGrams } = await host.request('slice', { project, inputs, output })
+          const { parts, printSeconds, filamentGrams } = await host.request('slice', { operation: op.id, project, inputs, output })
           return { ok: true, parts, printSeconds, filamentGrams }
         } catch (error) {
           return { ok: false, error: error instanceof Error ? error.message : String(error) }

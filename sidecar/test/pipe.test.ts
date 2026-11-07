@@ -75,7 +75,7 @@ describe('the pipe to Rust', () => {
     input.write(`${JSON.stringify({ kind: 'answer', id: 2, ok: false, error: 'Keychain is locked' })}\n`)
     await expect(refused).rejects.toThrow('Keychain is locked')
 
-    const open = host.request('slice', { project: 'p', inputs: ['a.stl'], output: 'print/a.3mf' })
+    const open = host.request('slice', { operation: 'op', project: 'p', inputs: ['a.stl'], output: 'print/a.3mf' })
     input.end()
     await serving
     await expect(open).rejects.toThrow('the app closed the pipe')
