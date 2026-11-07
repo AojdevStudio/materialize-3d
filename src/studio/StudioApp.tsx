@@ -104,6 +104,8 @@ export default function StudioApp() {
   const edits = useRef<Record<string, number>>({})
   /** The revision of each screen's saved draft, so a send names the draft it went out with. */
   const revs = useRef<Record<string, number>>({})
+  /** The last save the window started for each screen's draft, and the revision it got, or none if it failed. */
+  const saving = useRef<Record<string, Promise<number | undefined>>>({})
   const early = useRef<View[]>([])
   /** Counts chat loads, so only the newest load of the open chat replaces its view, not an older one that answers late. */
   const loads = useRef(0)
@@ -224,6 +226,16 @@ export default function StudioApp() {
     }
   }, [])
 
+  /** Saves one screen's draft, and keeps the revision the sidecar gave it. */
+  const storeDraft = (key: string, draft: Draft) => {
+    const save = sidecar('drafts.set', { key, ...draft }).then(({ rev }) => {
+      revs.current[key] = Math.max(revs.current[key] ?? 0, rev)
+      return rev
+    })
+    saving.current[key] = save.catch(() => undefined)
+    return save
+  }
+
   /** Saves the draft now, if one waits to be saved. */
   const saveDraft = async () => {
     const waiting = unsaved.current
@@ -231,8 +243,7 @@ export default function StudioApp() {
     window.clearTimeout(waiting.timer)
     unsaved.current = null
     drafts.current = { ...drafts.current, [waiting.key]: waiting.draft }
-    const { rev } = await sidecar('drafts.set', { key: waiting.key, ...waiting.draft })
-    revs.current[waiting.key] = Math.max(revs.current[waiting.key] ?? 0, rev)
+    await storeDraft(waiting.key, waiting.draft)
   }
 
   // The composer's pictures as they are now, for a draft saved from outside a render, and to free their previews.
@@ -385,13 +396,18 @@ export default function StudioApp() {
     // while it runs changes `loadRequest`, and then the send leaves that view alone.
     let request = loadRequest.current
     let sentTo: string | null = null
+    const empty: Draft = { text: '', attachments: [] }
     try {
-      await saveDraft()
-      // What this send went out with: its screen's edits and saved draft revision. The start screen's draft may move to
-      // the new project, by the sidecar's rule that its text is the title.
+      // What this send went out with: its screen's edits and the revision of the last save of its draft, both taken
+      // before anything waits, as the person may go on typing. The start screen's draft may move to the new project, by
+      // the sidecar's rule that its text is the title.
       const fromKey = current?.id ?? START
       const fromEdits = edits.current[fromKey] ?? 0
-      const fromRev = revs.current[fromKey]
+      const before = revs.current[fromKey]
+      const saved = saveDraft()
+      const fromSave = saving.current[fromKey]
+      await saved
+      const fromRev = (await fromSave) ?? before
       const createdHere = current === null
       let moved = false
       let project = current
@@ -407,19 +423,17 @@ export default function StudioApp() {
         }
         setProjects((prev) => [created, ...prev])
         if (loadRequest.current === request) {
-          // The person stayed on the screen this was sent from, so text typed while the project was made follows them
-          // to it as its draft, and the start screen is empty again. A save still waiting belongs to that screen, so it
-          // goes too.
-          const typed = composerText.current
+          // The person stayed on the screen this was sent from, so what they changed there while the project was made,
+          // even back to the same text, is a newer draft. It follows them to the project, and the start screen is empty
+          // again. A save still waiting belongs to that screen, so it goes too.
           if (unsaved.current !== null) window.clearTimeout(unsaved.current.timer)
           unsaved.current = null
-          if (typed.trim() !== message) {
+          if ((edits.current[START] ?? 0) !== fromEdits) {
+            const draft: Draft = { text: composerText.current, attachments: unsent.current.map((a) => a.path) }
             edits.current[created.id] = (edits.current[created.id] ?? 0) + 1
-            drafts.current = { ...drafts.current, [created.id]: { text: typed, attachments: [] }, [START]: { text: '', attachments: [] } }
-            for (const [key, value] of [[created.id, typed], [START, '']]) {
-              void sidecar('drafts.set', { key, text: value, attachments: [] })
-                .then(({ rev }) => (revs.current[key] = Math.max(revs.current[key] ?? 0, rev)))
-                .catch((err: unknown) => setError(String(err)))
+            drafts.current = { ...drafts.current, [created.id]: draft, [START]: empty }
+            for (const [key, value] of [[created.id, draft], [START, empty]] as const) {
+              void storeDraft(key, value).catch((err: unknown) => setError(String(err)))
             }
           }
           show(created, true)
@@ -459,7 +473,6 @@ export default function StudioApp() {
       pending.current.delete(id)
       setSendErrors(({ [id]: _, ...rest }) => rest)
       const sent = new Set(outgoing.map((a) => a.path))
-      const empty: Draft = { text: '', attachments: [] }
       if ((edits.current[id] ?? 0) === projectEdits) {
         // Nothing changed on the project's screen since: its composer held what went out, and the sidecar removed the
         // draft it went out with.
@@ -477,9 +490,7 @@ export default function StudioApp() {
         if (cached !== undefined && cached.attachments.some((path) => sent.has(path))) {
           drafts.current = { ...drafts.current, [id]: keep(cached) }
           if (unsaved.current?.key !== id) {
-            void sidecar('drafts.set', { key: id, ...keep(cached) })
-              .then(({ rev }) => (revs.current[id] = Math.max(revs.current[id] ?? 0, rev)))
-              .catch((err: unknown) => setError(String(err)))
+            void storeDraft(id, keep(cached)).catch((err: unknown) => setError(String(err)))
           }
         }
         if (currentId.current === id) {
@@ -492,9 +503,7 @@ export default function StudioApp() {
       if (createdHere && !moved && (edits.current[START] ?? 0) === fromEdits) {
         drafts.current = { ...drafts.current, [START]: empty }
         if (unsaved.current?.key !== START) {
-          void sidecar('drafts.set', { key: START, ...empty })
-            .then(({ rev }) => (revs.current[START] = Math.max(revs.current[START] ?? 0, rev)))
-            .catch((err: unknown) => setError(String(err)))
+          void storeDraft(START, empty).catch((err: unknown) => setError(String(err)))
         }
         if (currentId.current === null) {
           setText('')

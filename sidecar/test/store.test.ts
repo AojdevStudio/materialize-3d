@@ -3,9 +3,11 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
+import { createModels, InMemoryCredentialStore } from '@earendil-works/pi-ai'
+import { createRegistry } from '@earendil-works/pi-durable'
 import { registerStorageConformance } from '@earendil-works/pi-durable/testing'
 import { EXIT } from '../src/protocol'
-import { openStorage } from '../src/store'
+import { DraftsDoc, openStorage, Store } from '../src/store'
 import { spawnSidecar } from './sidecar'
 
 function scratch() {
@@ -132,6 +134,32 @@ describe('app state', () => {
     await app.call('drafts.set', { key: 'new', text: 'A shelf bracket', attachments: [] })
     await app.call('projects.create', { title: 'A knob' })
     expect(((await app.call('state.get')) as { drafts: object }).drafts).toEqual({ new: { text: 'A shelf bracket', attachments: [], rev: expect.any(Number) } })
+    await app.quit()
+  })
+
+  test('a draft saved before drafts had revisions gets one at start, so its send takes it away', async () => {
+    const { data, projects } = scratch()
+    const old = await Store.open({
+      dataDir: data,
+      projectsDir: projects,
+      models: createModels({ credentials: new InMemoryCredentialStore() }),
+      registry: createRegistry(),
+      env: () => {
+        throw new Error('no conversation runs here')
+      },
+    })
+    await old.harness.commit(async (tx) => {
+      ;(await tx.doc(DraftsDoc, old.root.id)).drafts.new = { text: 'A knob', attachments: [] }
+    }, BACKGROUND_CONTEXT)
+    await old.close()
+
+    const app = spawnSidecar(data, projects)
+    await app.next()
+    const { drafts } = (await app.call('state.get')) as { drafts: Record<string, { text: string; attachments: string[]; rev?: number }> }
+    expect(drafts.new).toEqual({ text: 'A knob', attachments: [], rev: expect.any(Number) })
+    const project = (await app.call('projects.create', { title: 'A knob' })) as { id: string }
+    await app.call('chat.send', { project: project.id, requestId: 'r1', text: 'A knob', attachments: [], draftRev: drafts.new?.rev })
+    expect(((await app.call('state.get')) as { drafts: object }).drafts).toEqual({})
     await app.quit()
   })
 

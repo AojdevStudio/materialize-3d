@@ -57,7 +57,7 @@ const ProjectsDoc = defineDoc<{ projects: Project[] }>({
   checkpointWhen: always,
 })
 
-export const DraftsDoc = defineDoc<{ drafts: Record<string, SavedDraft>; seq?: number }>({
+export const DraftsDoc = defineDoc<{ drafts: Record<string, Draft & { rev?: number }>; seq?: number }>({
   kind: 'm3d.drafts',
   version: 1,
   scope: 'conversation',
@@ -220,6 +220,18 @@ export class Store implements LoginIndex {
       if (draft.text === '' && draft.attachments.length === 0) delete doc.drafts[key]
       else doc.drafts[key] = { ...draft, rev }
       return rev
+    }, context)
+  }
+
+  /** Gives each draft saved before drafts had revisions one, so a send can take it away as it takes any other. */
+  async reviseOldDrafts(): Promise<void> {
+    await this.harness.commit(async (tx) => {
+      const doc = await tx.doc(DraftsDoc, this.root.id)
+      for (const draft of Object.values(doc.drafts)) {
+        if (draft.rev !== undefined) continue
+        doc.seq = (doc.seq ?? 0) + 1
+        draft.rev = doc.seq
+      }
     }, context)
   }
 

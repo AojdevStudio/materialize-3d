@@ -529,6 +529,41 @@ describe('StudioApp', () => {
     expect(screen.queryByTestId('attachments')).toBeNull()
   })
 
+  it('keeps text typed while the draft before a send was still being saved', async () => {
+    let finishSave: (value: unknown) => void = () => {}
+    let saves = 0
+    mockSidecar({ 'drafts.set': () => (++saves === 1 ? new Promise((resolve) => (finishSave = resolve)) : Promise.resolve({ rev: 100 + saves })) })
+    render(<StudioApp />)
+    fireEvent.click(await screen.findByText('Project B'))
+    await screen.findByRole('banner')
+    type('Make it red')
+    fireEvent.click(screen.getByTestId('send'))
+    await waitFor(() => expect(sidecarCalls('drafts.set')).toHaveLength(1))
+    type('Make it blue')
+    // The newer text's own save ends first, so only the send's first save names what went out.
+    await waitFor(() => expect(sidecarCalls('drafts.set')).toHaveLength(2))
+    await act(async () => finishSave({ rev: 1 }))
+    await waitFor(() => expect(sidecarCalls('chat.send')).toHaveLength(1))
+    expect(sidecarCalls('chat.send')[0]).toMatchObject({ text: 'Make it red', draftRev: 1 })
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(prompt().value).toBe('Make it blue')
+  })
+
+  it('keeps a picture added while the project of a first message was being made', async () => {
+    let finishCreate: (project: unknown) => void = () => {}
+    mockSidecar({ 'projects.create': () => new Promise((resolve) => (finishCreate = resolve)), studio_import_file: () => Promise.resolve('refs/photo.jpg') })
+    render(<StudioApp />)
+    await screen.findByText('Project B')
+    type('A clip')
+    fireEvent.click(screen.getByTestId('send'))
+    await waitFor(() => expect(sidecarCalls('projects.create')).toHaveLength(1))
+    await act(async () => listeners.drop.forEach((listener) => listener({ payload: { type: 'drop', paths: ['/Users/me/later.jpg'] } })))
+    await act(async () => finishCreate({ id: '2026-11-06-a-clip', conversation: 4, title: 'A clip', createdMs: 3 }))
+    await waitFor(() => expect(sidecarCalls('chat.send')).toHaveLength(1))
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(screen.getByTestId('attachments').textContent).toContain('later.jpg')
+  })
+
   it('keeps chat changes that arrive while the chat opens', async () => {
     let finishOpen: (view: unknown) => void = () => {}
     mockSidecar({ 'chat.open': () => new Promise((resolve) => (finishOpen = resolve)) })

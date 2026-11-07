@@ -100,6 +100,7 @@ export async function runSidecar({ argv, addProviders }: SidecarOptions): Promis
     return { imported: imported.length, blocked }
   }
   let oldChats = await importOld()
+  await store.reviseOldDrafts()
   // A pasted picture is kept until it is sent, which copies it into its project, or its draft lets it go. A window that
   // outlived a crash may still hold one it has not saved in a draft yet, so only pictures older than a day that no
   // draft names are removed.
