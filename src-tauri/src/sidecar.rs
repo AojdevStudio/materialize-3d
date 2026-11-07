@@ -3,7 +3,7 @@
 //! Rust starts it with none of the person's environment but what its tools need to run,
 //! forwards the window's calls to it, answers its requests for the Keychain and the Bambu
 //! slice step, and starts it again after a crash. Each side writes one JSON object per line
-//! (`sidecar/src/protocol.ts`). Rust never opens the sidecar's store.
+//! (`sidecar/src/protocol.ts`). Rust never opens the sidecar's store: it only names its folder.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -152,11 +152,25 @@ fn kept_env() -> Vec<(&'static str, String)> {
     env
 }
 
+/// The sidecar's store goes in the app's Application Support folder, and project folders in Documents.
+/// A verification run keeps both in its own data folder.
+fn folders(app: &AppHandle) -> Result<(PathBuf, PathBuf), String> {
+    let data = app.path().app_data_dir().map_err(|e| format!("finding the app's data folder: {e}"))?;
+    #[cfg(feature = "e2e")]
+    let data = std::env::var_os("M3D_E2E_DATA_DIR").map(PathBuf::from).unwrap_or(data);
+    Ok((data.join("state"), studio::projects_root()?))
+}
+
 /// One sidecar process, from its start until it exits.
 async fn run(app: &AppHandle) -> Result<std::process::ExitStatus, String> {
     let exe = binary_path()?;
+    let (store, projects) = folders(app)?;
     let mut child = tokio::process::Command::new(&exe)
         .args(["--app-version", &app.package_info().version.to_string()])
+        .arg("--data")
+        .arg(&store)
+        .arg("--projects")
+        .arg(&projects)
         .env_clear()
         .envs(kept_env())
         .stdin(Stdio::piped())

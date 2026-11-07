@@ -6,9 +6,35 @@
  * window's code can share its types.
  */
 
+export type ModelChoice = { provider: string; modelId: string }
+export type Thinking = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+
+/** Where first-launch setup stands. Setup reopens on `step` until it is `done`. */
+export type Setup = { step: 'welcome' | 'check' | 'model' | 'printer' | 'ready'; done: boolean }
+
+/** What the next turn starts with. A running turn keeps what it started with. */
+export type Settings = {
+  model: ModelChoice
+  thinking: Thinking
+  printer: { machine: string; process: string; filament: string }
+}
+
+/** `conversation` is the project's Pi conversation id. */
+export type Project = { id: string; conversation: number; title: string; createdMs: number }
+
+/** An unsent message, by project id, or `new` for the start screen. Attachments are paths inside the project. */
+export type Draft = { text: string; attachments: string[] }
+
+export type AppState = { setup: Setup; settings: Settings; projects: Project[]; drafts: Record<string, Draft> }
+
 /** What the window can ask the sidecar, by method name. */
 export interface Methods {
   'app.ping': { params: Record<string, never>; result: { version: string } }
+  'state.get': { params: Record<string, never>; result: AppState }
+  'setup.set': { params: Setup; result: AppState }
+  'settings.set': { params: Partial<Settings>; result: AppState }
+  'drafts.set': { params: { key: string } & Draft; result: null }
+  'projects.create': { params: { title: string }; result: Project }
 }
 
 export type Method = keyof Methods

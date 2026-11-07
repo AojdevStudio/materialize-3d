@@ -1,31 +1,15 @@
 import { describe, expect, test } from 'bun:test'
 import { PassThrough } from 'node:stream'
 import { compile, obj } from '@earendil-works/pi-schema'
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { Host } from '../src/host'
+import { spawnSidecar as spawnIn } from './sidecar'
 
-/** The sidecar as Rust runs it: a child process spoken to over stdin and stdout. */
 function spawnSidecar() {
-  const child = Bun.spawn(['bun', 'src/main.ts', '--app-version', '9.9.9'], {
-    cwd: `${import.meta.dir}/..`,
-    stdin: 'pipe',
-    stdout: 'pipe',
-    stderr: 'pipe',
-  })
-  const lines = (async function* () {
-    let buffered = ''
-    for await (const chunk of child.stdout.pipeThrough(new TextDecoderStream())) {
-      buffered += chunk
-      let end = buffered.indexOf('\n')
-      while (end >= 0) {
-        yield JSON.parse(buffered.slice(0, end)) as Record<string, unknown>
-        buffered = buffered.slice(end + 1)
-        end = buffered.indexOf('\n')
-      }
-    }
-  })()
-  const next = async () => (await lines.next()).value
-  const send = (message: unknown) => child.stdin.write(`${JSON.stringify(message)}\n`)
-  return { child, next, send }
+  const dir = mkdtempSync(join(tmpdir(), 'm3d-pipe-'))
+  return spawnIn(join(dir, 'state'), join(dir, 'projects'))
 }
 
 describe('the pipe to Rust', () => {
