@@ -133,6 +133,39 @@ describe('subscription sign-ins', () => {
   })
 })
 
+describe('the compiled sidecar', () => {
+  test('reaches the first step of both subscription sign-ins, with no source files or node_modules beside it', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'm3d-compiled-'))
+    const bin = join(dir, 'materialize-sidecar')
+    const built = Bun.spawnSync(['bun', 'build', '--compile', join(import.meta.dir, '..', 'src', 'main.ts'), '--outfile', bin])
+    expect(built.exitCode).toBe(0)
+    const app = Bun.spawn([bin, '--app-version', '0.0.0', '--data', join(dir, 'state'), '--projects', join(dir, 'projects')], {
+      cwd: dir,
+      env: { PATH: '/usr/bin:/bin', HOME: dir },
+      stdin: 'pipe',
+      stdout: 'pipe',
+      stderr: 'ignore',
+    })
+    app.stdin.write('{"kind":"call","id":1,"method":"auth.login","params":{"provider":"anthropic"}}\n')
+    app.stdin.write('{"kind":"call","id":2,"method":"auth.login","params":{"provider":"openai-codex"}}\n')
+    app.stdin.flush()
+    const steps = new Map<string, string>()
+    const decoder = new TextDecoder()
+    let buffered = ''
+    for await (const chunk of app.stdout) {
+      buffered += decoder.decode(chunk)
+      for (const line of buffered.split('\n').slice(0, -1)) {
+        const message = JSON.parse(line) as { kind: string; event?: { type: string; provider: string; step: string } }
+        if (message.event?.type === 'login' && !steps.has(message.event.provider)) steps.set(message.event.provider, message.event.step)
+      }
+      buffered = buffered.slice(buffered.lastIndexOf('\n') + 1)
+      if (steps.size === 2) break
+    }
+    app.kill()
+    expect(Object.fromEntries(steps)).toEqual({ anthropic: 'ask', 'openai-codex': 'ask' })
+  }, 120_000)
+})
+
 describe('the Keychain credential store', () => {
   test('a cancelled save writes nothing, whether it was cancelled before its turn or while it ran', async () => {
     const keychain = new Map<string, string>()

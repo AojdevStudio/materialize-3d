@@ -15,6 +15,7 @@ import {
   type MutableModels,
   type Provider,
 } from '@earendil-works/pi-ai'
+import { registerBunOAuthFlows } from '@earendil-works/pi-ai/bun-oauth'
 import { anthropicProvider } from '@earendil-works/pi-ai/providers/anthropic'
 import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-codex'
 import { opencodeGoProvider } from '@earendil-works/pi-ai/providers/opencode-go'
@@ -130,6 +131,9 @@ export class KeychainCredentials implements CredentialStore {
 
 /** The models the agent can run on: the app's three providers, on the person's own logins. */
 export function inferenceModels(credentials: CredentialStore): MutableModels {
+  // pi-ai loads a provider's sign-in with an import a bundler cannot follow, so the compiled sidecar would have none.
+  // Registering them statically puts both subscription sign-ins in the binary.
+  registerBunOAuthFlows()
   const models = createModels({ credentials, authContext: noAmbient, identity: { attribution: null } })
   models.setProvider(anthropic())
   models.setProvider(openaiCodexProvider())
