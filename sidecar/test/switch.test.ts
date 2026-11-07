@@ -59,6 +59,41 @@ describe('the import of chats from before the store', () => {
     expect(await app.stderr()).toContain('2026-11-06-bad-record')
   })
 
+  test('keeps a project that has no chat yet, and shows a step a quit cut off as stopped', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'm3d-import-'))
+    const projects = join(dir, 'projects')
+    cpSync(CLIP, join(projects, '2026-11-06-no-chat'), { recursive: true })
+    rmSync(join(projects, '2026-11-06-no-chat', '.m3d', 'transcript.jsonl'))
+    cpSync(CLIP, join(projects, '2026-11-06-cut-off'), { recursive: true })
+    const cut = [
+      { type: 'm3d_user', text: 'A hook', images: [] },
+      { type: 'assistant', message: { content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { description: 'Build the hook' } }] } },
+    ]
+    writeFileSync(join(projects, '2026-11-06-cut-off', '.m3d', 'transcript.jsonl'), cut.map((line) => JSON.stringify(line)).join('\n'))
+    const app = spawnSidecar(join(dir, 'state'), projects)
+    const state = (await app.call('state.get')) as { projects: { id: string }[] }
+    expect(state.projects.map((p) => p.id).sort()).toEqual(['2026-11-06-cut-off', '2026-11-06-no-chat'])
+    expect(((await app.call('chat.open', { project: '2026-11-06-no-chat' })) as ChatView).entries).toEqual([])
+    const steps = ((await app.call('chat.open', { project: '2026-11-06-cut-off' })) as ChatView).entries.map(({ id: _, ...entry }) => entry)
+    expect(steps[1]).toEqual({ kind: 'imported', role: 'tool', name: 'Bash', text: 'Build the hook', result: 'It stopped before it finished.', failed: true })
+    await app.quit()
+  })
+
+  test('a projects folder that cannot be listed holds the start up for no one', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'm3d-import-'))
+    const projects = join(dir, 'projects')
+    cpSync(CLIP, join(projects, '2026-11-06-a-wall-clip'), { recursive: true })
+    chmodSync(projects, 0o000)
+    try {
+      const app = spawnSidecar(join(dir, 'state'), projects)
+      expect(((await app.call('state.get')) as { projects: unknown[] }).projects).toEqual([])
+      await app.quit()
+      expect(await app.stderr()).toContain('could not list')
+    } finally {
+      chmodSync(projects, 0o755)
+    }
+  })
+
   test('reads no old transcript on a launch after the import', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'm3d-import-'))
     const projects = join(dir, 'projects')

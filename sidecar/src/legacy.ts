@@ -1,14 +1,18 @@
 /**
  * Chats from before the store: each project folder kept its record in `.m3d/project.json` and its chat in
  * `.m3d/transcript.jsonl`, Claude Code stream-json events plus the app's own `m3d_*` events. Each one is imported
- * once, as display entries, and its files stay as they are.
+ * once, as display entries, and its files stay as they are. The old `m3d_files` cards are not kept: the Files tab lists
+ * every file, and the preview opens the newest.
  */
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
+import { type Dirent, existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import type { ImportedEntry } from './protocol'
 
 /** How much of an old tool result the chat keeps. */
 const RESULT_LIMIT = 4_000
+
+/** What a step shows when the chat ended before its result came back, as when the old app quit mid-step. */
+const CUT_OFF = 'It stopped before it finished.'
 
 export type LegacyProject = { id: string; title: string; createdMs: number; entries: ImportedEntry[] }
 
@@ -31,6 +35,7 @@ function summary(input: Record<string, unknown>): string {
 export function readTranscript(text: string): ImportedEntry[] {
   const entries: ImportedEntry[] = []
   const tools = new Map<string, Extract<ImportedEntry, { role: 'tool' }>>()
+  const answered = new Set<string>()
   for (const line of text.split('\n')) {
     if (line.trim() === '') continue
     let parsed: unknown
@@ -65,6 +70,7 @@ export function readTranscript(text: string): ImportedEntry[] {
         for (const block of blocks) {
           const tool = block.type === 'tool_result' && block.tool_use_id !== undefined ? tools.get(block.tool_use_id) : undefined
           if (tool === undefined) continue
+          answered.add(block.tool_use_id ?? '')
           tool.result = resultText(block.content).slice(-RESULT_LIMIT)
           tool.failed = block.is_error === true
         }
@@ -74,19 +80,35 @@ export function readTranscript(text: string): ImportedEntry[] {
         break
     }
   }
+  for (const [id, tool] of tools) {
+    if (answered.has(id)) continue
+    tool.result = CUT_OFF
+    tool.failed = true
+  }
   return entries
 }
 
 /**
- * Every old project in the projects folder that has a record and a transcript, but those in `known`, whose files are
- * not read. A project whose files cannot be read is skipped and named on stderr, as the old app skipped it.
+ * Every old project in the projects folder that has a record, but those in `known`, whose files are not read. One with
+ * no transcript yet comes with an empty chat. A project whose files cannot be read is skipped and named on stderr, as
+ * the old app skipped it.
  */
 export function legacyProjects(projectsDir: string, known: ReadonlySet<string>): LegacyProject[] {
   // No projects folder, or something else in its place, holds no old chats.
   if (!existsSync(projectsDir) || !statSync(projectsDir).isDirectory()) return []
-  return readdirSync(projectsDir, { withFileTypes: true }).flatMap((dir) => {
+  let dirs: Dirent[]
+  try {
+    dirs = readdirSync(projectsDir, { withFileTypes: true })
+  } catch (error) {
+    // The app still starts, as macOS can keep the folder from it until the person allows it. The import runs at each
+    // start, so it comes once the folder can be listed.
+    console.error(`could not list ${projectsDir} for chats from before the store: ${error instanceof Error ? error.message : String(error)}`)
+    return []
+  }
+  return dirs.flatMap((dir) => {
     const meta = join(projectsDir, dir.name, '.m3d')
-    if (known.has(dir.name) || !dir.isDirectory() || !existsSync(join(meta, 'project.json')) || !existsSync(join(meta, 'transcript.jsonl'))) return []
+    if (known.has(dir.name) || !dir.isDirectory() || !existsSync(join(meta, 'project.json'))) return []
+    const transcript = join(meta, 'transcript.jsonl')
     try {
       const record = JSON.parse(readFileSync(join(meta, 'project.json'), 'utf8')) as { title?: unknown; createdMs?: unknown }
       return [
@@ -94,7 +116,7 @@ export function legacyProjects(projectsDir: string, known: ReadonlySet<string>):
           id: dir.name,
           title: str(record.title) || dir.name,
           createdMs: typeof record.createdMs === 'number' ? record.createdMs : 0,
-          entries: readTranscript(readFileSync(join(meta, 'transcript.jsonl'), 'utf8')),
+          entries: existsSync(transcript) ? readTranscript(readFileSync(transcript, 'utf8')) : [],
         },
       ]
     } catch (error) {
