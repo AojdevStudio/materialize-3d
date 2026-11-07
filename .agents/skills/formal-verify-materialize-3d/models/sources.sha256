@@ -7,4 +7,4 @@ dc1709c75444259b23f19d9210b730ba014074dcffc42453537d1f3a16cd5430  src-tauri/src/
 adc22bee7f98a0717baf0999cccaf528142ad4e08e4ed88d17bedc45ec97d511  src-tauri/src/sidecar.rs
 672150b06f7a26b26c4af16eaf9d878dab762c6bf37a406c87cf118f9e71f439  sidecar/src/busy.ts
 860fcae9bcc1f04f6a3de1352f13b2923c011bc8dbb91f52de5d8cc493172f30  sidecar/src/chat.ts
-97028671a9e42763a9520730891ade82ac05d2beffe6fb251a471f709aa4e00e  sidecar/src/app.ts
+6596da86044ce6f0c138862e5abca7384bfd6cb46f9029ffd8e2ba15f717af3a  sidecar/src/app.ts
