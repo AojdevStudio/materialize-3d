@@ -7,7 +7,7 @@ description: Model-check, with TLC, what the in-app update's restart can cut off
 
 Two TLA+ models describe code where a bad order of events harms a user and tests rarely reach that order. TLC (the TLA+ model checker) tries every order of steps that the models allow.
 
-- `models/UpdateRestart.tla`. **Update now** waits for builds, closes the build gate, backs up, installs, and restarts. Builds, STL slices, and Studio turns race against it, and so do print queue writes.
+- `models/UpdateRestart.tla`. **Update now** waits for builds, closes the build gate, backs up, installs, and restarts. Builds, STL slices, and the sidecar's chat work race against it, and so do print queue writes.
 - `models/AutoSend.tla`. Two auto-send runs race to send the first Pending job in the print queue to the printer, across reconnects and a printer switch.
 
 ## Checks
@@ -16,7 +16,7 @@ Two TLA+ models describe code where a bad order of events harms a user and tests
 
 | Check | Property | Harm if it breaks | Recorded |
 |---|---|---|---|
-| `no-build-cut-off` | The restart never kills a build, a slice, or a Studio turn, nor cuts a turn's last transcript write. | A half-made build or 3MF, a turn's agent killed mid-job, or a chat that never records how its turn ended. | holds |
+| `no-build-cut-off` | The restart never kills a build, a slice, or the sidecar's chat work, nor cuts its last commit. | A half-made build or 3MF, or a turn's agent killed mid-job. | holds |
 | `gate-held-until-restart` | From the idle check to the restart, the gate is closed and no build runs. | A build starts that the restart then kills. | holds |
 | `failed-update-reopens` | A failed update lets builds start again. | The app refuses every build until it is quit. | holds |
 | `update-wakes` | When builds stop starting, a waiting update goes ahead. | **Update now** hangs with no build running. | holds |
@@ -55,8 +55,8 @@ Exit 0 means every verdict matches the recorded one. Exit 1 means at least one d
 | `split-close` | `close_when_idle` reads `running`, then closes the gate in a second send. | `gate-held-until-restart` |
 | `late-subscribe` | `borrow_and_update` moves after the idle check, so a build that ends in between is never heard. | `update-wakes` |
 | `ungated-slice` | `slice_model` no longer calls `builds.enter()`. | `no-build-cut-off` |
-| `ungated-turn` | `studio_send` no longer calls `take_pass`. | `no-build-cut-off` |
-| `early-release` | A Studio turn drops its pass before its last transcript write. | `no-build-cut-off` |
+| `ungated-turn` | A send no longer asks for the pass (`Busy.during` in `sidecar/src/busy.ts`). | `no-build-cut-off` |
+| `early-release` | The sidecar gives its pass back while a task is still live. | `no-build-cut-off` |
 | `guard-dropped` | `update_install` binds the `Closed` guard to `_`, which drops it before the restart. | `no-build-cut-off` |
 | `guard-leaked` | An error path keeps the `Closed` guard alive. | `failed-update-reopens` |
 | `unguarded` | The claim in `auto_send_pending_job` no longer checks `queue_held`. | `one-run-at-a-time` |
@@ -78,7 +78,7 @@ Then read each covered function that changed. Also look for new code that reache
 
 | Model action | Code |
 |---|---|
-| `Enter`, `Leave` | `BuildGate::enter` and `Drop for Running` in `build_gate.rs`. Callers: `build_as` in `pipeline.rs`, `slice_model` in `commands.rs`. For a Studio turn, `BuildGate::enter_owned` through `take_pass` in `studio_send`, and `Drop for OwnedRunning` at the end of the turn's task in `studio/turn.rs`, after its last transcript write. |
+| `Enter`, `Leave` | `BuildGate::enter` and `Drop for Running` in `build_gate.rs`. Callers: `build_as` in `pipeline.rs`, `slice_model` in `commands.rs`. For the sidecar's chat work, `BuildGate::enter_owned` through `take_pass` in `set_busy` (`sidecar.rs`), which `sidecar/src/busy.ts` asks for before a send commits, and `Drop for OwnedRunning` when it gives the pass back once no task is live, after its last commit. |
 | `Downloaded`, `Top`, `CheckAndClose`, `CheckBusy`, `Wake` | `BuildGate::close_when_idle`. Its `subscribe`, `borrow_and_update`, one `send_if_modified`, and `changed().await`. |
 | `Reopen` | `Drop for Closed`, on each error return of `install_when_idle`. |
 | `Click`, `DownloadFails`, `BackupOk`, `BackupFails`, `InstallOk`, `InstallFails`, `Exit` | `update_install` and `install_when_idle` in `updater.rs`, then Tauri's `AppHandle::restart`, which ends in `process::exit(0)`. |

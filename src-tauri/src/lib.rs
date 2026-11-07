@@ -74,7 +74,6 @@ pub fn run() {
         .manage(OpenScadService::default())
         .manage(agent::commands::AgentTurns::default())
         .manage(updater::PendingUpdate::default())
-        .manage(studio::Turns::default())
         .manage(sidecar::Sidecar::default())
         .invoke_handler(tauri::generate_handler![
             get_app_state,
@@ -153,11 +152,6 @@ pub fn run() {
             studio_commands::clear_bambu_studio,
             updater::update_check,
             updater::update_install,
-            studio::studio_projects,
-            studio::studio_create_project,
-            studio::turn::studio_transcript,
-            studio::turn::studio_send,
-            studio::turn::studio_cancel,
             studio::files::studio_files,
             studio::files::studio_import_file,
             studio::files::studio_save_bytes,
@@ -344,9 +338,8 @@ pub fn run() {
         .build(app_context())
         .expect("error while building tauri application")
         .run(|app, event| {
-            // A turn running when the app quits would keep changing its project with no window to show it.
+            // The sidecar finishes its commits and exits before the app does.
             if let tauri::RunEvent::Exit = event {
-                app.state::<studio::Turns>().stop_all();
                 app.state::<sidecar::Sidecar>().shutdown();
             }
         });

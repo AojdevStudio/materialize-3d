@@ -23,6 +23,7 @@ import {
 } from '@earendil-works/pi-durable'
 import type { ConversationView } from '@earendil-works/pi-durable'
 import { leaves, WORKFLOW, WORKFLOW_VERSION } from './agent'
+import type { Busy } from './busy'
 import type { ChatEntry, ChatView, SidecarEvent, Turn, Waiting } from './protocol'
 import { isLoginFailure } from './inference'
 import { DraftsDoc, LoginSavesDoc, SettingsDoc, type Store, TurnDoc, WaitingDoc } from './store'
@@ -40,6 +41,7 @@ export interface ChatsOptions {
   extension: Extension
   tools: readonly ToolRegistration[]
   version: string
+  busy: Busy
   emit(event: SidecarEvent): void
 }
 
@@ -194,7 +196,7 @@ export class Chats {
    * once a picture it sent is gone.
    */
   async send(project: string, requestId: string, text: string, attachments: string[]): Promise<void> {
-    const { store, extension, tools, version } = this.#o
+    const { store, extension, tools, version, busy } = this.#o
     const conversation = await this.#conversation(project)
     if ((await store.harness.commit((tx) => tx.submissionByRequest(conversation.id, requestId), context)) !== undefined) {
       await this.#watch(project, conversation)
@@ -203,7 +205,7 @@ export class Chats {
     const folder = store.projectFolder(project)
     const content = userContent(folder, text, attachments)
     try {
-      await store.harness.commit(async (tx) => {
+      await busy.during(() => store.harness.commit(async (tx) => {
         if ((await tx.submissionByRequest(conversation.id, requestId)) !== undefined) return
         const settings = await tx.doc(SettingsDoc, store.root.id)
         const model = { provider: settings.model.provider, modelId: settings.model.modelId }
@@ -223,7 +225,7 @@ export class Chats {
         waiting.waiting = null
         waiting.tool = false
         waiting.saves = (await tx.doc(LoginSavesDoc, store.root.id)).saves[model.provider] ?? 0
-      }, context)
+      }, context))
     } catch (error) {
       if (error instanceof ConversationBusy) throw new Error('The agent is still working on the last message.')
       throw error
@@ -238,16 +240,18 @@ export class Chats {
   async #continue(project: string): Promise<void> {
     const { store, version } = this.#o
     const conversation = await this.#conversation(project)
-    await store.harness.commit(async (tx) => {
-      await conversation.submit(tx, { type: 'continue' })
-      const waiting = await tx.doc(WaitingDoc, conversation.id)
-      waiting.waiting = null
-      const { turn } = await tx.doc(TurnDoc, conversation.id)
-      if (turn !== null) {
-        turn.app = version
-        waiting.saves = (await tx.doc(LoginSavesDoc, store.root.id)).saves[turn.model.provider] ?? 0
-      }
-    }, context)
+    await this.#o.busy.during(() =>
+      store.harness.commit(async (tx) => {
+        await conversation.submit(tx, { type: 'continue' })
+        const waiting = await tx.doc(WaitingDoc, conversation.id)
+        waiting.waiting = null
+        const { turn } = await tx.doc(TurnDoc, conversation.id)
+        if (turn !== null) {
+          turn.app = version
+          waiting.saves = (await tx.doc(LoginSavesDoc, store.root.id)).saves[turn.model.provider] ?? 0
+        }
+      }, context),
+    )
     await this.#watch(project, conversation)
   }
 

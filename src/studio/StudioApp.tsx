@@ -1,9 +1,12 @@
 import { getCurrentWebview } from '@tauri-apps/api/webview'
+import { openUrl } from '@tauri-apps/plugin-opener'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { autoOpens, onSidecarEvent, sidecar, studio, type Project, type ProjectFile, type StudioEvent } from './api'
+import type { ChatView as View, Project } from '../../sidecar/src/protocol'
+import { autoOpens, onSidecarEvent, sidecar, studio, type ProjectFile } from './api'
 import { ChatView, Composer, releaseAttachment, type Attachment } from './Chat'
 import RightPanel, { type Tab } from './RightPanel'
 import { buildChat } from './transcript'
+import { WaitingBanner } from './Waiting'
 import { UpdateBanner } from '../components/UpdateBanner'
 import { checkForUpdatesAtLaunch, useUpdateEvents } from '../stores/updates'
 import './studio.css'
@@ -16,10 +19,11 @@ const SUGGESTIONS = [
 
 const PICTURE = /\.(png|jpe?g|heic|heif|webp|gif)$/i
 
-/** Adds a live event at its transcript line. One the loaded history already holds is a repeat. */
-function appendEvent(events: StudioEvent[], seq: number, event: StudioEvent): StudioEvent[] {
-  return seq < events.length ? events : [...events, event]
-}
+/** The unsent message of the start screen, before a project exists. */
+const START = 'new'
+
+/** How long typing pauses before the draft is saved. */
+const DRAFT_PAUSE_MS = 400
 
 function newestAutoOpen(files: ProjectFile[]): ProjectFile | undefined {
   return files.filter((f) => autoOpens(f.rel)).sort((a, b) => b.modifiedMs - a.modifiedMs)[0]
@@ -28,7 +32,7 @@ function newestAutoOpen(files: ProjectFile[]): ProjectFile | undefined {
 export default function StudioApp() {
   const [projects, setProjects] = useState<Project[]>([])
   const [current, setCurrent] = useState<Project | null>(null)
-  const [events, setEvents] = useState<StudioEvent[]>([])
+  const [view, setView] = useState<View | null>(null)
   const [files, setFiles] = useState<ProjectFile[]>([])
   const [selected, setSelected] = useState<string | null>(null)
   const [tab, setTab] = useState<Tab>('preview')
@@ -36,20 +40,23 @@ export default function StudioApp() {
   const [error, setError] = useState<string | null>(null)
   /** A failed send's error, kept with the project it was sent to and shown only there. */
   const [sendErrors, setSendErrors] = useState<Record<string, string>>({})
-  /** The unsent message. It belongs to the open project and stays until a send succeeds. */
+  /** The unsent message. The sidecar keeps it as the open project's draft. */
   const [text, setText] = useState('')
   const [sending, setSending] = useState(false)
   const [engine, setEngine] = useState('Engine starting')
   const sendingNow = useRef(false)
   const currentId = useRef<string | null>(null)
-  /** Bumped on every switch, so a slow history load for a project already left is dropped. */
+  /** Bumped on every switch, so a slow load for a project already left is dropped. */
   const loadRequest = useRef(0)
-  /** Live events that arrive while the open project's history is loading. */
-  const pending = useRef<{ seq: number; event: StudioEvent }[] | null>(null)
   /** The newest file time already shown, so only newer files take over the preview. */
   const lastSeen = useRef(0)
+  /** Saved drafts as the sidecar last gave them, to fill the composer when a project opens. */
+  const drafts = useRef<Record<string, { text: string }>>({})
+  /** A send that has not gone through yet keeps its request id, so sending it again never sends it twice. */
+  const pending = useRef<{ key: string; id: string } | null>(null)
 
-  const chat = useMemo(() => buildChat(events, current?.path ?? ''), [events, current?.path])
+  const items = useMemo(() => buildChat(view?.entries ?? []), [view?.entries])
+  const running = view?.running ?? false
 
   useUpdateEvents()
   useEffect(() => {
@@ -57,33 +64,60 @@ export default function StudioApp() {
   }, [])
 
   useEffect(() => {
-    // The listener is in place before the ping, so no change is missed, and a ping that answers late never hides one.
-    let changed = false
+    sidecar('app.ping', {})
+      .then(({ version }) => setEngine(`Engine ${version}`))
+      .catch((err: unknown) => setEngine(String(err)))
+    sidecar('state.get', {})
+      .then((state) => {
+        drafts.current = state.drafts
+        setProjects(state.projects)
+        if (currentId.current === null) setText(state.drafts[START]?.text ?? '')
+      })
+      .catch((err: unknown) => setError(String(err)))
     const unlisten = onSidecarEvent((event) => {
-      if (event.type !== 'ready' && event.type !== 'engine') return
-      changed = true
-      setEngine(event.type === 'ready' ? `Engine ${event.version}` : event.state === 'stopped' ? event.detail : 'Engine restarting')
+      switch (event.type) {
+        case 'ready':
+          setEngine(`Engine ${event.version}`)
+          break
+        case 'engine':
+          setEngine(event.state === 'stopped' ? event.detail : 'Engine restarting')
+          break
+        case 'chat':
+          if (event.project !== currentId.current) break
+          setView((now) => {
+            if (now === null || now.project !== event.project) return now
+            const last = now.entries[now.entries.length - 1]?.id ?? 0
+            const added = event.entries.filter((entry) => entry.id > last)
+            return { ...now, entries: added.length > 0 ? [...now.entries, ...added] : now.entries, running: event.running, waiting: event.waiting, turn: event.turn }
+          })
+          break
+        case 'login':
+          if (event.step === 'open') void openUrl(event.url).catch((err: unknown) => setError(String(err)))
+          if (event.step === 'ask') {
+            // A choice is answered with its option's id, so the question lists them.
+            const choices = event.options?.map((option) => `${option.id}: ${option.label}`).join('\n')
+            const answer = window.prompt(choices === undefined ? event.message : `${event.message}\n${choices}`)
+            if (answer !== null) void sidecar('auth.answer', { provider: event.provider, text: answer }).catch((err: unknown) => setError(String(err)))
+          }
+          if (event.step === 'failed') setError(event.detail)
+          break
+      }
     })
-    unlisten
-      .then(() => sidecar('app.ping', {}))
-      .then(({ version }) => changed || setEngine(`Engine ${version}`))
-      .catch((err: unknown) => changed || setEngine(String(err)))
     return () => {
       void unlisten.then((stop) => stop())
     }
   }, [])
 
+  // The draft is saved a moment after typing stops, for the open project or the start screen.
   useEffect(() => {
-    studio.projects().then(setProjects).catch((err: unknown) => setError(String(err)))
-    const unlisten = studio.onEvent((project, seq, event) => {
-      if (project !== currentId.current) return
-      if (pending.current) pending.current.push({ seq, event })
-      else setEvents((prev) => appendEvent(prev, seq, event))
-    })
-    return () => {
-      void unlisten.then((stop) => stop())
-    }
-  }, [])
+    const key = current?.id ?? START
+    if ((drafts.current[key]?.text ?? '') === text) return
+    const timer = window.setTimeout(() => {
+      drafts.current = { ...drafts.current, [key]: { text } }
+      void sidecar('drafts.set', { key, text, attachments: [] }).catch((err: unknown) => setError(String(err)))
+    }, DRAFT_PAUSE_MS)
+    return () => window.clearTimeout(timer)
+  }, [text, current?.id])
 
   // Pasted pictures still waiting when the studio closes give their previews back.
   const unsent = useRef(attachments)
@@ -122,26 +156,25 @@ export default function StudioApp() {
   useEffect(() => {
     if (!current) return
     void refreshFiles(current.id).catch((err: unknown) => setError(String(err)))
-    if (!chat.running) return
+    if (!running) return
     const timer = window.setInterval(() => {
       void refreshFiles(current.id).catch((err: unknown) => setError(String(err)))
     }, 1500)
     return () => window.clearInterval(timer)
-  }, [current, chat.running, refreshFiles])
+  }, [current, running, refreshFiles])
 
-  /** Opens a project, or the start screen. A move the person makes drops the unsent message, so it never lands in another project. */
-  const show = (project: Project | null, history: StudioEvent[], keepDraft = false) => {
-    if (!keepDraft) {
-      setText('')
+  /** Shows a project, or the start screen, with its saved draft. */
+  const show = (project: Project | null, keepText = false) => {
+    if (!keepText) {
+      setText(drafts.current[project?.id ?? START]?.text ?? '')
       attachments.forEach(releaseAttachment)
       setAttachments([])
     }
     loadRequest.current += 1
-    pending.current = null
     currentId.current = project?.id ?? null
     lastSeen.current = 0
     setCurrent(project)
-    setEvents(history)
+    setView(null)
     setFiles([])
     setSelected(null)
     setTab('preview')
@@ -149,39 +182,36 @@ export default function StudioApp() {
   }
 
   const openProject = async (project: Project) => {
-    show(project, [])
+    show(project)
     const request = loadRequest.current
-    pending.current = []
     try {
-      const history = await studio.transcript(project.id)
-      if (request !== loadRequest.current) return
-      const live = pending.current
-      pending.current = null
-      setEvents(live.reduce((events, { seq, event }) => appendEvent(events, seq, event), history))
+      const opened = await sidecar('chat.open', { project: project.id })
+      if (request === loadRequest.current) setView(opened)
     } catch (err) {
-      if (request !== loadRequest.current) return
-      pending.current = null
-      setError(String(err))
+      if (request === loadRequest.current) setError(String(err))
     }
   }
 
   const send = async () => {
     const message = text.trim()
-    if ((!message && attachments.length === 0) || sendingNow.current || chat.running) return
+    if ((!message && attachments.length === 0) || sendingNow.current || running) return
     sendingNow.current = true
     setSending(true)
     // The view this send belongs to. A move to another project or the start screen
     // while it runs changes `loadRequest`, and then the send leaves that view alone.
-    let view = loadRequest.current
+    let request = loadRequest.current
     let sentTo: string | null = null
     try {
       let project = current
       if (!project) {
-        project = await studio.createProject(message || 'New part')
-        setProjects((prev) => [project!, ...prev])
-        if (loadRequest.current === view) {
-          show(project, [], true)
-          view = loadRequest.current
+        const created = await sidecar('projects.create', { title: message || 'New part' })
+        project = created
+        setProjects((prev) => [created, ...prev])
+        if (loadRequest.current === request) {
+          show(created, true)
+          request = loadRequest.current
+          const opened = await sidecar('chat.open', { project: created.id })
+          if (loadRequest.current === request) setView(opened)
         }
       }
       const id = project.id
@@ -190,10 +220,14 @@ export default function StudioApp() {
       const images = await Promise.all(
         outgoing.map((a) => (a.kind === 'path' ? studio.importFile(id, a.path) : studio.saveBytes(id, a.name, a.bytes))),
       )
-      await studio.send(id, message, images)
+      const key = [id, message, ...images].join('\n')
+      if (pending.current?.key !== key) pending.current = { key, id: crypto.randomUUID() }
+      await sidecar('chat.send', { project: id, requestId: pending.current.id, text: message, attachments: images })
+      pending.current = null
+      drafts.current = { ...drafts.current, [id]: { text: '' } }
       // Text typed while this was sending is a new message, so only the sent text is cleared,
       // and only in the view that sent it.
-      if (loadRequest.current === view) setText((now) => (now.trim() === message ? '' : now))
+      if (loadRequest.current === request) setText((now) => (now.trim() === message ? '' : now))
       // A picture added while these imported waits for the next message.
       setAttachments((prev) => prev.filter((a) => !outgoing.includes(a)))
       outgoing.forEach(releaseAttachment)
@@ -202,7 +236,7 @@ export default function StudioApp() {
       if (sentTo !== null) {
         const project = sentTo
         setSendErrors((prev) => ({ ...prev, [project]: message }))
-      } else if (loadRequest.current === view) {
+      } else if (loadRequest.current === request) {
         // No project was made, so the error belongs to the start screen, if it is still open.
         setError(message)
       }
@@ -229,9 +263,9 @@ export default function StudioApp() {
         setAttachments((prev) => prev.filter((_, i) => i !== index))
       }}
       onSend={() => void send()}
-      onStop={current ? () => void studio.cancel(current.id) : undefined}
-      busy={sending || chat.running}
-      running={chat.running}
+      onStop={current ? () => void sidecar('chat.stop', { project: current.id }).catch((err: unknown) => setError(String(err))) : undefined}
+      busy={sending || running}
+      running={running}
       placeholder={placeholder}
       autoFocus={autoFocus}
     />
@@ -240,7 +274,7 @@ export default function StudioApp() {
   return (
     <div className={`studio ${current ? 'studio-work' : 'studio-start'}`}>
       <nav className="sessions" aria-label="Projects">
-        <button type="button" className="new-project" onClick={() => show(null, [])} data-testid="new-project">
+        <button type="button" className="new-project" onClick={() => show(null)} data-testid="new-project">
           New project
         </button>
         <ul>
@@ -268,10 +302,16 @@ export default function StudioApp() {
         {current ? (
           <>
             <header className="chat-title">{current.title}</header>
+            {view?.turn && (
+              <p className="chat-model" data-testid="chat-model">
+                {view.turn.model.modelId}
+              </p>
+            )}
+            {view?.waiting && <WaitingBanner project={current.id} waiting={view.waiting} onError={setError} />}
             <ChatView
               project={current.id}
-              items={chat.items}
-              running={chat.running}
+              items={items}
+              running={running}
               onPreview={(rel) => {
                 setSelected(rel)
                 setTab('preview')

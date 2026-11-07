@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::future::Future;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use serde::de::DeserializeOwned;
@@ -21,6 +21,8 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::{mpsc, oneshot, watch, Notify, OnceCell};
 
 use crate::credentials;
+use crate::fabrication::build_gate::{BuildGate, OwnedRunning};
+use crate::state::AppState;
 use crate::studio;
 
 /// The one event the window listens to. The sidecar's own events and the engine's state both arrive here.
@@ -57,6 +59,8 @@ pub struct Sidecar {
     kill: Notify,
     /// Each slice by its operation id, running or done, for as long as the app runs.
     slices: Operations,
+    /// The update gate's pass, held while the sidecar has work in flight.
+    pass: Mutex<Option<OwnedRunning<StateGate>>>,
 }
 
 /// Outside work by operation id: one result each, shared by every request that names the id.
@@ -74,6 +78,24 @@ where
     cell.get_or_init(work).await.clone()
 }
 
+/// The gate inside the app's state, so the sidecar's pass can own its way to it.
+struct StateGate(Arc<AppState>);
+
+impl std::ops::Deref for StateGate {
+    type Target = BuildGate;
+    fn deref(&self) -> &BuildGate {
+        &self.0.builds
+    }
+}
+
+/// The pass that holds an update off while the sidecar works. The updater restarts the app only once no build
+/// and no sidecar work holds one. While an update installs, the gate is closed and the pass, and with it a send,
+/// is refused.
+fn take_pass(state: Arc<AppState>) -> Result<OwnedRunning<StateGate>, String> {
+    BuildGate::enter_owned(StateGate(state))
+        .ok_or_else(|| "An update is installing, and the app restarts when it is done. Send this again after it opens.".to_owned())
+}
+
 impl Default for Sidecar {
     fn default() -> Self {
         Self {
@@ -84,6 +106,7 @@ impl Default for Sidecar {
             alive: watch::Sender::new(false),
             kill: Notify::new(),
             slices: Mutex::default(),
+            pass: Mutex::default(),
         }
     }
 }
@@ -170,10 +193,84 @@ fn binary_path() -> Result<PathBuf, String> {
     Ok(dir.join(if cfg!(windows) { format!("{BINARY}.exe") } else { BINARY.to_owned() }))
 }
 
+/// How long the login shell may take to tell its PATH before the app goes on without it.
+const LOGIN_SHELL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The PATH of the person's login shell. An app opened from Finder starts with
+/// only the system folders, where `uv` is not.
+fn login_path() -> &'static str {
+    static PATH: OnceLock<String> = OnceLock::new();
+    PATH.get_or_init(|| {
+        let current = std::env::var("PATH").unwrap_or_default();
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_owned());
+        match shell_path(&shell, LOGIN_SHELL_DEADLINE) {
+            Some(path) if current.is_empty() => path,
+            Some(path) => format!("{path}:{current}"),
+            None => current,
+        }
+    })
+}
+
+/// The PATH `shell` reports as a login shell, or none when it fails, says nothing, or does not end within
+/// `deadline`. A shell whose startup files hang is ended with all it started, so the sidecar and the runner still
+/// start.
+fn shell_path(shell: &str, deadline: std::time::Duration) -> Option<String> {
+    let marker = "__M3D_PATH__";
+    let end = std::time::Instant::now() + deadline;
+    let mut command = std::process::Command::new(shell);
+    command
+        .args(["-ilc", &format!("printf '{marker}%s' \"$PATH\"")])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    // The shell leads a session of its own, so the deadline ends what its startup files started too. A session, not
+    // only a group: a shell in a background group of the terminal the app started from stops before its startup
+    // files, and one in a session of its own has no terminal to stop for.
+    #[cfg(unix)]
+    // SAFETY: setsid is async-signal-safe and only makes the child a session leader before it runs the shell.
+    unsafe {
+        std::os::unix::process::CommandExt::pre_exec(&mut command, || {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let mut child = command.spawn().ok()?;
+    let mut stdout = child.stdout.take()?;
+    let (sent, said) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut out = Vec::new();
+        let _ = std::io::Read::read_to_end(&mut stdout, &mut out);
+        let _ = sent.send(out);
+    });
+    let out = said.recv_timeout(deadline).ok();
+    // Startup files can send stdout elsewhere and go on running, so the shell's end has the same deadline.
+    let ended = loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break true,
+            Ok(None) if std::time::Instant::now() < end => std::thread::sleep(std::time::Duration::from_millis(20)),
+            _ => break false,
+        }
+    };
+    if !ended {
+        #[cfg(unix)]
+        if let Ok(group) = i32::try_from(child.id()) {
+            // SAFETY: killpg only sends a signal, to the group this shell leads, as its session leader, and has not been
+            // reaped from.
+            unsafe { libc::killpg(group, libc::SIGKILL) };
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    let out = out?;
+    String::from_utf8_lossy(&out).rsplit_once(marker).map(|(_, path)| path.trim().to_owned()).filter(|path| !path.is_empty())
+}
+
 /// The only variables the sidecar gets. Its tools need a PATH that finds `uv` and a HOME for
 /// uv's cache. The person's agent and inference settings (`ANTHROPIC_API_KEY` and the like) stay out.
 fn kept_env() -> Vec<(&'static str, String)> {
-    let mut env = vec![("PATH", studio::turn::login_path().to_owned())];
+    let mut env = vec![("PATH", login_path().to_owned())];
     for name in ["HOME", "USER", "LANG", "TMPDIR"] {
         if let Ok(value) = std::env::var(name) {
             env.push((name, value));
@@ -280,6 +377,9 @@ async fn run(app: &AppHandle) -> Result<std::process::ExitStatus, String> {
     writer.abort();
     let _ = writer.await;
     sidecar.drop_calls();
+    // Work a sidecar was doing when it ended no longer holds an update off. Its replacement asks again for work
+    // it resumes.
+    *sidecar.pass.lock().unwrap_or_else(|e| e.into_inner()) = None;
     // A sidecar can close its stdout and still hang, so the wait still answers a kill.
     let status = loop {
         tokio::select! {
@@ -373,6 +473,22 @@ struct SliceCall {
 }
 
 #[derive(Deserialize)]
+struct Busy {
+    busy: bool,
+}
+
+/// Takes the update gate's pass for the sidecar, or gives it back. Taking it again while held changes nothing.
+fn set_busy(sidecar: &Sidecar, state: &Arc<AppState>, busy: bool) -> Result<(), String> {
+    let mut pass = sidecar.pass.lock().unwrap_or_else(|e| e.into_inner());
+    match (busy, pass.is_some()) {
+        (true, false) => *pass = Some(take_pass(state.clone())?),
+        (false, true) => *pass = None,
+        _ => {}
+    }
+    Ok(())
+}
+
+#[derive(Deserialize)]
 struct Account {
     account: String,
 }
@@ -411,6 +527,11 @@ async fn answer(app: &AppHandle, method: &str, params: Value) -> Result<Value, S
         "keychain.delete" => {
             let Account { account } = parse(method, params)?;
             credentials::delete_credential(&keychain_item(&account)?).await?;
+            Ok(Value::Null)
+        }
+        "busy" => {
+            let Busy { busy } = parse(method, params)?;
+            set_busy(&app.state::<Sidecar>(), app.state::<Arc<AppState>>().inner(), busy)?;
             Ok(Value::Null)
         }
         "slice" => {
@@ -454,6 +575,27 @@ pub async fn sidecar(sidecar: State<'_, Sidecar>, method: String, params: Value)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn a_login_shell_that_hangs_is_ended_at_its_deadline() {
+        let dir = tempfile::tempdir().unwrap();
+        let shell = dir.path().join("slow-shell");
+        std::fs::write(&shell, "#!/bin/sh\nsleep 30\n").unwrap();
+        let mut perms = std::fs::metadata(&shell).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+        std::fs::set_permissions(&shell, perms).unwrap();
+        let started = std::time::Instant::now();
+        assert_eq!(shell_path(shell.to_str().unwrap(), std::time::Duration::from_millis(300)), None);
+        assert!(started.elapsed() < std::time::Duration::from_secs(5), "took {:?}", started.elapsed());
+
+        // Startup files that send stdout elsewhere and then hang end at the deadline too.
+        std::fs::write(&shell, "#!/bin/sh\nexec >/dev/null\nsleep 30\n").unwrap();
+        let started = std::time::Instant::now();
+        assert_eq!(shell_path(shell.to_str().unwrap(), std::time::Duration::from_millis(300)), None);
+        assert!(started.elapsed() < std::time::Duration::from_secs(5), "took {:?}", started.elapsed());
+        assert!(shell_path("/bin/sh", std::time::Duration::from_secs(5)).is_some_and(|path| !path.is_empty()));
+    }
 
     #[test]
     fn the_sidecar_reaches_only_inference_items_in_the_keychain() {
@@ -500,6 +642,25 @@ mod tests {
             serde_json::from_value(json!({ "operation": "abc", "project": "p", "inputs": ["a.stl"], "output": "out.3mf" })).expect("slice call");
         assert_eq!(call.operation, "abc");
         assert!(serde_json::from_value::<SliceCall>(json!({ "project": "p", "inputs": ["a.stl"], "output": "out.3mf" })).is_err());
+    }
+
+    /// The pass a busy sidecar takes holds an update off until it gives it back, and while the update installs
+    /// the pass, and with it a send, is refused.
+    #[tokio::test]
+    async fn an_update_waits_for_a_busy_sidecar_and_refuses_it_work_while_it_installs() {
+        const SETTLE: Duration = Duration::from_millis(50);
+        let state = Arc::new(AppState::default());
+        let sidecar = Sidecar::default();
+        set_busy(&sidecar, &state, true).expect("the sidecar takes the pass");
+        set_busy(&sidecar, &state, true).expect("asking again while it holds the pass changes nothing");
+        let mut close = std::pin::pin!(state.builds.close_when_idle(|_| {}));
+        assert!(tokio::time::timeout(SETTLE, &mut close).await.is_err(), "the update waits while the sidecar is busy");
+        set_busy(&sidecar, &state, false).expect("the sidecar gives the pass back");
+        let closed = tokio::time::timeout(SETTLE, &mut close).await.expect("the update goes ahead once the sidecar is idle");
+        let refused = set_busy(&sidecar, &state, true).expect_err("work is refused while the update installs");
+        assert!(refused.contains("update is installing"), "{refused}");
+        drop(closed);
+        set_busy(&sidecar, &state, true).expect("a failed install lets the sidecar work again");
     }
 
     #[test]

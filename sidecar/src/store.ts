@@ -12,6 +12,7 @@ import type { Models } from '@earendil-works/pi-ai'
 import { type Conversation, defineDoc, type HarnessOptions, Harness, type Registry } from '@earendil-works/pi-durable'
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node'
 import type { LoginIndex } from './inference'
+import type { LegacyProject } from './legacy'
 import type { AppState, Draft, LoginKind, Project, Settings, Setup, Turn, Waiting } from './protocol'
 
 const context = BACKGROUND_CONTEXT
@@ -285,6 +286,26 @@ export class Store implements LoginIndex {
   /** How many times the provider's login was saved. */
   async loginSaves(provider: string): Promise<number> {
     return (await this.harness.snapshot(LoginSavesDoc, this.root.id, context))?.saves[provider] ?? 0
+  }
+
+  /**
+   * Imports chats from before the store, each with its conversation and its place in the index in one commit. A
+   * project already in the index was imported before, so each is imported once.
+   */
+  async importLegacy(legacy: LegacyProject[]): Promise<string[]> {
+    const imported: string[] = []
+    for (const old of legacy) {
+      const done = await this.harness.commit(async (tx) => {
+        const index = await tx.doc(ProjectsDoc, this.root.id)
+        if (index.projects.some((p) => p.id === old.id)) return false
+        const conversation = await tx.createConversation({ ownership: { kind: 'ownerless' } })
+        for (const data of old.entries) await tx.appendEntry(conversation.id, { kind: 'm3d.imported', data })
+        index.projects.push({ id: old.id, conversation: conversation.id, title: old.title, createdMs: old.createdMs })
+        return true
+      }, context)
+      if (done) imported.push(old.id)
+    }
+    return imported
   }
 
   /** The project's folder, made if it is missing. */

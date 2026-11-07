@@ -1,51 +1,55 @@
 import { describe, expect, it } from 'vitest'
 import { buildChat } from './transcript'
 
-const project = '/Users/o/Documents/Materialize 3D/2026-11-06-dock-mount'
-
 describe('buildChat', () => {
-  it('folds each tool step into one line with its result, and names Astra', () => {
-    const chat = buildChat(
-      [
-        { type: 'm3d_user', text: 'A dock mount', images: ['refs/arm.jpg'] },
-        {
-          type: 'assistant',
-          message: {
-            content: [
-              { type: 'text', text: 'Writing the parameters.' },
-              { type: 'tool_use', id: 't1', name: 'Write', input: { file_path: `${project}/params.json`, content: '{}' } },
-              { type: 'tool_use', id: 't2', name: 'Bash', input: { command: 'codex exec -c model_provider=cliproxy "draw it"', description: 'Astra draws the part' } },
-            ],
-          },
-        },
-        { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 't1', content: 'ok' }] } },
-        { type: 'assistant', parent_tool_use_id: 't9', message: { content: [{ type: 'text', text: 'inner helper chatter' }] } },
-        { type: 'm3d_files', files: ['params.json', 'drawing.html', 'build/astra.log', 'print/clip.3mf'] },
-      ],
-      project,
-    )
-
-    expect(chat.running).toBe(true)
-    expect(chat.items).toEqual([
+  it('folds each tool step into one line with its result, and ends the turn with the files it wrote', () => {
+    const items = buildChat([
+      { id: 1, kind: 'user', text: 'A dock mount', images: ['refs/arm.jpg'] },
+      {
+        id: 2,
+        kind: 'assistant',
+        text: 'Writing the parameters.',
+        calls: [
+          { id: 'c1', name: 'write', args: { path: 'params.json', content: '{}' } },
+          { id: 'c2', name: 'astra', args: { task: 'Draw it\nas an HTML page' } },
+          { id: 'c3', name: 'slice', args: { inputs: ['clip.stl'], output: 'print/clip.3mf' } },
+          { id: 'c4', name: 'write', args: { path: 'drawing.html', content: '<html>' } },
+        ],
+      },
+      { id: 3, kind: 'tool', callId: 'c1', name: 'write', text: 'ok', failed: false },
+      { id: 4, kind: 'tool', callId: 'c2', name: 'astra', text: 'drew it', failed: false },
+      { id: 5, kind: 'tool', callId: 'c3', name: 'slice', text: 'Wrote print/clip.3mf', failed: false },
+      { id: 6, kind: 'tool', callId: 'c4', name: 'write', text: 'no space left', failed: true },
+      { id: 7, kind: 'assistant', text: 'Done.', calls: [] },
+      { id: 8, kind: 'user', text: 'thanks', images: [] },
+    ])
+    expect(items).toEqual([
       { kind: 'user', text: 'A dock mount', images: ['refs/arm.jpg'] },
       { kind: 'text', text: 'Writing the parameters.' },
-      expect.objectContaining({ kind: 'tool', label: 'Wrote', summary: 'params.json', result: 'ok', failed: false }),
-      expect.objectContaining({ kind: 'tool', label: 'Astra (GPT)', summary: 'Astra draws the part' }),
-      { kind: 'files', files: ['print/clip.3mf', 'drawing.html'] },
+      { kind: 'tool', id: 'c1', label: 'Wrote', summary: 'params.json', detail: 'params.json', result: 'ok', failed: false },
+      { kind: 'tool', id: 'c2', label: 'Astra (GPT)', summary: 'Draw it', detail: 'Draw it\nas an HTML page', result: 'drew it', failed: false },
+      expect.objectContaining({ kind: 'tool', id: 'c3', label: 'Sliced', summary: 'print/clip.3mf', failed: false }),
+      { kind: 'tool', id: 'c4', label: 'Wrote', summary: 'drawing.html', detail: 'drawing.html', result: 'no space left', failed: true },
+      { kind: 'text', text: 'Done.' },
+      { kind: 'files', files: ['print/clip.3mf'] },
+      { kind: 'user', text: 'thanks', images: [] },
     ])
   })
 
-  it('ends the turn, marks its unfinished step stopped, and shows its error', () => {
-    const chat = buildChat(
-      [
-        { type: 'm3d_user', text: 'hi' },
-        { type: 'assistant', message: { content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'python3 build/slice.py' } }] } },
-        { type: 'm3d_turn_end', ok: false, error: 'Stopped.' },
-      ],
-      project,
-    )
-    expect(chat.running).toBe(false)
-    expect(chat.items[1]).toEqual(expect.objectContaining({ kind: 'tool', failed: true, result: 'Stopped before it finished.' }))
-    expect(chat.items[chat.items.length - 1]).toEqual({ kind: 'error', text: 'Stopped.' })
+  it('shows a step still running without a result, and a chat from before the store as it was', () => {
+    const items = buildChat([
+      { id: 1, kind: 'imported', role: 'user', text: 'A clip', images: [] },
+      { id: 2, kind: 'imported', role: 'tool', name: 'Bash', text: 'Build the clip', result: 'clip.stl written', failed: false },
+      { id: 3, kind: 'imported', role: 'assistant', text: 'Here it is.' },
+      { id: 4, kind: 'user', text: 'Thicker', images: [] },
+      { id: 5, kind: 'assistant', text: '', calls: [{ id: 'c1', name: 'run', args: { args: ['run', 'python', 'build/model.py'] } }] },
+    ])
+    expect(items).toEqual([
+      { kind: 'user', text: 'A clip', images: [] },
+      { kind: 'tool', id: 'imported-2', label: 'Ran', summary: 'Build the clip', detail: 'Build the clip', result: 'clip.stl written', failed: false },
+      { kind: 'text', text: 'Here it is.' },
+      { kind: 'user', text: 'Thicker', images: [] },
+      { kind: 'tool', id: 'c1', label: 'Ran', summary: 'uv run python build/model.py', detail: 'uv run python build/model.py' },
+    ])
   })
 })

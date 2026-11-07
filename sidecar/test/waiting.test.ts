@@ -107,7 +107,7 @@ describe('a turn whose provider is not signed in', () => {
     let holding = true
     const held: (() => void)[] = []
     const app = spawnSidecar(join(dir, 'state'), join(dir, 'projects'), new Map(), {
-      gate: (request, answer) => (holding && request.method === 'keychain.get' ? held.push(answer) : answer()),
+      hold: (request, answer) => (holding && request.method === 'keychain.get' ? held.push(answer) : answer()),
     })
     await app.next()
     const { id: project } = (await app.call('projects.create', { title: 'A cube' })) as { id: string }

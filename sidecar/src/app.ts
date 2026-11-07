@@ -2,9 +2,11 @@ import { parseArgs } from 'node:util'
 import type { MutableModels } from '@earendil-works/pi-ai'
 import { createRegistry } from '@earendil-works/pi-durable'
 import { agentExtension, agentTools, ProjectEnv } from './agent'
+import { Busy } from './busy'
 import { Chats } from './chat'
 import { Host } from './host'
 import { inferenceModels, KeychainCredentials, Logins } from './inference'
+import { legacyProjects } from './legacy'
 import { handlers } from './methods'
 import { EXIT, type SidecarEvent } from './protocol'
 import { Store, StoreInUse } from './store'
@@ -80,12 +82,16 @@ export async function runSidecar({ argv, addProviders }: SidecarOptions): Promis
       chats.signedIn(event.provider).catch((error: unknown) => console.error(`resuming turns after a sign-in failed: ${String(error)}`))
     }
   }
-  const chats = new Chats({ store, models, extension, tools, version, emit })
+  const busy = new Busy(host)
+  const chats = new Chats({ store, models, extension, tools, version, busy, emit })
   const logins = new Logins(models, credentials, emit)
   console.error(`agent tools: ${tools.map((tool) => tool.name).join(', ')}`)
 
   // The pipe opens before the reconcile, which asks Rust's Keychain whether a waited-on login is there now.
   const serving = host.serve(handlers({ store, logins, chats, version }), process.stdin)
+  const imported = await store.importLegacy(legacyProjects(projects))
+  if (imported.length > 0) console.error(`imported ${imported.length} chats from before the store: ${imported.join(', ')}`)
+  await busy.watch(store.harness)
   host.emit({ type: 'ready', version })
   await chats.reconcile()
   await serving
