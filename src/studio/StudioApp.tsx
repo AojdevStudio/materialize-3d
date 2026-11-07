@@ -85,10 +85,11 @@ export default function StudioApp() {
   /** A draft not saved yet, and the timer that saves it. */
   const unsaved = useRef<{ key: string; draft: Draft; timer: number } | null>(null)
   /**
-   * Messages whose send has not gone through, by project. Sending one again sends the same pictures under the same
-   * request id, so a send whose reply was lost never sends it twice.
+   * Messages whose send has not gone through, by project, each named by the revision of the saved draft it went out
+   * as. The same revision is the same message: it goes out again with the same pictures under the same request id, so a
+   * send whose reply was lost is never sent twice. Any edit saves a new revision, and so makes a new message.
    */
-  const pending = useRef(new Map<string, { text: string; paths: string[]; images: string[]; id: string }>())
+  const pending = useRef(new Map<string, { rev: number; images: string[]; id: string }>())
   /** Whether the person typed on the start screen, so the saved draft no longer fills it. */
   const typedOnStart = useRef(false)
   /** Whether the person changed the start screen's pictures, so its saved ones no longer fill it. */
@@ -439,6 +440,9 @@ export default function StudioApp() {
             for (const [key, value] of [[created.id, draft], [START, empty]] as const) {
               void storeDraft(key, value).catch((err: unknown) => setError(String(err)))
             }
+          } else if (fromRev !== undefined) {
+            // The project's composer holds what went out, so a send again from it is the same message.
+            revs.current[created.id] = fromRev
           }
           show(created, true)
           request = loadRequest.current
@@ -454,20 +458,12 @@ export default function StudioApp() {
       // screen did not move to the project, or a newer one, stays.
       const draftRev = fromRev
       const outgoing = attachments
-      const paths = outgoing.map((a) => a.path)
-      // The same text and pictures as an unsent message is that message again, even with the pictures brought back from
-      // its saved draft, so it keeps its request id and the sidecar sends it once.
       const last = pending.current.get(id)
-      const again = last !== undefined && last.text === message && last.paths.length === paths.length && last.paths.every((path, i) => path === paths[i])
-      const sendable = again
-        ? last
-        : {
-            text: message,
-            paths,
-            images: await Promise.all(outgoing.map((a) => studio.importFile(id, a.path))),
-            id: crypto.randomUUID(),
-          }
-      pending.current.set(id, sendable)
+      const sendable =
+        last !== undefined && last.rev === fromRev
+          ? last
+          : { images: await Promise.all(outgoing.map((a) => studio.importFile(id, a.path))), id: crypto.randomUUID() }
+      if (fromRev !== undefined) pending.current.set(id, { ...sendable, rev: fromRev })
       await sidecar('chat.send', {
         project: id,
         requestId: sendable.id,

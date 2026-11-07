@@ -57,7 +57,7 @@ type Calls = Record<string, (params: Record<string, unknown>) => Promise<unknown
 /** The revisions the mocked sidecar gives saved drafts, growing as the real one's do. */
 let draftRevs = 0
 
-function mockSidecar(overrides: Calls = {}, projects = [projectB], drafts: Record<string, { text: string; attachments?: string[] }> = {}) {
+function mockSidecar(overrides: Calls = {}, projects = [projectB], drafts: Record<string, { text: string; attachments?: string[]; rev?: number }> = {}) {
   invokeMock.mockImplementation((command: string, args: { method: string; params: Record<string, unknown> }) => {
     if (command === 'update_check') return Promise.resolve({ status: 'upToDate' })
     if (command === 'studio_files') return Promise.resolve([])
@@ -537,7 +537,7 @@ describe('StudioApp', () => {
         studio_import_file: () => Promise.resolve('refs/pic.jpg'),
       },
       [projectA, projectB],
-      { [projectA.id]: { text: 'A clip like this', attachments: ['/Users/me/pic.jpg'] } },
+      { [projectA.id]: { text: 'A clip like this', attachments: ['/Users/me/pic.jpg'], rev: 7 } },
     )
     render(<StudioApp />)
     fireEvent.click(await screen.findByText('Project A'))
@@ -548,6 +548,50 @@ describe('StudioApp', () => {
     await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project B'))
     fireEvent.click(screen.getByText('Project A'))
     await waitFor(() => expect(prompt().value).toBe('A clip like this'))
+    fireEvent.click(screen.getByTestId('send'))
+    await waitFor(() => expect(sidecarCalls('chat.send')).toHaveLength(2))
+    const [first, second] = sidecarCalls('chat.send')
+    expect(second?.requestId).toBe(first?.requestId)
+  })
+
+  it('sends a picture taken out and put back after a lost answer as a new message, as it may be a new file', async () => {
+    let sends = 0
+    let imports = 0
+    mockSidecar(
+      {
+        'chat.send': () => (sends++ === 0 ? Promise.reject('The engine restarted before it answered. Try again.') : Promise.resolve(null)),
+        studio_import_file: () => Promise.resolve(`refs/pic-${++imports}.jpg`),
+      },
+      [projectA, projectB],
+      { [projectA.id]: { text: 'A clip like this', attachments: ['/Users/me/pic.jpg'], rev: 7 } },
+    )
+    render(<StudioApp />)
+    fireEvent.click(await screen.findByText('Project A'))
+    await waitFor(() => expect(prompt().value).toBe('A clip like this'))
+    fireEvent.click(screen.getByTestId('send'))
+    await screen.findByRole('alert')
+    fireEvent.click(screen.getByLabelText('Remove pic.jpg'))
+    await act(async () => listeners.drop.forEach((listener) => listener({ payload: { type: 'drop', paths: ['/Users/me/pic.jpg'] } })))
+    fireEvent.click(screen.getByTestId('send'))
+    await waitFor(() => expect(sidecarCalls('chat.send')).toHaveLength(2))
+    const [first, second] = sidecarCalls('chat.send')
+    expect(second?.requestId).not.toBe(first?.requestId)
+    expect(second?.attachments).toEqual(['refs/pic-2.jpg'])
+  })
+
+  it('sends a first message of only a picture again under the same request id from the project it made', async () => {
+    let sends = 0
+    mockSidecar({
+      'projects.create': () => Promise.resolve({ id: '2026-11-06-new-part', conversation: 4, title: 'New part', createdMs: 3 }),
+      'chat.send': () => (sends++ === 0 ? Promise.reject('The engine restarted before it answered. Try again.') : Promise.resolve(null)),
+      studio_import_file: () => Promise.resolve('refs/pic.jpg'),
+    })
+    render(<StudioApp />)
+    await screen.findByText('Project B')
+    await act(async () => listeners.drop.forEach((listener) => listener({ payload: { type: 'drop', paths: ['/Users/me/pic.jpg'] } })))
+    fireEvent.click(screen.getByTestId('send'))
+    await screen.findByRole('alert')
+    await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('New part'))
     fireEvent.click(screen.getByTestId('send'))
     await waitFor(() => expect(sidecarCalls('chat.send')).toHaveLength(2))
     const [first, second] = sidecarCalls('chat.send')
