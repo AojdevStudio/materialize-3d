@@ -11,7 +11,8 @@ import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
 import type { Models } from '@earendil-works/pi-ai'
 import { type Conversation, defineDoc, Harness, type Registry } from '@earendil-works/pi-durable'
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node'
-import type { AppState, Draft, Project, Settings, Setup } from './protocol'
+import type { LoginIndex } from './inference'
+import type { AppState, Draft, LoginKind, Project, Settings, Setup } from './protocol'
 
 const context = BACKGROUND_CONTEXT
 
@@ -65,6 +66,17 @@ export const DraftsDoc = defineDoc<{ drafts: Record<string, Draft> }>({
   checkpointWhen: always,
 })
 
+/** Which providers have a login in the Keychain. Never the secret itself. */
+const LoginsDoc = defineDoc<{ logins: Record<string, LoginKind> }>({
+  kind: 'm3d.logins',
+  version: 1,
+  scope: 'conversation',
+  history: 'latest',
+  fork: 'initial',
+  initial: () => ({ logins: {} }),
+  checkpointWhen: always,
+})
+
 /** The store's SQLite storage, through Pi's own async adapter, which queues every operation and transaction. */
 export const openStorage = (path: string) => openNodeSqliteStorage(path)
 
@@ -104,7 +116,7 @@ export interface StoreOptions {
   registry: Registry
 }
 
-export class Store {
+export class Store implements LoginIndex {
   readonly #lock: DatabaseSync
   readonly harness: Harness
   readonly root: Conversation
@@ -196,6 +208,18 @@ export class Store {
       return created
     }, context)
     return project
+  }
+
+  async logins(): Promise<Record<string, LoginKind>> {
+    return (await this.harness.snapshot(LoginsDoc, this.root.id, context))?.logins ?? {}
+  }
+
+  async setLogin(provider: string, kind: LoginKind | undefined): Promise<void> {
+    await this.harness.commit(async (tx) => {
+      const { logins } = await tx.doc(LoginsDoc, this.root.id)
+      if (kind === undefined) delete logins[provider]
+      else logins[provider] = kind
+    }, context)
   }
 
   /** The project's folder, made if it is missing. */
