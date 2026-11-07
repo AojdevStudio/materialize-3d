@@ -25,6 +25,29 @@ export type Project = { id: string; conversation: number; title: string; created
 /** An unsent message, by project id, or `new` for the start screen. Attachments are paths inside the project. */
 export type Draft = { text: string; attachments: string[] }
 
+/** How a provider's login was made: an API key or proxy token, or a subscription sign-in. */
+export type LoginKind = 'api_key' | 'oauth'
+
+export type ProviderId = 'anthropic' | 'openai-codex' | 'opencode-go'
+
+/** A provider the app offers, how it can be signed in to, and how it is now. */
+export type Login = { provider: ProviderId; name: string; login: LoginKind | null; kinds: LoginKind[] }
+
+/** A sign-in's progress: a page to open (with a code to enter there, for some), a question, and its end. */
+export type LoginEvent =
+  | { type: 'login'; provider: ProviderId; step: 'open'; url: string; code?: string }
+  | {
+      type: 'login'
+      provider: ProviderId
+      step: 'ask'
+      /** `select` answers with one option's id. The others answer with text the person types or pastes. */
+      kind: 'text' | 'secret' | 'select' | 'manual_code'
+      message: string
+      options?: { id: string; label: string }[]
+    }
+  | { type: 'login'; provider: ProviderId; step: 'done' }
+  | { type: 'login'; provider: ProviderId; step: 'failed'; detail: string }
+
 export type AppState = { setup: Setup; settings: Settings; projects: Project[]; drafts: Record<string, Draft> }
 
 /** What the window can ask the sidecar, by method name. */
@@ -35,6 +58,12 @@ export interface Methods {
   'settings.set': { params: Partial<Settings>; result: AppState }
   'drafts.set': { params: { key: string } & Draft; result: null }
   'projects.create': { params: { title: string }; result: Project }
+  'auth.status': { params: Record<string, never>; result: Login[] }
+  /** A key, or for Anthropic a proxy's base URL and token. */
+  'auth.setKey': { params: { provider: ProviderId; key: string; baseUrl?: string }; result: Login[] }
+  'auth.login': { params: { provider: ProviderId }; result: null }
+  'auth.answer': { params: { provider: ProviderId; text: string }; result: null }
+  'auth.logout': { params: { provider: ProviderId }; result: Login[] }
 }
 
 export type Method = keyof Methods
@@ -66,6 +95,7 @@ export interface SliceResult {
 /** What the window hears on the one `sidecar://event` channel: the sidecar's own events and, from Rust, the engine's state. */
 export type SidecarEvent =
   | { type: 'ready'; version: string }
+  | LoginEvent
   | { type: 'engine'; state: 'restarting' | 'stopped'; detail: string }
 
 /** Rust to sidecar. */

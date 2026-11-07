@@ -60,9 +60,9 @@ export default function StudioApp() {
     // The listener is in place before the ping, so no change is missed, and a ping that answers late never hides one.
     let changed = false
     const unlisten = onSidecarEvent((event) => {
+      if (event.type !== 'ready' && event.type !== 'engine') return
       changed = true
-      if (event.type === 'ready') setEngine(`Engine ${event.version}`)
-      else setEngine(event.state === 'stopped' ? event.detail : 'Engine restarting')
+      setEngine(event.type === 'ready' ? `Engine ${event.version}` : event.state === 'stopped' ? event.detail : 'Engine restarting')
     })
     unlisten
       .then(() => sidecar('app.ping', {}))
