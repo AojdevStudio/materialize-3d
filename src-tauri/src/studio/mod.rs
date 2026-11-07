@@ -59,7 +59,7 @@ pub fn may_navigate(url: &url::Url) -> bool {
 
 /// Where projects live: `~/Documents/Materialize 3D`. A verification run keeps
 /// its projects in its own data folder.
-fn projects_root() -> Result<PathBuf, String> {
+pub(crate) fn projects_root() -> Result<PathBuf, String> {
     #[cfg(feature = "e2e")]
     if let Some(dir) = std::env::var_os("M3D_E2E_DATA_DIR") {
         return Ok(PathBuf::from(dir).join("projects"));

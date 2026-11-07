@@ -53,7 +53,7 @@ export class Host {
    * Reads stdin until it closes, then lets every call it accepted finish. A line that is not a message of the
    * protocol is a bug in Rust, so it fails the process loudly rather than being skipped.
    */
-  async serve(handlers: Handlers, input: NodeJS.ReadableStream): Promise<void> {
+  async serve(handlers: Partial<Handlers>, input: NodeJS.ReadableStream): Promise<void> {
     const accepted = new Set<Promise<void>>()
     for await (const line of createInterface({ input, crlfDelay: Infinity })) {
       if (line.trim() === '') continue
@@ -78,7 +78,7 @@ export class Host {
     await Promise.allSettled(accepted)
   }
 
-  async #call(handlers: Handlers, id: number, method: string, params: unknown): Promise<void> {
+  async #call(handlers: Partial<Handlers>, id: number, method: string, params: unknown): Promise<void> {
     try {
       if (!Object.hasOwn(handlers, method)) throw new Error(`no method ${method}`)
       const handler = handlers[method as Method] as Handler<Method>

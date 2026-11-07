@@ -3,7 +3,7 @@
 //! Rust starts it with none of the person's environment but what its tools need to run,
 //! forwards the window's calls to it, answers its requests for the Keychain and the Bambu
 //! slice step, and starts it again after a crash. Each side writes one JSON object per line
-//! (`sidecar/src/protocol.ts`). Rust never opens the sidecar's store.
+//! (`sidecar/src/protocol.ts`). Rust never opens the sidecar's store: it only names its folder.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -29,6 +29,9 @@ const BINARY: &str = "materialize-sidecar";
 const EXIT_STORE_IN_USE: i32 = 75;
 /// Crashes in a row, each within a minute of its start, before Rust stops starting it again.
 const MAX_CRASHES: u32 = 5;
+/// Tries, a second apart, while the store is in use. A sidecar that just ended can still be closing it; another
+/// copy of the app holds it for longer than this.
+const IN_USE_TRIES: u32 = 10;
 /// Keychain items the sidecar may touch. Any other item, such as a printer's access code, is out of its reach.
 const KEYCHAIN_PREFIX: &str = "inference.";
 
@@ -103,6 +106,7 @@ impl Sidecar {
 pub fn start(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         let mut crashes = 0;
+        let mut in_use = 0;
         loop {
             if app.state::<Sidecar>().quitting.load(Ordering::SeqCst) {
                 return;
@@ -115,12 +119,19 @@ pub fn start(app: AppHandle) {
             }
             let why = match outcome {
                 Ok(status) if status.code() == Some(EXIT_STORE_IN_USE) => {
-                    sidecar.stop(&app, "Another copy of Materialize 3D is open. Quit it, then open this one again.".to_owned());
-                    return;
+                    in_use += 1;
+                    if in_use >= IN_USE_TRIES {
+                        sidecar.stop(&app, "Another copy of Materialize 3D is open. Quit it, then open this one again.".to_owned());
+                        return;
+                    }
+                    log::warn!("sidecar: the store is still in use, trying again");
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    continue;
                 }
                 Ok(status) => format!("the engine exited with {status}"),
                 Err(e) => e,
             };
+            in_use = 0;
             crashes = if started.elapsed() > Duration::from_secs(60) { 1 } else { crashes + 1 };
             if crashes >= MAX_CRASHES {
                 sidecar.stop(&app, format!("The engine stopped {crashes} times in a row. The last time: {why}"));
@@ -152,11 +163,25 @@ fn kept_env() -> Vec<(&'static str, String)> {
     env
 }
 
+/// The sidecar's store goes in the app's Application Support folder, and project folders in Documents.
+/// A verification run keeps both in its own data folder.
+fn folders(app: &AppHandle) -> Result<(PathBuf, PathBuf), String> {
+    let data = app.path().app_data_dir().map_err(|e| format!("finding the app's data folder: {e}"))?;
+    #[cfg(feature = "e2e")]
+    let data = std::env::var_os("M3D_E2E_DATA_DIR").map(PathBuf::from).unwrap_or(data);
+    Ok((data.join("state"), studio::projects_root()?))
+}
+
 /// One sidecar process, from its start until it exits.
 async fn run(app: &AppHandle) -> Result<std::process::ExitStatus, String> {
     let exe = binary_path()?;
+    let (store, projects) = folders(app)?;
     let mut child = tokio::process::Command::new(&exe)
         .args(["--app-version", &app.package_info().version.to_string()])
+        .arg("--data")
+        .arg(&store)
+        .arg("--projects")
+        .arg(&projects)
         .env_clear()
         .envs(kept_env())
         .stdin(Stdio::piped())
@@ -172,16 +197,11 @@ async fn run(app: &AppHandle) -> Result<std::process::ExitStatus, String> {
     let (input, mut lines_in) = mpsc::unbounded_channel::<String>();
     // Requests answer through a weak handle, so the link alone keeps stdin open and quitting closes it.
     let answers = input.downgrade();
-    // A quit that came while this sidecar started has already stopped the link: it must not reopen it.
-    let opened = sidecar.link.send_if_modified(|link| {
-        let open = matches!(link, Link::Starting);
-        if open {
-            *link = Link::Up(input.clone());
-        }
-        open
-    });
-    drop(input);
-    if !opened {
+    // Calls wait for the sidecar's ready event, which comes once it owns its store. A sidecar that exits because
+    // another one still holds the store, as after a quick relaunch or an update, so never takes a call.
+    let mut pending = Some(input);
+    // A quit that came while this sidecar started has already stopped the link.
+    if !matches!(*sidecar.link.borrow(), Link::Starting) {
         let _ = child.start_kill();
     }
     let writer = tokio::spawn(async move {
@@ -203,7 +223,24 @@ async fn run(app: &AppHandle) -> Result<std::process::ExitStatus, String> {
     let read = loop {
         tokio::select! {
             line = lines.next_line() => match line {
-                Ok(Some(line)) => dispatch(app, &answers, &line),
+                Ok(Some(line)) => {
+                    if dispatch(app, &answers, &line) {
+                        if let Some(input) = pending.take() {
+                            // A quit that came while this sidecar started has already stopped the link: it must not
+                            // reopen it.
+                            let opened = sidecar.link.send_if_modified(|link| {
+                                let open = matches!(link, Link::Starting);
+                                if open {
+                                    *link = Link::Up(input.clone());
+                                }
+                                open
+                            });
+                            if !opened {
+                                let _ = child.start_kill();
+                            }
+                        }
+                    }
+                }
                 Ok(None) => break Ok(()),
                 Err(e) => break Err(format!("reading the engine's output: {e}")),
             },
@@ -261,13 +298,14 @@ enum Outbound {
     },
 }
 
-fn dispatch(app: &AppHandle, answers: &mpsc::WeakUnboundedSender<String>, line: &str) {
+/// Handles one line from the sidecar, and says whether it was the sidecar's ready event.
+fn dispatch(app: &AppHandle, answers: &mpsc::WeakUnboundedSender<String>, line: &str) -> bool {
     let message = match serde_json::from_str::<Outbound>(line) {
         Ok(message) => message,
         Err(e) => {
             let start: String = line.chars().take(200).collect();
             log::error!("sidecar: not a protocol line ({e}): {start}");
-            return;
+            return false;
         }
     };
     match message {
@@ -281,7 +319,9 @@ fn dispatch(app: &AppHandle, answers: &mpsc::WeakUnboundedSender<String>, line: 
             }
         }
         Outbound::Event { event } => {
+            let ready = event.get("type").and_then(Value::as_str) == Some("ready");
             let _ = app.emit(EVENT, event);
+            return ready;
         }
         Outbound::Request { id, method, params } => {
             let app = app.clone();
@@ -298,6 +338,7 @@ fn dispatch(app: &AppHandle, answers: &mpsc::WeakUnboundedSender<String>, line: 
             });
         }
     }
+    false
 }
 
 fn parse<T: DeserializeOwned>(method: &str, params: Value) -> Result<T, String> {
