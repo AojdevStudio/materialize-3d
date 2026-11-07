@@ -65,6 +65,9 @@ tauri-plugin-updater = { version = "~2.12.0", default-features = false, features
 # studio: pictures sent to the agent, and the m3dfile:// protocol
 base64 = "0.22"
 percent-encoding = "2"
+# studio: Astra's own codex config, and the person's skills it turns off
+toml = "0.9"
+walkdir = "2"
 
 # fabrication
 earcutr = "0.5"

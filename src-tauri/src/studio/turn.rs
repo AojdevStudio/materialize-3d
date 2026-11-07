@@ -13,7 +13,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio_util::sync::CancellationToken;
 
-use super::{files, project_dir, read_meta, META_DIR};
+use super::{files, lean, lean_session, project_dir, read_meta, META_DIR};
 use crate::fabrication::build_gate::{BuildGate, OwnedRunning};
 use crate::state::AppState;
 
@@ -296,6 +296,15 @@ pub fn studio_transcript(turns: State<'_, Turns>, project: String) -> Result<Vec
     Ok(events)
 }
 
+/// The app's data folder, or a verification run's own.
+fn app_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    #[cfg(feature = "e2e")]
+    if let Some(dir) = std::env::var_os("M3D_E2E_DATA_DIR") {
+        return Ok(PathBuf::from(dir));
+    }
+    app.path().app_data_dir().map_err(|e| format!("app data folder: {e}"))
+}
+
 /// The PATH of the person's login shell. An app opened from Finder starts with
 /// only the system folders, where `claude`, `codex`, and `uv` are not.
 fn login_path() -> &'static str {
@@ -370,7 +379,7 @@ fn keep(event: &Value) -> bool {
 #[tauri::command]
 pub fn studio_send(app: AppHandle, turns: State<'_, Turns>, project: String, text: String, images: Vec<String>) -> Result<(), String> {
     let dir = project_dir(&project)?;
-    let meta = read_meta(&dir)?;
+    let meta = lean_session(&dir, read_meta(&dir)?)?;
     let mut content: Vec<Value> = images.iter().map(|rel| image_block(&dir, rel)).collect::<Result<_, _>>()?;
     let mut prompt = text.clone();
     if !images.is_empty() {
@@ -378,6 +387,12 @@ pub fn studio_send(app: AppHandle, turns: State<'_, Turns>, project: String, tex
     }
     content.push(json!({ "type": "text", "text": prompt }));
     let message = json!({ "type": "user", "message": { "role": "user", "content": content } });
+
+    // The agent's own environment: the person's inference login, the app's plugin, and nothing else of their setup.
+    let home = dirs::home_dir().ok_or("no home folder")?;
+    let inference = lean::ClaudeInference::read(&home)?;
+    let plugin = app.path().resource_dir().map_err(|e| format!("app resources: {e}"))?.join("studio-plugin");
+    let app_data = app_data_dir(&app)?;
 
     // Taken before anything is written and dropped after the last write, on every path.
     let pass = take_pass(app.state::<Arc<AppState>>().inner().clone())?;
@@ -411,10 +426,15 @@ pub fn studio_send(app: AppHandle, turns: State<'_, Turns>, project: String, tex
         .args(["--model", &model, "--permission-mode", "bypassPermissions"])
         .args(["--append-system-prompt", SYSTEM_PROMPT])
         .args([session_flag, &meta.session_id])
+        .args(inference.args(&plugin))
         .current_dir(&dir)
+        // Only what the agent needs: a home, a shell, the locale, the login PATH,
+        // the inference keys, and Astra's own home. Nothing else of the app's environment.
+        .env_clear()
+        .envs(lean::KEPT_ENV.iter().filter_map(|&key| std::env::var_os(key).map(|value| (key, value))))
         .env("PATH", login_path())
-        .env_remove("CLAUDECODE")
-        .env_remove("CLAUDE_CODE_ENTRYPOINT")
+        .envs(inference.env.iter().map(|(key, value)| (key, value)))
+        .envs(lean::NO_MEMORY_ENV)
         .env(TAG_VAR, &tag)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -426,6 +446,23 @@ pub fn studio_send(app: AppHandle, turns: State<'_, Turns>, project: String, tex
 
     tauri::async_runtime::spawn(async move {
         let before: HashMap<String, u64> = files::list(&dir).unwrap_or_default().into_iter().map(|f| (f.rel.clone(), f.modified_ms)).collect();
+        // Astra's home walks the person's skills folder, so it is made here, off the main thread.
+        // If it cannot be made, Astra still gets the app's folder and so has no model, never the person's setup.
+        let astra_dir = app_data.join("astra");
+        let astra = tauri::async_runtime::spawn_blocking(move || lean::astra_home(&home, &app_data))
+            .await
+            .map_err(|e| format!("preparing Astra: {e}"))
+            .and_then(|made| made)
+            .unwrap_or_else(|error| {
+                log::warn!("studio: {error}, so Astra cannot reach a model this turn");
+                lean::AstraHome { dir: astra_dir, env: Vec::new(), secrets: Vec::new() }
+            });
+        let mut command = command;
+        // Astra, the codex helper, finds its home through the agent's environment, plus the variables its provider reads.
+        command
+            .env("CODEX_HOME", &astra.dir)
+            .envs(astra.env.iter().filter_map(|key| std::env::var_os(key).map(|value| (key, value))))
+            .envs(astra.secrets.iter().map(|(key, value)| (key, value)));
         let outcome = run(&app, &project, &mut transcript, &started, command, message, token, &tag, &leader).await;
         let changed: Vec<String> = files::list(&dir)
             .unwrap_or_default()

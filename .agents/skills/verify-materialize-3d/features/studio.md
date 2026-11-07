@@ -8,6 +8,7 @@ The studio is the whole app. Each chat is a project folder in `~/Documents/Mater
 - `prompt` takes text, pasted pictures, and links. A picture dropped on the window or chosen with `Add picture` shows in `attachments` and is copied to the project's `refs/` on send. It reaches the model as an image block.
 - `messages` shows each tool step on one line (`.tool`, with `.tool-running` while it runs), agent text, `file-cards` after a turn that wrote previewable files or a 3MF, and `.msg-error` for a failed or stopped turn. `working` shows while a turn runs, and `stop` replaces `send`.
 - `stop` ends the agent and every tool it started (its process group).
+- The agent runs lean: the person's inference login only (`ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, `API_TIMEOUT_MS`, and `apiKeyHelper` from `~/.claude/settings.json`), `--setting-sources project`, no MCP servers, no CLAUDE.md or auto-memory, and the app's own `materialize-studio` plugin from the bundle's `studio-plugin` resource. Astra runs with `CODEX_HOME` set to `<app data>/astra`, which holds only the cliproxy provider and turns off the skills under `~/.agents/skills`. A turn's `system` `init` line in the transcript lists its tools, MCP servers, plugins, and skills.
 - A turn cut off by quitting the app ends when the project reopens, with "This turn stopped when the app closed."
 - `files-tab` opens `files-list`, with "Print files" (3MF) above "All files".
 - `html-preview` is the iframe. `model-view` holds the orbit canvas.
