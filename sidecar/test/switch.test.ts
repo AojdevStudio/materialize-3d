@@ -192,7 +192,7 @@ describe('the update gate', () => {
     await expect(app.call('chat.send', { project, requestId: 'r2', text: 'make it red', attachments: [] })).rejects.toThrow('An update is installing.')
     const view = (await app.call('chat.open', { project })) as ChatView
     expect(view.entries.filter((entry) => entry.kind === 'user')).toHaveLength(1)
-    expect(((await app.call('state.get')) as { drafts: Record<string, unknown> }).drafts[project]).toEqual({ text: 'make it red', attachments: [] })
+    expect(((await app.call('state.get')) as { drafts: Record<string, unknown> }).drafts[project]).toMatchObject({ text: 'make it red', attachments: [] })
     await app.quit()
   })
 

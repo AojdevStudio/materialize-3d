@@ -1,6 +1,6 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
-import { arr, bool, compile, lit, obj, opt, str, union } from '@earendil-works/pi-schema'
+import { arr, bool, compile, int, lit, obj, opt, str, union } from '@earendil-works/pi-schema'
 import { toolchainNeeds } from './agent'
 import type { Chats } from './chat'
 import type { Handlers } from './host'
@@ -77,10 +77,7 @@ export function handlers({ store, logins, chats, version, legacy, pictures }: Se
     },
     'drafts.set': {
       params: compile(obj({ key: str(), text: str(), attachments: arr(str()) })),
-      run: async ({ key, text, attachments }) => {
-        await store.setDraft(key, { text, attachments })
-        return null
-      },
+      run: async ({ key, text, attachments }) => ({ rev: await store.setDraft(key, { text, attachments }) }),
     },
     'projects.create': { params: compile(obj({ title: str() })), run: ({ title }) => store.createProject(title) },
     'auth.status': { params: compile(obj({})), run: () => logins.status() },
@@ -114,9 +111,9 @@ export function handlers({ store, logins, chats, version, legacy, pictures }: Se
     },
     'chat.open': { params: compile(obj({ project: str() })), run: ({ project }) => chats.open(project) },
     'chat.send': {
-      params: compile(obj({ project: str(), requestId: str({ minLength: 1 }), text: str(), attachments: arr(str()) })),
-      run: async ({ project, requestId, text, attachments }) => {
-        await chats.send(project, requestId, text, attachments)
+      params: compile(obj({ project: str(), requestId: str({ minLength: 1 }), text: str(), attachments: arr(str()), draftRev: opt(int()) })),
+      run: async ({ project, requestId, text, attachments, draftRev }) => {
+        await chats.send(project, requestId, text, attachments, draftRev)
         return null
       },
     },

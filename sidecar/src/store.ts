@@ -13,7 +13,7 @@ import { type Conversation, defineDoc, type HarnessOptions, Harness, type Regist
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node'
 import type { LoginIndex } from './inference'
 import type { LegacyProject } from './legacy'
-import type { Draft, LoginKind, Project, Settings, Setup, StoredState, Turn, Waiting } from './protocol'
+import type { Draft, LoginKind, Project, SavedDraft, Settings, Setup, StoredState, Turn, Waiting } from './protocol'
 
 const context = BACKGROUND_CONTEXT
 
@@ -57,7 +57,7 @@ const ProjectsDoc = defineDoc<{ projects: Project[] }>({
   checkpointWhen: always,
 })
 
-export const DraftsDoc = defineDoc<{ drafts: Record<string, Draft> }>({
+export const DraftsDoc = defineDoc<{ drafts: Record<string, SavedDraft>; seq?: number }>({
   kind: 'm3d.drafts',
   version: 1,
   scope: 'conversation',
@@ -211,11 +211,15 @@ export class Store implements LoginIndex {
     }, context)
   }
 
-  async setDraft(key: string, draft: Draft): Promise<void> {
-    await this.harness.commit(async (tx) => {
-      const { drafts } = await tx.doc(DraftsDoc, this.root.id)
-      if (draft.text === '' && draft.attachments.length === 0) delete drafts[key]
-      else drafts[key] = draft
+  /** Saves a draft, or removes an empty one, and answers its revision. A store from before revisions starts at 1. */
+  async setDraft(key: string, draft: Draft): Promise<number> {
+    return this.harness.commit(async (tx) => {
+      const doc = await tx.doc(DraftsDoc, this.root.id)
+      const rev = (doc.seq ?? 0) + 1
+      doc.seq = rev
+      if (draft.text === '' && draft.attachments.length === 0) delete doc.drafts[key]
+      else doc.drafts[key] = { ...draft, rev }
+      return rev
     }, context)
   }
 

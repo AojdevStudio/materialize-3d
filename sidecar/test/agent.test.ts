@@ -45,7 +45,10 @@ async function waitForFile(path: string, ms = 15_000) {
   }
 }
 
-const send = (app: App, project: string, requestId: string, text: string) => app.call('chat.send', { project, requestId, text, attachments: [] })
+const send = (app: App, project: string, requestId: string, text: string, draftRev?: number) =>
+  app.call('chat.send', { project, requestId, text, attachments: [], ...(draftRev === undefined ? {} : { draftRev }) })
+const saveDraft = async (app: App, key: string, text: string) =>
+  ((await app.call('drafts.set', { key, text, attachments: [] })) as { rev: number }).rev
 
 describe('a send', () => {
   test('commits the message, the settings its turn runs with, and the draft removal together, and only once', async () => {
@@ -53,9 +56,9 @@ describe('a send', () => {
     const app = start(where, 'models')
     await app.next()
     const project = await newProject(app)
-    await app.call('drafts.set', { key: project, text: 'A 20 mm cube', attachments: [] })
+    const rev = await saveDraft(app, project, 'A 20 mm cube')
 
-    await send(app, project, 'r1', 'A 20 mm cube')
+    await send(app, project, 'r1', 'A 20 mm cube', rev)
     expect(((await app.call('state.get')) as { drafts: object }).drafts).toEqual({})
     const view = (await app.call('chat.open', { project })) as ChatView
     expect(view.entries[0]).toMatchObject({ kind: 'user', text: 'A 20 mm cube' })
@@ -75,9 +78,9 @@ describe('a send', () => {
     // A send while a turn runs is refused whole: no message, and the draft stays.
     await send(app, project, 'r2', 'please wait')
     await waitForFile(join(where.projects, project, 'started'))
-    await app.call('drafts.set', { key: project, text: 'make it red', attachments: [] })
-    await expect(send(app, project, 'r3', 'make it red')).rejects.toThrow('The agent is still working on the last message.')
-    expect(((await app.call('state.get')) as { drafts: Record<string, unknown> }).drafts[project]).toEqual({ text: 'make it red', attachments: [] })
+    const red = await saveDraft(app, project, 'make it red')
+    await expect(send(app, project, 'r3', 'make it red', red)).rejects.toThrow('The agent is still working on the last message.')
+    expect(((await app.call('state.get')) as { drafts: Record<string, unknown> }).drafts[project]).toEqual({ text: 'make it red', attachments: [], rev: red })
     const refused = (await app.call('chat.open', { project })) as ChatView
     expect(refused.entries.filter((entry) => entry.kind === 'user').map((entry) => entry.kind === 'user' && entry.text)).toEqual(['A 20 mm cube', 'please wait'])
     writeFileSync(join(where.projects, project, 'go'), '')
@@ -85,14 +88,16 @@ describe('a send', () => {
     await app.quit()
   })
 
-  test('leaves a draft that holds newer text than it sends', async () => {
+  test('leaves a draft saved after the one it went out with, even one that reads the same', async () => {
     const where = scratch()
     const app = start(where, 'models')
     await app.next()
     const project = await newProject(app)
-    await app.call('drafts.set', { key: project, text: 'make it blue', attachments: [] })
-    await send(app, project, 'r1', 'make it red')
-    expect(((await app.call('state.get')) as { drafts: Record<string, unknown> }).drafts[project]).toEqual({ text: 'make it blue', attachments: [] })
+    const sent = await saveDraft(app, project, 'make it red')
+    const newer = ((await app.call('drafts.set', { key: project, text: 'make it red', attachments: ['/me/new.jpg'] })) as { rev: number }).rev
+    expect(newer).toBeGreaterThan(sent)
+    await send(app, project, 'r1', 'make it red', sent)
+    expect(((await app.call('state.get')) as { drafts: Record<string, unknown> }).drafts[project]).toEqual({ text: 'make it red', attachments: ['/me/new.jpg'], rev: newer })
     await app.quit()
   })
 })

@@ -203,11 +203,11 @@ export class Chats {
   }
 
   /**
-   * Sends a message. The message, the settings its turn runs with, and the removal of the draft that holds it commit
-   * together. A send whose `requestId` was already committed changes nothing, so the window can send again after any
+   * Sends a message. The message, the settings its turn runs with, and the removal of the draft it went out with
+   * (`draftRev`) commit together. A send whose `requestId` was already committed changes nothing, so the window can send again after any
    * failure, even once a picture it sent is gone.
    */
-  async send(project: string, requestId: string, text: string, attachments: string[]): Promise<void> {
+  async send(project: string, requestId: string, text: string, attachments: string[], draftRev: number | undefined): Promise<void> {
     const { store, extension, tools, version, busy } = this.#o
     const conversation = await this.#conversation(project)
     if ((await store.harness.commit((tx) => tx.submissionByRequest(conversation.id, requestId), context)) !== undefined) {
@@ -232,9 +232,10 @@ export class Chats {
         await configure(tx, conversation.id, { model, thinkingLevel: thinking, extensions: [extension], tools, instructions: WORKFLOW, cwd: folder })
         const turn: Turn = { requestId, model, thinking, tools: tools.map((t) => t.name), instructions: WORKFLOW_VERSION, app: version, startedMs: Date.now() }
         ;(await tx.doc(TurnDoc, conversation.id)).turn = turn
-        // Text typed after this message was sent is a newer message, so only a draft of this text goes.
+        // Only the draft this message went out with goes. One saved after it is the next message, even one that reads
+        // the same, so it stays.
         const { drafts } = await tx.doc(DraftsDoc, store.root.id)
-        if (drafts[project]?.text.trim() === text.trim()) delete drafts[project]
+        if (draftRev !== undefined && drafts[project]?.rev === draftRev) delete drafts[project]
         const waiting = await tx.doc(WaitingDoc, conversation.id)
         waiting.waiting = null
         waiting.tool = false

@@ -131,7 +131,7 @@ describe('app state', () => {
     await app.next()
     await app.call('drafts.set', { key: 'new', text: 'A shelf bracket', attachments: [] })
     await app.call('projects.create', { title: 'A knob' })
-    expect(((await app.call('state.get')) as { drafts: object }).drafts).toEqual({ new: { text: 'A shelf bracket', attachments: [] } })
+    expect(((await app.call('state.get')) as { drafts: object }).drafts).toEqual({ new: { text: 'A shelf bracket', attachments: [], rev: expect.any(Number) } })
     await app.quit()
   })
 
@@ -141,7 +141,7 @@ describe('app state', () => {
     await app.next()
     await app.call('drafts.set', { key: 'new', text: 'A knob', attachments: ['refs/shaft.png'] })
     const project = (await app.call('projects.create', { title: 'A knob' })) as { id: string }
-    expect(((await app.call('state.get')) as { drafts: object }).drafts).toEqual({ [project.id]: { text: 'A knob', attachments: ['refs/shaft.png'] } })
+    expect(((await app.call('state.get')) as { drafts: object }).drafts).toEqual({ [project.id]: { text: 'A knob', attachments: ['refs/shaft.png'], rev: expect.any(Number) } })
     await app.quit()
   })
 })

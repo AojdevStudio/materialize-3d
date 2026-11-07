@@ -25,6 +25,12 @@ export type Project = { id: string; conversation: number; title: string; created
 /** An unsent message, by project id, or `new` for the start screen. Attachments are paths inside the project. */
 export type Draft = { text: string; attachments: string[] }
 
+/**
+ * A draft as the store keeps it. `rev` grows with every save of any draft, and is never used again, so a send can name
+ * the draft it went out with, and a newer one saved meanwhile is never taken for it.
+ */
+export type SavedDraft = Draft & { rev: number }
+
 /** How a provider's login was made: an API key or proxy token, or a subscription sign-in. */
 export type LoginKind = 'api_key' | 'oauth'
 
@@ -86,7 +92,7 @@ export type Turn = {
 export type ChatView = { project: string; entries: ChatEntry[]; running: boolean; waiting: Waiting | null; turn: Turn | null; seq: number }
 
 /** What the store keeps of the app. */
-export type StoredState = { setup: Setup; settings: Settings; projects: Project[]; drafts: Record<string, Draft> }
+export type StoredState = { setup: Setup; settings: Settings; projects: Project[]; drafts: Record<string, SavedDraft> }
 
 /**
  * The app as the window sees it. `importBlocked` names the projects folder when the chats from before the store could
@@ -107,7 +113,8 @@ export interface Methods {
   'state.get': { params: Record<string, never>; result: AppState }
   'setup.set': { params: Setup; result: AppState }
   'settings.set': { params: Partial<Settings>; result: AppState }
-  'drafts.set': { params: { key: string } & Draft; result: null }
+  /** Saves a draft, and answers the revision it was saved as. */
+  'drafts.set': { params: { key: string } & Draft; result: { rev: number } }
   /** Keeps a pasted picture in a file of its own, outside any project, and answers its path, for a draft to keep. */
   'drafts.picture': { params: { name: string; data: string }; result: string }
   /** What the agent needs before a send: the chosen model's sign-in, uv, and a Python uv can run. Empty when ready. */
@@ -123,7 +130,11 @@ export interface Methods {
   'auth.logout': { params: { provider: ProviderId }; result: Login[] }
   'chat.open': { params: { project: string }; result: ChatView }
   /** `requestId` is the window's own id for this message: sending it again never sends twice. */
-  'chat.send': { params: { project: string; requestId: string; text: string; attachments: string[] }; result: null }
+  /**
+   * Sends a message. `draftRev` names the saved draft it went out with, which the send removes in the same commit. A
+   * draft saved after it, newer, stays.
+   */
+  'chat.send': { params: { project: string; requestId: string; text: string; attachments: string[]; draftRev?: number }; result: null }
   'chat.stop': { params: { project: string }; result: null }
   'chat.retry': { params: { project: string }; result: null }
   /** The tools a project's agent is offered, as Pi resolves them. */
