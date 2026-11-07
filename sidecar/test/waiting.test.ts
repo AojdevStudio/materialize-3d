@@ -131,6 +131,43 @@ describe('a turn whose provider is not signed in', () => {
     proxy.stop()
   }, 30_000)
 
+  test('a sign-in that waits out an installing update holds up neither the start nor a quit, and goes on later', async () => {
+    const proxy = anthropicProxy('Hello after the install', { token: 'old-token', release: Promise.resolve() })
+    const dir = mkdtempSync(join(tmpdir(), 'm3d-wait-'))
+    const keychain = new Map<string, string>()
+    const start = () => spawnSidecar(join(dir, 'state'), join(dir, 'projects'), keychain)
+    const first = start()
+    await first.next()
+    const { id: project } = (await first.call('projects.create', { title: 'A cube' })) as { id: string }
+    await first.call('chat.open', { project })
+    await first.call('auth.setKey', { provider: 'anthropic', key: 'old-token', baseUrl: proxy.url })
+    await first.call('chat.send', { project, requestId: 'r1', text: 'A 20 mm cube', attachments: [] })
+    await first.until((event) => event.type === 'chat' && event.waiting !== null)
+    // A new login is saved while an update installs, so the turn waits for the pass.
+    first.gate.installing = true
+    await first.call('auth.setKey', { provider: 'anthropic', key: 'new-token', baseUrl: proxy.url })
+    await first.quit()
+    // The app starts again with the update still installing, and quits at once.
+    const second = start()
+    second.gate.installing = true
+    await second.next()
+    await second.call('chat.open', { project })
+    const quit = Date.now()
+    await second.quit()
+    expect(Date.now() - quit).toBeLessThan(3000)
+    expect(proxy.seen).toHaveLength(1)
+    // With the gate open, the turn goes on with the new login, with no new sign-in.
+    const third = start()
+    await third.next()
+    await third.until(
+      (event) => event.type === 'chat' && (event.entries as ChatEntry[]).some((entry) => entry.kind === 'assistant'),
+      10_000,
+    )
+    expect(proxy.seen.map((call) => call.authorization)).toEqual(['Bearer old-token', 'Bearer new-token'])
+    await third.quit()
+    proxy.stop()
+  }, 40_000)
+
   test('a turn that failed with no login goes on when one is saved while the failure is read', async () => {
     const proxy = anthropicProxy('Hello after the slow read')
     const dir = mkdtempSync(join(tmpdir(), 'm3d-wait-'))

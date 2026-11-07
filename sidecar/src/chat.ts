@@ -147,12 +147,8 @@ export class Chats {
     const recorded = (await this.#o.store.harness.snapshot(WaitingDoc, conversation.id, context))?.failure ?? null
     if (state.failure !== undefined && state.failure.reason !== 'aborted' && state.failure.taskId !== recorded) {
       // The waiting document is not part of the view a watch follows, so its commit wakes no one: read it here.
-      // A login saved since the turn went out lets it go on now: the sign-in that saved it found no wait to let go. It
-      // waits out an update that is installing without holding up this chat's other changes. The wait stays recorded
-      // until it goes on, so a failure here leaves the fix shown.
-      if (await this.#read(conversation, state.failure, state.turn)) {
-        void this.#continue(project, 'login').catch((error: unknown) => console.error(`going on with a newer login failed: ${String(error)}`))
-      }
+      // A login saved since the turn went out lets it go on now: the sign-in that saved it found no wait to let go.
+      if (await this.#read(conversation, state.failure, state.turn)) this.#resume(project, state.failure.taskId)
       state = await this.#state(conversation)
     }
     const entries = await this.#entries(conversation, this.#sent.get(project) ?? 0)
@@ -237,18 +233,19 @@ export class Chats {
 
   /**
    * Goes on from where the turn stopped, with the model, tools, and instructions it started with, and clears what it
-   * waited on. The turn records the app version that goes on with it. With `only: 'login'`, it goes on only while the
-   * turn still waits on a sign-in, so when two paths let one wait go, as a sign-in and the read of a failure that
-   * crossed it, the turn goes on once. Such a turn goes on by itself, so it waits for the pass while an update
+   * waited on. The turn records the app version that goes on with it. With `login`, the run failure a sign-in wait was
+   * recorded for, it goes on only while the turn still waits on that one, so when two paths let one wait go, as a
+   * sign-in and the read of a failure that crossed it, the turn goes on once, and a late one never lets go a newer
+   * wait from the same refused login. Such a turn goes on by itself, so it waits for the pass while an update
    * installs, instead of failing and being left waiting when the install fails.
    */
-  async #continue(project: string, only?: 'login'): Promise<void> {
+  async #continue(project: string, login?: number): Promise<void> {
     const { store, version } = this.#o
     const conversation = await this.#conversation(project)
     const commit = () =>
       store.harness.commit(async (tx) => {
         const waiting = await tx.doc(WaitingDoc, conversation.id)
-        if (only === 'login' && waiting.waiting?.kind !== 'login') return
+        if (login !== undefined && (waiting.waiting?.kind !== 'login' || waiting.failure !== login)) return
         await conversation.submit(tx, { type: 'continue' })
         waiting.waiting = null
         const { turn } = await tx.doc(TurnDoc, conversation.id)
@@ -257,9 +254,18 @@ export class Chats {
           waiting.saves = (await tx.doc(LoginSavesDoc, store.root.id)).saves[turn.model.provider] ?? 0
         }
       }, context)
-    if (only === 'login') await this.#o.busy.duringWhenAllowed(commit)
-    else await this.#o.busy.during(commit)
+    if (login === undefined) await this.#o.busy.during(commit)
+    else await this.#o.busy.duringWhenAllowed(commit)
     await this.#watch(project, conversation)
+  }
+
+  /**
+   * Lets a sign-in wait go, in the background: it may wait out an installing update, which must not hold up the chat's
+   * other changes, the start, or a quit. The wait stays recorded until the turn goes on, so a failure here leaves the
+   * fix shown.
+   */
+  #resume(project: string, login: number): void {
+    this.#continue(project, login).catch((error: unknown) => console.error(`going on after a sign-in failed: ${String(error)}`))
   }
 
   /**
@@ -360,8 +366,8 @@ export class Chats {
       if (turn !== null && turn !== undefined && turn.app !== version) {
         await this.#outdated(conversation)
         await this.#show(project.id)
-      } else {
-        await this.#continue(project.id, 'login')
+      } else if (waiting.failure !== null) {
+        this.#resume(project.id, waiting.failure)
       }
     }
   }
@@ -410,7 +416,7 @@ export class Chats {
       if (record === undefined || record.waiting?.kind !== 'login' || record.tool || running) continue
       const waiting = record.waiting
       if (state.turn !== null && state.turn.app !== version) await this.#outdated(conversation.id)
-      else if (await this.#savedSince(record, waiting.provider)) await this.#continue(project.id, 'login')
+      else if (record.failure !== null && (await this.#savedSince(record, waiting.provider))) this.#resume(project.id, record.failure)
     }
   }
 
