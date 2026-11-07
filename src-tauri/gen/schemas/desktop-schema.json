@@ -771,10 +771,22 @@
           "markdownDescription": "Enables the studio_files command without any pre-configured scope."
         },
         {
+          "description": "Enables the studio_flushed command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-studio-flushed",
+          "markdownDescription": "Enables the studio_flushed command without any pre-configured scope."
+        },
+        {
           "description": "Enables the studio_import_file command without any pre-configured scope.",
           "type": "string",
           "const": "allow-studio-import-file",
           "markdownDescription": "Enables the studio_import_file command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the studio_open_files_privacy command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-studio-open-files-privacy",
+          "markdownDescription": "Enables the studio_open_files_privacy command without any pre-configured scope."
         },
         {
           "description": "Enables the studio_open_in_bambu command without any pre-configured scope.",
@@ -1263,10 +1275,22 @@
           "markdownDescription": "Denies the studio_files command without any pre-configured scope."
         },
         {
+          "description": "Denies the studio_flushed command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-studio-flushed",
+          "markdownDescription": "Denies the studio_flushed command without any pre-configured scope."
+        },
+        {
           "description": "Denies the studio_import_file command without any pre-configured scope.",
           "type": "string",
           "const": "deny-studio-import-file",
           "markdownDescription": "Denies the studio_import_file command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the studio_open_files_privacy command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-studio-open-files-privacy",
+          "markdownDescription": "Denies the studio_open_files_privacy command without any pre-configured scope."
         },
         {
           "description": "Denies the studio_open_in_bambu command without any pre-configured scope.",
