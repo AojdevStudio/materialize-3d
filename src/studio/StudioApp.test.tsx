@@ -33,6 +33,8 @@ function mockStudio(overrides: Record<string, () => Promise<unknown>>) {
         return Promise.resolve([])
       case 'update_check':
         return Promise.resolve({ status: 'upToDate' })
+      case 'sidecar':
+        return Promise.resolve({ version: '1.2.3' })
       default:
         return Promise.resolve(undefined)
     }
@@ -40,6 +42,13 @@ function mockStudio(overrides: Record<string, () => Promise<unknown>>) {
 }
 
 describe('StudioApp', () => {
+  it('shows the engine version the sidecar answers with', async () => {
+    mockStudio({})
+    render(<StudioApp />)
+    expect((await screen.findByText('Engine 1.2.3')).dataset.testid).toBe('engine')
+    expect(invokeMock).toHaveBeenCalledWith('sidecar', { method: 'app.ping', params: {} })
+  })
+
   it('leaves the project the person moved to alone when a slow send from the start screen finishes', async () => {
     let finishCreate: (project: unknown) => void = () => {}
     invokeMock.mockImplementation((command: string) => {

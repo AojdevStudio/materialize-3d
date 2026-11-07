@@ -307,7 +307,7 @@ fn app_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
 
 /// The PATH of the person's login shell. An app opened from Finder starts with
 /// only the system folders, where `claude`, `codex`, and `uv` are not.
-fn login_path() -> &'static str {
+pub(crate) fn login_path() -> &'static str {
     static PATH: OnceLock<String> = OnceLock::new();
     PATH.get_or_init(|| {
         let current = std::env::var("PATH").unwrap_or_default();

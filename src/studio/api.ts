@@ -1,5 +1,13 @@
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
+import type { Method, Methods, SidecarEvent } from '../../sidecar/src/protocol'
+
+/** The window's one call into the sidecar. A call made while it starts waits for it. */
+export const sidecar = <M extends Method>(method: M, params: Methods[M]['params']) =>
+  invoke<Methods[M]['result']>('sidecar', { method, params })
+
+export const onSidecarEvent = (handler: (event: SidecarEvent) => void) =>
+  listen<SidecarEvent>('sidecar://event', ({ payload }) => handler(payload))
 
 export interface Project {
   id: string

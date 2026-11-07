@@ -9,6 +9,7 @@ pub mod fabrication;
 #[cfg(feature = "e2e")]
 mod e2e;
 mod mcp;
+mod sidecar;
 mod studio;
 mod studio_commands;
 pub mod tools;
@@ -74,6 +75,7 @@ pub fn run() {
         .manage(agent::commands::AgentTurns::default())
         .manage(updater::PendingUpdate::default())
         .manage(studio::Turns::default())
+        .manage(sidecar::Sidecar::default())
         .invoke_handler(tauri::generate_handler![
             get_app_state,
             set_active_view,
@@ -161,6 +163,7 @@ pub fn run() {
             studio::files::studio_save_bytes,
             studio::files::studio_reveal,
             studio::files::studio_open_in_bambu,
+            sidecar::sidecar,
         ])
         .setup(|app| {
             // Initialize SQLite database
@@ -214,6 +217,7 @@ pub fn run() {
             tauri::WebviewWindowBuilder::from_config(app.handle(), main_window)?
                 .on_navigation(studio::may_navigate)
                 .build()?;
+            sidecar::start(app.handle().clone());
 
             // A build that was running when the app stopped can never finish;
             // record it as failed and remove its directory.
@@ -343,6 +347,7 @@ pub fn run() {
             // A turn running when the app quits would keep changing its project with no window to show it.
             if let tauri::RunEvent::Exit = event {
                 app.state::<studio::Turns>().stop_all();
+                app.state::<sidecar::Sidecar>().shutdown();
             }
         });
 }

@@ -96,6 +96,7 @@
     "allow-studio-import-file",
     "allow-studio-save-bytes",
     "allow-studio-reveal",
-    "allow-studio-open-in-bambu"
+    "allow-studio-open-in-bambu",
+    "allow-sidecar"
   ]
 }

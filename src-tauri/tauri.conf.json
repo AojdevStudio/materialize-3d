@@ -4,9 +4,9 @@
   "version": "0.2.2",
   "identifier": "com.aojdevstudio.materialize3d",
   "build": {
-    "beforeDevCommand": "bun run dev",
+    "beforeDevCommand": "scripts/build-sidecar.sh && bun run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "bun run build",
+    "beforeBuildCommand": "scripts/build-sidecar.sh && bun run build",
     "frontendDist": "../dist"
   },
   "app": {
@@ -39,6 +39,7 @@
       "icons/Assets.car"
     ],
     "category": "GraphicsAndDesign",
+    "externalBin": ["binaries/materialize-sidecar"],
     "copyright": "Copyright (c) 2026 Ossie Irondi",
     "resources": {
       "../LICENSE": "LICENSE",

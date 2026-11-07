@@ -22,6 +22,7 @@ __pycache__/
 .venv/
 venv/
 target/
+src-tauri/binaries/
 vendor/
 *.log
 coverage/

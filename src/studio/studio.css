@@ -519,3 +519,9 @@ pre {
   color: var(--s-muted);
   font-size: 12px;
 }
+
+.sessions .engine {
+  padding: 8px;
+  font-size: 12px;
+  color: var(--s-muted);
+}

@@ -1,6 +1,6 @@
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { autoOpens, studio, type Project, type ProjectFile, type StudioEvent } from './api'
+import { autoOpens, onSidecarEvent, sidecar, studio, type Project, type ProjectFile, type StudioEvent } from './api'
 import { ChatView, Composer, releaseAttachment, type Attachment } from './Chat'
 import RightPanel, { type Tab } from './RightPanel'
 import { buildChat } from './transcript'
@@ -39,6 +39,7 @@ export default function StudioApp() {
   /** The unsent message. It belongs to the open project and stays until a send succeeds. */
   const [text, setText] = useState('')
   const [sending, setSending] = useState(false)
+  const [engine, setEngine] = useState('Engine starting')
   const sendingNow = useRef(false)
   const currentId = useRef<string | null>(null)
   /** Bumped on every switch, so a slow history load for a project already left is dropped. */
@@ -53,6 +54,19 @@ export default function StudioApp() {
   useUpdateEvents()
   useEffect(() => {
     void checkForUpdatesAtLaunch()
+  }, [])
+
+  useEffect(() => {
+    sidecar('app.ping', {})
+      .then(({ version }) => setEngine(`Engine ${version}`))
+      .catch((err: unknown) => setEngine(String(err)))
+    const unlisten = onSidecarEvent((event) => {
+      if (event.type === 'ready') setEngine(`Engine ${event.version}`)
+      else setEngine(event.state === 'stopped' ? event.detail : 'Engine restarting')
+    })
+    return () => {
+      void unlisten.then((stop) => stop())
+    }
   }, [])
 
   useEffect(() => {
@@ -234,6 +248,9 @@ export default function StudioApp() {
             </li>
           ))}
         </ul>
+        <p className="engine" data-testid="engine">
+          {engine}
+        </p>
       </nav>
 
       <main className="chat" aria-label="Chat">
