@@ -61,6 +61,7 @@ function mockSidecar(overrides: Calls = {}, projects = [projectB], drafts: Recor
   // The drafts the sidecar holds, as the window saved them, so a new project takes the start screen's draft by the
   // sidecar's own rule: when its text is the project's title.
   const held: Record<string, { text: string; attachments: string[]; rev: number }> = {}
+  const madeFor = new Map<number, object>()
   for (const [key, draft] of Object.entries(drafts)) held[key] = { text: draft.text, attachments: draft.attachments ?? [], rev: draft.rev ?? 0 }
   const call = (method: string, params: Record<string, unknown>): Promise<unknown> => {
     const override = overrides[method]
@@ -75,9 +76,13 @@ function mockSidecar(overrides: Calls = {}, projects = [projectB], drafts: Recor
       })
     }
     if (method === 'projects.create') {
+      const again = typeof params.rev === 'number' ? madeFor.get(params.rev) : undefined
+      if (again !== undefined) return Promise.resolve({ ...again, draft: null })
       const made = override ? override(params) : Promise.resolve(null)
       return made.then((project) => {
-        if (project === null || typeof project !== 'object' || 'draft' in project) return project
+        if (project === null || typeof project !== 'object') return project
+        if (typeof params.rev === 'number') madeFor.set(params.rev, project as object)
+        if ('draft' in project) return project
         const id = (project as { id: string }).id
         const start = held.new
         if (start === undefined || start.text.trim() !== String(params.title).trim()) return { ...project, draft: null }
@@ -378,6 +383,10 @@ describe('StudioApp', () => {
     await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project B'))
     await act(async () => finishPicture('/state/pictures/1/shot.png'))
     expect(screen.queryByTestId('attachments')).toBeNull()
+    // It lands in the draft of the screen it was pasted on, and is there when the person goes back.
+    await waitFor(() => expect(sidecarCalls('drafts.set')).toContainEqual({ key: projectA.id, text: '', attachments: ['/state/pictures/1/shot.png'] }))
+    fireEvent.click(screen.getByText('Project A'))
+    await waitFor(() => expect(screen.getByTestId('attachments').textContent).toContain('shot.png'))
   })
 
   it("brings the start screen's saved pictures back even when the person typed before the saved state arrived", async () => {
@@ -689,6 +698,66 @@ describe('StudioApp', () => {
     // The start screen keeps the newer draft with b.jpg.
     fireEvent.click(screen.getByTestId('new-project'))
     await waitFor(() => expect(screen.getByTestId('attachments').textContent).toContain('b.jpg'))
+  })
+
+  it('sends a newer draft the sidecar moved to a first message\'s project as a new message', async () => {
+    let finishCreate: (project: unknown) => void = () => {}
+    let sends = 0
+    let imports = 0
+    const revs: number[] = []
+    mockSidecar({
+      'projects.create': () => new Promise((resolve) => (finishCreate = resolve)),
+      'chat.send': () => (sends++ === 0 ? Promise.reject('The engine restarted before it answered. Try again.') : Promise.resolve(null)),
+      'drafts.set': () => {
+        revs.push(++draftRevs)
+        return Promise.resolve({ rev: draftRevs })
+      },
+      studio_import_file: () => Promise.resolve(`refs/pic-${++imports}.jpg`),
+    })
+    render(<StudioApp />)
+    await screen.findByText('Project B')
+    type('A knob')
+    await act(async () => listeners.drop.forEach((listener) => listener({ payload: { type: 'drop', paths: ['/Users/me/a.jpg'] } })))
+    fireEvent.click(screen.getByTestId('send'))
+    await waitFor(() => expect(sidecarCalls('projects.create')).toHaveLength(1))
+    fireEvent.click(screen.getByLabelText('Remove a.jpg'))
+    await act(async () => listeners.drop.forEach((listener) => listener({ payload: { type: 'drop', paths: ['/Users/me/b.jpg'] } })))
+    fireEvent.click(screen.getByText('Project B'))
+    await waitFor(() => expect(revs).toHaveLength(2))
+    const made = { id: '2026-11-06-a-knob', conversation: 4, title: 'A knob', createdMs: 3 }
+    // The sidecar made the project after the newer draft was saved, so it took that one.
+    await act(async () => finishCreate({ ...made, draft: { text: 'A knob', attachments: ['/Users/me/b.jpg'], rev: revs[1] } }))
+    await waitFor(() => expect(sidecarCalls('chat.send')).toHaveLength(1))
+    fireEvent.click(await screen.findByText('A knob'))
+    await waitFor(() => expect(screen.getByTestId('attachments').textContent).toContain('b.jpg'))
+    fireEvent.click(screen.getByTestId('send'))
+    await waitFor(() => expect(sidecarCalls('chat.send')).toHaveLength(2))
+    const [first, second] = sidecarCalls('chat.send')
+    expect(second?.requestId).not.toBe(first?.requestId)
+    expect(second?.attachments).toEqual(['refs/pic-2.jpg'])
+  })
+
+  it('sends a picture-only first message again from the start screen into the same project under the same request id', async () => {
+    let sends = 0
+    let made = 0
+    mockSidecar({
+      // Each call makes a project of its own, as the sidecar does.
+      'projects.create': () => Promise.resolve({ id: `2026-11-06-new-part-${++made}`, conversation: 3 + made, title: 'New part', createdMs: 3 }),
+      'chat.send': () => (sends++ === 0 ? Promise.reject('The engine restarted before it answered. Try again.') : Promise.resolve(null)),
+      studio_import_file: () => Promise.resolve('refs/pic.jpg'),
+    })
+    render(<StudioApp />)
+    await screen.findByText('Project B')
+    await act(async () => listeners.drop.forEach((listener) => listener({ payload: { type: 'drop', paths: ['/Users/me/pic.jpg'] } })))
+    fireEvent.click(screen.getByTestId('send'))
+    await screen.findByRole('alert')
+    fireEvent.click(screen.getByTestId('new-project'))
+    await waitFor(() => expect(screen.getByTestId('attachments').textContent).toContain('pic.jpg'))
+    fireEvent.click(screen.getByTestId('send'))
+    await waitFor(() => expect(sidecarCalls('chat.send')).toHaveLength(2))
+    const [first, second] = sidecarCalls('chat.send')
+    expect(second?.project).toBe(first?.project)
+    expect(second?.requestId).toBe(first?.requestId)
   })
 
   it('names the start draft a first send went out with, even when the person saved a newer one and left before the project was made', async () => {

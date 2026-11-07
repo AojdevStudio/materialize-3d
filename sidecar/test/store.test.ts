@@ -127,6 +127,19 @@ describe('app state', () => {
     await app.quit()
   })
 
+  test("a first message's draft revision makes one project, even when asked again", async () => {
+    const { data, projects } = scratch()
+    const app = spawnSidecar(data, projects)
+    await app.next()
+    const first = (await app.call('projects.create', { title: 'New part', rev: 7 })) as { id: string }
+    const again = (await app.call('projects.create', { title: 'New part', rev: 7 })) as { id: string; draft: unknown }
+    expect(again).toMatchObject({ id: first.id, draft: null })
+    expect(((await app.call('state.get')) as { projects: unknown[] }).projects).toHaveLength(1)
+    const other = (await app.call('projects.create', { title: 'New part', rev: 8 })) as { id: string }
+    expect(other.id).not.toBe(first.id)
+    await app.quit()
+  })
+
   test('a project made from the start screen leaves a start screen draft that holds other text where it is', async () => {
     const { data, projects } = scratch()
     const app = spawnSidecar(data, projects)

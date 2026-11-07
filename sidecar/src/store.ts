@@ -47,7 +47,8 @@ export const SettingsDoc = defineDoc<Settings>({
   checkpointWhen: always,
 })
 
-const ProjectsDoc = defineDoc<{ projects: Project[] }>({
+/** The projects, and the project each first message's draft revision made, so a send of it again makes no other. */
+const ProjectsDoc = defineDoc<{ projects: Project[]; madeFor?: Record<string, string> }>({
   kind: 'm3d.projects',
   version: 1,
   scope: 'conversation',
@@ -241,9 +242,10 @@ export class Store implements LoginIndex {
    * draft holds the project's first message, in one commit. A start screen draft with other text is the person's next
    * idea, so it stays. The folder is made inside that commit, before anything is kept, so a folder that cannot be made
    * keeps nothing. A crash after the folder leaves an empty folder, which the next id skips. It answers with the draft it
-   * moved, so the window shows what the project holds rather than guessing.
+   * moved, so the window shows what the project holds rather than guessing. A first message's draft revision makes one
+   * project only: asked again for it, as after an answer that was lost, it answers with that project.
    */
-  async createProject(title: string): Promise<CreatedProject> {
+  async createProject(title: string, rev?: number): Promise<CreatedProject> {
     const firstLine = (title.split('\n')[0] ?? '').trim().slice(0, 80) || 'New part'
     const now = new Date()
     // The person's own date, as the folder name shows it.
@@ -251,6 +253,9 @@ export class Store implements LoginIndex {
     const base = `${today}-${slug(firstLine)}`
     const project = await this.harness.commit(async (tx) => {
       const index = await tx.doc(ProjectsDoc, this.root.id)
+      const before = rev === undefined ? undefined : index.madeFor?.[rev]
+      const again = index.projects.find((p) => p.id === before)
+      if (again !== undefined) return { ...again, draft: null }
       const taken = new Set(index.projects.map((p) => p.id))
       let id = base
       // A folder already on disk, which the store may not list, is never taken over.
@@ -259,6 +264,7 @@ export class Store implements LoginIndex {
       const conversation = await tx.createConversation({ ownership: { kind: 'ownerless' } })
       const created: Project = { id, conversation: conversation.id, title: firstLine, createdMs: now.getTime() }
       index.projects.push(created)
+      if (rev !== undefined) index.madeFor = { ...index.madeFor, [rev]: id }
       const { drafts } = await tx.doc(DraftsDoc, this.root.id)
       const draft = drafts.new
       if (draft === undefined || draft.text.trim() !== title.trim()) return { ...created, draft: null }

@@ -79,7 +79,7 @@ export function handlers({ store, logins, chats, version, legacy, pictures }: Se
       params: compile(obj({ key: str(), text: str(), attachments: arr(str()) })),
       run: async ({ key, text, attachments }) => ({ rev: await store.setDraft(key, { text, attachments }) }),
     },
-    'projects.create': { params: compile(obj({ title: str() })), run: ({ title }) => store.createProject(title) },
+    'projects.create': { params: compile(obj({ title: str(), rev: opt(int()) })), run: ({ title, rev }) => store.createProject(title, rev) },
     'auth.status': { params: compile(obj({})), run: () => logins.status() },
     'auth.setKey': {
       params: compile(obj({ provider, key: str({ minLength: 1 }), baseUrl: opt(str({ minLength: 1 })) })),

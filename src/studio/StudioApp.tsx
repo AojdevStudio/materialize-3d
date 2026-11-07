@@ -84,13 +84,8 @@ export default function StudioApp() {
   const drafts = useRef<Record<string, Draft>>({})
   /** A draft not saved yet, and the timer that saves it. */
   const unsaved = useRef<{ key: string; draft: Draft; timer: number } | null>(null)
-  /**
-   * Messages whose send has not gone through, by project, each with the count of edits to the project's composer it went
-   * out at. A send at that same count is the same message: it goes out again with the same pictures under the same
-   * request id, so a send whose reply was lost is never sent twice. Any edit, saved or not, makes a new message, and
-   * moving between screens is no edit.
-   */
-  const pending = useRef(new Map<string, { edits: number; images: string[]; id: string }>())
+  /** The pictures a send imported into its project, by the draft revision it went out as, for a send of it again. */
+  const imported = useRef(new Map<number, string[]>())
   /** Whether the person typed on the start screen, so the saved draft no longer fills it. */
   const typedOnStart = useRef(false)
   /** Whether the person changed the start screen's pictures, so its saved ones no longer fill it. */
@@ -99,12 +94,13 @@ export default function StudioApp() {
   const composerText = useRef('')
   /** The project whose chat view is loaded. Chat changes for the open project wait in `early` until it is. */
   const loaded = useRef<string | null>(null)
-  /**
-   * The person's edits to each screen's composer, text or pictures, so a send clears a screen only when nothing changed
-   * there since it went out.
-   */
+  /** Counts the changes to each screen's draft, so a save knows whether the draft changed while it was on its way. */
   const edits = useRef<Record<string, number>>({})
-  /** The revision of each screen's saved draft, so a send names the draft it went out with. */
+  /**
+   * The revision the sidecar gave each screen's draft as it is now, or none when the draft changed since its last save.
+   * It is the message's identity: a send goes out as `draft-<revision>`, so a send of the same draft again, as after a
+   * lost answer, is the same message, and the sidecar sends it once. Any change is a new message.
+   */
   const revs = useRef<Record<string, number>>({})
   /** The last save the window started for each screen's draft, and the revision it got, or none if it failed. */
   const saving = useRef<Record<string, Promise<number | undefined>>>({})
@@ -128,8 +124,9 @@ export default function StudioApp() {
     const saved = state.drafts[START]
     const local = drafts.current[START]
     const restoreStart = !startPicturesTouched.current && saved !== undefined && saved.attachments.length > 0 && (local?.attachments.length ?? 0) === 0
+    // A saved revision names a draft only where this window has not changed it.
+    for (const [key, draft] of Object.entries(state.drafts)) if (!(key in drafts.current) && !edits.current[key]) revs.current[key] = draft.rev
     drafts.current = { ...state.drafts, ...drafts.current }
-    for (const [key, draft] of Object.entries(state.drafts)) revs.current[key] ??= draft.rev
     if (restoreStart) drafts.current = { ...drafts.current, [START]: { text: local?.text ?? saved.text, attachments: saved.attachments } }
     // A project made while this was on its way is newer than the saved list, so it stays.
     setProjects((made) => [...made.filter((p) => !state.projects.some((saved) => saved.id === p.id)), ...state.projects])
@@ -228,14 +225,28 @@ export default function StudioApp() {
     }
   }, [])
 
-  /** Saves one screen's draft, and keeps the revision the sidecar gave it. */
+  /** Saves one screen's draft, and keeps the revision the sidecar gave it if the draft did not change meanwhile. */
   const storeDraft = (key: string, draft: Draft) => {
+    const at = edits.current[key] ?? 0
     const save = sidecar('drafts.set', { key, ...draft }).then(({ rev }) => {
-      revs.current[key] = Math.max(revs.current[key] ?? 0, rev)
+      if ((edits.current[key] ?? 0) === at) revs.current[key] = Math.max(revs.current[key] ?? 0, rev)
       return rev
     })
     saving.current[key] = save.catch(() => undefined)
     return save
+  }
+
+  /** Counts a change to a screen's draft. Its revision no longer names it. */
+  const changed = (key: string) => {
+    edits.current[key] = (edits.current[key] ?? 0) + 1
+    delete revs.current[key]
+  }
+
+  /** Changes a screen's draft from outside its composer, and saves it. */
+  const putDraft = (key: string, draft: Draft) => {
+    changed(key)
+    drafts.current = { ...drafts.current, [key]: draft }
+    void storeDraft(key, draft).catch((err: unknown) => setError(String(err)))
   }
 
   /** Saves the draft now, if one waits to be saved. */
@@ -261,10 +272,7 @@ export default function StudioApp() {
   }
 
   /** Counts an edit to the open screen's composer. */
-  const edited = () => {
-    const key = currentId.current ?? START
-    edits.current[key] = (edits.current[key] ?? 0) + 1
-  }
+  const edited = () => changed(currentId.current ?? START)
 
   const type = (value: string) => {
     edited()
@@ -283,9 +291,12 @@ export default function StudioApp() {
     queueDraft(composerText.current, next)
   }
 
-  /** Keeps pasted pictures in files, then adds them to the screen they were pasted on, if the person is still there. */
+  /**
+   * Keeps pasted pictures in files, then adds them to the screen they were pasted on: to its composer if the person is
+   * there, or else to its saved draft.
+   */
   const pastePictures = (pasted: PastedPicture[]) => {
-    const request = loadRequest.current
+    const key = currentId.current ?? START
     void Promise.all(
       pasted.map(async ({ name, file }) => ({
         name,
@@ -294,8 +305,12 @@ export default function StudioApp() {
       })),
     )
       .then((kept) => {
-        if (request !== loadRequest.current) return
-        setPictures([...unsent.current, ...kept.map(({ name, path, file }) => ({ name, path, previewUrl: URL.createObjectURL(file) }))])
+        if ((currentId.current ?? START) === key) {
+          setPictures([...unsent.current, ...kept.map(({ name, path, file }) => ({ name, path, previewUrl: URL.createObjectURL(file) }))])
+          return
+        }
+        const draft = drafts.current[key] ?? { text: '', attachments: [] }
+        putDraft(key, { ...draft, attachments: [...draft.attachments, ...kept.map(({ path }) => path)] })
       })
       .catch((err: unknown) => setError(String(err)))
   }
@@ -404,45 +419,47 @@ export default function StudioApp() {
     let sentTo: string | null = null
     const empty: Draft = { text: '', attachments: [] }
     try {
-      // What this send went out with: its screen's edits and the revision of the last save of its draft, both taken
-      // before anything waits, as the person may go on typing. The start screen's draft may move to the new project, by
-      // the sidecar's rule that its text is the title.
+      // The draft this send goes out as, named by its revision: the one the sidecar gave the draft as it is now, or else
+      // the one a save of it gives now. Both are taken before the person can change it. A save that fails ends the send.
       const fromKey = current?.id ?? START
-      const fromEdits = edits.current[fromKey] ?? 0
-      const before = revs.current[fromKey]
-      const saved = saveDraft()
-      const fromSave = saving.current[fromKey]
-      await saved
-      const fromRev = (await fromSave) ?? before
+      const goingOut: Draft = { text, attachments: attachments.map((a) => a.path) }
+      const waiting = unsaved.current?.key === fromKey ? unsaved.current : null
+      if (waiting !== null) {
+        window.clearTimeout(waiting.timer)
+        unsaved.current = null
+        drafts.current = { ...drafts.current, [fromKey]: waiting.draft }
+      }
+      const known = waiting === null ? revs.current[fromKey] : undefined
+      const rev = known ?? (await storeDraft(fromKey, goingOut))
       const createdHere = current === null
-      let moved = false
       let project = current
       if (!project) {
-        const { draft: took, ...created } = await sidecar('projects.create', { title: message || 'New part' })
+        // One project per first message: sent again, the same revision finds the project it made.
+        const { draft: took, ...created } = await sidecar('projects.create', { title: message || 'New part', rev })
         project = created
-        // The project holds the start screen's draft only if the sidecar says it took it. The start screen's own draft,
-        // if the person changed it since this send, is newer, and stays.
+        // The project holds the start screen's draft only if the sidecar says it took it, and then the start screen's
+        // saved draft is gone, unless the person changed it since. A composer still showing it empties once the send
+        // goes through.
         if (took !== null) {
-          moved = true
-          const { rev, ...draft } = took
+          const { rev: tookRev, ...draft } = took
           drafts.current = { ...drafts.current, [created.id]: draft }
-          revs.current[created.id] = rev
-          if ((edits.current[START] ?? 0) === fromEdits) drafts.current = { ...drafts.current, [START]: empty }
+          revs.current[created.id] = tookRev
+          if (revs.current[START] === tookRev) drafts.current = { ...drafts.current, [START]: empty }
         }
-        setProjects((prev) => [created, ...prev])
+        setProjects((prev) => (prev.some((p) => p.id === created.id) ? prev : [created, ...prev]))
         if (loadRequest.current === request) {
-          // The person stayed on the screen this was sent from, so what they changed there while the project was made,
-          // even back to the same text, is a newer draft. It follows them to the project, and the start screen is empty
-          // again. A save still waiting belongs to that screen, so it goes too.
+          // The person stayed on the screen this was sent from, so its composer goes with them to the project: as
+          // what went out, or as a newer draft if they changed it while the project was made. A save still waiting
+          // belongs to that screen, so it goes too.
           if (unsaved.current !== null) window.clearTimeout(unsaved.current.timer)
           unsaved.current = null
-          if ((edits.current[START] ?? 0) !== fromEdits) {
-            const draft: Draft = { text: composerText.current, attachments: unsent.current.map((a) => a.path) }
-            edits.current[created.id] = (edits.current[created.id] ?? 0) + 1
-            drafts.current = { ...drafts.current, [created.id]: draft, [START]: empty }
-            for (const [key, value] of [[created.id, draft], [START, empty]] as const) {
-              void storeDraft(key, value).catch((err: unknown) => setError(String(err)))
-            }
+          const now: Draft = { text: composerText.current, attachments: unsent.current.map((a) => a.path) }
+          if (revs.current[START] === rev && took === null) {
+            drafts.current = { ...drafts.current, [created.id]: now }
+            revs.current[created.id] = rev
+          } else if (revs.current[START] !== rev) {
+            putDraft(created.id, now)
+            putDraft(START, empty)
           }
           show(created, true)
           request = loadRequest.current
@@ -451,65 +468,37 @@ export default function StudioApp() {
       }
       const id = project.id
       sentTo = id
-      // Edits on the project's screen after this send went out make a newer draft. A project this send made had none
-      // before it, so text typed while it was made counts as one.
-      const projectEdits = createdHere ? 0 : fromEdits
-      // The sidecar removes the project's draft only if it is still the one this send went out with, so a draft the start
-      // screen did not move to the project, or a newer one, stays.
-      const draftRev = fromRev
       const outgoing = attachments
-      const last = pending.current.get(id)
-      const sendable =
-        last !== undefined && last.edits === projectEdits
-          ? last
-          : { edits: projectEdits, images: await Promise.all(outgoing.map((a) => studio.importFile(id, a.path))), id: crypto.randomUUID() }
-      pending.current.set(id, sendable)
-      await sidecar('chat.send', {
-        project: id,
-        requestId: sendable.id,
-        text: message,
-        attachments: sendable.images,
-        ...(draftRev === undefined ? {} : { draftRev }),
-      })
-      pending.current.delete(id)
+      const images = imported.current.get(rev) ?? (await Promise.all(outgoing.map((a) => studio.importFile(id, a.path))))
+      imported.current.set(rev, images)
+      // The sidecar removes the project's draft only if it is still this one, so a newer draft stays.
+      await sidecar('chat.send', { project: id, requestId: `draft-${rev}`, text: message, attachments: images, draftRev: rev })
+      imported.current.delete(rev)
       setSendErrors(({ [id]: _, ...rest }) => rest)
+      // Each screen that still holds what went out is empty again, as its saved draft is. The project's newer draft keeps
+      // all but the pictures that went out. A newer start screen draft is the person's next idea, and stays as it is.
       const sent = new Set(outgoing.map((a) => a.path))
-      if ((edits.current[id] ?? 0) === projectEdits) {
-        // Nothing changed on the project's screen since: its composer held what went out, and the sidecar removed the
-        // draft it went out with.
-        drafts.current = { ...drafts.current, [id]: empty }
-        if (currentId.current === id) {
-          setText('')
-          unsent.current = []
-          setAttachments([])
-        }
-      } else {
-        // A newer draft, even one that reads the same, is the next message. Only the pictures just sent leave it.
-        const keep = (draft: Draft): Draft => ({ ...draft, attachments: draft.attachments.filter((path) => !sent.has(path)) })
-        if (unsaved.current?.key === id) unsaved.current.draft = keep(unsaved.current.draft)
-        const cached = drafts.current[id]
-        if (cached !== undefined && cached.attachments.some((path) => sent.has(path))) {
-          drafts.current = { ...drafts.current, [id]: keep(cached) }
-          if (unsaved.current?.key !== id) {
-            void storeDraft(id, keep(cached)).catch((err: unknown) => setError(String(err)))
+      for (const key of createdHere ? [id, START] : [id]) {
+        if (revs.current[key] !== rev && key === START) continue
+        if (revs.current[key] === rev) {
+          drafts.current = { ...drafts.current, [key]: empty }
+          delete revs.current[key]
+          // The start screen's draft stays saved when the sidecar did not take it, as a first message of only pictures.
+          if (key === START) void storeDraft(START, empty).catch((err: unknown) => setError(String(err)))
+          if ((currentId.current ?? START) === key) {
+            setText('')
+            unsent.current = []
+            setAttachments([])
           }
+          continue
         }
-        if (currentId.current === id) {
+        const keep = (draft: Draft): Draft => ({ ...draft, attachments: draft.attachments.filter((path) => !sent.has(path)) })
+        if (unsaved.current?.key === key) unsaved.current.draft = keep(unsaved.current.draft)
+        const cached = drafts.current[key]
+        if (cached !== undefined && cached.attachments.some((path) => sent.has(path)) && unsaved.current?.key !== key) putDraft(key, keep(cached))
+        if ((currentId.current ?? START) === key) {
           unsent.current = unsent.current.filter((a) => !sent.has(a.path))
           setAttachments(unsent.current)
-        }
-      }
-      // A first message the start screen still holds, as one of only pictures, which the sidecar does not move, goes
-      // from it too, unless the person started something new there.
-      if (createdHere && !moved && (edits.current[START] ?? 0) === fromEdits) {
-        drafts.current = { ...drafts.current, [START]: empty }
-        if (unsaved.current?.key !== START) {
-          void storeDraft(START, empty).catch((err: unknown) => setError(String(err)))
-        }
-        if (currentId.current === null) {
-          setText('')
-          unsent.current = []
-          setAttachments([])
         }
       }
       outgoing.forEach(releaseAttachment)

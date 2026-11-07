@@ -123,7 +123,7 @@ export interface Methods {
   'setup.check': { params: Record<string, never>; result: Need[] }
   /** Imports the chats from before the store again, as after the person let the app read the projects folder. */
   'legacy.import': { params: Record<string, never>; result: { imported: number; blocked: string | null } }
-  'projects.create': { params: { title: string }; result: CreatedProject }
+  'projects.create': { params: { title: string; rev?: number }; result: CreatedProject }
   'auth.status': { params: Record<string, never>; result: Login[] }
   /** A key, or for Anthropic a proxy's base URL and token. */
   'auth.setKey': { params: { provider: ProviderId; key: string; baseUrl?: string }; result: Login[] }
