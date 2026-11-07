@@ -223,6 +223,21 @@ describe('the update gate', () => {
     await after.quit()
   }, 60_000)
 
+  test('gives the pass back while Astra waits on a sign-in, even when a tool beside it already finished', async () => {
+    const where = scratch()
+    const app = spawnSidecar(where.data, where.projects, new Map(), { script: 'astra-and-read', env: where.env })
+    await app.next()
+    await app.call('settings.set', { model: { provider: 'faux', modelId: 'faux-a' } })
+    const { id: project } = (await app.call('projects.create', { title: 'A cube' })) as { id: string }
+    writeFileSync(join(where.projects, project, 'note.txt'), 'a note')
+    await app.call('chat.send', { project, requestId: 'r1', text: 'go', attachments: [] })
+    await app.until((event) => event.type === 'chat' && event.waiting !== null)
+    const deadline = Date.now() + 5_000
+    while (app.gate.requests.at(-1) !== false && Date.now() < deadline) await Bun.sleep(25)
+    expect(app.gate.requests.at(-1)).toBe(false)
+    await app.quit()
+  }, 30_000)
+
   test('gives the pass back while a turn waits on a sign-in, and takes it again when the turn goes on', async () => {
     const where = scratch()
     const app = spawnSidecar(where.data, where.projects, new Map(), { script: 'astra', env: where.env })

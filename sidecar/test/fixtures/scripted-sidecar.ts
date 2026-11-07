@@ -44,6 +44,14 @@ const scripts: Record<string, (messages: Message[], model: Model<string>) => Ass
     if (results.length === 0) return call('astra', { task: 'Draw it as an HTML page.' })
     return fauxAssistantMessage(fauxText(`parent saw: ${resultText(results[0])}`))
   },
+  /** Reads a file and hands Astra a task in the same step, then repeats what Astra answered. */
+  'astra-and-read': (messages) => {
+    const { results } = sinceUser(messages)
+    if (results.length === 0) {
+      return fauxAssistantMessage([fauxToolCall('read', { path: 'note.txt' }), fauxToolCall('astra', { task: 'Draw it as an HTML page.' })], { stopReason: 'toolUse' })
+    }
+    return fauxAssistantMessage(fauxText('both done'))
+  },
   /** Shows the command's environment: whether the sidecar's own variables reach it, and its operation id. */
   env: (messages) => {
     const { results } = sinceUser(messages)

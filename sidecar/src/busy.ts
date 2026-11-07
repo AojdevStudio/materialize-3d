@@ -31,9 +31,12 @@ function working(graph: TaskGraph, parked: ReadonlySet<string>): boolean {
   const idle = (id: string): boolean => {
     if (parked.has(id)) return true
     const task = graph.tasks[id]
-    if (task === undefined) return false
-    if (task.blocked !== undefined) return true
-    return task.state.status === 'waiting' && task.state.on.every((child) => idle(String(child)))
+    if (task === undefined || task.blocked !== undefined) return task !== undefined
+    if (task.state.status !== 'waiting') return false
+    // A finished child is gone from the graph. A task whose children all finished is about to go on, and one that
+    // still waits on a live child is idle when every live child is.
+    const live = task.state.on.map(String).filter((child) => graph.tasks[child] !== undefined)
+    return live.length > 0 && live.every(idle)
   }
   return Object.keys(graph.tasks).some((id) => !idle(id))
 }
