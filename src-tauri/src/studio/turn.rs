@@ -392,7 +392,7 @@ pub fn studio_send(app: AppHandle, turns: State<'_, Turns>, project: String, tex
     let home = dirs::home_dir().ok_or("no home folder")?;
     let inference = lean::ClaudeInference::read(&home)?;
     let plugin = app.path().resource_dir().map_err(|e| format!("app resources: {e}"))?.join("studio-plugin");
-    let astra = lean::astra_home(&home, &app_data_dir(&app)?)?;
+    let app_data = app_data_dir(&app)?;
 
     // Taken before anything is written and dropped after the last write, on every path.
     let pass = take_pass(app.state::<Arc<AppState>>().inner().clone())?;
@@ -431,11 +431,10 @@ pub fn studio_send(app: AppHandle, turns: State<'_, Turns>, project: String, tex
         // Only what the agent needs: a home, a shell, the locale, the login PATH,
         // the inference keys, and Astra's own home. Nothing else of the app's environment.
         .env_clear()
-        .envs(lean::KEPT_ENV.iter().copied().chain(astra.env.iter().map(String::as_str)).filter_map(|key| std::env::var_os(key).map(|value| (key, value))))
+        .envs(lean::KEPT_ENV.iter().filter_map(|&key| std::env::var_os(key).map(|value| (key, value))))
         .env("PATH", login_path())
         .envs(inference.env.iter().map(|(key, value)| (key, value)))
         .envs(lean::NO_MEMORY_ENV)
-        .env("CODEX_HOME", &astra.dir)
         .env(TAG_VAR, &tag)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -447,6 +446,20 @@ pub fn studio_send(app: AppHandle, turns: State<'_, Turns>, project: String, tex
 
     tauri::async_runtime::spawn(async move {
         let before: HashMap<String, u64> = files::list(&dir).unwrap_or_default().into_iter().map(|f| (f.rel.clone(), f.modified_ms)).collect();
+        // Astra's home walks the person's skills folder, so it is made here, off the main thread.
+        // If it cannot be made, Astra still gets the app's folder and so has no model, never the person's setup.
+        let astra_dir = app_data.join("astra");
+        let astra = tauri::async_runtime::spawn_blocking(move || lean::astra_home(&home, &app_data))
+            .await
+            .map_err(|e| format!("preparing Astra: {e}"))
+            .and_then(|made| made)
+            .unwrap_or_else(|error| {
+                log::warn!("studio: {error}, so Astra cannot reach a model this turn");
+                lean::AstraHome { dir: astra_dir, env: Vec::new() }
+            });
+        let mut command = command;
+        // Astra, the codex helper, finds its home through the agent's environment, plus the variables its provider reads.
+        command.env("CODEX_HOME", &astra.dir).envs(astra.env.iter().filter_map(|key| std::env::var_os(key).map(|value| (key, value))));
         let outcome = run(&app, &project, &mut transcript, &started, command, message, token, &tag, &leader).await;
         let changed: Vec<String> = files::list(&dir)
             .unwrap_or_default()

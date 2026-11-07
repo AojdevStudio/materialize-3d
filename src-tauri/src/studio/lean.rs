@@ -16,7 +16,9 @@ const CLAUDE_INFERENCE_KEYS: [&str; 5] =
 /// The only variables the agent's process keeps from the app's own environment.
 /// The app may have been started from a shell full of the person's setup, such
 /// as `CLAUDE_CONFIG_DIR` or `CLAUDE_ENV_FILE`, and none of that may pass.
-pub const KEPT_ENV: [&str; 9] = ["HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE", "TZ"];
+/// `CLAUDE_CONFIG_DIR` stays because it picks which Claude login the keychain
+/// holds. The flags still keep that folder's settings, CLAUDE.md, and memory out.
+pub const KEPT_ENV: [&str; 10] = ["HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "CLAUDE_CONFIG_DIR"];
 
 /// Set for the agent's process. `--setting-sources project` leaves out user
 /// settings but not memory: without these the person's `~/.claude/CLAUDE.md`
@@ -140,6 +142,7 @@ pub fn astra_home(home: &Path, app_data: &Path) -> Result<AstraHome, String> {
     let env = provider_env_names(&config);
     let dir = app_data.join("astra");
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    remove_abandoned(&dir);
     // Written whole and then renamed, so an Astra starting meanwhile reads the old file or the new one.
     let staged = dir.join(format!("config.toml.{}", uuid::Uuid::new_v4()));
     let text = toml::to_string(&config).map_err(|e| format!("Astra config: {e}"))?;
@@ -148,6 +151,20 @@ pub fn astra_home(home: &Path, app_data: &Path) -> Result<AstraHome, String> {
         return Err(format!("{}: {e}", dir.display()));
     }
     Ok(AstraHome { dir, env })
+}
+
+/// Removes staged configs a stopped app left before it could rename them. One
+/// a minute old or more is not another turn's write in progress.
+fn remove_abandoned(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let cutoff = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+    for entry in entries.filter_map(Result::ok) {
+        let staged = entry.file_name().to_string_lossy().starts_with("config.toml.");
+        let old = entry.metadata().and_then(|m| m.modified()).is_ok_and(|modified| modified < cutoff);
+        if staged && old {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
 
 /// Astra's home, and the variables its provider reads its key from, which the
