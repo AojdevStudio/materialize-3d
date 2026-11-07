@@ -3,7 +3,8 @@
  * draft's removal together. A turn that stops before its answer waits with the fix named, and continues once it is
  * fixed. The window sees committed entries only.
  */
-import { mkdirSync, readFileSync, realpathSync, statSync } from 'node:fs'
+import { mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { extname, isAbsolute, join, relative } from 'node:path'
 import type { Context } from '@earendil-works/chord'
 import { awaitWithContext, BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
@@ -58,11 +59,16 @@ function picture(folder: string, rel: string): ImageContent | undefined {
     return { type: 'image', data: readFileSync(path).toString('base64'), mimeType: type }
   }
   if (process.platform !== 'darwin') return undefined
-  const out = join(folder, '.m3d', 'send', `${rel.replaceAll('/', '_')}.jpg`)
-  mkdirSync(join(folder, '.m3d', 'send'), { recursive: true })
-  const converted = Bun.spawnSync(['sips', '-s', 'format', 'jpeg', '-Z', '2000', path, '--out', out])
-  if (converted.exitCode !== 0) return undefined
-  return { type: 'image', data: readFileSync(out).toString('base64'), mimeType: 'image/jpeg' }
+  // The JPEG is made in a folder of its own outside the project, so no link in the project can steer where it is written.
+  const scratch = mkdtempSync(join(tmpdir(), 'm3d-send-'))
+  try {
+    const out = join(scratch, 'picture.jpg')
+    const converted = Bun.spawnSync(['sips', '-s', 'format', 'jpeg', '-Z', '2000', path, '--out', out])
+    if (converted.exitCode !== 0) return undefined
+    return { type: 'image', data: readFileSync(out).toString('base64'), mimeType: 'image/jpeg' }
+  } finally {
+    rmSync(scratch, { recursive: true, force: true })
+  }
 }
 
 function userContent(folder: string, text: string, attachments: string[]): string | (TextContent | ImageContent)[] {
