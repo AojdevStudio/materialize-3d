@@ -27,13 +27,13 @@ Other agents share this host. Hold `~/m3d-ui.lock` for the whole run, from `up` 
 S=.agents/skills/verify-materialize-3d/scripts
 $S/m3d.sh up                 # deps, cargo build, Xvfb, Vite, tauri-driver; prints run dir
 $S/wd.ts session             # launches the app window; prints the session id
-$S/wd.ts wait 'nav[aria-label=Primary], [data-testid=onboarding-wizard]' 30000
+$S/wd.ts wait '[data-testid=start-screen]' 30000   # the studio; see features/studio.md
 $S/m3d.sh close-inspector    # debug builds dock devtools over the bottom 300px
 ```
 
 `up` is ready when it prints `m3d: ready run=... display=:9N rev=<sha>`. A first cargo build takes a few minutes; later builds are incremental. Each run gets `~/m3d-verify/<timestamp>/`, and `~/m3d-verify/current` points at the active run.
 
-`up` isolates app state with `XDG_DATA_HOME`/`XDG_CONFIG_HOME`/`XDG_CACHE_HOME` under the run dir. A fresh run therefore starts at onboarding with an empty DB at `<run>/xdg/data/com.aojdevstudio.materialize3d/materialize.db`. `wd.ts end` followed by `wd.ts session` relaunches the app on the same data, which is how you prove persistence.
+`up` isolates app state with `XDG_DATA_HOME`/`XDG_CONFIG_HOME`/`XDG_CACHE_HOME` under the run dir. A fresh run therefore starts at the studio start screen with no projects and an empty DB at `<run>/xdg/data/com.aojdevstudio.materialize3d/materialize.db`. `wd.ts end` followed by `wd.ts session` relaunches the app on the same data, which is how you prove persistence.
 
 The driver and app run with the run directory as their working directory, so stray output never lands in the checkout. The app's Bambu Studio `--help` probe runs in its own temporary directory (PR 42), so neither the run directory nor the checkout gets a `result.json` **(observed 2026-11-03)**. Compare `git status --short` before `up` and after `down` to check for Git-visible changes. Ignored build and dependency outputs, including `src-tauri/target` and `node_modules`, stay in the checkout.
 

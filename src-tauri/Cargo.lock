@@ -5861,6 +5861,7 @@ name = "materialize-3d"
 version = "0.2.2"
 dependencies = [
  "axum",
+ "base64 0.22.1",
  "block2",
  "chrono",
  "dirs 5.0.1",
@@ -5879,6 +5880,7 @@ dependencies = [
  "objc2-app-kit",
  "objc2-foundation",
  "objc2-web-kit",
+ "percent-encoding",
  "quick-xml 0.38.4",
  "rcgen",
  "reqwest 0.12.28",

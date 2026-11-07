@@ -1,15 +1,11 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import './monaco-env'
-import App from "./App";
-import { installTauriBrowserMock } from "./dev/tauriBrowserMock";
+import StudioApp from "./studio/StudioApp";
 
-if (import.meta.env.DEV) {
-  installTauriBrowserMock()
-}
-
+// The chat studio is the app. The earlier CAD, printer, and library screens
+// stay in the tree, unused, until the MVP settles what comes back.
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
-    <App />
+    <StudioApp />
   </React.StrictMode>,
 );

@@ -8,6 +8,7 @@ For installed macOS release acceptance, use [Verify the installed Mac app](../..
 
 - `$S/m3d.sh up` printed `m3d: ready`, and `$S/m3d.sh doctor` exits 0.
 - `$S/wd.ts session` is open, and `$S/m3d.sh close-inspector` reports a 1440x900 viewport.
+- Since 2026-11-06 the app opens on the [studio](./studio.md) start screen. Wait for `[data-testid=start-screen]` instead of `nav[aria-label=Primary]`, and skip onboarding, which no longer shows. The rest of this list applies to the hidden screens.
 - A fresh run starts at onboarding. Every recipe except [onboarding](./onboarding.md) starts from the main UI, so complete onboarding first: `$S/wd.ts click "[data-testid=btn-get-started]"`, `$S/wd.ts click "[data-testid=btn-llm-skip]"`, `$S/wd.ts click "[data-testid=btn-bambu-skip]"`, `$S/wd.ts click "[data-testid=btn-launch-app]"`, `$S/wd.ts wait "nav[aria-label=Primary]"`.
 - `DB` means `$(readlink -f ~/m3d-verify/current)/xdg/data/com.aojdevstudio.materialize3d/materialize.db`. Read it with the bun one-liner in SKILL.md.
 
@@ -44,6 +45,7 @@ Each feature file has an H1 and one paragraph of user-visible behavior, followed
 
 ## Features
 
+- [Studio](./studio.md) is the app since 2026-11-06: chat with a local Claude Code agent, pictures, the preview and Files panel, and Open in Bambu Studio. It has no onboarding, so its recipe starts at the start screen. The recipes below describe screens the studio hides.
 - [Onboarding](./onboarding.md) covers the four-step first-run wizard, its skip paths, and the persisted completion flag.
 - [Navigation](./navigation.md) covers the sidebar, the workspace tabs, the Library and History views, the status bar, and the launch refusal for a newer database.
 - [MakerWorld](./makerworld.md) covers the embedded MakerWorld browser, model detection, Import to Library, and how downloads land in the Library.

@@ -25,6 +25,8 @@ MUTANTS='
 split-close    gate-held-until-restart
 late-subscribe update-wakes
 ungated-slice  no-build-cut-off
+ungated-turn   no-build-cut-off
+early-release  no-build-cut-off
 guard-dropped  no-build-cut-off
 guard-leaked   failed-update-reopens
 unguarded          one-run-at-a-time

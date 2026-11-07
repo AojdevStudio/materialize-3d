@@ -26,18 +26,35 @@ pub struct Running<'a>(&'a BuildGate);
 #[derive(Debug)]
 pub struct Closed<'a>(&'a BuildGate);
 
+/// A pass for work that outlives a borrow of the gate, such as a Studio turn
+/// that runs on its own task. Dropping it lets a waiting update go ahead.
+#[must_use]
+pub struct OwnedRunning<G: std::ops::Deref<Target = BuildGate>>(G);
+
 impl BuildGate {
     /// Lets a build start, unless an update is installing.
     pub fn enter(&self) -> Option<Running<'_>> {
-        self.0
-            .send_if_modified(|builds| {
-                if builds.closed {
-                    return false;
-                }
-                builds.running += 1;
-                true
-            })
-            .then(|| Running(self))
+        self.admit().then(|| Running(self))
+    }
+
+    /// `enter` for a pass that owns its way to the gate.
+    pub fn enter_owned<G: std::ops::Deref<Target = BuildGate>>(gate: G) -> Option<OwnedRunning<G>> {
+        gate.admit().then(|| OwnedRunning(gate))
+    }
+
+    /// One send_if_modified: counts a new build unless the gate is closed.
+    fn admit(&self) -> bool {
+        self.0.send_if_modified(|builds| {
+            if builds.closed {
+                return false;
+            }
+            builds.running += 1;
+            true
+        })
+    }
+
+    fn leave(&self) {
+        self.0.send_modify(|builds| builds.running -= 1);
     }
 
     /// Waits until no build runs, then refuses new builds until the returned
@@ -67,7 +84,13 @@ impl BuildGate {
 
 impl Drop for Running<'_> {
     fn drop(&mut self) {
-        self.0 .0.send_modify(|builds| builds.running -= 1);
+        self.0.leave();
+    }
+}
+
+impl<G: std::ops::Deref<Target = BuildGate>> Drop for OwnedRunning<G> {
+    fn drop(&mut self) {
+        self.0.leave();
     }
 }
 

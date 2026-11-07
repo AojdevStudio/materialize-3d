@@ -86,6 +86,16 @@
     "allow-choose-bambu-studio",
     "allow-clear-bambu-studio",
     "allow-update-check",
-    "allow-update-install"
+    "allow-update-install",
+    "allow-studio-projects",
+    "allow-studio-create-project",
+    "allow-studio-transcript",
+    "allow-studio-send",
+    "allow-studio-cancel",
+    "allow-studio-files",
+    "allow-studio-import-file",
+    "allow-studio-save-bytes",
+    "allow-studio-reveal",
+    "allow-studio-open-in-bambu"
   ]
 }

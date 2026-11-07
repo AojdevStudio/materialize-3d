@@ -28,6 +28,7 @@ on:
       - src-tauri/src/printer/mod.rs
       - src-tauri/src/commands.rs
       - src-tauri/src/fabrication/pipeline.rs
+      - src-tauri/src/studio/turn.rs
       - .agents/skills/formal-verify-materialize-3d/**
       - .github/workflows/formal-verification.yml
   push:

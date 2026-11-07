@@ -8,6 +8,10 @@
 (*                                            install_when_idle            *)
 (*   src-tauri/src/fabrication/pipeline.rs    build_as takes a pass        *)
 (*   src-tauri/src/commands.rs                slice_model takes a pass     *)
+(*   src-tauri/src/studio/turn.rs             a Studio turn takes a pass   *)
+(*                                            in studio_send, before its   *)
+(*                                            first transcript line, and   *)
+(*                                            drops it after its last      *)
 (*   src-tauri/src/print_queue.rs             persist_queue                *)
 (* Tauri's AppHandle::restart from an async command asks the event loop to *)
 (* exit, then calls std::process::exit(0), which stops every other thread  *)
@@ -18,19 +22,21 @@ EXTENDS Naturals
 CONSTANTS
   Builds,      \* tasks that each hold at most one build pass at a time
   Slice,       \* the member of Builds that is commands.rs slice_model
+  Turn,        \* the member of Builds that is a Studio turn (studio/turn.rs)
   MaxStarts,   \* starts per build task. 0 means no limit.
   MaxUpdates,  \* how many times update_install can run
   Mutant       \* "none" is the code. The others are broken variants.
 
 Mutants == {"none", "split-close", "late-subscribe", "ungated-slice",
-            "guard-dropped", "guard-leaked"}
-ASSUME Mutant \in Mutants /\ Slice \in Builds /\ MaxStarts \in Nat
+            "guard-dropped", "guard-leaked", "ungated-turn", "early-release"}
+ASSUME Mutant \in Mutants /\ Slice \in Builds /\ Turn \in Builds /\ Turn /= Slice /\ MaxStarts \in Nat
 
 VARIABLES
   running,    \* Builds.running in the gate's watch channel
   closed,     \* Builds.closed in the gate's watch channel
   unseen,     \* the updater's watch::Receiver holds a change it has not seen
-  build,      \* build task -> "idle" or "running"
+  build,      \* build task -> "idle", "running", or "writing" (mutant
+              \* early-release: a turn still writing after its pass is gone)
   starts,     \* build task -> starts so far, counted only when MaxStarts > 0
   upd,        \* where update_install is
   updates,    \* update_install runs so far
@@ -56,9 +62,16 @@ Init ==
 
 ----------------------------------------------------------------------------
 (* Builds. build_as and slice_model each call BuildGate::enter first and   *)
-(* hold the Running pass until they return.                                *)
+(* hold the Running pass until they return. A Studio turn calls            *)
+(* BuildGate::enter_owned in studio_send and drops the pass at the end of  *)
+(* its task, after its last transcript write.                              *)
 
-Gated(b) == ~(Mutant = "ungated-slice" /\ b = Slice)
+Gated(b) ==
+  /\ ~(Mutant = "ungated-slice" /\ b = Slice)
+  /\ ~(Mutant = "ungated-turn" /\ b = Turn)
+
+\* Mutant early-release: a turn drops its pass before its last transcript write.
+EarlyRelease(b) == Mutant = "early-release" /\ b = Turn
 
 CanStart(b) ==
   /\ Alive
@@ -77,7 +90,7 @@ Enter(b) ==
   /\ Started(b)
   /\ UNCHANGED <<closed, upd, updates, qlock, queueFile>>
 
-\* Mutant ungated-slice: slice_model runs OrcaSlicer without a pass.
+\* Mutants ungated-slice and ungated-turn: the task runs without a pass.
 StartUngated(b) ==
   /\ CanStart(b) /\ ~Gated(b)
   /\ Started(b)
@@ -85,12 +98,25 @@ StartUngated(b) ==
 
 \* Drop for Running. One send_modify, which always notifies.
 Leave(b) ==
-  /\ Alive /\ build[b] = "running"
+  /\ Alive /\ build[b] = "running" /\ ~EarlyRelease(b)
   /\ build' = [build EXCEPT ![b] = "idle"]
   /\ IF Gated(b)
        THEN running' = running - 1 /\ unseen' = TRUE
        ELSE UNCHANGED <<running, unseen>>
   /\ UNCHANGED <<closed, starts, upd, updates, qlock, queueFile>>
+
+\* Mutant early-release: the pass drops while the turn still has its last
+\* transcript lines to write.
+ReleaseEarly(b) ==
+  /\ Alive /\ build[b] = "running" /\ EarlyRelease(b)
+  /\ build' = [build EXCEPT ![b] = "writing"]
+  /\ running' = running - 1 /\ unseen' = TRUE
+  /\ UNCHANGED <<closed, starts, upd, updates, qlock, queueFile>>
+
+FinishWrite(b) ==
+  /\ Alive /\ build[b] = "writing"
+  /\ build' = [build EXCEPT ![b] = "idle"]
+  /\ UNCHANGED <<running, closed, unseen, starts, upd, updates, qlock, queueFile>>
 
 ----------------------------------------------------------------------------
 (* update_install. It holds the PendingUpdate lock for the whole run, so   *)
@@ -211,7 +237,7 @@ WriteFails ==
 ----------------------------------------------------------------------------
 
 Next ==
-  \/ \E b \in Builds : Enter(b) \/ StartUngated(b) \/ Leave(b)
+  \/ \E b \in Builds : Enter(b) \/ StartUngated(b) \/ Leave(b) \/ ReleaseEarly(b) \/ FinishWrite(b)
   \/ Click \/ DownloadFails \/ Downloaded
   \/ Top \/ CheckAndClose \/ CheckOnly \/ CloseLate \/ CheckBusy \/ MarkSeen \/ Wake
   \/ BackupOk \/ BackupFails \/ InstallOk \/ InstallFails \/ Exit
@@ -222,7 +248,7 @@ Next ==
 Fairness ==
   /\ WF_vars(Top) /\ WF_vars(CheckAndClose) /\ WF_vars(CheckOnly)
   /\ WF_vars(CloseLate) /\ WF_vars(CheckBusy) /\ WF_vars(MarkSeen) /\ WF_vars(Wake)
-  /\ \A b \in Builds : WF_vars(Leave(b))
+  /\ \A b \in Builds : WF_vars(Leave(b)) /\ WF_vars(ReleaseEarly(b)) /\ WF_vars(FinishWrite(b))
   /\ WF_vars(WriteEnd)
 
 Spec == Init /\ [][Next]_vars /\ Fairness
@@ -230,7 +256,8 @@ Spec == Init /\ [][Next]_vars /\ Fairness
 ----------------------------------------------------------------------------
 (* Properties. Each is one check in scripts/check.sh.                      *)
 
-\* The restart never kills a build or a slice.
+\* The restart never kills a build, a slice, or a Studio turn, nor cuts a
+\* turn's last transcript write.
 NoBuildCutOff == upd = "exited" => \A b \in Builds : build[b] = "idle"
 
 \* From the idle check to the restart, the gate is closed and no build runs.
