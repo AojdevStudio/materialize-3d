@@ -79,6 +79,16 @@ describe('StudioApp', () => {
     expect((await screen.findByText('Engine 1.2.3')).dataset.testid).toBe('engine')
   })
 
+  it('keeps an engine stop that arrives while its version is still on the way', async () => {
+    let answerPing: (value: unknown) => void = () => {}
+    mockSidecar({ 'app.ping': () => new Promise((resolve) => (answerPing = resolve)) })
+    render(<StudioApp />)
+    await waitFor(() => expect(sidecarCalls('app.ping')).toHaveLength(1))
+    await emit({ type: 'engine', state: 'stopped', detail: 'The engine stopped.' })
+    await act(async () => answerPing({ version: '1.2.3' }))
+    expect(screen.getByTestId('engine').textContent).toBe('The engine stopped.')
+  })
+
   it('leaves the project the person moved to alone when a slow send from the start screen finishes', async () => {
     let finishCreate: (project: unknown) => void = () => {}
     mockSidecar({ 'projects.create': () => new Promise((resolve) => (finishCreate = resolve)) })

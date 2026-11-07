@@ -91,9 +91,6 @@ export default function StudioApp() {
   }, [])
 
   useEffect(() => {
-    sidecar('app.ping', {})
-      .then(({ version }) => setEngine(`Engine ${version}`))
-      .catch((err: unknown) => setEngine(String(err)))
     sidecar('state.get', {})
       .then((state) => {
         // Drafts saved in this window since are newer, and text already typed stays.
@@ -102,12 +99,17 @@ export default function StudioApp() {
         if (currentId.current === null && !typedOnStart.current) setText(drafts.current[START]?.text ?? '')
       })
       .catch((err: unknown) => setError(String(err)))
+    // The listener is in place before the ping, so no engine change is missed, and a ping that answers late never
+    // hides one.
+    let engineChanged = false
     const unlisten = onSidecarEvent((event) => {
       switch (event.type) {
         case 'ready':
+          engineChanged = true
           setEngine(`Engine ${event.version}`)
           break
         case 'engine':
+          engineChanged = true
           setEngine(event.state === 'stopped' ? event.detail : 'Engine restarting')
           break
         case 'chat':
@@ -132,6 +134,10 @@ export default function StudioApp() {
           break
       }
     })
+    unlisten
+      .then(() => sidecar('app.ping', {}))
+      .then(({ version }) => engineChanged || setEngine(`Engine ${version}`))
+      .catch((err: unknown) => engineChanged || setEngine(String(err)))
     return () => {
       void unlisten.then((stop) => stop())
     }
