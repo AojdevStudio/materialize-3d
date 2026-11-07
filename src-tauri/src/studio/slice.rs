@@ -114,9 +114,11 @@ fn slice_in(studio: &BambuStudio, dir: &Path, inputs: &[String], output: &str, c
         .arg(format!("{};{}", process_path.display(), presets.machine.path.display()))
         .arg("--load-filaments")
         .arg(&presets.filaments[0].path)
-        .args(["--arrange", "1", "--orient", "0", "--slice", "0", "--export-3mf"])
-        .arg(&staged)
-        // Bambu writes result.json into its working directory.
+        // The 3MF goes by its bare name: Bambu joins it to the output folder, and on macOS a full path
+        // there fails to export (-13).
+        .args(["--arrange", "1", "--orient", "0", "--slice", "0", "--export-3mf", "out.3mf", "--outputdir"])
+        .arg(staging.path())
+        // Bambu writes result.json into its output folder or its working directory. Both are this folder.
         .current_dir(staging.path())
         .stdin(Stdio::null())
         .stdout(File::create(&log).map_err(|e| e.to_string())?)
@@ -130,7 +132,11 @@ fn slice_in(studio: &BambuStudio, dir: &Path, inputs: &[String], output: &str, c
         Some(Outcome { return_code, error_string }) => {
             return Err(format!("Bambu Studio failed ({return_code}): {}", if error_string.is_empty() { status.to_string() } else { error_string }))
         }
-        None => return Err(format!("Bambu Studio exited with {status} and reported nothing")),
+        None => {
+            let log = std::fs::read_to_string(&log).unwrap_or_default();
+            let tail = log.lines().rev().take(5).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
+            return Err(format!("Bambu Studio exited with {status} and reported nothing. Its log ends:\n{tail}"));
+        }
     }
     let info = parse_slice_info(&staged).map_err(|e| e.to_string())?;
     if info.sliced_parts != inputs.len() {
