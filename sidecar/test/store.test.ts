@@ -1,5 +1,5 @@
 import { describe, expect, it, test } from 'bun:test'
-import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
@@ -98,6 +98,18 @@ describe('app state', () => {
         made ? { made, onProject: `Knob ${round}`, onStart: undefined } : { made, onProject: undefined, onStart: `Knob ${round}` },
       )
     }
+    await app.quit()
+  })
+
+  test('a new project never takes the folder of one already on disk', async () => {
+    const { data, projects } = scratch()
+    const app = spawnSidecar(data, projects)
+    await app.next()
+    const first = (await app.call('projects.create', { title: 'A knob' })) as { id: string }
+    // A folder the store does not list, such as one an older app made, under the id the next project would take.
+    mkdirSync(join(projects, `${first.id}-2`), { recursive: true })
+    const second = (await app.call('projects.create', { title: 'A knob' })) as { id: string }
+    expect(second.id).toBe(`${first.id}-3`)
     await app.quit()
   })
 

@@ -4,7 +4,7 @@
  *
  * App state lives as Pi documents on the root conversation. Each project is a conversation of its own.
  */
-import { mkdirSync } from 'node:fs'
+import { existsSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
@@ -180,7 +180,8 @@ export class Store {
       const index = await tx.doc(ProjectsDoc, this.root.id)
       const taken = new Set(index.projects.map((p) => p.id))
       let id = base
-      for (let n = 2; taken.has(id); n++) id = `${base}-${n}`
+      // A folder already on disk, which the store may not list, is never taken over.
+      for (let n = 2; taken.has(id) || existsSync(join(this.projectsDir, id)); n++) id = `${base}-${n}`
       const conversation = await tx.createConversation({ ownership: { kind: 'ownerless' } })
       const created: Project = { id, conversation: conversation.id, title: firstLine, createdMs: now.getTime() }
       index.projects.push(created)
