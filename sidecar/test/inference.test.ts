@@ -3,7 +3,7 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { InMemoryCredentialStore, type OAuthAuth } from '@earendil-works/pi-ai'
-import { inferenceModels, KeychainCredentials, keyCredential, Logins } from '../src/inference'
+import { inferenceModels, isLoginFailure, KeychainCredentials, keyCredential, Logins } from '../src/inference'
 import type { LoginEvent, LoginKind } from '../src/protocol'
 import { spawnSidecar } from './sidecar'
 
@@ -48,6 +48,17 @@ describe('logins', () => {
     process.env.OPENCODE_API_KEY = 'oc-from-the-persons-shell'
     const models = inferenceModels(new InMemoryCredentialStore())
     for (const provider of ['anthropic', 'openai-codex', 'opencode-go']) expect(await models.getAuth(provider)).toBeUndefined()
+  })
+})
+
+describe('a refused request', () => {
+  test('waits for a sign-in only when the login itself was refused, not when the login lacks access', () => {
+    expect(isLoginFailure('401 {"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}')).toBe(true)
+    expect(isLoginFailure('Anthropic is not configured')).toBe(true)
+    expect(isLoginFailure('OAuth token expired')).toBe(true)
+    expect(
+      isLoginFailure('403 {"type":"error","error":{"type":"permission_error","message":"Your API key does not have permission to use the specified resource."}}'),
+    ).toBe(false)
   })
 })
 

@@ -134,6 +134,51 @@ describe('a turn whose provider is not signed in', () => {
     proxy.stop()
   }, 20_000)
 
+  test('a stopped turn that waited on a sign-in stays stopped when the person signs in', async () => {
+    const proxy = anthropicProxy('never')
+    const dir = mkdtempSync(join(tmpdir(), 'm3d-wait-'))
+    const app = spawnSidecar(join(dir, 'state'), join(dir, 'projects'), new Map())
+    await app.next()
+    const { id: project } = (await app.call('projects.create', { title: 'A cube' })) as { id: string }
+    await app.call('chat.open', { project })
+    await app.call('chat.send', { project, requestId: 'r1', text: 'A 20 mm cube', attachments: [] })
+    await app.until((event) => event.type === 'chat' && event.waiting !== null)
+    await app.call('chat.stop', { project })
+    await app.call('auth.setKey', { provider: 'anthropic', key: 'new-token', baseUrl: proxy.url })
+    await Bun.sleep(500)
+    expect(proxy.seen).toHaveLength(0)
+    expect(((await app.call('chat.open', { project })) as ChatView).waiting).toBeNull()
+    await app.quit()
+    proxy.stop()
+  }, 20_000)
+
+  test('a restart does not try a refused login again, only one saved after it', async () => {
+    const proxy = anthropicProxy('Hello after the restart', { token: 'old-token', release: Promise.resolve() })
+    const dir = mkdtempSync(join(tmpdir(), 'm3d-wait-'))
+    const keychain = new Map<string, string>()
+    const first = spawnSidecar(join(dir, 'state'), join(dir, 'projects'), keychain)
+    await first.next()
+    const { id: project } = (await first.call('projects.create', { title: 'A cube' })) as { id: string }
+    await first.call('chat.open', { project })
+    await first.call('auth.setKey', { provider: 'anthropic', key: 'old-token', baseUrl: proxy.url })
+    await first.call('chat.send', { project, requestId: 'r1', text: 'A 20 mm cube', attachments: [] })
+    await first.until((event) => event.type === 'chat' && event.waiting !== null)
+    await first.quit()
+    const second = spawnSidecar(join(dir, 'state'), join(dir, 'projects'), keychain)
+    await second.next()
+    await Bun.sleep(500)
+    expect(proxy.seen).toHaveLength(1)
+    await second.call('chat.open', { project })
+    await second.call('auth.setKey', { provider: 'anthropic', key: 'new-token', baseUrl: proxy.url })
+    await second.until(
+      (event) => event.type === 'chat' && (event.entries as ChatEntry[]).some((entry) => entry.kind === 'assistant'),
+      10_000,
+    )
+    expect(proxy.seen.map((call) => call.authorization)).toEqual(['Bearer old-token', 'Bearer new-token'])
+    await second.quit()
+    proxy.stop()
+  }, 30_000)
+
   test('a refused login with no newer one saved waits for a sign-in, and is not tried again', async () => {
     const proxy = anthropicProxy('never', { token: 'old-token', release: Promise.resolve() })
     const dir = mkdtempSync(join(tmpdir(), 'm3d-wait-'))

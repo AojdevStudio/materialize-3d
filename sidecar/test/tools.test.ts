@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { logFollower, once, operationId, tailOf } from '../src/agent'
@@ -59,8 +59,10 @@ describe('an outside action', () => {
   })
 
   test('calls whose ids differ only in characters a file name cannot hold keep separate receipts', () => {
-    expect(operationId('call/a')).not.toBe(operationId('call:a'))
-    expect(operationId('call/a')).toBe(operationId('call/a'))
+    expect(operationId('t1', 'call/a')).not.toBe(operationId('t1', 'call:a'))
+    expect(operationId('t1', 'call/a')).toBe(operationId('t1', 'call/a'))
+    // Some providers number their calls in each message, so a call id comes back in a later step: its task tells them apart.
+    expect(operationId('t1', 'call_0')).not.toBe(operationId('t2', 'call_0'))
   })
 })
 
@@ -181,6 +183,32 @@ describe('a picture sent with a message', () => {
     mkdirSync(join(where.projects, project, 'refs'), { recursive: true })
     symlinkSync(join(where.dir, 'secret.jpg'), join(where.projects, project, 'refs', 'photo.jpg'))
     await expect(app.call('chat.send', { project, requestId: 'r1', text: 'like this', attachments: ['refs/photo.jpg'] })).rejects.toThrow(
+      'is not a file in the project folder',
+    )
+    await app.quit()
+  })
+
+  test('may have a name that starts with two dots, and a send that repeats needs no file', async () => {
+    const where = scratch()
+    const app = start(where, 'models')
+    await app.next()
+    const project = await newProject(app)
+    const photo = join(where.projects, project, '..photo.png')
+    writeFileSync(photo, 'png')
+    await app.call('chat.send', { project, requestId: 'r1', text: 'like this', attachments: ['..photo.png'] })
+    await answered(app, project, 'answered by faux-a')
+    rmSync(photo)
+    await app.call('chat.send', { project, requestId: 'r1', text: 'like this', attachments: ['..photo.png'] })
+    await app.quit()
+  })
+
+  test('that is not a regular file is refused, and never holds the sidecar', async () => {
+    const where = scratch()
+    const app = start(where, 'models')
+    await app.next()
+    const project = await newProject(app)
+    expect(Bun.spawnSync(['mkfifo', join(where.projects, project, 'pipe.png')]).exitCode).toBe(0)
+    await expect(app.call('chat.send', { project, requestId: 'r1', text: 'like this', attachments: ['pipe.png'] })).rejects.toThrow(
       'is not a file in the project folder',
     )
     await app.quit()

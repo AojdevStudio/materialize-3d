@@ -9,7 +9,7 @@
  */
 import { createHash } from 'node:crypto'
 import { closeSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, readSync, realpathSync, renameSync, writeFileSync } from 'node:fs'
-import { basename, dirname, isAbsolute, join, relative } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path'
 import type { Context, JsonValue } from '@earendil-works/chord'
 import {
   AssistantEntry,
@@ -136,6 +136,9 @@ function realPath(path: string, links = 0): string {
   }
 }
 
+/** Whether a path relative to a folder leads out of it. A name that only starts with two dots, `..notes`, stays in. */
+export const leaves = (rel: string) => rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)
+
 /** One project's files and processes. A path that leads out of the project folder is refused, for every file tool. */
 export class ProjectEnv extends NodeExecutionEnv {
   override async absolutePath(path: string, context: Context): Promise<Result<string, FileError>> {
@@ -148,7 +151,7 @@ export class ProjectEnv extends NodeExecutionEnv {
       return err(new FileError('permission_denied', error instanceof Error ? error.message : String(error), path))
     }
     const inside = relative(realpathSync.native(this.cwd), real)
-    if (inside.startsWith('..') || isAbsolute(inside)) {
+    if (leaves(inside)) {
       return err(new FileError('permission_denied', `${path} is outside the project folder`, path))
     }
     return resolved
@@ -192,15 +195,19 @@ export interface AgentHost {
   loginSaves(provider: string): Promise<number>
 }
 
-/** A call's operation id: a hash of the call id, since an id the model made can hold any character, and no two may share a receipt. */
-export const operationId = (callId: string) => createHash('sha256').update(callId).digest('hex').slice(0, 32)
+/**
+ * A call's operation id: a hash of its durable task and its call id. The task tells apart calls a provider gave the
+ * same id in different steps, and stays the same when a crash replays the call. The hash holds any character an id
+ * the model made can hold, and no two calls share a receipt.
+ */
+export const operationId = (taskId: string, callId: string) => createHash('sha256').update(`${taskId}\0${callId}`).digest('hex').slice(0, 32)
 
 /** A tool call's operation: its id, its receipt file in the project's hidden folder, and Pi's memo of it. */
 function operation<T extends JsonValue>(api: ToolExecutionApi, context: Context) {
   const env = api.env
   // Astra's conversation is not a project, so the folder is the one its tools work in, which it shares.
   if (!(env instanceof ProjectEnv)) throw new Error('this conversation has no project folder')
-  const id = operationId(api.callId)
+  const id = operationId(String(api.taskId), api.callId)
   const memo: Memo<T> = { get: () => api.memo<T>('receipt', context), set: (value) => api.memo('receipt', value, context) }
   return { env, id, memo, receipt: join(env.cwd, '.m3d', 'ops', `${id}.json`) }
 }

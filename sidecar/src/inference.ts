@@ -60,8 +60,11 @@ const credential = compile(
   ]),
 )
 
-/** A provider's answer that means the login itself is missing or refused, not that the request failed. */
-const LOGIN_FAILURE = /not configured|\b(401|403)\b|unauthori[sz]ed|authentication|invalid (api )?(key|token)|expired/i
+/**
+ * A provider's answer that means the login itself is missing or refused, not that the request failed. A 403 alone is
+ * not one: it says the login works but lacks access, which a new sign-in to the same account does not change.
+ */
+const LOGIN_FAILURE = /not configured|\b401\b|unauthori[sz]ed|authentication|invalid (api )?(key|token)|expired/i
 
 export const isLoginFailure = (detail: string) => LOGIN_FAILURE.test(detail)
 

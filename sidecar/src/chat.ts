@@ -22,7 +22,7 @@ import {
   type WatchHandle,
 } from '@earendil-works/pi-durable'
 import type { ConversationView } from '@earendil-works/pi-durable'
-import { WORKFLOW, WORKFLOW_VERSION } from './agent'
+import { leaves, WORKFLOW, WORKFLOW_VERSION } from './agent'
 import type { ChatEntry, ChatView, SidecarEvent, Turn, Waiting } from './protocol'
 import { isLoginFailure } from './inference'
 import { DraftsDoc, LoginSavesDoc, SettingsDoc, type Store, TurnDoc, WaitingDoc } from './store'
@@ -43,11 +43,14 @@ export interface ChatsOptions {
   emit(event: SidecarEvent): void
 }
 
-/** A path the window named for an attachment, inside the project folder where it really leads, links followed. */
+/**
+ * A path the window named for an attachment: a regular file inside the project folder where it really leads, links
+ * followed. Anything else, such as a pipe that would hold every read, is refused.
+ */
 function inside(folder: string, rel: string): string {
   const path = join(folder, rel)
   const back = relative(realpathSync.native(folder), realpathSync.native(path))
-  if (back === '' || back.startsWith('..') || isAbsolute(back)) throw new Error(`${rel} is not a file in the project folder`)
+  if (back === '' || leaves(back) || !statSync(path).isFile()) throw new Error(`${rel} is not a file in the project folder`)
   return path
 }
 
@@ -168,6 +171,8 @@ export class Chats {
         ? { kind: 'login', provider, name, fix: `Sign in to ${name}. The message picks up where it stopped.` }
         : { kind: 'error', detail, fix: 'Try again' }
     await store.harness.commit(async (tx) => {
+      // A send that came after this failure started a new turn, which this failure must not hold.
+      if ((await tx.doc(TurnDoc, conversation.id)).turn?.requestId !== turn?.requestId) return
       const record = await tx.doc(WaitingDoc, conversation.id)
       record.failure = failure.taskId
       record.tool = false
@@ -185,11 +190,16 @@ export class Chats {
 
   /**
    * Sends a message. The message, the settings its turn runs with, and the draft's removal commit together. A send
-   * whose `requestId` was already committed changes nothing, so the window can send again after any failure.
+   * whose `requestId` was already committed changes nothing, so the window can send again after any failure, even
+   * once a picture it sent is gone.
    */
   async send(project: string, requestId: string, text: string, attachments: string[]): Promise<void> {
     const { store, extension, tools, version } = this.#o
     const conversation = await this.#conversation(project)
+    if ((await store.harness.commit((tx) => tx.submissionByRequest(conversation.id, requestId), context)) !== undefined) {
+      await this.#watch(project, conversation)
+      return
+    }
     const folder = store.projectFolder(project)
     const content = userContent(folder, text, attachments)
     try {
@@ -303,8 +313,16 @@ export class Chats {
     return agent.tools.map((tool) => tool.name)
   }
 
+  /** Stops the turn. What it waited on is forgotten, so a later sign-in does not start it again. */
   async stop(project: string): Promise<void> {
-    await (await this.#conversation(project)).abort(context)
+    const conversation = await this.#conversation(project)
+    await conversation.abort(context)
+    await this.#o.store.harness.commit(async (tx) => {
+      const record = await tx.doc(WaitingDoc, conversation.id)
+      record.waiting = null
+      record.tool = false
+    }, context)
+    await this.#show(project)
   }
 
   /** A turn that started on another version of the app waits for the person to go on with this one. */
@@ -378,11 +396,20 @@ export class Chats {
         }, context)
         continue
       }
-      const waiting = record?.waiting
-      if (waiting?.kind !== 'login' || record?.tool || running) continue
+      if (record === undefined || record.waiting?.kind !== 'login' || record.tool || running) continue
+      const waiting = record.waiting
       if (state.turn !== null && state.turn.app !== version) await this.#outdated(conversation.id)
-      else if ((await models.getAuth(waiting.provider).catch(() => undefined)) !== undefined) await this.#continue(project.id)
+      else if (await this.#savedSince(record, waiting.provider)) await this.#continue(project.id)
     }
+  }
+
+  /**
+   * Whether a login the turn did not go out with is there: one saved since it last went out, as a sign-in that a crash
+   * cut off before it let the turn go. The login it went out with was missing or refused, so trying it again cannot help.
+   */
+  async #savedSince(record: { saves: number | null }, provider: string): Promise<boolean> {
+    if (record.saves !== null) return (await this.#o.store.loginSaves(provider)) > record.saves
+    return (await this.#o.models.getAuth(provider).catch(() => undefined)) !== undefined
   }
 
   async close(): Promise<void> {
