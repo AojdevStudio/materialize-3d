@@ -44,20 +44,30 @@ const COMMAND_ENV = ['PATH', 'HOME', 'USER', 'LANG', 'TMPDIR'] as const
 /**
  * Runs a command under a watch on the sidecar. Pi starts each command in a process group of its own, so it can end the
  * whole tree on a timeout or a stop, but a sidecar killed outright ends nothing. The watch ends the group, command and
- * all, within a second of the sidecar's end, and a command that ends first leaves its receipt with its exit code. So
- * a command a crash cut off either finished, and a resumed turn takes its receipt, or was ended.
+ * all, within a second of the sidecar's end. The command writes its output to its log, never to the sidecar's pipe, so
+ * a sidecar's end cannot cut it off, and one that ends first leaves its exit code beside the log. So a command a crash
+ * cut off either finished, and a resumed turn takes its exit code and output, or was ended.
  */
 const GUARD = [
-  'sidecar=$1; receipt=$2; shift 2',
+  'sidecar=$1; log=$2; exited=$3; shift 3',
   '(while kill -0 "$sidecar" 2>/dev/null; do sleep 1; done; kill -KILL 0) </dev/null >/dev/null 2>&1 &',
   'watch=$!',
-  '"$@"',
+  '"$@" >"$log" 2>&1',
   'status=$?',
-  // Waiting on the stopped watch keeps bash, the macOS sh, from printing that it was terminated into the output.
   'kill "$watch" 2>/dev/null; wait "$watch" 2>/dev/null',
-  `printf '{"exitCode":%d,"output":""}' "$status" > "$receipt.new" && mv -f "$receipt.new" "$receipt"`,
+  `printf '%d' "$status" > "$exited.new" && mv -f "$exited.new" "$exited"`,
   'exit "$status"',
 ].join('\n')
+
+/** How often a running command's log is read for its new output. */
+const LOG_POLL_MS = 200
+
+/** The end of a command's log, where errors are. */
+function tailOf(log: string): string {
+  if (!existsSync(log)) return ''
+  const bytes = readFileSync(log)
+  return new TextDecoder().decode(bytes.subarray(Math.max(0, bytes.length - OUTPUT_TAIL)))
+}
 
 /** Longer than the watch takes to end a command after its sidecar ends. */
 const GUARD_GRACE_MS = 2000
@@ -182,26 +192,28 @@ export function agentTools({ host, projectOf, signedIn, loginSaves }: AgentHost)
         const value = process.env[name]
         if (value !== undefined) vars[name] = value
       }
-      // A command a crash cut off may still be ending: wait until its watch has ended it or it left its receipt.
-      if ((await api.memo<boolean>('started', context)) === true && !existsSync(op.receipt)) await Bun.sleep(GUARD_GRACE_MS)
+      const log = `${op.receipt}.log`
+      const exited = `${op.receipt}.exit`
+      // A command a crash cut off may still be ending: wait until its watch has ended it or it left its exit code.
+      if ((await api.memo<boolean>('started', context)) === true && !existsSync(op.receipt) && !existsSync(exited)) {
+        await Bun.sleep(GUARD_GRACE_MS)
+      }
       const receipt = await once(op.memo, op.receipt, async () => {
-        let output = ''
+        if (existsSync(exited)) return { exitCode: Number(readFileSync(exited, 'utf8')), output: tailOf(log) }
         mkdirSync(dirname(op.receipt), { recursive: true })
         await api.memo('started', true, context)
-        const ran = await env.exec(
-          ['/bin/sh', '-c', GUARD, 'm3d-run', String(process.pid), op.receipt, 'uv', ...args],
-          {
-            env: vars,
-            inheritEnv: false,
-            timeout: timeoutSeconds ?? 600,
-            onOutput: (chunk) => {
-              output = (output + chunk).slice(-OUTPUT_TAIL)
-              api.output(chunk)
-            },
-          },
-          context,
-        )
-        return ran.ok ? { exitCode: ran.value.exitCode, output } : { exitCode: -1, output: `${output}\n${ran.error.message}` }
+        let shown = 0
+        const show = () => {
+          const bytes = existsSync(log) ? readFileSync(log) : new Uint8Array()
+          if (bytes.length > shown) api.output(new TextDecoder().decode(bytes.subarray(shown)))
+          shown = bytes.length
+        }
+        const poll = setInterval(show, LOG_POLL_MS)
+        const ran = await env
+          .exec(['/bin/sh', '-c', GUARD, 'm3d-run', String(process.pid), log, exited, 'uv', ...args], { env: vars, inheritEnv: false, timeout: timeoutSeconds ?? 600 }, context)
+          .finally(() => clearInterval(poll))
+        show()
+        return ran.ok ? { exitCode: ran.value.exitCode, output: tailOf(log) } : { exitCode: -1, output: `${tailOf(log)}\n${ran.error.message}` }
       })
       return { output: text(`exit code ${receipt.exitCode}\n${receipt.output}`), isError: receipt.exitCode !== 0 }
     },

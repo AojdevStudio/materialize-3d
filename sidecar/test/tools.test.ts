@@ -72,7 +72,9 @@ describe('the run tool', () => {
     const project = await newProject(app)
     await send(app, project, 'r1')
     await answered(app, project, 'exit code 0\nsecret=none op=set\n')
-    expect(readdirSync(join(where.projects, project, '.m3d', 'ops'))).toHaveLength(1)
+    // One operation: its receipt, its log, and its exit code.
+    const files = readdirSync(join(where.projects, project, '.m3d', 'ops'))
+    expect(new Set(files.map((name) => name.split('.')[0])).size).toBe(1)
     await app.quit()
   })
 
@@ -102,7 +104,7 @@ describe('the run tool', () => {
     expect(existsSync(join(where.projects, project, 'finished'))).toBe(false)
   }, 20_000)
 
-  test('runs once when the sidecar restarts at once while a command cut off by its crash still ends', async () => {
+  test('runs once, with its output, when the sidecar restarts at once while a command cut off by its crash still ends', async () => {
     const where = scratch()
     const first = start(where, 'quick')
     await first.next()
@@ -116,6 +118,7 @@ describe('the run tool', () => {
     await answered(second, project, 'ran')
     await Bun.sleep(1500)
     expect(readFileSync(join(where.projects, project, 'ran.log'), 'utf8')).toBe('ran\n')
+    expect((await toolResults(second, project))[0]).toMatchObject({ name: 'run', failed: false, text: 'exit code 0\nmeasured-value=42\n' })
     await second.quit()
   }, 30_000)
 })
