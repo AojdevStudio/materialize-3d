@@ -48,13 +48,17 @@ export function handlers({ store, logins, chats, version, legacy, pictures }: Se
     'setup.check': {
       params: compile(obj({})),
       run: async () => {
-        // The chosen model's provider must have a login. A refused or expired one still waits in the turn, with its fix.
+        // The chosen model must be one the app offers, and its provider must have a login. A refused or expired login
+        // still waits in the turn, with its fix.
         const { settings } = await store.state()
-        const login = (await logins.status()).find((l) => l.provider === settings.model.provider)
+        const offered = await logins.status()
+        const login = offered.find((l) => l.provider === settings.model.provider)
         const needs: Need[] =
-          login !== undefined && login.login === null
-            ? [{ kind: 'login', provider: login.provider, name: login.name, fix: `Sign in to ${login.name} before you send.` }]
-            : []
+          login === undefined
+            ? [{ kind: 'model', fix: `Choose a model from ${offered.map((l) => l.name).join(', ')}. The app does not offer ${settings.model.provider}.` }]
+            : login.login === null
+              ? [{ kind: 'login', provider: login.provider, name: login.name, fix: `Sign in to ${login.name} before you send.` }]
+              : []
         return [...needs, ...toolchainNeeds()]
       },
     },

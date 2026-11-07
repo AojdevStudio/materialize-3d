@@ -15,6 +15,9 @@ export type Attachment = { name: string; path: string; previewUrl?: string }
 export const savedAttachment = (path: string): Attachment => ({ name: path.split(/[\\/]/).pop() ?? path, path })
 
 /** Frees a pasted picture's preview once it is sent, removed, or left. */
+/** A picture pasted into the composer, before it is kept in a file. */
+export type PastedPicture = { name: string; bytes: Uint8Array; previewUrl: string }
+
 export function releaseAttachment(attachment: Attachment): void {
   if (attachment.previewUrl !== undefined) URL.revokeObjectURL(attachment.previewUrl)
 }
@@ -109,8 +112,8 @@ interface ComposerProps {
   onText: (text: string) => void
   attachments: Attachment[]
   onAttach: (files: Attachment[]) => void
-  /** Keeps a pasted picture in a file, and answers its path. */
-  onPaste: (name: string, bytes: Uint8Array) => Promise<string>
+  /** Pictures pasted into the composer, with their previews, for the screen they were pasted on to keep. */
+  onPaste: (pictures: PastedPicture[]) => void
   onRemove: (index: number) => void
   /** Sends the text and pictures. The owner clears them only once the send succeeds. */
   onSend: () => void
@@ -129,13 +132,13 @@ export function Composer({ text, onText, attachments, onAttach, onPaste, onRemov
     const pictures = [...event.clipboardData.files].filter((f) => f.type.startsWith('image/'))
     if (pictures.length === 0) return
     event.preventDefault()
-    onAttach(
+    onPaste(
       await Promise.all(
-        pictures.map(async (file, i) => {
-          const name = file.name && file.name !== 'image.png' ? file.name : `pasted-${Date.now()}-${i}.${file.type.split('/')[1] ?? 'png'}`
-          const path = await onPaste(name, new Uint8Array(await file.arrayBuffer()))
-          return { name, path, previewUrl: URL.createObjectURL(file) }
-        }),
+        pictures.map(async (file, i) => ({
+          name: file.name && file.name !== 'image.png' ? file.name : `pasted-${Date.now()}-${i}.${file.type.split('/')[1] ?? 'png'}`,
+          bytes: new Uint8Array(await file.arrayBuffer()),
+          previewUrl: URL.createObjectURL(file),
+        })),
       ),
     )
   }

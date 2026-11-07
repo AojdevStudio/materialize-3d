@@ -1,3 +1,4 @@
+import { existsSync, readdirSync, rmSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { parseArgs } from 'node:util'
 import type { MutableModels } from '@earendil-works/pi-ai'
@@ -99,6 +100,14 @@ export async function runSidecar({ argv, addProviders }: SidecarOptions): Promis
     return { imported: imported.length, blocked }
   }
   let oldChats = await importOld()
+  // A pasted picture is kept until it is sent, which copies it into its project, or its draft lets it go. At the start
+  // no window has one pending, so each kept picture no draft names is removed.
+  const pictures = join(dirname(data), 'pictures')
+  const named = new Set(Object.values((await store.state()).drafts).flatMap((draft) => draft.attachments))
+  for (const folder of existsSync(pictures) ? readdirSync(pictures) : []) {
+    const files = readdirSync(join(pictures, folder))
+    if (!files.some((file) => named.has(join(pictures, folder, file)))) rmSync(join(pictures, folder), { recursive: true, force: true })
+  }
   const legacy = {
     blocked: () => oldChats.blocked,
     retry: async () => {
@@ -108,7 +117,7 @@ export async function runSidecar({ argv, addProviders }: SidecarOptions): Promis
   }
   // The pipe opens before the pass is asked for and before the reconcile, which asks Rust's Keychain whether a
   // waited-on login is there now.
-  const serving = host.serve(handlers({ store, logins, chats, version, legacy, pictures: join(dirname(data), 'pictures') }), process.stdin)
+  const serving = host.serve(handlers({ store, logins, chats, version, legacy, pictures }), process.stdin)
   // Work a crash cut off resumes only with the pass. Without it an update is installing, and the work resumes after
   // the restart.
   const resumable = await busy.watch(store.harness)

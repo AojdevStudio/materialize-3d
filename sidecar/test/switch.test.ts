@@ -52,6 +52,21 @@ describe('a picture pasted into a draft', () => {
     await expect(app.call('drafts.picture', { name: '../escape.png', data: '' })).rejects.toThrow()
     await app.quit()
   })
+
+  test('is removed at the next start once no draft keeps it, and kept while one does', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'm3d-picture-'))
+    const first = spawnSidecar(join(dir, 'state'), join(dir, 'projects'))
+    await first.next()
+    const kept = (await first.call('drafts.picture', { name: 'kept.png', data: '' })) as string
+    const dropped = (await first.call('drafts.picture', { name: 'dropped.png', data: '' })) as string
+    await first.call('drafts.set', { key: 'new', text: 'like this', attachments: [kept] })
+    await first.quit()
+    const second = spawnSidecar(join(dir, 'state'), join(dir, 'projects'))
+    await second.next()
+    expect(existsSync(kept)).toBe(true)
+    expect(existsSync(dropped)).toBe(false)
+    await second.quit()
+  })
 })
 
 describe('the import of chats from before the store', () => {

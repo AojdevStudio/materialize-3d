@@ -2,7 +2,7 @@
 //! saved yet. The window saves its draft a moment after typing pauses, so text typed just before a quit would be lost
 //! without this. A restart for an update cannot be held: Tauri ignores a hold on it, and the update waits for idle.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 use std::time::Duration;
 
 use tauri::{AppHandle, Emitter, Manager, Runtime, State};
@@ -14,27 +14,56 @@ const FLUSH: &str = "studio://flush";
 /// How long a quit waits for the window. A window that does not answer, as one that is gone, never holds it longer.
 const FLUSH_WAIT: Duration = Duration::from_millis(1500);
 
+/// What runs once the window has saved: the quit, or the window's close, each held for the save.
+type Held = Box<dyn FnOnce() + Send>;
+
+/// Where the save before a quit stands.
+#[derive(Default)]
+enum Stage {
+    #[default]
+    Idle,
+    /// The window was asked. Each quit or close that came meanwhile waits here for the same save.
+    Saving(Vec<Held>),
+    /// The window saved, or the wait ended. A quit or close now goes through.
+    Saved,
+}
+
 #[derive(Default)]
 pub struct QuitFlush {
-    /// Set once the window was asked, so the quit or close that follows the answer goes through.
-    asked: AtomicBool,
+    stage: Mutex<Stage>,
     saved: Notify,
 }
 
 impl QuitFlush {
-    /// Asks the window to save its draft, the first time only, and then runs `then`. Returns whether it asked, so the
-    /// caller holds the quit or close until `then` runs.
+    /// Holds a quit or a close until the window has saved its draft, and then runs `then`. The first one asks the
+    /// window. One that comes while it saves waits for the same save. Returns whether it held, so the caller stops the
+    /// quit or close for now; once the window has saved, nothing is held.
     pub fn hold<R: Runtime>(app: &AppHandle<R>, then: impl FnOnce(AppHandle<R>) + Send + 'static) -> bool {
         let flush = app.state::<QuitFlush>();
-        if flush.asked.swap(true, Ordering::SeqCst) {
-            return false;
+        let mut stage = flush.stage.lock().unwrap_or_else(|e| e.into_inner());
+        let handle = app.clone();
+        let held: Held = Box::new(move || then(handle));
+        match &mut *stage {
+            Stage::Saved => return false,
+            Stage::Saving(waiting) => {
+                waiting.push(held);
+                return true;
+            }
+            Stage::Idle => *stage = Stage::Saving(vec![held]),
         }
+        drop(stage);
         let app = app.clone();
         tauri::async_runtime::spawn(async move {
             if app.emit(FLUSH, ()).is_ok() {
                 let _ = tokio::time::timeout(FLUSH_WAIT, app.state::<QuitFlush>().saved.notified()).await;
             }
-            then(app);
+            let held = match std::mem::replace(&mut *app.state::<QuitFlush>().stage.lock().unwrap_or_else(|e| e.into_inner()), Stage::Saved) {
+                Stage::Saving(held) => held,
+                Stage::Idle | Stage::Saved => Vec::new(),
+            };
+            for then in held {
+                then();
+            }
         });
         true
     }
@@ -72,11 +101,18 @@ mod tests {
         let app = tauri::test::mock_app();
         app.manage(QuitFlush::default());
         let (done, finished) = std::sync::mpsc::channel();
-        let first = done.clone();
-        assert!(QuitFlush::hold(app.handle(), move |_| first.send(()).unwrap()), "the first quit waits for the window");
-        assert!(!QuitFlush::hold(app.handle(), move |_| done.send(()).unwrap()), "the quit that follows goes through");
+        let (first, second) = (done.clone(), done.clone());
+        assert!(QuitFlush::hold(app.handle(), move |_| first.send("close").unwrap()), "the close waits for the window");
+        // A quit while the window still saves waits for the same save, then goes on too.
+        assert!(QuitFlush::hold(app.handle(), move |_| second.send("quit").unwrap()), "the quit waits for that save");
         // No window answers in the mock, so the wait ends at its limit.
-        finished.recv_timeout(FLUSH_WAIT + Duration::from_secs(2)).expect("the quit goes on");
+        let mut ran = [
+            finished.recv_timeout(FLUSH_WAIT + Duration::from_secs(2)).expect("the close goes on"),
+            finished.recv_timeout(Duration::from_secs(1)).expect("the quit goes on"),
+        ];
+        ran.sort();
+        assert_eq!(ran, ["close", "quit"]);
+        assert!(!QuitFlush::hold(app.handle(), move |_| done.send("again").unwrap()), "once saved, a quit goes through");
     }
 
     #[test]

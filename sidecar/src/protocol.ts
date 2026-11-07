@@ -97,6 +97,7 @@ export type AppState = StoredState & { importBlocked: string | null }
 /** Something the agent needs before a message can go out, and the one thing that gives it. */
 export type Need =
   | { kind: 'login'; provider: ProviderId; name: string; fix: string }
+  | { kind: 'model'; fix: string }
   | { kind: 'uv'; fix: string }
   | { kind: 'python'; fix: string }
 

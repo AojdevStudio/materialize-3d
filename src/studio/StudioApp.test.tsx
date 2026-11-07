@@ -27,8 +27,10 @@ vi.mock('@tauri-apps/api/webview', () => ({
 
 import StudioApp from './StudioApp'
 
-// jsdom has no layout, so the chat's scroll to its newest line is a no-op here.
+// jsdom has no layout, so the chat's scroll to its newest line is a no-op here, and no object URLs for previews.
 Element.prototype.scrollIntoView = vi.fn()
+URL.createObjectURL = vi.fn(() => 'blob:preview')
+URL.revokeObjectURL = vi.fn()
 
 const projectA = { id: '2026-11-06-a', conversation: 2, title: 'Project A', createdMs: 2 }
 const projectB = { id: '2026-11-06-b', conversation: 3, title: 'Project B', createdMs: 1 }
@@ -275,6 +277,88 @@ describe('StudioApp', () => {
     fireEvent.click(screen.getByText('Try again'))
     await waitFor(() => expect(screen.queryByTestId('import-blocked')).toBeNull())
     expect(await screen.findByText('Project A')).toBeTruthy()
+  })
+
+  it('checks again when the engine is ready, so a check that failed during a restart does not keep Send off', async () => {
+    let checks = 0
+    mockSidecar({ 'setup.check': () => (++checks === 1 ? Promise.reject('The engine restarted before it answered.') : Promise.resolve([])) })
+    render(<StudioApp />)
+    fireEvent.click(await screen.findByText('Project B'))
+    await screen.findByRole('banner')
+    type('A clip')
+    expect((screen.getByTestId('send') as HTMLButtonElement).disabled).toBe(true)
+    await emit({ type: 'ready', version: '1.2.3' })
+    await waitFor(() => expect((screen.getByTestId('send') as HTMLButtonElement).disabled).toBe(false))
+  })
+
+  it('never brings a sent picture back in the next draft', async () => {
+    let finishSend: (value: unknown) => void = () => {}
+    mockSidecar({ 'chat.send': () => new Promise((resolve) => (finishSend = resolve)), studio_import_file: () => Promise.resolve('refs/photo.jpg') }, [projectA, projectB])
+    render(<StudioApp />)
+    fireEvent.click(await screen.findByText('Project B'))
+    await screen.findByRole('banner')
+    await act(async () => listeners.drop.forEach((listener) => listener({ payload: { type: 'drop', paths: ['/Users/me/photo.jpg'] } })))
+    type('Like this')
+    fireEvent.click(screen.getByTestId('send'))
+    await waitFor(() => expect(sidecarCalls('chat.send')).toHaveLength(1))
+    type('And thinner')
+    await act(async () => finishSend(null))
+    await new Promise((resolve) => setTimeout(resolve, 500))
+    const saves = sidecarCalls('drafts.set')
+    expect(saves[saves.length - 1]).toEqual({ key: projectB.id, text: 'And thinner', attachments: [] })
+    fireEvent.click(screen.getByText('Project A'))
+    fireEvent.click(screen.getByText('Project B'))
+    await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project B'))
+    expect(screen.queryByTestId('attachments')).toBeNull()
+  })
+
+  it('takes a picture sent as a first message off the start screen', async () => {
+    mockSidecar({
+      'projects.create': () => Promise.resolve({ id: '2026-11-06-new-part', conversation: 4, title: 'New part', createdMs: 3 }),
+      studio_import_file: () => Promise.resolve('refs/photo.jpg'),
+    })
+    render(<StudioApp />)
+    await screen.findByText('Project B')
+    await act(async () => listeners.drop.forEach((listener) => listener({ payload: { type: 'drop', paths: ['/Users/me/photo.jpg'] } })))
+    fireEvent.click(screen.getByTestId('send'))
+    await waitFor(() => expect(sidecarCalls('chat.send')).toHaveLength(1))
+    fireEvent.click(screen.getByTestId('new-project'))
+    expect(screen.queryByTestId('attachments')).toBeNull()
+    await waitFor(() => {
+      const saves = sidecarCalls('drafts.set').filter((save) => save.key === 'new')
+      expect(saves[saves.length - 1]).toEqual({ key: 'new', text: '', attachments: [] })
+    })
+  })
+
+  it('keeps a pasted picture on the screen it was pasted on, even when the person leaves before it is kept', async () => {
+    let finishPicture: (path: unknown) => void = () => {}
+    mockSidecar({ 'drafts.picture': () => new Promise((resolve) => (finishPicture = resolve)) }, [projectA, projectB])
+    render(<StudioApp />)
+    fireEvent.click(await screen.findByText('Project A'))
+    await screen.findByRole('banner')
+    const file = new File(['png'], 'shot.png', { type: 'image/png' })
+    fireEvent.paste(prompt(), { clipboardData: { files: [file] } })
+    await waitFor(() => expect(sidecarCalls('drafts.picture')).toHaveLength(1))
+    fireEvent.click(screen.getByText('Project B'))
+    await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project B'))
+    await act(async () => finishPicture('/state/pictures/1/shot.png'))
+    expect(screen.queryByTestId('attachments')).toBeNull()
+  })
+
+  it("brings the start screen's saved pictures back even when the person typed before the saved state arrived", async () => {
+    let finishState: (state: unknown) => void = () => {}
+    mockSidecar({ 'state.get': () => new Promise((resolve) => (finishState = resolve)) })
+    render(<StudioApp />)
+    type('a hook')
+    await act(async () =>
+      finishState({ setup: { step: 'ready', done: true }, settings, projects: [projectB], drafts: { new: { text: 'older', attachments: ['/Users/me/hook.jpg'] } }, importBlocked: null }),
+    )
+    expect(screen.getByTestId('attachments').textContent).toContain('hook.jpg')
+    expect(prompt().value).toBe('a hook')
+    await waitFor(() => {
+      const saves = sidecarCalls('drafts.set')
+      expect(saves[saves.length - 1]).toEqual({ key: 'new', text: 'a hook', attachments: ['/Users/me/hook.jpg'] })
+    })
   })
 
   it('keeps chat changes that arrive while the chat opens', async () => {

@@ -3,7 +3,7 @@ import { openUrl } from '@tauri-apps/plugin-opener'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { AppState, Draft, LoginEvent, Need, ChatView as View, Project } from '../../sidecar/src/protocol'
 import { autoOpens, onQuitFlush, onSidecarEvent, sidecar, studio, type ProjectFile } from './api'
-import { ChatView, Composer, releaseAttachment, savedAttachment, type Attachment } from './Chat'
+import { ChatView, Composer, releaseAttachment, savedAttachment, type Attachment, type PastedPicture } from './Chat'
 import RightPanel, { type Tab } from './RightPanel'
 import { buildChat } from './transcript'
 import { ImportBlockedBanner, ReadinessBanner, SignInAsk, WaitingBanner } from './Waiting'
@@ -117,10 +117,19 @@ export default function StudioApp() {
     // A project made while this was on its way is newer than the saved list, so it stays.
     setProjects((made) => [...made.filter((p) => !state.projects.some((saved) => saved.id === p.id)), ...state.projects])
     setImportBlocked(state.importBlocked)
-    if (currentId.current === null && !typedOnStart.current) {
+    if (currentId.current === null) {
       const draft = drafts.current[START]
-      setText(draft?.text ?? '')
-      setAttachments((now) => (now.length === 0 ? (draft?.attachments ?? []).map(savedAttachment) : now))
+      if (!typedOnStart.current) setText(draft?.text ?? '')
+      // Pictures the person has not touched yet come back even when they typed first. A save that waits for that typing
+      // then keeps them too.
+      const restored = (draft?.attachments ?? []).map(savedAttachment)
+      if (unsent.current.length === 0 && restored.length > 0) {
+        if (unsaved.current?.key === START) setPictures(restored)
+        else {
+          unsent.current = restored
+          setAttachments(restored)
+        }
+      }
     }
   }
 
@@ -151,6 +160,8 @@ export default function StudioApp() {
         case 'ready': {
           engineChanged = true
           setEngine(`Engine ${event.version}`)
+          // A check that failed while the engine started again is asked again, so Send does not stay off.
+          checkReady()
           // An engine that started again holds what a crash cut off from the window, such as a turn's last entry, so
           // the open chat is read again. The changes that arrive meanwhile are kept, as when it first opened.
           const project = currentId.current
@@ -234,6 +245,24 @@ export default function StudioApp() {
     unsent.current = next
     setAttachments(next)
     queueDraft(composerText.current, next)
+  }
+
+  /** Keeps pasted pictures in files, then adds them to the screen they were pasted on, if the person is still there. */
+  const pastePictures = (pasted: PastedPicture[]) => {
+    const request = loadRequest.current
+    void Promise.all(pasted.map(({ name, bytes }) => sidecar('drafts.picture', { name, data: toBase64(bytes) })))
+      .then((paths) => {
+        const added = pasted.map(({ name, previewUrl }, i) => ({ name, path: paths[i] ?? '', previewUrl }))
+        if (request !== loadRequest.current) {
+          added.forEach(releaseAttachment)
+          return
+        }
+        setPictures([...unsent.current, ...added])
+      })
+      .catch((err: unknown) => {
+        pasted.forEach(({ previewUrl }) => URL.revokeObjectURL(previewUrl))
+        setError(String(err))
+      })
   }
 
   // A quit or the window's close first saves the draft still waiting, then lets the quit go on.
@@ -339,11 +368,13 @@ export default function StudioApp() {
       const sentEdits = edits.current
       let project = current
       if (!project) {
-        const created = await sidecar('projects.create', { title: message || 'New part' })
+        const title = message || 'New part'
+        const created = await sidecar('projects.create', { title })
         project = created
-        // The sidecar moved the start screen's draft to the new project in the same commit, when it held this message.
+        // The sidecar moved the start screen's draft to the new project in the same commit when the draft's text is the
+        // project's title, as for a first message with text. One of only pictures stays on the start screen.
         const { [START]: started, ...rest } = drafts.current
-        if (started?.text.trim() === message) drafts.current = { ...rest, [created.id]: started }
+        if (started !== undefined && started.text.trim() === title) drafts.current = { ...rest, [created.id]: started }
         setProjects((prev) => [created, ...prev])
         if (loadRequest.current === request) {
           // The person stayed on the screen this was sent from, so text typed while the project was made follows them
@@ -390,8 +421,24 @@ export default function StudioApp() {
         drafts.current = { ...drafts.current, [id]: { text: '', attachments: [] } }
       }
       if (edits.current === sentEdits && loadRequest.current === request) setText((now) => (now.trim() === message ? '' : now))
-      // A picture added while these imported waits for the next message.
-      setAttachments((prev) => prev.filter((a) => !outgoing.includes(a)))
+      // The sent pictures leave every draft that names them: the one waiting to be saved, the saved one of this
+      // project, and the start screen's, which a first message of only pictures leaves in place. A picture added
+      // while these imported waits for the next message.
+      const sent = new Set(outgoing.map((a) => a.path))
+      const unsentNames = (draft: Draft) => draft.attachments.filter((path) => !sent.has(path))
+      if (unsaved.current !== null) unsaved.current.draft = { ...unsaved.current.draft, attachments: unsentNames(unsaved.current.draft) }
+      for (const key of [id, START]) {
+        const draft = drafts.current[key]
+        if (draft === undefined || draft.attachments.every((path) => !sent.has(path))) continue
+        drafts.current = { ...drafts.current, [key]: { ...draft, attachments: unsentNames(draft) } }
+        if (unsaved.current?.key !== key) {
+          void sidecar('drafts.set', { key, ...drafts.current[key] }).catch((err: unknown) => setError(String(err)))
+        }
+      }
+      if (loadRequest.current === request) {
+        unsent.current = unsent.current.filter((a) => !outgoing.includes(a))
+        setAttachments(unsent.current)
+      }
       outgoing.forEach(releaseAttachment)
     } catch (err) {
       const message = String(err)
@@ -424,7 +471,7 @@ export default function StudioApp() {
         onText={type}
         attachments={attachments}
         onAttach={(more) => setPictures([...unsent.current, ...more])}
-        onPaste={(name, bytes) => sidecar('drafts.picture', { name, data: toBase64(bytes) })}
+        onPaste={pastePictures}
         onRemove={(index) => {
           releaseAttachment(attachments[index])
           setPictures(unsent.current.filter((_, i) => i !== index))

@@ -153,6 +153,15 @@ describe('the check before a send', () => {
     expect((await check(toolchain(false), true)).map((need) => need.kind)).toEqual(['python'])
   })
 
+  test('names a model whose provider the app does not offer', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'm3d-check-'))
+    const app = spawnSidecar(join(dir, 'state'), join(dir, 'projects'), new Map(), { env: { PATH: toolchain(true) } })
+    await app.next()
+    await app.call('settings.set', { model: { provider: 'openai', modelId: 'gpt-6' } })
+    expect(((await app.call('setup.check', {})) as { kind: string }[]).map((need) => need.kind)).toEqual(['model'])
+    await app.quit()
+  })
+
   test('has nothing to name when the sign-in, uv, and Python are all there', async () => {
     expect(await check(toolchain(true), true)).toEqual([])
   })
