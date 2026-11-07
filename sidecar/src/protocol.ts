@@ -21,6 +21,8 @@ export type Settings = {
 
 /** `conversation` is the project's Pi conversation id. */
 export type Project = { id: string; conversation: number; title: string; createdMs: number }
+/** A project just made, and the start screen's draft it took as its own, if it took one. */
+export type CreatedProject = Project & { draft: SavedDraft | null }
 
 /** An unsent message, by project id, or `new` for the start screen. Attachments are paths inside the project. */
 export type Draft = { text: string; attachments: string[] }
@@ -121,7 +123,7 @@ export interface Methods {
   'setup.check': { params: Record<string, never>; result: Need[] }
   /** Imports the chats from before the store again, as after the person let the app read the projects folder. */
   'legacy.import': { params: Record<string, never>; result: { imported: number; blocked: string | null } }
-  'projects.create': { params: { title: string }; result: Project }
+  'projects.create': { params: { title: string }; result: CreatedProject }
   'auth.status': { params: Record<string, never>; result: Login[] }
   /** A key, or for Anthropic a proxy's base URL and token. */
   'auth.setKey': { params: { provider: ProviderId; key: string; baseUrl?: string }; result: Login[] }

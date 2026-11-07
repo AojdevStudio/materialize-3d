@@ -58,27 +58,57 @@ type Calls = Record<string, (params: Record<string, unknown>) => Promise<unknown
 let draftRevs = 0
 
 function mockSidecar(overrides: Calls = {}, projects = [projectB], drafts: Record<string, { text: string; attachments?: string[]; rev?: number }> = {}) {
-  invokeMock.mockImplementation((command: string, args: { method: string; params: Record<string, unknown> }) => {
-    if (command === 'update_check') return Promise.resolve({ status: 'upToDate' })
-    if (command === 'studio_files') return Promise.resolve([])
-    if (overrides[command]) return overrides[command](args as unknown as Record<string, unknown>)
-    if (command !== 'sidecar') return Promise.resolve(undefined)
-    const override = overrides[args.method]
-    if (override) return override(args.params)
-    switch (args.method) {
+  // The drafts the sidecar holds, as the window saved them, so a new project takes the start screen's draft by the
+  // sidecar's own rule: when its text is the project's title.
+  const held: Record<string, { text: string; attachments: string[]; rev: number }> = {}
+  for (const [key, draft] of Object.entries(drafts)) held[key] = { text: draft.text, attachments: draft.attachments ?? [], rev: draft.rev ?? 0 }
+  const call = (method: string, params: Record<string, unknown>): Promise<unknown> => {
+    const override = overrides[method]
+    if (method === 'drafts.set') {
+      const saved = override ? override(params) : Promise.resolve({ rev: ++draftRevs })
+      return saved.then((value) => {
+        const { rev } = value as { rev: number }
+        const draft = { text: String(params.text), attachments: params.attachments as string[], rev }
+        if (draft.text === '' && draft.attachments.length === 0) delete held[String(params.key)]
+        else held[String(params.key)] = draft
+        return value
+      })
+    }
+    if (method === 'projects.create') {
+      const made = override ? override(params) : Promise.resolve(null)
+      return made.then((project) => {
+        if (project === null || typeof project !== 'object' || 'draft' in project) return project
+        const id = (project as { id: string }).id
+        const start = held.new
+        if (start === undefined || start.text.trim() !== String(params.title).trim()) return { ...project, draft: null }
+        held[id] = start
+        delete held.new
+        return { ...project, draft: start }
+      })
+    }
+    if (override) return override(params)
+    return defaults(method, params)
+  }
+  const defaults = (method: string, params: Record<string, unknown>): Promise<unknown> => {
+    switch (method) {
       case 'app.ping':
         return Promise.resolve({ version: '1.2.3' })
       case 'state.get':
         return Promise.resolve({ setup: { step: 'ready', done: true }, settings, projects, drafts, importBlocked: null })
       case 'chat.open':
-        return Promise.resolve(view(String(args.params.project)))
+        return Promise.resolve(view(String(params.project)))
       case 'setup.check':
         return Promise.resolve([])
-      case 'drafts.set':
-        return Promise.resolve({ rev: ++draftRevs })
       default:
         return Promise.resolve(null)
     }
+  }
+  invokeMock.mockImplementation((command: string, args: { method: string; params: Record<string, unknown> }) => {
+    if (command === 'update_check') return Promise.resolve({ status: 'upToDate' })
+    if (command === 'studio_files') return Promise.resolve([])
+    if (overrides[command]) return overrides[command](args as unknown as Record<string, unknown>)
+    if (command !== 'sidecar') return Promise.resolve(undefined)
+    return call(args.method, args.params)
   })
 }
 
@@ -596,6 +626,69 @@ describe('StudioApp', () => {
     await waitFor(() => expect(sidecarCalls('chat.send')).toHaveLength(2))
     const [first, second] = sidecarCalls('chat.send')
     expect(second?.requestId).toBe(first?.requestId)
+  })
+
+  it('sends text changed after a lost answer as a new message, even when the change could not be saved', async () => {
+    let sends = 0
+    let saves = 0
+    mockSidecar(
+      {
+        'chat.send': () => (sends++ === 0 ? Promise.reject('The engine restarted before it answered. Try again.') : Promise.resolve(null)),
+        'drafts.set': () => (++saves === 2 ? Promise.reject('The engine is starting.') : Promise.resolve({ rev: 100 + saves })),
+      },
+      [projectA, projectB],
+    )
+    render(<StudioApp />)
+    fireEvent.click(await screen.findByText('Project A'))
+    await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project A'))
+    type('A clip for my desk')
+    fireEvent.click(screen.getByTestId('send'))
+    await screen.findByRole('alert')
+    type('A clip for my shelf')
+    // The pause after typing saves the change, and that save fails.
+    await waitFor(() => expect(sidecarCalls('drafts.set')).toHaveLength(2))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    fireEvent.click(screen.getByTestId('send'))
+    await waitFor(() => expect(sidecarCalls('chat.send')).toHaveLength(2))
+    const [first, second] = sidecarCalls('chat.send')
+    expect(second).toMatchObject({ text: 'A clip for my shelf' })
+    expect(second?.requestId).not.toBe(first?.requestId)
+  })
+
+  it('opens a first message\'s project with the draft the sidecar moved there, not a newer start draft', async () => {
+    let finishCreate: (project: unknown) => void = () => {}
+    let sends = 0
+    let imports = 0
+    mockSidecar({
+      'projects.create': () => new Promise((resolve) => (finishCreate = resolve)),
+      'chat.send': () => (sends++ === 0 ? Promise.reject('The engine restarted before it answered. Try again.') : Promise.resolve(null)),
+      studio_import_file: () => Promise.resolve(`refs/pic-${++imports}.jpg`),
+    })
+    render(<StudioApp />)
+    await screen.findByText('Project B')
+    type('A knob')
+    await act(async () => listeners.drop.forEach((listener) => listener({ payload: { type: 'drop', paths: ['/Users/me/a.jpg'] } })))
+    fireEvent.click(screen.getByTestId('send'))
+    await waitFor(() => expect(sidecarCalls('projects.create')).toHaveLength(1))
+    const sentRev = draftRevs
+    // While the project is made, the person swaps the picture and leaves.
+    fireEvent.click(screen.getByLabelText('Remove a.jpg'))
+    await act(async () => listeners.drop.forEach((listener) => listener({ payload: { type: 'drop', paths: ['/Users/me/b.jpg'] } })))
+    fireEvent.click(screen.getByText('Project B'))
+    const made = { id: '2026-11-06-a-knob', conversation: 4, title: 'A knob', createdMs: 3 }
+    await act(async () => finishCreate({ ...made, draft: { text: 'A knob', attachments: ['/Users/me/a.jpg'], rev: sentRev } }))
+    await waitFor(() => expect(sidecarCalls('chat.send')).toHaveLength(1))
+    fireEvent.click(await screen.findByText('A knob'))
+    await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('A knob'))
+    expect(screen.getByTestId('attachments').textContent).toContain('a.jpg')
+    expect(screen.getByTestId('attachments').textContent).not.toContain('b.jpg')
+    fireEvent.click(screen.getByTestId('send'))
+    await waitFor(() => expect(sidecarCalls('chat.send')).toHaveLength(2))
+    const [first, second] = sidecarCalls('chat.send')
+    expect(second?.requestId).toBe(first?.requestId)
+    // The start screen keeps the newer draft with b.jpg.
+    fireEvent.click(screen.getByTestId('new-project'))
+    await waitFor(() => expect(screen.getByTestId('attachments').textContent).toContain('b.jpg'))
   })
 
   it('names the start draft a first send went out with, even when the person saved a newer one and left before the project was made', async () => {

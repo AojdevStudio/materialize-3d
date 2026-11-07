@@ -13,7 +13,7 @@ import { type Conversation, defineDoc, type HarnessOptions, Harness, type Regist
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node'
 import type { LoginIndex } from './inference'
 import type { LegacyProject } from './legacy'
-import type { Draft, LoginKind, Project, SavedDraft, Settings, Setup, StoredState, Turn, Waiting } from './protocol'
+import type { CreatedProject, Draft, LoginKind, Project, SavedDraft, Settings, Setup, StoredState, Turn, Waiting } from './protocol'
 
 const context = BACKGROUND_CONTEXT
 
@@ -57,7 +57,7 @@ const ProjectsDoc = defineDoc<{ projects: Project[] }>({
   checkpointWhen: always,
 })
 
-export const DraftsDoc = defineDoc<{ drafts: Record<string, Draft & { rev?: number }>; seq?: number }>({
+export const DraftsDoc = defineDoc<{ drafts: Record<string, SavedDraft>; seq?: number }>({
   kind: 'm3d.drafts',
   version: 1,
   scope: 'conversation',
@@ -227,7 +227,8 @@ export class Store implements LoginIndex {
   async reviseOldDrafts(): Promise<void> {
     await this.harness.commit(async (tx) => {
       const doc = await tx.doc(DraftsDoc, this.root.id)
-      for (const draft of Object.values(doc.drafts)) {
+      // A store from before revisions holds drafts without one, which this read is the only place to see.
+      for (const draft of Object.values(doc.drafts) as (Draft & { rev?: number })[]) {
         if (draft.rev !== undefined) continue
         doc.seq = (doc.seq ?? 0) + 1
         draft.rev = doc.seq
@@ -239,9 +240,10 @@ export class Store implements LoginIndex {
    * Makes a project: its conversation, its place in the index, and the start screen's draft moved to it when that
    * draft holds the project's first message, in one commit. A start screen draft with other text is the person's next
    * idea, so it stays. The folder is made inside that commit, before anything is kept, so a folder that cannot be made
-   * keeps nothing. A crash after the folder leaves an empty folder, which the next id skips.
+   * keeps nothing. A crash after the folder leaves an empty folder, which the next id skips. It answers with the draft it
+   * moved, so the window shows what the project holds rather than guessing.
    */
-  async createProject(title: string): Promise<Project> {
+  async createProject(title: string): Promise<CreatedProject> {
     const firstLine = (title.split('\n')[0] ?? '').trim().slice(0, 80) || 'New part'
     const now = new Date()
     // The person's own date, as the folder name shows it.
@@ -259,11 +261,11 @@ export class Store implements LoginIndex {
       index.projects.push(created)
       const { drafts } = await tx.doc(DraftsDoc, this.root.id)
       const draft = drafts.new
-      if (draft !== undefined && draft.text.trim() === title.trim()) {
-        drafts[id] = draft
-        delete drafts.new
-      }
-      return created
+      if (draft === undefined || draft.text.trim() !== title.trim()) return { ...created, draft: null }
+      drafts[id] = draft
+      delete drafts.new
+      // A plain copy, since the documents a commit hands out are only valid inside it.
+      return { ...created, draft: { text: draft.text, attachments: [...draft.attachments], rev: draft.rev } }
     }, context)
     return project
   }

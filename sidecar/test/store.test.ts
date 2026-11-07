@@ -132,7 +132,7 @@ describe('app state', () => {
     const app = spawnSidecar(data, projects)
     await app.next()
     await app.call('drafts.set', { key: 'new', text: 'A shelf bracket', attachments: [] })
-    await app.call('projects.create', { title: 'A knob' })
+    expect(((await app.call('projects.create', { title: 'A knob' })) as { draft: unknown }).draft).toBeNull()
     expect(((await app.call('state.get')) as { drafts: object }).drafts).toEqual({ new: { text: 'A shelf bracket', attachments: [], rev: expect.any(Number) } })
     await app.quit()
   })
@@ -149,7 +149,8 @@ describe('app state', () => {
       },
     })
     await old.harness.commit(async (tx) => {
-      ;(await tx.doc(DraftsDoc, old.root.id)).drafts.new = { text: 'A knob', attachments: [] }
+      // A draft as a store from before revisions holds it.
+      ;((await tx.doc(DraftsDoc, old.root.id)).drafts as Record<string, { text: string; attachments: string[] }>).new = { text: 'A knob', attachments: [] }
     }, BACKGROUND_CONTEXT)
     await old.close()
 
@@ -167,8 +168,10 @@ describe('app state', () => {
     const { data, projects } = scratch()
     const app = spawnSidecar(data, projects)
     await app.next()
-    await app.call('drafts.set', { key: 'new', text: 'A knob', attachments: ['refs/shaft.png'] })
-    const project = (await app.call('projects.create', { title: 'A knob' })) as { id: string }
+    const { rev } = (await app.call('drafts.set', { key: 'new', text: 'A knob', attachments: ['refs/shaft.png'] })) as { rev: number }
+    const project = (await app.call('projects.create', { title: 'A knob' })) as { id: string; draft: unknown }
+    // It answers with the draft it took, so the window need not guess.
+    expect(project.draft).toEqual({ text: 'A knob', attachments: ['refs/shaft.png'], rev })
     expect(((await app.call('state.get')) as { drafts: object }).drafts).toEqual({ [project.id]: { text: 'A knob', attachments: ['refs/shaft.png'], rev: expect.any(Number) } })
     await app.quit()
   })

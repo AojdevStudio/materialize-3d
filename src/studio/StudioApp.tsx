@@ -85,11 +85,12 @@ export default function StudioApp() {
   /** A draft not saved yet, and the timer that saves it. */
   const unsaved = useRef<{ key: string; draft: Draft; timer: number } | null>(null)
   /**
-   * Messages whose send has not gone through, by project, each named by the revision of the saved draft it went out
-   * as. The same revision is the same message: it goes out again with the same pictures under the same request id, so a
-   * send whose reply was lost is never sent twice. Any edit saves a new revision, and so makes a new message.
+   * Messages whose send has not gone through, by project, each with the count of edits to the project's composer it went
+   * out at. A send at that same count is the same message: it goes out again with the same pictures under the same
+   * request id, so a send whose reply was lost is never sent twice. Any edit, saved or not, makes a new message, and
+   * moving between screens is no edit.
    */
-  const pending = useRef(new Map<string, { rev: number; images: string[]; id: string }>())
+  const pending = useRef(new Map<string, { edits: number; images: string[]; id: string }>())
   /** Whether the person typed on the start screen, so the saved draft no longer fills it. */
   const typedOnStart = useRef(false)
   /** Whether the person changed the start screen's pictures, so its saved ones no longer fill it. */
@@ -417,14 +418,16 @@ export default function StudioApp() {
       let moved = false
       let project = current
       if (!project) {
-        const title = message || 'New part'
-        const created = await sidecar('projects.create', { title })
+        const { draft: took, ...created } = await sidecar('projects.create', { title: message || 'New part' })
         project = created
-        const { [START]: started, ...rest } = drafts.current
-        moved = started !== undefined && started.text.trim() === title
-        if (moved && started !== undefined) {
-          drafts.current = { ...rest, [created.id]: started }
-          if (fromRev !== undefined) revs.current[created.id] = fromRev
+        // The project holds the start screen's draft only if the sidecar says it took it. The start screen's own draft,
+        // if the person changed it since this send, is newer, and stays.
+        if (took !== null) {
+          moved = true
+          const { rev, ...draft } = took
+          drafts.current = { ...drafts.current, [created.id]: draft }
+          revs.current[created.id] = rev
+          if ((edits.current[START] ?? 0) === fromEdits) drafts.current = { ...drafts.current, [START]: empty }
         }
         setProjects((prev) => [created, ...prev])
         if (loadRequest.current === request) {
@@ -440,9 +443,6 @@ export default function StudioApp() {
             for (const [key, value] of [[created.id, draft], [START, empty]] as const) {
               void storeDraft(key, value).catch((err: unknown) => setError(String(err)))
             }
-          } else if (fromRev !== undefined) {
-            // The project's composer holds what went out, so a send again from it is the same message.
-            revs.current[created.id] = fromRev
           }
           show(created, true)
           request = loadRequest.current
@@ -460,10 +460,10 @@ export default function StudioApp() {
       const outgoing = attachments
       const last = pending.current.get(id)
       const sendable =
-        last !== undefined && last.rev === fromRev
+        last !== undefined && last.edits === projectEdits
           ? last
-          : { images: await Promise.all(outgoing.map((a) => studio.importFile(id, a.path))), id: crypto.randomUUID() }
-      if (fromRev !== undefined) pending.current.set(id, { ...sendable, rev: fromRev })
+          : { edits: projectEdits, images: await Promise.all(outgoing.map((a) => studio.importFile(id, a.path))), id: crypto.randomUUID() }
+      pending.current.set(id, sendable)
       await sidecar('chat.send', {
         project: id,
         requestId: sendable.id,
