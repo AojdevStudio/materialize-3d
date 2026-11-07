@@ -135,7 +135,7 @@ pub fn astra_home(home: &Path, app_data: &Path) -> Result<AstraHome, String> {
             toml::Table::new()
         }
     };
-    let AstraConfig { config, secrets } = astra_config(&user, &host_skills(home));
+    let AstraConfig { config, secrets } = astra_config(&user, &host_skills(home), |var| std::env::var_os(var).is_some());
     if !config.contains_key("model_providers") {
         log::warn!("studio: ~/.codex/config.toml has no cliproxy provider, so Astra cannot reach a model");
     }
@@ -204,7 +204,9 @@ struct AstraConfig {
     secrets: Vec<(String, String)>,
 }
 
-fn astra_config(user: &toml::Table, skills: &[PathBuf]) -> AstraConfig {
+/// `env_set` says whether a variable is set in the app's environment, which
+/// decides whether an environment-backed header wins over a static one.
+fn astra_config(user: &toml::Table, skills: &[PathBuf], env_set: impl Fn(&str) -> bool) -> AstraConfig {
     let keep = |table: &toml::Table, keys: &[&str]| -> toml::Table {
         table.iter().filter(|(key, _)| keys.contains(&key.as_str())).map(|(key, value)| (key.clone(), value.clone())).collect()
     };
@@ -230,6 +232,10 @@ fn astra_config(user: &toml::Table, skills: &[PathBuf]) -> AstraConfig {
             let mut named = provider.get("env_http_headers").and_then(toml::Value::as_table).cloned().unwrap_or_default();
             for (index, (header, value)) in headers.iter().enumerate() {
                 let Some(value) = value.as_str() else { continue };
+                // Codex sends an environment-backed header over a static one when its variable is set, so that mapping stays.
+                if named.get(header).and_then(toml::Value::as_str).is_some_and(|var| env_set(var)) {
+                    continue;
+                }
                 let var = format!("{ASTRA_HEADER_VAR}{index}");
                 named.insert(header.clone(), var.clone().into());
                 secrets.push((var, value.to_owned()));
@@ -285,6 +291,24 @@ mod tests {
     }
 
     #[test]
+    fn an_environment_backed_header_keeps_winning_when_its_variable_is_set() {
+        let user: toml::Table = r#"
+            [model_providers.cliproxy]
+            base_url = "https://mini:8317/v1"
+            http_headers = { Authorization = "Bearer static" }
+            env_http_headers = { Authorization = "PROXY_AUTH" }
+        "#
+        .parse()
+        .expect("toml");
+        let set = astra_config(&user, &[], |var| var == "PROXY_AUTH");
+        assert_eq!(set.config["model_providers"]["cliproxy"]["env_http_headers"]["Authorization"].as_str(), Some("PROXY_AUTH"));
+        assert!(set.secrets.is_empty(), "the static value is not used when the variable is set");
+        let unset = astra_config(&user, &[], |_| false);
+        let var = unset.config["model_providers"]["cliproxy"]["env_http_headers"]["Authorization"].as_str().expect("var").to_owned();
+        assert_eq!(unset.secrets, [(var, "Bearer static".to_owned())], "without the variable, the static value is sent");
+    }
+
+    #[test]
     fn a_codex_config_astra_cannot_read_never_stops_a_turn() {
         let home = tempfile::tempdir().expect("home");
         let data = tempfile::tempdir().expect("data");
@@ -313,7 +337,7 @@ mod tests {
         "#
         .parse()
         .expect("toml");
-        let AstraConfig { config, secrets } = astra_config(&user, &[PathBuf::from("/home/o/.agents/skills/a/SKILL.md")]);
+        let AstraConfig { config, secrets } = astra_config(&user, &[PathBuf::from("/home/o/.agents/skills/a/SKILL.md")], |_| false);
         assert_eq!(config["model"].as_str(), Some("gpt-6.1-sol"));
         assert_eq!(config["model_providers"]["cliproxy"]["auth"]["command"].as_str(), Some("cat"));
         assert!(!toml::to_string(&config).expect("toml").contains("secret-token"), "no inline secret is copied");
@@ -326,7 +350,7 @@ mod tests {
         assert!(config.get("mcp_servers").is_none(), "the person's MCP servers stay out");
         assert_eq!(config["project_doc_max_bytes"].as_integer(), Some(0));
         assert_eq!(config["skills"]["config"][0]["enabled"].as_bool(), Some(false));
-        let no_proxy = astra_config(&"model = \"gpt\"".parse().expect("toml"), &[]).config;
+        let no_proxy = astra_config(&"model = \"gpt\"".parse().expect("toml"), &[], |_| false).config;
         assert!(no_proxy.get("model_providers").is_none(), "with no cliproxy provider Astra reaches no model");
     }
 }
