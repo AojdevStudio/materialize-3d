@@ -43,7 +43,8 @@
     "resources": {
       "../LICENSE": "LICENSE",
       "../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md",
-      "resources/bambu/AGPL-3.0.txt": "AGPL-3.0.txt"
+      "resources/bambu/AGPL-3.0.txt": "AGPL-3.0.txt",
+      "resources/studio-plugin/": "studio-plugin/"
     },
     "macOS": {
       "minimumSystemVersion": "26.0",

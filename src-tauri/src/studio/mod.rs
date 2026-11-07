@@ -6,6 +6,7 @@
 //! in the project folder; later turns resume the same session.
 
 pub mod files;
+mod lean;
 pub mod turn;
 
 use std::path::{Path, PathBuf};

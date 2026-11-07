@@ -1,0 +1,5 @@
+{
+  "name": "materialize-studio",
+  "version": "0.1.0",
+  "description": "The workflow Materialize 3D's agent follows to turn a request into a print-ready 3MF. Ships inside the app."
+}

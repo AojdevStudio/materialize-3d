@@ -13,7 +13,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio_util::sync::CancellationToken;
 
-use super::{files, project_dir, read_meta, META_DIR};
+use super::{files, lean, project_dir, read_meta, META_DIR};
 use crate::fabrication::build_gate::{BuildGate, OwnedRunning};
 use crate::state::AppState;
 
@@ -296,6 +296,15 @@ pub fn studio_transcript(turns: State<'_, Turns>, project: String) -> Result<Vec
     Ok(events)
 }
 
+/// The app's data folder, or a verification run's own.
+fn app_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    #[cfg(feature = "e2e")]
+    if let Some(dir) = std::env::var_os("M3D_E2E_DATA_DIR") {
+        return Ok(PathBuf::from(dir));
+    }
+    app.path().app_data_dir().map_err(|e| format!("app data folder: {e}"))
+}
+
 /// The PATH of the person's login shell. An app opened from Finder starts with
 /// only the system folders, where `claude`, `codex`, and `uv` are not.
 fn login_path() -> &'static str {
@@ -379,6 +388,12 @@ pub fn studio_send(app: AppHandle, turns: State<'_, Turns>, project: String, tex
     content.push(json!({ "type": "text", "text": prompt }));
     let message = json!({ "type": "user", "message": { "role": "user", "content": content } });
 
+    // The agent's own environment: the person's inference login, the app's plugin, and nothing else of their setup.
+    let home = dirs::home_dir().ok_or("no home folder")?;
+    let inference = lean::ClaudeInference::read(&home)?;
+    let plugin = app.path().resource_dir().map_err(|e| format!("app resources: {e}"))?.join("studio-plugin");
+    let astra = lean::astra_home(&home, &app_data_dir(&app)?)?;
+
     // Taken before anything is written and dropped after the last write, on every path.
     let pass = take_pass(app.state::<Arc<AppState>>().inner().clone())?;
     let token = CancellationToken::new();
@@ -411,15 +426,22 @@ pub fn studio_send(app: AppHandle, turns: State<'_, Turns>, project: String, tex
         .args(["--model", &model, "--permission-mode", "bypassPermissions"])
         .args(["--append-system-prompt", SYSTEM_PROMPT])
         .args([session_flag, &meta.session_id])
+        .args(inference.args(&plugin))
         .current_dir(&dir)
         .env("PATH", login_path())
         .env_remove("CLAUDECODE")
         .env_remove("CLAUDE_CODE_ENTRYPOINT")
+        .envs(inference.env.iter().map(|(key, value)| (key, value)))
+        .envs(lean::NO_MEMORY_ENV)
         .env(TAG_VAR, &tag)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    // Astra, the codex helper, finds its own home through the agent's environment.
+    if let Some(astra) = &astra {
+        command.env("CODEX_HOME", astra);
+    }
     // Its own process group, apart from the app's, so signals to it never reach the app.
     #[cfg(unix)]
     command.process_group(0);
