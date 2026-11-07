@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import type { ProviderId, Waiting } from '../../sidecar/src/protocol'
+import type { LoginEvent, ProviderId, Waiting } from '../../sidecar/src/protocol'
 import { sidecar } from './api'
 
 /** Providers a key or a proxy can sign in to, and those with a subscription sign-in. */
@@ -47,6 +47,52 @@ export function WaitingBanner({ project, waiting, onError }: { project: string; 
           )}
           <button type="submit" disabled={key === ''}>
             Save
+          </button>
+        </form>
+      )}
+    </div>
+  )
+}
+
+/** What a sign-in needs from the person: the code to enter on the page it opened, or an answer to its question. */
+export function SignInAsk({ ask, onAnswer }: { ask: Extract<LoginEvent, { step: 'open' | 'ask' }>; onAnswer: (text: string) => void }) {
+  const [text, setText] = useState('')
+  if (ask.step === 'open') {
+    return (
+      <div className="waiting" role="status" data-testid="sign-in">
+        <span>
+          Enter the code {ask.code} at {ask.url}
+        </span>
+      </div>
+    )
+  }
+  return (
+    <div className="waiting" role="status" data-testid="sign-in">
+      {ask.kind === 'select' ? (
+        <>
+          <span>{ask.message}</span>
+          {ask.options?.map((option) => (
+            <button type="button" key={option.id} onClick={() => onAnswer(option.id)}>
+              {option.label}
+            </button>
+          ))}
+        </>
+      ) : (
+        <form
+          onSubmit={(event) => {
+            event.preventDefault()
+            onAnswer(text)
+          }}
+        >
+          <input
+            type={ask.kind === 'secret' ? 'password' : 'text'}
+            placeholder={ask.message}
+            aria-label={ask.message}
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+          />
+          <button type="submit" disabled={text === ''}>
+            Answer
           </button>
         </form>
       )}

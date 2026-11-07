@@ -1,7 +1,7 @@
 /**
  * Chats: one Pi conversation per project. A send commits the message, the settings its turn runs with, and the
- * draft's removal together. A turn that stops before its answer waits with the fix named, and continues once it is
- * fixed. The window sees committed entries only.
+ * removal of the draft that holds the message together. A turn that stops before its answer waits with the fix named,
+ * and continues once it is fixed. The window sees committed entries only.
  */
 import { mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -191,9 +191,9 @@ export class Chats {
   }
 
   /**
-   * Sends a message. The message, the settings its turn runs with, and the draft's removal commit together. A send
-   * whose `requestId` was already committed changes nothing, so the window can send again after any failure, even
-   * once a picture it sent is gone.
+   * Sends a message. The message, the settings its turn runs with, and the removal of the draft that holds it commit
+   * together. A send whose `requestId` was already committed changes nothing, so the window can send again after any
+   * failure, even once a picture it sent is gone.
    */
   async send(project: string, requestId: string, text: string, attachments: string[]): Promise<void> {
     const { store, extension, tools, version, busy } = this.#o
@@ -220,7 +220,9 @@ export class Chats {
         await configure(tx, conversation.id, { model, thinkingLevel: thinking, extensions: [extension], tools, instructions: WORKFLOW, cwd: folder })
         const turn: Turn = { requestId, model, thinking, tools: tools.map((t) => t.name), instructions: WORKFLOW_VERSION, app: version, startedMs: Date.now() }
         ;(await tx.doc(TurnDoc, conversation.id)).turn = turn
-        delete (await tx.doc(DraftsDoc, store.root.id)).drafts[project]
+        // Text typed after this message was sent is a newer message, so only a draft of this text goes.
+        const { drafts } = await tx.doc(DraftsDoc, store.root.id)
+        if (drafts[project]?.text.trim() === text.trim()) delete drafts[project]
         const waiting = await tx.doc(WaitingDoc, conversation.id)
         waiting.waiting = null
         waiting.tool = false
@@ -290,7 +292,7 @@ export class Chats {
             await hold({ kind: 'login', provider, name, fix })
             await this.#show(project)
           }
-          await awaitWithContext(promise, waiting)
+          await this.#o.busy.parked(() => awaitWithContext(promise, waiting))
         } finally {
           waiters.delete(resolve)
         }

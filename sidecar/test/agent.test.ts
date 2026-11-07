@@ -84,6 +84,17 @@ describe('a send', () => {
     await answered(app, project, 'answered by faux-a')
     await app.quit()
   })
+
+  test('leaves a draft that holds newer text than it sends', async () => {
+    const where = scratch()
+    const app = start(where, 'models')
+    await app.next()
+    const project = await newProject(app)
+    await app.call('drafts.set', { key: project, text: 'make it blue', attachments: [] })
+    await send(app, project, 'r1', 'make it red')
+    expect(((await app.call('state.get')) as { drafts: Record<string, unknown> }).drafts[project]).toEqual({ text: 'make it blue', attachments: [] })
+    await app.quit()
+  })
 })
 
 describe('a crash mid-turn', () => {

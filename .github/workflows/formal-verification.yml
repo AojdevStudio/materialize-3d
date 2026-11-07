@@ -30,6 +30,8 @@ on:
       - src-tauri/src/fabrication/pipeline.rs
       - src-tauri/src/sidecar.rs
       - sidecar/src/busy.ts
+      - sidecar/src/chat.ts
+      - sidecar/src/app.ts
       - .agents/skills/formal-verify-materialize-3d/**
       - .github/workflows/formal-verification.yml
   push:

@@ -1,12 +1,12 @@
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { ChatView as View, Project } from '../../sidecar/src/protocol'
+import type { LoginEvent, ChatView as View, Project } from '../../sidecar/src/protocol'
 import { autoOpens, onSidecarEvent, sidecar, studio, type ProjectFile } from './api'
 import { ChatView, Composer, releaseAttachment, type Attachment } from './Chat'
 import RightPanel, { type Tab } from './RightPanel'
 import { buildChat } from './transcript'
-import { WaitingBanner } from './Waiting'
+import { SignInAsk, WaitingBanner } from './Waiting'
 import { UpdateBanner } from '../components/UpdateBanner'
 import { checkForUpdatesAtLaunch, useUpdateEvents } from '../stores/updates'
 import './studio.css'
@@ -24,6 +24,14 @@ const START = 'new'
 
 /** How long typing pauses before the draft is saved. */
 const DRAFT_PAUSE_MS = 400
+
+/** A chat change on top of a view: entries joined by id, and the turn's state as the change gives it. */
+function merge(view: View, change: View): View {
+  const byId = new Map(view.entries.map((entry) => [entry.id, entry]))
+  for (const entry of change.entries) byId.set(entry.id, entry)
+  const entries = [...byId.values()].sort((a, b) => a.id - b.id)
+  return { ...view, entries, running: change.running, waiting: change.waiting, turn: change.turn }
+}
 
 function newestAutoOpen(files: ProjectFile[]): ProjectFile | undefined {
   return files.filter((f) => autoOpens(f.rel)).sort((a, b) => b.modifiedMs - a.modifiedMs)[0]
@@ -44,16 +52,30 @@ export default function StudioApp() {
   const [text, setText] = useState('')
   const [sending, setSending] = useState(false)
   const [engine, setEngine] = useState('Engine starting')
+  /** What a sign-in needs from the person: the code to enter on its page, or an answer. */
+  const [signIn, setSignIn] = useState<Extract<LoginEvent, { step: 'open' | 'ask' }> | null>(null)
   const sendingNow = useRef(false)
   const currentId = useRef<string | null>(null)
   /** Bumped on every switch, so a slow load for a project already left is dropped. */
   const loadRequest = useRef(0)
   /** The newest file time already shown, so only newer files take over the preview. */
   const lastSeen = useRef(0)
-  /** Saved drafts as the sidecar last gave them, to fill the composer when a project opens. */
+  /**
+   * Drafts by project, or `new` for the start screen, to fill the composer when a screen opens. The rules: typing saves
+   * the draft of its screen once typing pauses, or at once when the person leaves the screen or sends. A send removes
+   * the draft only when it holds the sent text. Making a project moves the start screen's draft to it.
+   */
   const drafts = useRef<Record<string, { text: string }>>({})
-  /** A send that has not gone through yet keeps its request id, so sending it again never sends it twice. */
-  const pending = useRef<{ key: string; id: string } | null>(null)
+  /** Typed text not saved yet, and the timer that saves it. */
+  const unsaved = useRef<{ key: string; text: string; timer: number } | null>(null)
+  /**
+   * A message whose send has not gone through. Sending it again sends the same pictures under the same request id, so
+   * a send whose reply was lost never sends it twice.
+   */
+  const pending = useRef<{ project: string; text: string; outgoing: Attachment[]; images: string[]; id: string } | null>(null)
+  /** The project whose chat view is loaded. Chat changes for the open project wait in `early` until it is. */
+  const loaded = useRef<string | null>(null)
+  const early = useRef<View[]>([])
 
   const items = useMemo(() => buildChat(view?.entries ?? []), [view?.entries])
   const running = view?.running ?? false
@@ -69,9 +91,10 @@ export default function StudioApp() {
       .catch((err: unknown) => setEngine(String(err)))
     sidecar('state.get', {})
       .then((state) => {
-        drafts.current = state.drafts
+        // Drafts saved in this window since are newer, and text already typed stays.
+        drafts.current = { ...state.drafts, ...drafts.current }
         setProjects(state.projects)
-        if (currentId.current === null) setText(state.drafts[START]?.text ?? '')
+        if (currentId.current === null) setText((now) => (now === '' ? (drafts.current[START]?.text ?? '') : now))
       })
       .catch((err: unknown) => setError(String(err)))
     const unlisten = onSidecarEvent((event) => {
@@ -84,22 +107,23 @@ export default function StudioApp() {
           break
         case 'chat':
           if (event.project !== currentId.current) break
-          setView((now) => {
-            if (now === null || now.project !== event.project) return now
-            const last = now.entries[now.entries.length - 1]?.id ?? 0
-            const added = event.entries.filter((entry) => entry.id > last)
-            return { ...now, entries: added.length > 0 ? [...now.entries, ...added] : now.entries, running: event.running, waiting: event.waiting, turn: event.turn }
-          })
+          if (loaded.current !== event.project) {
+            early.current.push(event)
+            break
+          }
+          setView((now) => now && merge(now, event))
           break
         case 'login':
-          if (event.step === 'open') void openUrl(event.url).catch((err: unknown) => setError(String(err)))
-          if (event.step === 'ask') {
-            // A choice is answered with its option's id, so the question lists them.
-            const choices = event.options?.map((option) => `${option.id}: ${option.label}`).join('\n')
-            const answer = window.prompt(choices === undefined ? event.message : `${event.message}\n${choices}`)
-            if (answer !== null) void sidecar('auth.answer', { provider: event.provider, text: answer }).catch((err: unknown) => setError(String(err)))
+          if (event.step === 'open') {
+            void openUrl(event.url).catch((err: unknown) => setError(String(err)))
+            setSignIn(event.code === undefined ? null : event)
           }
-          if (event.step === 'failed') setError(event.detail)
+          if (event.step === 'ask') setSignIn(event)
+          if (event.step === 'done') setSignIn(null)
+          if (event.step === 'failed') {
+            setSignIn(null)
+            setError(event.detail)
+          }
           break
       }
     })
@@ -108,16 +132,23 @@ export default function StudioApp() {
     }
   }, [])
 
-  // The draft is saved a moment after typing stops, for the open project or the start screen.
-  useEffect(() => {
-    const key = current?.id ?? START
-    if ((drafts.current[key]?.text ?? '') === text) return
-    const timer = window.setTimeout(() => {
-      drafts.current = { ...drafts.current, [key]: { text } }
-      void sidecar('drafts.set', { key, text, attachments: [] }).catch((err: unknown) => setError(String(err)))
-    }, DRAFT_PAUSE_MS)
-    return () => window.clearTimeout(timer)
-  }, [text, current?.id])
+  /** Saves the typed text now, if any waits to be saved. */
+  const saveDraft = async () => {
+    const draft = unsaved.current
+    if (draft === null) return
+    window.clearTimeout(draft.timer)
+    unsaved.current = null
+    drafts.current = { ...drafts.current, [draft.key]: { text: draft.text } }
+    await sidecar('drafts.set', { key: draft.key, text: draft.text, attachments: [] })
+  }
+
+  const type = (value: string) => {
+    setText(value)
+    if (unsaved.current !== null) window.clearTimeout(unsaved.current.timer)
+    const timer = window.setTimeout(() => void saveDraft().catch((err: unknown) => setError(String(err))), DRAFT_PAUSE_MS)
+    unsaved.current = { key: currentId.current ?? START, text: value, timer }
+  }
+  useEffect(() => () => window.clearTimeout(unsaved.current?.timer), [])
 
   // Pasted pictures still waiting when the studio closes give their previews back.
   const unsent = useRef(attachments)
@@ -165,6 +196,7 @@ export default function StudioApp() {
 
   /** Shows a project, or the start screen, with its saved draft. */
   const show = (project: Project | null, keepText = false) => {
+    void saveDraft().catch((err: unknown) => setError(String(err)))
     if (!keepText) {
       setText(drafts.current[project?.id ?? START]?.text ?? '')
       attachments.forEach(releaseAttachment)
@@ -172,6 +204,8 @@ export default function StudioApp() {
     }
     loadRequest.current += 1
     currentId.current = project?.id ?? null
+    loaded.current = null
+    early.current = []
     lastSeen.current = 0
     setCurrent(project)
     setView(null)
@@ -181,12 +215,20 @@ export default function StudioApp() {
     setError(null)
   }
 
+  /** Loads the open project's chat, with the changes that arrived while it loaded. */
+  const load = async (project: string, request: number) => {
+    const opened = await sidecar('chat.open', { project })
+    if (request !== loadRequest.current) return
+    setView(early.current.reduce(merge, opened))
+    early.current = []
+    loaded.current = project
+  }
+
   const openProject = async (project: Project) => {
     show(project)
     const request = loadRequest.current
     try {
-      const opened = await sidecar('chat.open', { project: project.id })
-      if (request === loadRequest.current) setView(opened)
+      await load(project.id, request)
     } catch (err) {
       if (request === loadRequest.current) setError(String(err))
     }
@@ -202,29 +244,46 @@ export default function StudioApp() {
     let request = loadRequest.current
     let sentTo: string | null = null
     try {
+      await saveDraft()
       let project = current
       if (!project) {
         const created = await sidecar('projects.create', { title: message || 'New part' })
         project = created
+        // The sidecar moved the start screen's draft to the new project in the same commit.
+        const { [START]: started, ...rest } = drafts.current
+        drafts.current = started === undefined ? rest : { ...rest, [created.id]: started }
         setProjects((prev) => [created, ...prev])
         if (loadRequest.current === request) {
           show(created, true)
           request = loadRequest.current
-          const opened = await sidecar('chat.open', { project: created.id })
-          if (loadRequest.current === request) setView(opened)
+          await load(created.id, request)
         }
       }
       const id = project.id
       sentTo = id
       const outgoing = attachments
-      const images = await Promise.all(
-        outgoing.map((a) => (a.kind === 'path' ? studio.importFile(id, a.path) : studio.saveBytes(id, a.name, a.bytes))),
-      )
-      const key = [id, message, ...images].join('\n')
-      if (pending.current?.key !== key) pending.current = { key, id: crypto.randomUUID() }
-      await sidecar('chat.send', { project: id, requestId: pending.current.id, text: message, attachments: images })
+      const last = pending.current
+      const again =
+        last !== null &&
+        last.project === id &&
+        last.text === message &&
+        last.outgoing.length === outgoing.length &&
+        last.outgoing.every((a, i) => a === outgoing[i])
+      const sendable = again
+        ? last
+        : {
+            project: id,
+            text: message,
+            outgoing,
+            images: await Promise.all(
+              outgoing.map((a) => (a.kind === 'path' ? studio.importFile(id, a.path) : studio.saveBytes(id, a.name, a.bytes))),
+            ),
+            id: crypto.randomUUID(),
+          }
+      pending.current = sendable
+      await sidecar('chat.send', { project: id, requestId: sendable.id, text: message, attachments: sendable.images })
       pending.current = null
-      drafts.current = { ...drafts.current, [id]: { text: '' } }
+      if (drafts.current[id]?.text.trim() === message) drafts.current = { ...drafts.current, [id]: { text: '' } }
       // Text typed while this was sending is a new message, so only the sent text is cleared,
       // and only in the view that sent it.
       if (loadRequest.current === request) setText((now) => (now.trim() === message ? '' : now))
@@ -255,7 +314,7 @@ export default function StudioApp() {
   const composer = (placeholder: string, autoFocus: boolean) => (
     <Composer
       text={text}
-      onText={setText}
+      onText={type}
       attachments={attachments}
       onAttach={(more) => setAttachments((prev) => [...prev, ...more])}
       onRemove={(index) => {
@@ -299,6 +358,16 @@ export default function StudioApp() {
             <button type="button" onClick={dismissError} aria-label="Dismiss">×</button>
           </div>
         )}
+        {signIn && (
+          <SignInAsk
+            key={signIn.step === 'ask' ? signIn.message : signIn.url}
+            ask={signIn}
+            onAnswer={(answer) => {
+              setSignIn(null)
+              void sidecar('auth.answer', { provider: signIn.provider, text: answer }).catch((err: unknown) => setError(String(err)))
+            }}
+          />
+        )}
         {current ? (
           <>
             <header className="chat-title">{current.title}</header>
@@ -326,7 +395,7 @@ export default function StudioApp() {
             {composer('Describe the part. Paste a link or drop a photo if you have one.', true)}
             <div className="chips">
               {SUGGESTIONS.map((s) => (
-                <button type="button" key={s} onClick={() => setText(s)}>
+                <button type="button" key={s} onClick={() => type(s)}>
                   {s}
                 </button>
               ))}

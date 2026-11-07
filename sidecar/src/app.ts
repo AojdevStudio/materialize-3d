@@ -87,13 +87,20 @@ export async function runSidecar({ argv, addProviders }: SidecarOptions): Promis
   const logins = new Logins(models, credentials, emit)
   console.error(`agent tools: ${tools.map((tool) => tool.name).join(', ')}`)
 
-  // The pipe opens before the reconcile, which asks Rust's Keychain whether a waited-on login is there now.
-  const serving = host.serve(handlers({ store, logins, chats, version }), process.stdin)
-  const imported = await store.importLegacy(legacyProjects(projects))
+  // The import asks Rust for nothing, so it ends before the pipe opens and the first call sees every old chat. Projects
+  // already in the index were imported before, and their transcripts are not read again.
+  const known = new Set((await store.projects()).map((project) => project.id))
+  const imported = await store.importLegacy(legacyProjects(projects, known))
   if (imported.length > 0) console.error(`imported ${imported.length} chats from before the store: ${imported.join(', ')}`)
-  await busy.watch(store.harness)
+  // The pipe opens before the pass is asked for and before the reconcile, which asks Rust's Keychain whether a
+  // waited-on login is there now.
+  const serving = host.serve(handlers({ store, logins, chats, version }), process.stdin)
+  // Work a crash cut off resumes only with the pass. Without it an update is installing, and the work resumes after
+  // the restart.
+  const resumable = await busy.watch(store.harness)
   host.emit({ type: 'ready', version })
-  await chats.reconcile()
+  if (resumable) await chats.reconcile()
+  else console.error('an update is installing, so the work a crash cut off resumes after the restart')
   await serving
   await chats.close()
   await store.close()

@@ -78,7 +78,7 @@ Then read each covered function that changed. Also look for new code that reache
 
 | Model action | Code |
 |---|---|
-| `Enter`, `Leave` | `BuildGate::enter` and `Drop for Running` in `build_gate.rs`. Callers: `build_as` in `pipeline.rs`, `slice_model` in `commands.rs`. For the sidecar's chat work, `BuildGate::enter_owned` through `take_pass` in `set_busy` (`sidecar.rs`), which `sidecar/src/busy.ts` asks for before a send commits, and `Drop for OwnedRunning` when it gives the pass back once no task is live, after its last commit. |
+| `Enter`, `Leave` | `BuildGate::enter` and `Drop for Running` in `build_gate.rs`. Callers: `build_as` in `pipeline.rs`, `slice_model` in `commands.rs`. For the sidecar's chat work, `BuildGate::enter_owned` through `take_pass` in `set_busy` (`sidecar.rs`), which `sidecar/src/busy.ts` asks for before a send commits (`Busy.during` in `sidecar/src/chat.ts`) and before work a crash cut off resumes (`busy.watch` in `sidecar/src/app.ts`), and `Drop for OwnedRunning` when it gives the pass back once no task is pending or running, after its last commit. A task that waits, sleeps, or holds a sign-in wait (`Busy.parked`) is not work: it resumes after a restart. `set_busy` refuses a request from a sidecar run that ended. |
 | `Downloaded`, `Top`, `CheckAndClose`, `CheckBusy`, `Wake` | `BuildGate::close_when_idle`. Its `subscribe`, `borrow_and_update`, one `send_if_modified`, and `changed().await`. |
 | `Reopen` | `Drop for Closed`, on each error return of `install_when_idle`. |
 | `Click`, `DownloadFails`, `BackupOk`, `BackupFails`, `InstallOk`, `InstallFails`, `Exit` | `update_install` and `install_when_idle` in `updater.rs`, then Tauri's `AppHandle::restart`, which ends in `process::exit(0)`. |

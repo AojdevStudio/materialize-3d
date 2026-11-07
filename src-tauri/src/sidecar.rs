@@ -59,8 +59,16 @@ pub struct Sidecar {
     kill: Notify,
     /// Each slice by its operation id, running or done, for as long as the app runs.
     slices: Operations,
-    /// The update gate's pass, held while the sidecar has work in flight.
-    pass: Mutex<Option<OwnedRunning<StateGate>>>,
+    /// The update gate's pass, held while the sidecar has work in flight, and the sidecar run it belongs to.
+    pass: Mutex<Pass>,
+}
+
+#[derive(Default)]
+struct Pass {
+    /// How many sidecar runs ended. A run's requests carry the count from its start, so a request still on its way
+    /// when its run ended never takes the pass.
+    run: u64,
+    held: Option<OwnedRunning<StateGate>>,
 }
 
 /// Outside work by operation id: one result each, shared by every request that names the id.
@@ -112,6 +120,19 @@ impl Default for Sidecar {
 }
 
 impl Sidecar {
+    /// The run a sidecar process that starts now belongs to.
+    fn run_started(&self) -> u64 {
+        self.pass.lock().unwrap_or_else(|e| e.into_inner()).run
+    }
+
+    /// Work a sidecar was doing when it ended no longer holds an update off, and its requests still on their way take
+    /// nothing. Its replacement asks again for work it resumes.
+    fn run_ended(&self) {
+        let mut pass = self.pass.lock().unwrap_or_else(|e| e.into_inner());
+        pass.run += 1;
+        pass.held = None;
+    }
+
     /// Fails every call the sidecar that just exited will never answer.
     fn drop_calls(&self) {
         let calls = std::mem::take(&mut *self.calls.lock().unwrap_or_else(|e| e.into_inner()));
@@ -308,6 +329,7 @@ async fn run(app: &AppHandle) -> Result<std::process::ExitStatus, String> {
         .map_err(|e| format!("starting {}: {e}", exe.display()))?;
     let sidecar = app.state::<Sidecar>();
     sidecar.alive.send_replace(true);
+    let run = sidecar.run_started();
 
     let mut stdin = child.stdin.take().expect("piped stdin");
     let (input, mut lines_in) = mpsc::unbounded_channel::<String>();
@@ -340,7 +362,7 @@ async fn run(app: &AppHandle) -> Result<std::process::ExitStatus, String> {
         tokio::select! {
             line = lines.next_line() => match line {
                 Ok(Some(line)) => {
-                    if dispatch(app, &answers, &line) {
+                    if dispatch(app, run, &answers, &line) {
                         if let Some(input) = pending.take() {
                             // A quit that came while this sidecar started has already stopped the link: it must not
                             // reopen it.
@@ -377,9 +399,7 @@ async fn run(app: &AppHandle) -> Result<std::process::ExitStatus, String> {
     writer.abort();
     let _ = writer.await;
     sidecar.drop_calls();
-    // Work a sidecar was doing when it ended no longer holds an update off. Its replacement asks again for work
-    // it resumes.
-    *sidecar.pass.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    sidecar.run_ended();
     // A sidecar can close its stdout and still hang, so the wait still answers a kill.
     let status = loop {
         tokio::select! {
@@ -418,7 +438,7 @@ enum Outbound {
 }
 
 /// Handles one line from the sidecar, and says whether it was the sidecar's ready event.
-fn dispatch(app: &AppHandle, answers: &mpsc::WeakUnboundedSender<String>, line: &str) -> bool {
+fn dispatch(app: &AppHandle, run: u64, answers: &mpsc::WeakUnboundedSender<String>, line: &str) -> bool {
     let message = match serde_json::from_str::<Outbound>(line) {
         Ok(message) => message,
         Err(e) => {
@@ -446,7 +466,7 @@ fn dispatch(app: &AppHandle, answers: &mpsc::WeakUnboundedSender<String>, line: 
             let app = app.clone();
             let answers = answers.clone();
             tauri::async_runtime::spawn(async move {
-                let answer = match answer(&app, &method, params).await {
+                let answer = match answer(&app, run, &method, params).await {
                     Ok(value) => json!({ "kind": "answer", "id": id, "ok": true, "value": value }),
                     Err(error) => json!({ "kind": "answer", "id": id, "ok": false, "error": error }),
                 };
@@ -477,12 +497,16 @@ struct Busy {
     busy: bool,
 }
 
-/// Takes the update gate's pass for the sidecar, or gives it back. Taking it again while held changes nothing.
-fn set_busy(sidecar: &Sidecar, state: &Arc<AppState>, busy: bool) -> Result<(), String> {
+/// Takes the update gate's pass for the sidecar run `run`, or gives it back. Taking it again while held changes
+/// nothing. A run that ended changes nothing either.
+fn set_busy(sidecar: &Sidecar, state: &Arc<AppState>, run: u64, busy: bool) -> Result<(), String> {
     let mut pass = sidecar.pass.lock().unwrap_or_else(|e| e.into_inner());
-    match (busy, pass.is_some()) {
-        (true, false) => *pass = Some(take_pass(state.clone())?),
-        (false, true) => *pass = None,
+    if pass.run != run {
+        return Err("This engine has exited.".to_owned());
+    }
+    match (busy, pass.held.is_some()) {
+        (true, false) => pass.held = Some(take_pass(state.clone())?),
+        (false, true) => pass.held = None,
         _ => {}
     }
     Ok(())
@@ -511,8 +535,8 @@ fn keychain_item(account: &str) -> Result<String, String> {
     }
 }
 
-/// Answers one request from the sidecar. Errors name what failed and never carry a secret.
-async fn answer(app: &AppHandle, method: &str, params: Value) -> Result<Value, String> {
+/// Answers one request from the sidecar run `run`. Errors name what failed and never carry a secret.
+async fn answer(app: &AppHandle, run: u64, method: &str, params: Value) -> Result<Value, String> {
     match method {
         "keychain.get" => {
             let Account { account } = parse(method, params)?;
@@ -531,7 +555,7 @@ async fn answer(app: &AppHandle, method: &str, params: Value) -> Result<Value, S
         }
         "busy" => {
             let Busy { busy } = parse(method, params)?;
-            set_busy(&app.state::<Sidecar>(), app.state::<Arc<AppState>>().inner(), busy)?;
+            set_busy(&app.state::<Sidecar>(), app.state::<Arc<AppState>>().inner(), run, busy)?;
             Ok(Value::Null)
         }
         "slice" => {
@@ -651,16 +675,31 @@ mod tests {
         const SETTLE: Duration = Duration::from_millis(50);
         let state = Arc::new(AppState::default());
         let sidecar = Sidecar::default();
-        set_busy(&sidecar, &state, true).expect("the sidecar takes the pass");
-        set_busy(&sidecar, &state, true).expect("asking again while it holds the pass changes nothing");
+        let run = sidecar.run_started();
+        set_busy(&sidecar, &state, run, true).expect("the sidecar takes the pass");
+        set_busy(&sidecar, &state, run, true).expect("asking again while it holds the pass changes nothing");
         let mut close = std::pin::pin!(state.builds.close_when_idle(|_| {}));
         assert!(tokio::time::timeout(SETTLE, &mut close).await.is_err(), "the update waits while the sidecar is busy");
-        set_busy(&sidecar, &state, false).expect("the sidecar gives the pass back");
+        set_busy(&sidecar, &state, run, false).expect("the sidecar gives the pass back");
         let closed = tokio::time::timeout(SETTLE, &mut close).await.expect("the update goes ahead once the sidecar is idle");
-        let refused = set_busy(&sidecar, &state, true).expect_err("work is refused while the update installs");
+        let refused = set_busy(&sidecar, &state, run, true).expect_err("work is refused while the update installs");
         assert!(refused.contains("update is installing"), "{refused}");
         drop(closed);
-        set_busy(&sidecar, &state, true).expect("a failed install lets the sidecar work again");
+        set_busy(&sidecar, &state, run, true).expect("a failed install lets the sidecar work again");
+    }
+
+    /// A busy request from a sidecar that already exited, answered after its exit gave the pass back, takes
+    /// nothing, so an idle replacement never leaves an update waiting.
+    #[tokio::test]
+    async fn a_sidecar_that_exited_cannot_take_the_pass() {
+        let state = Arc::new(AppState::default());
+        let sidecar = Sidecar::default();
+        let exited = sidecar.run_started();
+        sidecar.run_ended();
+        let _replacement = sidecar.run_started();
+        set_busy(&sidecar, &state, exited, true).expect_err("the exited sidecar's request is refused");
+        let close = state.builds.close_when_idle(|_| {});
+        let _closed = tokio::time::timeout(Duration::from_millis(50), close).await.expect("the update goes ahead");
     }
 
     #[test]

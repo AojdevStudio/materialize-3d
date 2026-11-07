@@ -1,17 +1,25 @@
 /**
  * Tells Rust while the store has work in flight, so an update waits to restart the app until the work is done. The
- * pass is asked for before a turn's first commit, and given back once no task is live and no send is committing.
+ * pass is asked for before a turn's first commit and before work a crash cut off resumes, and given back once no task
+ * is pending or running and no send is committing. A task that waits, sleeps, or holds a sign-in wait does no work
+ * until something wakes it, and it resumes after a restart, so an update may restart through it.
  * While an update installs, Rust refuses the pass, and the send with it.
  */
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
-import type { Harness } from '@earendil-works/pi-durable'
+import type { Harness, TaskGraph } from '@earendil-works/pi-durable'
 import type { Host } from './host'
+
+/** Tasks doing work now. A blocked task never runs here. */
+const working = (graph: TaskGraph) =>
+  Object.values(graph.tasks).filter((task) => (task.state.status === 'pending' || task.state.status === 'running') && task.blocked === undefined).length
 
 export class Busy {
   readonly #host: Host
-  /** Whether Rust holds the pass for this sidecar. */
+  /** Whether Rust said yes to the pass and it was not given back since. */
   #held = false
   #tasks = 0
+  /** Running tool tasks parked on a sign-in, which do no work until the person signs in. */
+  #parked = 0
   #sends = 0
   /** Changes reach Rust one at a time, in order. */
   #told: Promise<unknown> = Promise.resolve()
@@ -20,26 +28,45 @@ export class Busy {
     this.#host = host
   }
 
-  /** Follows the store's live tasks: a run, its tools, a child, a sleeping retry. */
-  async watch(harness: Harness): Promise<void> {
+  /**
+   * Follows the store's live tasks from the graph as it is now, so work a crash cut off asks for the pass before it
+   * resumes. Resolves false when that work has no pass, which means an update is installing and restarts the app.
+   */
+  async watch(harness: Harness): Promise<boolean> {
     const graph = await harness.watchTaskGraph(BACKGROUND_CONTEXT)
+    this.#tasks = working(graph.value)
+    const ok = await this.#settle().then(
+      () => true,
+      () => false,
+    )
     graph.start(async (call) => {
       if (call.kind !== 'value') return
-      this.#tasks = Object.keys(call.value.tasks).length
-      await this.#settle()
+      this.#tasks = working(call.value)
+      await this.#follow()
+    })
+    return ok
+  }
+
+  /**
+   * Settles for work already under way. A refusal means an update is installing and restarts the app soon: the work is
+   * committed step by step and resumes after it. The next change asks again.
+   */
+  #follow(): Promise<void> {
+    return this.#settle().catch((error: unknown) => {
+      console.error(`the update gate refused the engine's pass: ${error instanceof Error ? error.message : String(error)}`)
     })
   }
 
-  #settle(): Promise<unknown> {
-    const busy = this.#tasks > 0 || this.#sends > 0
-    if (busy === this.#held) return this.#told
-    this.#held = busy
-    this.#told = this.#told.then(() => this.#host.request('busy', { busy })).catch((error: unknown) => {
-      // A task that resumes while an update installs runs anyway: its work is committed step by step.
-      console.error(`the update gate refused the engine's pass: ${error instanceof Error ? error.message : String(error)}`)
-      this.#held = false
+  /** Brings Rust's pass in line with the work now. Rejects with Rust's refusal when this call asked and was refused. */
+  #settle(): Promise<void> {
+    const told = this.#told.then(async () => {
+      const busy = this.#sends > 0 || this.#tasks - this.#parked > 0
+      if (busy === this.#held) return
+      await this.#host.request('busy', { busy })
+      this.#held = busy
     })
-    return this.#told
+    this.#told = told.catch(() => {})
+    return told
   }
 
   /**
@@ -49,15 +76,23 @@ export class Busy {
   async during<T>(commit: () => Promise<T>): Promise<T> {
     this.#sends += 1
     try {
-      if (!this.#held) {
-        await this.#told
-        await this.#host.request('busy', { busy: true })
-        this.#held = true
-      }
+      await this.#settle()
       return await commit()
     } finally {
       this.#sends -= 1
-      await this.#settle()
+      await this.#follow()
+    }
+  }
+
+  /** Gives the pass back while a running tool waits on `wait` for a sign-in, and asks for it again when it goes on. */
+  async parked<T>(wait: () => Promise<T>): Promise<T> {
+    this.#parked += 1
+    void this.#follow()
+    try {
+      return await wait()
+    } finally {
+      this.#parked -= 1
+      await this.#follow()
     }
   }
 }

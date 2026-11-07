@@ -2,13 +2,24 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 
-const { invokeMock } = vi.hoisted(() => ({ invokeMock: vi.fn() }))
+type Listener = (event: { payload: unknown }) => void
+const { invokeMock, listeners } = vi.hoisted(() => ({ invokeMock: vi.fn(), listeners: { sidecar: [] as Listener[], drop: [] as Listener[] } }))
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: invokeMock }))
-vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn().mockResolvedValue(() => {}) }))
-vi.mock('@tauri-apps/plugin-opener', () => ({ openUrl: vi.fn() }))
+vi.mock('@tauri-apps/api/event', () => ({
+  listen: (_name: string, listener: Listener) => {
+    listeners.sidecar.push(listener)
+    return Promise.resolve(() => {})
+  },
+}))
+vi.mock('@tauri-apps/plugin-opener', () => ({ openUrl: () => Promise.resolve() }))
 vi.mock('@tauri-apps/api/webview', () => ({
-  getCurrentWebview: () => ({ onDragDropEvent: vi.fn().mockResolvedValue(() => {}) }),
+  getCurrentWebview: () => ({
+    onDragDropEvent: (listener: Listener) => {
+      listeners.drop.push(listener)
+      return Promise.resolve(() => {})
+    },
+  }),
 }))
 
 import StudioApp from './StudioApp'
@@ -24,7 +35,15 @@ const settings = { model: { provider: 'anthropic', modelId: 'claude-opus-5-5' },
 afterEach(() => {
   cleanup()
   invokeMock.mockReset()
+  listeners.sidecar.length = 0
+  listeners.drop.length = 0
 })
+
+/** An event from the sidecar, as Rust forwards it to the window. */
+const emit = (event: object) => act(() => listeners.sidecar.forEach((listener) => listener({ payload: event })))
+
+const prompt = () => screen.getByTestId('prompt') as HTMLTextAreaElement
+const type = (text: string) => fireEvent.change(prompt(), { target: { value: text } })
 
 type Calls = Record<string, (params: Record<string, unknown>) => Promise<unknown>>
 
@@ -33,6 +52,7 @@ function mockSidecar(overrides: Calls = {}, projects = [projectB], drafts: Recor
   invokeMock.mockImplementation((command: string, args: { method: string; params: Record<string, unknown> }) => {
     if (command === 'update_check') return Promise.resolve({ status: 'upToDate' })
     if (command === 'studio_files') return Promise.resolve([])
+    if (overrides[command]) return overrides[command](args as unknown as Record<string, unknown>)
     if (command !== 'sidecar') return Promise.resolve(undefined)
     const override = overrides[args.method]
     if (override) return override(args.params)
@@ -122,5 +142,118 @@ describe('StudioApp', () => {
     await waitFor(() => expect((screen.getByTestId('prompt') as HTMLTextAreaElement).value).toBe('make it red'))
     fireEvent.change(screen.getByTestId('prompt'), { target: { value: 'make it blue' } })
     await waitFor(() => expect(sidecarCalls('drafts.set')).toEqual([{ key: projectB.id, text: 'make it blue', attachments: [] }]))
+  })
+
+  it('sending again after a lost reply sends the same pictures under the same request id', async () => {
+    let sends = 0
+    let imports = 0
+    mockSidecar({
+      studio_import_file: () => Promise.resolve(imports++ === 0 ? 'refs/photo.jpg' : `refs/photo-${imports}.jpg`),
+      'chat.send': () => (sends++ === 0 ? Promise.reject('The engine restarted before it answered. Try again.') : Promise.resolve(null)),
+    })
+    render(<StudioApp />)
+    fireEvent.click(await screen.findByText('Project B'))
+    await screen.findByRole('banner')
+    await act(async () => listeners.drop.forEach((listener) => listener({ payload: { type: 'drop', paths: ['/Users/me/photo.jpg'] } })))
+    type('A clip like this')
+    fireEvent.click(screen.getByTestId('send'))
+    await screen.findByRole('alert')
+    fireEvent.click(screen.getByTestId('send'))
+    await waitFor(() => expect(sidecarCalls('chat.send')).toHaveLength(2))
+    const [first, second] = sidecarCalls('chat.send')
+    expect(second).toEqual(first)
+    expect(first?.attachments).toEqual(['refs/photo.jpg'])
+  })
+
+  it('keeps chat changes that arrive while the chat opens', async () => {
+    let finishOpen: (view: unknown) => void = () => {}
+    mockSidecar({ 'chat.open': () => new Promise((resolve) => (finishOpen = resolve)) })
+    render(<StudioApp />)
+    fireEvent.click(await screen.findByText('Project B'))
+    await screen.findByRole('banner')
+    const reply = { id: 2, kind: 'assistant', text: 'The clip is ready.', calls: [] }
+    await emit({ type: 'chat', ...view(projectB.id, { entries: [reply] }) })
+    const asked = { id: 1, kind: 'user', text: 'A clip', images: [] }
+    await act(async () => finishOpen(view(projectB.id, { entries: [asked], running: true })))
+    expect(screen.getByText('The clip is ready.')).toBeTruthy()
+    expect(screen.getByText('A clip')).toBeTruthy()
+    expect(screen.queryByTestId('working')).toBeNull()
+  })
+
+  it('saves a draft at once when the person moves to another project', async () => {
+    mockSidecar({}, [projectA, projectB])
+    render(<StudioApp />)
+    fireEvent.click(await screen.findByText('Project B'))
+    await screen.findByRole('banner')
+    type('make it blue')
+    fireEvent.click(screen.getByText('Project A'))
+    expect(sidecarCalls('drafts.set')).toEqual([{ key: projectB.id, text: 'make it blue', attachments: [] }])
+  })
+
+  it('keeps text typed while a send goes through as the draft', async () => {
+    let finishSend: (value: null) => void = () => {}
+    mockSidecar({ 'chat.send': () => new Promise((resolve) => (finishSend = resolve)) }, [projectA, projectB])
+    render(<StudioApp />)
+    fireEvent.click(await screen.findByText('Project B'))
+    await screen.findByRole('banner')
+    type('make it red')
+    fireEvent.click(screen.getByTestId('send'))
+    await waitFor(() => expect(sidecarCalls('chat.send')).toHaveLength(1))
+    type('make it blue')
+    await act(async () => finishSend(null))
+    fireEvent.click(screen.getByText('Project A'))
+    fireEvent.click(screen.getByText('Project B'))
+    await waitFor(() => expect(prompt().value).toBe('make it blue'))
+  })
+
+  it('keeps what the person typed on the start screen when the saved state arrives', async () => {
+    let finishState: (state: unknown) => void = () => {}
+    mockSidecar({ 'state.get': () => new Promise((resolve) => (finishState = resolve)) })
+    render(<StudioApp />)
+    type('A clip for my desk')
+    await act(async () => finishState({ setup: { step: 'ready', done: true }, settings, projects: [projectB], drafts: { new: { text: 'an older draft' } } }))
+    expect(prompt().value).toBe('A clip for my desk')
+  })
+
+  it('leaves the start screen empty after its message was sent', async () => {
+    mockSidecar({ 'projects.create': () => Promise.resolve(projectA) })
+    render(<StudioApp />)
+    await screen.findByText('Project B')
+    type('A clip for my desk')
+    await waitFor(() => expect(sidecarCalls('drafts.set')).toEqual([{ key: 'new', text: 'A clip for my desk', attachments: [] }]))
+    fireEvent.click(screen.getByTestId('send'))
+    await waitFor(() => expect(sidecarCalls('chat.send')).toHaveLength(1))
+    fireEvent.click(screen.getByTestId('new-project'))
+    expect(prompt().value).toBe('')
+  })
+
+  it('shows the code a device sign-in asks for, with its page', async () => {
+    mockSidecar()
+    render(<StudioApp />)
+    await screen.findByText('Project B')
+    await emit({ type: 'login', provider: 'openai-codex', step: 'open', url: 'https://auth.openai.com/codex/device', code: 'ABCD-1234' })
+    const ask = screen.getByTestId('sign-in')
+    expect(ask.textContent).toContain('ABCD-1234')
+    expect(ask.textContent).toContain('https://auth.openai.com/codex/device')
+    await emit({ type: 'login', provider: 'openai-codex', step: 'done' })
+    expect(screen.queryByTestId('sign-in')).toBeNull()
+  })
+
+  it('answers what a sign-in asks in the window: a choice by its id, and typed text', async () => {
+    mockSidecar()
+    render(<StudioApp />)
+    await screen.findByText('Project B')
+    await emit({ type: 'login', provider: 'anthropic', step: 'ask', kind: 'select', message: 'Which account?', options: [{ id: 'max', label: 'Claude Max' }] })
+    fireEvent.click(screen.getByText('Claude Max'))
+    await emit({ type: 'login', provider: 'anthropic', step: 'ask', kind: 'manual_code', message: 'Paste the code' })
+    fireEvent.change(screen.getByLabelText('Paste the code'), { target: { value: 'code#state' } })
+    fireEvent.click(screen.getByText('Answer'))
+    await waitFor(() =>
+      expect(sidecarCalls('auth.answer')).toEqual([
+        { provider: 'anthropic', text: 'max' },
+        { provider: 'anthropic', text: 'code#state' },
+      ]),
+    )
+    expect(screen.queryByTestId('sign-in')).toBeNull()
   })
 })

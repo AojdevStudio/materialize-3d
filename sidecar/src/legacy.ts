@@ -33,12 +33,15 @@ export function readTranscript(text: string): ImportedEntry[] {
   const tools = new Map<string, Extract<ImportedEntry, { role: 'tool' }>>()
   for (const line of text.split('\n')) {
     if (line.trim() === '') continue
-    let event: Record<string, unknown>
+    let parsed: unknown
     try {
-      event = JSON.parse(line)
+      parsed = JSON.parse(line)
     } catch {
       break
     }
+    // The old app read every line as a JSON value and matched only events, so it passed over anything else.
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) continue
+    const event = parsed as Record<string, unknown>
     // A helper agent's inner steps stayed inside its one line.
     if (event.parent_tool_use_id) continue
     const blocks = ((event.message as { content?: Block[] | string } | undefined)?.content ?? []) as Block[] | string
@@ -74,20 +77,28 @@ export function readTranscript(text: string): ImportedEntry[] {
   return entries
 }
 
-/** Every old project in the projects folder that has a record and a transcript. */
-export function legacyProjects(projectsDir: string): LegacyProject[] {
+/**
+ * Every old project in the projects folder that has a record and a transcript, but those in `known`, whose files are
+ * not read. A project whose files cannot be read is skipped and named on stderr, as the old app skipped it.
+ */
+export function legacyProjects(projectsDir: string, known: ReadonlySet<string>): LegacyProject[] {
   if (!existsSync(projectsDir)) return []
   return readdirSync(projectsDir, { withFileTypes: true }).flatMap((dir) => {
     const meta = join(projectsDir, dir.name, '.m3d')
-    if (!dir.isDirectory() || !existsSync(join(meta, 'project.json')) || !existsSync(join(meta, 'transcript.jsonl'))) return []
-    const record = JSON.parse(readFileSync(join(meta, 'project.json'), 'utf8')) as { title?: unknown; createdMs?: unknown }
-    return [
-      {
-        id: dir.name,
-        title: str(record.title) || dir.name,
-        createdMs: typeof record.createdMs === 'number' ? record.createdMs : 0,
-        entries: readTranscript(readFileSync(join(meta, 'transcript.jsonl'), 'utf8')),
-      },
-    ]
+    if (known.has(dir.name) || !dir.isDirectory() || !existsSync(join(meta, 'project.json')) || !existsSync(join(meta, 'transcript.jsonl'))) return []
+    try {
+      const record = JSON.parse(readFileSync(join(meta, 'project.json'), 'utf8')) as { title?: unknown; createdMs?: unknown }
+      return [
+        {
+          id: dir.name,
+          title: str(record.title) || dir.name,
+          createdMs: typeof record.createdMs === 'number' ? record.createdMs : 0,
+          entries: readTranscript(readFileSync(join(meta, 'transcript.jsonl'), 'utf8')),
+        },
+      ]
+    } catch (error) {
+      console.error(`skipped the old chat ${dir.name}, which could not be read: ${error instanceof Error ? error.message : String(error)}`)
+      return []
+    }
   })
 }

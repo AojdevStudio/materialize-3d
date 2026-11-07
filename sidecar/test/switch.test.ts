@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ChatEntry, ChatView } from '../src/protocol'
@@ -40,6 +40,42 @@ describe('chats from before the store', () => {
   })
 })
 
+describe('the import of chats from before the store', () => {
+  const CLIP = join(LEGACY, '2026-11-06-a-wall-clip')
+
+  test('skips a project whose record cannot be read, and names it, and passes over a line that is not an event', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'm3d-import-'))
+    const projects = join(dir, 'projects')
+    cpSync(CLIP, join(projects, '2026-11-06-bad-record'), { recursive: true })
+    writeFileSync(join(projects, '2026-11-06-bad-record', '.m3d', 'project.json'), '{"title":')
+    cpSync(CLIP, join(projects, '2026-11-06-null-line'), { recursive: true })
+    const transcript = join(projects, '2026-11-06-null-line', '.m3d', 'transcript.jsonl')
+    writeFileSync(transcript, `null\n${readFileSync(transcript, 'utf8')}`)
+    const app = spawnSidecar(join(dir, 'state'), projects)
+    const state = (await app.call('state.get')) as { projects: { id: string }[] }
+    expect(state.projects.map((p) => p.id)).toEqual(['2026-11-06-null-line'])
+    expect(((await app.call('chat.open', { project: '2026-11-06-null-line' })) as ChatView).entries).toHaveLength(5)
+    await app.quit()
+    expect(await app.stderr()).toContain('2026-11-06-bad-record')
+  })
+
+  test('reads no old transcript on a launch after the import', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'm3d-import-'))
+    const projects = join(dir, 'projects')
+    cpSync(CLIP, join(projects, '2026-11-06-a-wall-clip'), { recursive: true })
+    const first = spawnSidecar(join(dir, 'state'), projects)
+    await first.next()
+    await first.quit()
+    const transcript = join(projects, '2026-11-06-a-wall-clip', '.m3d', 'transcript.jsonl')
+    rmSync(transcript)
+    mkdirSync(transcript)
+    const second = spawnSidecar(join(dir, 'state'), projects)
+    expect(((await second.call('chat.open', { project: '2026-11-06-a-wall-clip' })) as ChatView).entries).toHaveLength(5)
+    await second.quit()
+    expect(await second.stderr()).not.toContain('2026-11-06-a-wall-clip')
+  })
+})
+
 describe('the update gate', () => {
   function scratch() {
     const dir = mkdtempSync(join(tmpdir(), 'm3d-gate-'))
@@ -77,4 +113,51 @@ describe('the update gate', () => {
     expect(((await app.call('state.get')) as { drafts: Record<string, unknown> }).drafts[project]).toEqual({ text: 'make it red', attachments: [] })
     await app.quit()
   })
+
+  test('after a crash, the sidecar holds the pass before the cut-off work resumes, and leaves the work alone while an update installs', async () => {
+    const where = scratch()
+    const first = spawnSidecar(where.data, where.projects, new Map(), { script: 'models', env: where.env })
+    await first.next()
+    await first.call('settings.set', { model: { provider: 'faux', modelId: 'faux-a' } })
+    const { id: project } = (await first.call('projects.create', { title: 'A cube' })) as { id: string }
+    await first.call('chat.send', { project, requestId: 'r1', text: 'please wait', attachments: [] })
+    const started = join(where.projects, project, 'started')
+    while (!existsSync(started)) await Bun.sleep(25)
+    first.child.kill('SIGKILL')
+    await first.child.exited
+    rmSync(started)
+
+    const installing = spawnSidecar(where.data, where.projects, new Map(), { script: 'models', env: where.env })
+    installing.gate.installing = true
+    await installing.until((event) => event.type === 'ready')
+    expect(installing.gate.requests).toEqual([true])
+    await Bun.sleep(1_500)
+    expect(existsSync(started)).toBe(false)
+    await installing.quit()
+
+    const after = spawnSidecar(where.data, where.projects, new Map(), { script: 'models', env: where.env })
+    await after.until((event) => event.type === 'ready')
+    expect(after.gate.requests).toEqual([true])
+    while (!existsSync(started)) await Bun.sleep(25)
+    await after.quit()
+  }, 30_000)
+
+  test('gives the pass back while a turn waits on a sign-in, and takes it again when the turn goes on', async () => {
+    const where = scratch()
+    const app = spawnSidecar(where.data, where.projects, new Map(), { script: 'astra', env: where.env })
+    await app.next()
+    await app.call('settings.set', { model: { provider: 'faux', modelId: 'faux-a' } })
+    const { id: project } = (await app.call('projects.create', { title: 'A cube' })) as { id: string }
+    await app.call('chat.send', { project, requestId: 'r1', text: 'go', attachments: [] })
+    await app.until((event) => event.type === 'chat' && event.waiting !== null)
+    const deadline = Date.now() + 5_000
+    while (app.gate.requests.at(-1) !== false && Date.now() < deadline) await Bun.sleep(25)
+    expect(app.gate.requests).toEqual([true, false])
+
+    await app.call('auth.setKey', { provider: 'openai-codex', key: 'astra-key' })
+    await app.until((event) => event.type === 'chat' && (event.entries as ChatEntry[]).some((entry) => entry.kind === 'assistant' && entry.text === 'parent saw: astra drew it'))
+    while (app.gate.requests.at(-1) !== false) await Bun.sleep(25)
+    expect(app.gate.requests.slice(2)).toContain(true)
+    await app.quit()
+  }, 30_000)
 })
