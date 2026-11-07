@@ -135,7 +135,7 @@ pub fn astra_home(home: &Path, app_data: &Path) -> Result<AstraHome, String> {
             toml::Table::new()
         }
     };
-    let AstraConfig { config, secrets } = astra_config(&user, &host_skills(home), |var| std::env::var_os(var).is_some());
+    let AstraConfig { config, secrets } = astra_config(&user, &host_skills(home), has_value);
     if !config.contains_key("model_providers") {
         log::warn!("studio: ~/.codex/config.toml has no cliproxy provider, so Astra cannot reach a model");
     }
@@ -253,6 +253,12 @@ fn astra_config(user: &toml::Table, skills: &[PathBuf], env_set: impl Fn(&str) -
     AstraConfig { config, secrets }
 }
 
+/// A variable counts only with a value: Codex falls back to a static header
+/// when the environment one is empty or blank, so the app does too.
+fn has_value(var: &str) -> bool {
+    std::env::var(var).is_ok_and(|value| !value.trim().is_empty())
+}
+
 /// The variables that carry an inline provider credential to Astra's process.
 const ASTRA_BEARER_VAR: &str = "M3D_ASTRA_BEARER_TOKEN";
 const ASTRA_HEADER_VAR: &str = "M3D_ASTRA_HEADER_";
@@ -306,6 +312,18 @@ mod tests {
         let unset = astra_config(&user, &[], |_| false);
         let var = unset.config["model_providers"]["cliproxy"]["env_http_headers"]["Authorization"].as_str().expect("var").to_owned();
         assert_eq!(unset.secrets, [(var, "Bearer static".to_owned())], "without the variable, the static value is sent");
+    }
+
+    #[test]
+    fn a_blank_environment_header_does_not_hide_the_static_one() {
+        let var = format!("M3D_TEST_HEADER_{}", std::process::id());
+        // SAFETY: a variable no other test reads.
+        unsafe { std::env::set_var(&var, "   ") };
+        assert!(!has_value(&var), "a blank value counts as unset");
+        unsafe { std::env::set_var(&var, "Bearer env") };
+        assert!(has_value(&var));
+        unsafe { std::env::remove_var(&var) };
+        assert!(!has_value(&var));
     }
 
     #[test]
