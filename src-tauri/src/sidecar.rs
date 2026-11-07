@@ -172,7 +172,18 @@ async fn run(app: &AppHandle) -> Result<std::process::ExitStatus, String> {
     let (input, mut lines_in) = mpsc::unbounded_channel::<String>();
     // Requests answer through a weak handle, so the link alone keeps stdin open and quitting closes it.
     let answers = input.downgrade();
-    sidecar.link.send_replace(Link::Up(input));
+    // A quit that came while this sidecar started has already stopped the link: it must not reopen it.
+    let opened = sidecar.link.send_if_modified(|link| {
+        let open = matches!(link, Link::Starting);
+        if open {
+            *link = Link::Up(input.clone());
+        }
+        open
+    });
+    drop(input);
+    if !opened {
+        let _ = child.start_kill();
+    }
     let writer = tokio::spawn(async move {
         while let Some(line) = lines_in.recv().await {
             if stdin.write_all(line.as_bytes()).await.is_err() {
@@ -213,7 +224,15 @@ async fn run(app: &AppHandle) -> Result<std::process::ExitStatus, String> {
     writer.abort();
     let _ = writer.await;
     sidecar.drop_calls();
-    let status = child.wait().await.map_err(|e| format!("waiting for the engine: {e}"));
+    // A sidecar can close its stdout and still hang, so the wait still answers a kill.
+    let status = loop {
+        tokio::select! {
+            status = child.wait() => break status.map_err(|e| format!("waiting for the engine: {e}")),
+            () = sidecar.kill.notified() => {
+                let _ = child.start_kill();
+            }
+        }
+    };
     sidecar.alive.send_replace(false);
     // A tool the sidecar started may hold its stderr open, so the last lines are not waited on for long.
     let _ = tokio::time::timeout(Duration::from_secs(1), logger).await;

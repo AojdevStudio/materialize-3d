@@ -58,6 +58,24 @@ describe('the pipe to Rust', () => {
     expect(written.map((line) => JSON.parse(line))).toEqual([{ kind: 'reply', id: 1, ok: true, value: { version: 'late' } }])
   })
 
+  test('a call that asks Rust for something after the pipe closed fails instead of waiting forever', async () => {
+    const input = new PassThrough()
+    const written: string[] = []
+    const host = new Host((line) => written.push(line))
+    const asksLate = {
+      params: compile(obj({})),
+      run: async () => {
+        await Bun.sleep(20)
+        await host.request('keychain.get', { account: 'anthropic' })
+        return { version: 'unreachable' }
+      },
+    }
+    const serving = host.serve({ 'app.ping': asksLate }, input)
+    input.end(`${JSON.stringify({ kind: 'call', id: 1, method: 'app.ping', params: {} })}\n`)
+    await serving
+    expect(written.map((line) => JSON.parse(line))).toEqual([{ kind: 'reply', id: 1, ok: false, error: 'the app closed the pipe' }])
+  })
+
   test('a request to Rust resolves with its answer, and an open request fails when the pipe closes', async () => {
     const input = new PassThrough()
     const written: string[] = []

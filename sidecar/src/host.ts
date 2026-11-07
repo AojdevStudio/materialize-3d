@@ -25,6 +25,8 @@ export class Host {
   #nextRequest = 1
   readonly #waiting = new Map<number, { resolve(value: unknown): void; reject(error: Error): void }>()
   readonly #write: (line: string) => void
+  /** Rust closed the pipe, so it answers nothing more. */
+  #closed = false
 
   constructor(write: (line: string) => void) {
     this.#write = write
@@ -39,6 +41,7 @@ export class Host {
   }
 
   request<R extends HostRequest>(method: R, params: HostRequests[R]['params']): Promise<HostRequests[R]['result']> {
+    if (this.#closed) return Promise.reject(new Error('the app closed the pipe'))
     const id = this.#nextRequest++
     const { promise, resolve, reject } = Promise.withResolvers<HostRequests[R]['result']>()
     this.#waiting.set(id, { resolve: (value) => resolve(value as HostRequests[R]['result']), reject })
@@ -68,7 +71,8 @@ export class Host {
       accepted.add(call)
       void call.finally(() => accepted.delete(call))
     }
-    // Rust answers nothing more, so a call waiting on it fails now instead of never.
+    // Rust answers nothing more, so a call waiting on it, or asking it later, fails now instead of never.
+    this.#closed = true
     for (const waiting of this.#waiting.values()) waiting.reject(new Error('the app closed the pipe'))
     this.#waiting.clear()
     await Promise.allSettled(accepted)

@@ -73,10 +73,21 @@ fn resolve(dir: &Path, inputs: &[String], output: &str) -> Result<(Vec<PathBuf>,
     };
     let inputs = inputs.iter().map(|rel| real(&inside(dir, rel)?, rel)).collect::<Result<Vec<_>, _>>()?;
     let target = inside(dir, output)?;
-    let parent = target.parent().expect("a path inside the project has a parent");
-    std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
-    let parent = real(parent, output)?;
-    Ok((inputs, parent.join(target.file_name().expect("a path inside the project names a file"))))
+    // The output's folder is made one level at a time, and each level that exists is checked where it really is
+    // first, so no folder is ever made outside the project.
+    let mut folder = root.clone();
+    for part in Path::new(output).parent().map_or_else(Vec::new, |parent| parent.components().collect()) {
+        let next = folder.join(part);
+        match std::fs::symlink_metadata(&next) {
+            Ok(_) => folder = real(&next, output)?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                std::fs::create_dir(&next).map_err(|e| format!("{}: {e}", next.display()))?;
+                folder = next;
+            }
+            Err(e) => return Err(format!("{}: {e}", next.display())),
+        }
+    }
+    Ok((inputs, folder.join(target.file_name().expect("a path inside the project names a file"))))
 }
 
 fn slice_in(studio: &BambuStudio, dir: &Path, inputs: &[String], output: &str, cache_root: &Path) -> Result<Sliced, String> {
@@ -150,6 +161,9 @@ mod tests {
 
         let output = resolve(project.path(), &["cube.stl".to_owned()], "print/cube.3mf").expect_err("output through a link");
         assert!(output.contains("leads outside the project folder"), "{output}");
+        let deeper = resolve(project.path(), &["cube.stl".to_owned()], "print/new/cube.3mf").expect_err("a new folder through a link");
+        assert!(deeper.contains("leads outside the project folder"), "{deeper}");
+        assert!(!outside.path().join("new").exists(), "no folder was made outside the project");
         let input = resolve(project.path(), &["part.stl".to_owned()], "out/cube.3mf").expect_err("input through a link");
         assert!(input.contains("leads outside the project folder"), "{input}");
         let (inputs, target) = resolve(project.path(), &["cube.stl".to_owned()], "out/cube.3mf").expect("inside");
