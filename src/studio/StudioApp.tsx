@@ -100,7 +100,8 @@ export default function StudioApp() {
       .then((state) => {
         // Drafts saved in this window since are newer, and text already typed stays.
         drafts.current = { ...state.drafts, ...drafts.current }
-        setProjects(state.projects)
+        // A project made while this was on its way is newer than the saved list, so it stays.
+        setProjects((made) => [...made.filter((p) => !state.projects.some((saved) => saved.id === p.id)), ...state.projects])
         if (currentId.current === null && !typedOnStart.current) setText(drafts.current[START]?.text ?? '')
       })
       .catch((err: unknown) => setError(String(err)))
@@ -309,6 +310,7 @@ export default function StudioApp() {
       pending.current.set(id, sendable)
       await sidecar('chat.send', { project: id, requestId: sendable.id, text: message, attachments: sendable.images })
       pending.current.delete(id)
+      setSendErrors(({ [id]: _, ...rest }) => rest)
       if (drafts.current[id]?.text.trim() === message) drafts.current = { ...drafts.current, [id]: { text: '' } }
       // Text typed while this was sending is a new message, so only the sent text is cleared,
       // and only in the view that sent it.

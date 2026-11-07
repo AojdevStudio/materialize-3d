@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 
 type Listener = (event: { payload: unknown }) => void
 const { invokeMock, listeners } = vi.hoisted(() => ({ invokeMock: vi.fn(), listeners: { sidecar: [] as Listener[], drop: [] as Listener[] } }))
@@ -111,7 +111,11 @@ describe('StudioApp', () => {
 
   it("keeps a slow send's failure with the project it was sent to, and sending again reuses its request id", async () => {
     let failSend: (reason: string) => void = () => {}
-    mockSidecar({ 'chat.send': () => new Promise((_, reject) => (failSend = reject)) }, [projectA, projectB])
+    let sends = 0
+    mockSidecar(
+      { 'chat.send': () => (++sends === 1 ? new Promise((_, reject) => (failSend = reject)) : Promise.resolve(null)) },
+      [projectA, projectB],
+    )
     render(<StudioApp />)
     fireEvent.click(await screen.findByText('Project A'))
     await screen.findByRole('banner')
@@ -131,6 +135,24 @@ describe('StudioApp', () => {
     await waitFor(() => expect(sidecarCalls('chat.send')).toHaveLength(2))
     const [first, second] = sidecarCalls('chat.send')
     expect(second?.requestId).toBe(first?.requestId)
+    // The send went through this time, so its failure is no longer shown.
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull())
+  })
+
+  it('keeps a project made while the saved state was still on its way', async () => {
+    let finishState: (state: unknown) => void = () => {}
+    mockSidecar({
+      'state.get': () => new Promise((resolve) => (finishState = resolve)),
+      'projects.create': () => Promise.resolve({ id: '2026-11-06-a-clip', conversation: 4, title: 'A clip for my desk', createdMs: 3 }),
+    })
+    render(<StudioApp />)
+    fireEvent.change(await screen.findByTestId('prompt'), { target: { value: 'A clip for my desk' } })
+    fireEvent.click(screen.getByTestId('send'))
+    await waitFor(() => expect(sidecarCalls('chat.send')).toHaveLength(1))
+    await act(async () => finishState({ setup: { step: 'ready', done: true }, settings, projects: [projectB], drafts: {} }))
+    const sidebar = within(screen.getByRole('navigation', { name: 'Projects' }))
+    expect(sidebar.getByText('A clip for my desk')).toBeTruthy()
+    expect(sidebar.getByText('Project B')).toBeTruthy()
   })
 
   it('shows what a waiting turn needs, and a proxy sign-in goes to the sidecar', async () => {

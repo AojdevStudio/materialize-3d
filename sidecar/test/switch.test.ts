@@ -50,7 +50,9 @@ describe('the import of chats from before the store', () => {
     writeFileSync(join(projects, '2026-11-06-bad-record', '.m3d', 'project.json'), '{"title":')
     cpSync(CLIP, join(projects, '2026-11-06-null-line'), { recursive: true })
     const transcript = join(projects, '2026-11-06-null-line', '.m3d', 'transcript.jsonl')
-    writeFileSync(transcript, `null\n${readFileSync(transcript, 'utf8')}`)
+    // Lines a cut-off or hand-edited transcript can hold: no event, content that is not a list, and a null block.
+    const odd = ['null', '{"type":"assistant","message":{"content":{"text":"x"}}}', '{"type":"assistant","message":{"content":[null]}}']
+    writeFileSync(transcript, `${odd.join('\n')}\n${readFileSync(transcript, 'utf8')}`)
     const app = spawnSidecar(join(dir, 'state'), projects)
     const state = (await app.call('state.get')) as { projects: { id: string }[] }
     expect(state.projects.map((p) => p.id)).toEqual(['2026-11-06-null-line'])

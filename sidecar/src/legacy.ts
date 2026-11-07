@@ -49,13 +49,14 @@ export function readTranscript(text: string): ImportedEntry[] {
     const event = parsed as Record<string, unknown>
     // A helper agent's inner steps stayed inside its one line.
     if (event.parent_tool_use_id) continue
-    const blocks = ((event.message as { content?: Block[] | string } | undefined)?.content ?? []) as Block[] | string
+    // Content in any form but a list of blocks, such as the plain text a few old lines held, has no steps to show.
+    const content = (event.message as { content?: unknown } | undefined)?.content
+    const blocks = Array.isArray(content) ? content.filter((block): block is Block => typeof block === 'object' && block !== null) : []
     switch (event.type) {
       case 'm3d_user':
         entries.push({ role: 'user', text: str(event.text), images: Array.isArray(event.images) ? event.images.map(str) : [] })
         break
       case 'assistant':
-        if (typeof blocks === 'string') break
         for (const block of blocks) {
           if (block.type === 'text' && block.text?.trim()) entries.push({ role: 'assistant', text: block.text })
           if (block.type === 'tool_use' && block.id !== undefined && block.name !== undefined) {
@@ -66,7 +67,6 @@ export function readTranscript(text: string): ImportedEntry[] {
         }
         break
       case 'user':
-        if (typeof blocks === 'string') break
         for (const block of blocks) {
           const tool = block.type === 'tool_result' && block.tool_use_id !== undefined ? tools.get(block.tool_use_id) : undefined
           if (tool === undefined) continue
