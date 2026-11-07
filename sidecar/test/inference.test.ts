@@ -65,6 +65,17 @@ describe('subscription sign-ins', () => {
   }
   const settle = () => Bun.sleep(20)
 
+  test('a key for a provider that has no key sign-in is refused, and its login stays as it was', async () => {
+    const credentials = new InMemoryCredentialStore()
+    const oauth = { type: 'oauth' as const, refresh: 'r', access: 'a', expires: Date.now() + 60_000 }
+    await credentials.modify('openai-codex', async () => oauth)
+    const events: LoginEvent[] = []
+    const logins = new Logins(inferenceModels(credentials), credentials, (event) => events.push(event))
+    await expect(logins.setKey('openai-codex', 'sk-not-for-codex', undefined)).rejects.toThrow('takes its own sign-in, not a key')
+    expect(await credentials.read('openai-codex')).toEqual(oauth)
+    expect(events).toEqual([])
+  })
+
   test('a choice the provider asks for reaches the window with its options, and the answer goes back', async () => {
     const { logins, events, credentials } = withSignIn(async (interaction) => {
       const method = await interaction.prompt({ type: 'select', message: 'Choose a login method', options: [{ id: 'console', label: 'Console' }, { id: 'claude', label: 'Claude.ai' }] })
@@ -201,6 +212,44 @@ describe('the Keychain credential store', () => {
 
     await store.modify('anthropic', async () => credential)
     expect(JSON.parse(keychain.get('anthropic') ?? '{}')).toEqual(credential)
+  })
+
+  test('a save cancelled while its login was being listed puts the earlier login back in both places', async () => {
+    const keychain = new Map<string, string>()
+    const request = async (method: string, params: { account: string; secret?: string }) => {
+      if (method === 'keychain.get') return { secret: keychain.get(params.account) ?? null }
+      if (method === 'keychain.set') keychain.set(params.account, params.secret ?? '')
+      if (method === 'keychain.delete') keychain.delete(params.account)
+      return null
+    }
+    const logins: Record<string, LoginKind> = {}
+    const listing = Promise.withResolvers<void>()
+    const finish = Promise.withResolvers<void>()
+    let gate = false
+    const store = new KeychainCredentials({ request } as never, {
+      logins: async () => logins,
+      setLogin: async (provider, kind) => {
+        if (gate) {
+          gate = false
+          listing.resolve()
+          await finish.promise
+        }
+        if (kind === undefined) delete logins[provider]
+        else logins[provider] = kind
+      },
+    })
+    const earlier = { type: 'api_key' as const, key: 'earlier' }
+    await store.modify('anthropic', async () => earlier)
+
+    const cancel = new AbortController()
+    gate = true
+    const save = store.modify('anthropic', async () => ({ type: 'oauth' as const, refresh: 'r', access: 'a', expires: 1 }), { signal: cancel.signal })
+    await listing.promise
+    cancel.abort()
+    finish.resolve()
+    await expect(save).rejects.toThrow()
+    expect(JSON.parse(keychain.get('anthropic') ?? '{}')).toEqual(earlier)
+    expect(logins).toEqual({ anthropic: 'api_key' })
   })
 
   test('a save cancelled while the Keychain wrote it puts the earlier login back', async () => {

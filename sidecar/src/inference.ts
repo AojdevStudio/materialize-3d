@@ -100,7 +100,7 @@ export class KeychainCredentials implements CredentialStore {
 
   /**
    * A sign-in that was cancelled, by a newer one or a sign-out, writes nothing, even once its turn in line comes, and
-   * one cancelled while the Keychain wrote it leaves the earlier login in place.
+   * one cancelled while it was saved leaves the earlier login in place, in the Keychain and in the index.
    */
   modify(provider: string, change: (current: Credential | undefined) => Promise<Credential | undefined>, options?: AuthOperationOptions) {
     return this.#serial(provider, async () => {
@@ -110,13 +110,15 @@ export class KeychainCredentials implements CredentialStore {
       options?.signal?.throwIfAborted()
       if (next === undefined) return current
       await this.#host.request('keychain.set', { account: provider, secret: JSON.stringify(next) })
+      await this.#index.setLogin(provider, next.type)
       if (options?.signal?.aborted) {
-        // Cancelled while the Keychain wrote it: the earlier login goes back before anything else reads this one.
+        // Cancelled while it was saved: the earlier login goes back, in the Keychain and in the index, before anything
+        // else reads this one.
         if (current === undefined) await this.#host.request('keychain.delete', { account: provider })
         else await this.#host.request('keychain.set', { account: provider, secret: JSON.stringify(current) })
+        await this.#index.setLogin(provider, current?.type)
         options.signal.throwIfAborted()
       }
-      await this.#index.setLogin(provider, next.type)
       return next
     })
   }
@@ -177,13 +179,16 @@ export class Logins {
       const provider = this.#models.getProvider(id)
       if (provider === undefined) throw new Error(`provider ${id} is not registered`)
       const kinds: LoginKind[] = []
-      if (provider.auth.apiKey !== undefined && id !== 'openai-codex') kinds.push('api_key')
+      if (provider.auth.apiKey !== undefined) kinds.push('api_key')
       if (provider.auth.oauth !== undefined) kinds.push('oauth')
       return { provider: id, name: provider.name, login: stored.get(id) ?? null, kinds }
     })
   }
 
+  /** Saves a key as the provider's login. A provider that has no key sign-in refuses it before its login changes. */
   async setKey(provider: ProviderId, key: string, baseUrl: string | undefined): Promise<void> {
+    const known = this.#models.getProvider(provider)
+    if (known?.auth.apiKey === undefined) throw new Error(`${known?.name ?? provider} takes its own sign-in, not a key.`)
     this.#cancel(provider)
     await this.#credentials.modify(provider, async () => keyCredential(key, baseUrl))
     this.#emit({ type: 'login', provider, step: 'done' })
