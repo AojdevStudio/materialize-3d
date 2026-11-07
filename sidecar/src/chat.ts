@@ -217,11 +217,12 @@ export class Chats {
   }
 
   /**
-   * Resolves once the person is signed in to `provider`, for a running tool. When they are not, or the provider
-   * `refused` the saved sign-in, it holds the turn where it is, with the fix named on its chat, and goes on once they
-   * sign in. A stop ends the wait. A wait the tool held before a restart is let go once the sign-in is there.
+   * Resolves once the person is signed in to `provider`, for a running tool: with `after`, signed in with a login saved
+   * after that many saves, as the one then saved was refused. Until then it holds the turn where it is, with the fix
+   * named on its chat, and goes on once they sign in. A stop ends the wait. A wait the tool held before a restart is
+   * let go once the sign-in is there.
    */
-  async loginFor(conversation: number, provider: string, waiting: Context, refused: boolean): Promise<void> {
+  async loginFor(conversation: number, provider: string, waiting: Context, after: number | undefined): Promise<void> {
     const { models, store } = this.#o
     const id = conversation as ConversationId
     const name = models.getProvider(provider)?.name ?? provider
@@ -232,25 +233,34 @@ export class Chats {
         record.waiting = wait
         record.tool = wait !== null
       }, context)
-    if (!refused && (await models.getAuth(provider).catch(() => undefined)) !== undefined) {
-      if ((await store.harness.snapshot(WaitingDoc, id, context))?.tool) {
+    const ready = async () =>
+      after === undefined ? (await models.getAuth(provider).catch(() => undefined)) !== undefined : (await store.loginSaves(provider)) > after
+    const fix =
+      after === undefined ? `Sign in to ${name}. Astra picks up where it stopped.` : `${name} refused the saved sign-in. Sign in again. Astra picks up where it stopped.`
+    let held = (await store.harness.snapshot(WaitingDoc, id, context))?.tool ?? false
+    try {
+      for (;;) {
+        // The waiter is in place before the check, so a sign-in that lands between the two is not missed.
+        const { promise, resolve } = Promise.withResolvers<void>()
+        const waiters = this.#signIns.get(provider) ?? new Set()
+        this.#signIns.set(provider, waiters.add(resolve))
+        try {
+          if (await ready()) return
+          if (!held) {
+            held = true
+            await hold({ kind: 'login', provider, name, fix })
+            await this.#show(project)
+          }
+          await awaitWithContext(promise, waiting)
+        } finally {
+          waiters.delete(resolve)
+        }
+      }
+    } finally {
+      if (held) {
         await hold(null)
         await this.#show(project)
       }
-      return
-    }
-    const { promise, resolve } = Promise.withResolvers<void>()
-    const waiters = this.#signIns.get(provider) ?? new Set()
-    this.#signIns.set(provider, waiters.add(resolve))
-    const fix = refused ? `${name} refused the saved sign-in. Sign in again. Astra picks up where it stopped.` : `Sign in to ${name}. Astra picks up where it stopped.`
-    await hold({ kind: 'login', provider, name, fix })
-    await this.#show(project)
-    try {
-      await awaitWithContext(promise, waiting)
-    } finally {
-      waiters.delete(resolve)
-      await hold(null)
-      await this.#show(project)
     }
   }
 

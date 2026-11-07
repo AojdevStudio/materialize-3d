@@ -4,6 +4,8 @@
  * mid-turn goes on with the same script. OpenAI Codex, Astra's provider, is replaced by a scripted Astra that answers
  * only once a key is saved for it, as the real one answers only once the person signs in.
  */
+import { existsSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { type AssistantMessage, fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall, type Message, type Model } from '@earendil-works/pi-ai'
 import type { JsonObject } from '@earendil-works/pi-durable'
 import { runSidecar } from '../../src/app'
@@ -94,10 +96,18 @@ await runSidecar({
     faux.setResponses(Array.from({ length: 200 }, () => (context, _options, _state, model) => script(context.messages, model)))
     models.setProvider(faux.provider)
     const astra = fauxProvider({ provider: 'openai-codex', models: [{ id: 'gpt-6-astra' }] })
-    // Astra runs a command of its own first, in the project folder it shares. The provider refuses the key `refused`.
+    // Astra runs a command of its own first, in the project folder it shares. The provider refuses the key `refused`,
+    // and with M3D_ASTRA_GATE set, it holds that request open until the test writes `release` there.
+    const gate = process.env.M3D_ASTRA_GATE
     astra.setResponses(
-      Array.from({ length: 50 }, () => (context, options) => {
-        if (options?.apiKey === 'refused') return fauxAssistantMessage([], { stopReason: 'error', errorMessage: '401 Unauthorized: invalid token' })
+      Array.from({ length: 50 }, () => async (context, options) => {
+        if (options?.apiKey === 'refused') {
+          if (gate !== undefined) {
+            writeFileSync(join(gate, 'asked'), '')
+            while (!existsSync(join(gate, 'release'))) await Bun.sleep(25)
+          }
+          return fauxAssistantMessage([], { stopReason: 'error', errorMessage: '401 Unauthorized: invalid token' })
+        }
         return sinceUser(context.messages).results.length === 0 ? run('echo astra-ran > astra.txt') : fauxAssistantMessage(fauxText('astra drew it'))
       }),
     )

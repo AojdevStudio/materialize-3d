@@ -168,6 +168,21 @@ describe('Astra', () => {
     await app.quit()
   }, 60_000)
 
+  test('a sign-in saved while a request it replaces was still out is not missed when that request is refused', async () => {
+    const gate = mkdtempSync(join(tmpdir(), 'm3d-astra-gate-'))
+    const where = scratch({ M3D_ASTRA_GATE: gate })
+    const app = start(where, 'astra')
+    await app.next()
+    const project = await newProject(app)
+    await app.call('auth.setKey', { provider: 'openai-codex', key: 'refused' })
+    await send(app, project, 'r1')
+    while (!existsSync(join(gate, 'asked'))) await Bun.sleep(25)
+    await app.call('auth.setKey', { provider: 'openai-codex', key: 'astra-key' })
+    writeFileSync(join(gate, 'release'), '')
+    await answered(app, project, 'parent saw: astra drew it')
+    await app.quit()
+  }, 60_000)
+
   test('a wait a crash cut off is let go once the sign-in is there, and the turn finishes', async () => {
     const where = scratch()
     const keychain = new Map<string, string>()

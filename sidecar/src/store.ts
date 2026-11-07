@@ -92,6 +92,17 @@ export const WaitingDoc = defineDoc<{ waiting: Waiting | null; failure: number |
   checkpointWhen: always,
 })
 
+/** How many times each provider's login was saved, so a wait can tell a new sign-in from the one a provider refused. */
+const LoginSavesDoc = defineDoc<{ saves: Record<string, number> }>({
+  kind: 'm3d.login-saves',
+  version: 1,
+  scope: 'conversation',
+  history: 'latest',
+  fork: 'initial',
+  initial: () => ({ saves: {} }),
+  checkpointWhen: always,
+})
+
 /** Which providers have a login in the Keychain. Never the secret itself. */
 const LoginsDoc = defineDoc<{ logins: Record<string, LoginKind> }>({
   kind: 'm3d.logins',
@@ -262,8 +273,17 @@ export class Store implements LoginIndex {
     await this.harness.commit(async (tx) => {
       const { logins } = await tx.doc(LoginsDoc, this.root.id)
       if (kind === undefined) delete logins[provider]
-      else logins[provider] = kind
+      else {
+        logins[provider] = kind
+        const { saves } = await tx.doc(LoginSavesDoc, this.root.id)
+        saves[provider] = (saves[provider] ?? 0) + 1
+      }
     }, context)
+  }
+
+  /** How many times the provider's login was saved. */
+  async loginSaves(provider: string): Promise<number> {
+    return (await this.harness.snapshot(LoginSavesDoc, this.root.id, context))?.saves[provider] ?? 0
   }
 
   /** The project's folder, made if it is missing. */

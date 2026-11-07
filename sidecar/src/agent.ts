@@ -134,10 +134,12 @@ export interface AgentHost {
   projectOf(conversation: number): Promise<string>
   /**
    * Resolves once the person is signed in to `provider`: at once when they are, after holding the turn with the fix
-   * named on its chat when they are not. After the provider `refused` the saved sign-in, only a new one will do. A stop
-   * ends the wait.
+   * named on its chat when they are not. With `after`, only a login saved after that many saves will do, as the one
+   * then saved was refused. A stop ends the wait.
    */
-  signedIn(conversation: number, provider: string, context: Context, refused: boolean): Promise<void>
+  signedIn(conversation: number, provider: string, context: Context, after: number | undefined): Promise<void>
+  /** How many times the provider's login was saved. */
+  loginSaves(provider: string): Promise<number>
 }
 
 /** A call's operation id: a hash of the call id, since an id the model made can hold any character, and no two may share a receipt. */
@@ -154,7 +156,7 @@ function operation<T extends JsonValue>(api: ToolExecutionApi, context: Context)
 }
 
 /** The agent's tools, in the order the model is offered them. */
-export function agentTools({ host, projectOf, signedIn }: AgentHost) {
+export function agentTools({ host, projectOf, signedIn, loginSaves }: AgentHost) {
   const read = createReadTool()
   const write = { ...createWriteTool(), replay: 'safe' as const }
   const edit = createEditTool()
@@ -239,9 +241,14 @@ export function agentTools({ host, projectOf, signedIn }: AgentHost) {
       await api.details({ astra: child }, context)
       const conversation = await api.conversation(child, context)
       if (conversation === undefined) throw new Error("Astra's conversation is gone")
+      const { provider } = ASTRA_MODEL
+      // The login save each request goes out with, kept with the request, so a rerun after a crash finds the same one.
+      const savedWith = async (requestId: string) => api.memo<number>(`login:${requestId}`, await loginSaves(provider), context)
       // Astra runs on the person's ChatGPT sign-in. Without it the turn waits here, with the fix named, and goes on.
-      await signedIn(api.conversationId, ASTRA_MODEL.provider, context, false)
-      let submission = await conversation.submit({ type: 'input', content: task, requestId: `astra:${api.taskId}` }, context)
+      await signedIn(api.conversationId, provider, context, undefined)
+      const first = `astra:${api.taskId}`
+      let saves = await savedWith(first)
+      let submission = await conversation.submit({ type: 'input', content: task, requestId: first }, context)
       // Each continue has its own request id, so a rerun after a crash finds the same one instead of sending another.
       for (let resumed = 0; ; resumed++) {
         const settled = await submission.wait(context)
@@ -254,11 +261,13 @@ export function agentTools({ host, projectOf, signedIn }: AgentHost) {
         if (settled.reason !== 'model_error' || !isLoginFailure(detail)) {
           return { output: text(`Astra did not answer (${settled.reason}${detail === '' ? '' : `: ${detail}`}).`), isError: true }
         }
-        // The sign-in was missing or refused, so Astra waits for a new one, then goes on from where it stopped. A rerun
-        // after a crash takes a continue it already sent as it was, without waiting again.
+        // The sign-in was missing or refused, so Astra waits for a login saved after the one this request went out
+        // with, which may have landed while it was out, then goes on from where it stopped. A rerun after a crash takes
+        // a continue it already sent as it was, without waiting again.
         const requestId = `astra:${api.taskId}:continue:${resumed}`
         const sent = await api.commit((tx) => tx.submissionByRequest(child, requestId), context)
-        if (sent === undefined) await signedIn(api.conversationId, ASTRA_MODEL.provider, context, true)
+        if (sent === undefined) await signedIn(api.conversationId, provider, context, saves)
+        saves = await savedWith(requestId)
         submission = await conversation.submit({ type: 'continue', requestId }, context)
       }
     },
