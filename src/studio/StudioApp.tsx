@@ -150,12 +150,18 @@ export default function StudioApp() {
     if ((!message && attachments.length === 0) || sendingNow.current || chat.running) return
     sendingNow.current = true
     setSending(true)
+    // The view this send belongs to. A move to another project or the start screen
+    // while it runs changes `loadRequest`, and then the send leaves that view alone.
+    let view = loadRequest.current
     try {
       let project = current
       if (!project) {
         project = await studio.createProject(message || 'New part')
         setProjects((prev) => [project!, ...prev])
-        show(project, [], true)
+        if (loadRequest.current === view) {
+          show(project, [], true)
+          view = loadRequest.current
+        }
       }
       const id = project.id
       const outgoing = attachments
@@ -163,8 +169,9 @@ export default function StudioApp() {
         outgoing.map((a) => (a.kind === 'path' ? studio.importFile(id, a.path) : studio.saveBytes(id, a.name, a.bytes))),
       )
       await studio.send(id, message, images)
-      // Text typed while this was sending is a new message, so only the sent text is cleared.
-      setText((now) => (now.trim() === message ? '' : now))
+      // Text typed while this was sending is a new message, so only the sent text is cleared,
+      // and only in the view that sent it.
+      if (loadRequest.current === view) setText((now) => (now.trim() === message ? '' : now))
       // A picture added while these imported waits for the next message.
       setAttachments((prev) => prev.filter((a) => !outgoing.includes(a)))
       outgoing.forEach(releaseAttachment)

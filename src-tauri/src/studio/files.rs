@@ -104,13 +104,23 @@ fn create_ref(dir: &Path, name: &str) -> Result<(std::fs::File, String), String>
     unreachable!("the name counter never ends")
 }
 
+/// Removes a picture whose write failed, so no empty or partial file is left
+/// in the project, and returns the error to report.
+fn discard(dir: &Path, rel: &str, error: String) -> String {
+    let _ = std::fs::remove_file(dir.join(rel));
+    error
+}
+
 /// Copies a dropped file into the project's `refs/` folder and returns its path there.
 #[tauri::command]
 pub fn studio_import_file(project: String, source: String) -> Result<String, String> {
     let dir = project_dir(&project)?;
     let mut from = std::fs::File::open(&source).map_err(|e| format!("opening {source}: {e}"))?;
+    if !from.metadata().map_err(|e| format!("{source}: {e}"))?.is_file() {
+        return Err(format!("{source} is not a file"));
+    }
     let (mut target, rel) = create_ref(&dir, &source)?;
-    std::io::copy(&mut from, &mut target).map_err(|e| format!("copying {source}: {e}"))?;
+    std::io::copy(&mut from, &mut target).map_err(|e| discard(&dir, &rel, format!("copying {source}: {e}")))?;
     Ok(rel)
 }
 
@@ -127,8 +137,9 @@ pub fn studio_save_bytes(request: tauri::ipc::Request<'_>) -> Result<String, Str
     let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
         return Err("expected raw bytes".to_owned());
     };
-    let (mut target, rel) = create_ref(&project_dir(&project)?, &name)?;
-    std::io::Write::write_all(&mut target, bytes).map_err(|e| format!("writing {rel}: {e}"))?;
+    let dir = project_dir(&project)?;
+    let (mut target, rel) = create_ref(&dir, &name)?;
+    std::io::Write::write_all(&mut target, bytes).map_err(|e| discard(&dir, &rel, format!("writing {rel}: {e}")))?;
     Ok(rel)
 }
 

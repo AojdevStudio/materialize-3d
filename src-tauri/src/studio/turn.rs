@@ -14,6 +14,8 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio_util::sync::CancellationToken;
 
 use super::{files, project_dir, read_meta, META_DIR};
+use crate::fabrication::build_gate::BuildGate;
+use crate::state::AppState;
 
 const SYSTEM_PROMPT: &str = include_str!("system_prompt.md");
 const MODEL: &str = "claude-opus-5-5";
@@ -152,7 +154,13 @@ fn end_turn(leaders: &[u32], tags: &[String], exclude: &BTreeSet<i32>) {
                 let _ = unsafe { libc::killpg(group, sig) };
             }
         };
-        let mut known = read(&processes());
+        let table = processes();
+        if table.is_empty() {
+            // No `ps` to read: end at least each agent's own group, whose pid is still its own.
+            signal(&mut leaders.iter().map(|&pid| pid as i32).filter(ours), libc::SIGTERM);
+            return;
+        }
+        let mut known = read(&table);
         if known.is_empty() {
             return;
         }
@@ -416,7 +424,8 @@ pub fn studio_send(app: AppHandle, turns: State<'_, Turns>, project: String, tex
 
     tauri::async_runtime::spawn(async move {
         let before: HashMap<String, u64> = files::list(&dir).unwrap_or_default().into_iter().map(|f| (f.rel.clone(), f.modified_ms)).collect();
-        let outcome = run(&app, &project, &mut transcript, &started, command, message, token, &tag, &leader).await;
+        let state = app.state::<Arc<AppState>>().inner().clone();
+        let outcome = gated(&state.builds, run(&app, &project, &mut transcript, &started, command, message, token, &tag, &leader)).await;
         let changed: Vec<String> = files::list(&dir)
             .unwrap_or_default()
             .into_iter()
@@ -443,6 +452,16 @@ pub fn studio_send(app: AppHandle, turns: State<'_, Turns>, project: String, tex
         }
     });
     Ok(())
+}
+
+/// Runs a turn while it holds the build gate, so the updater waits for it before
+/// restarting the app, the same as for a model build. A turn that would start
+/// while an update installs is refused instead, since the restart would end it.
+async fn gated<T>(gate: &BuildGate, turn: impl std::future::Future<Output = Result<T, String>>) -> Result<T, String> {
+    let Some(_running) = gate.enter() else {
+        return Err("An update is installing, and the app restarts when it is done. Send this again after it opens.".to_owned());
+    };
+    turn.await
 }
 
 async fn run(
@@ -487,6 +506,9 @@ async fn run(
         end_turn(&[pid], &tags, &exclude);
     })
     .await;
+    // Whatever the process reading found, the agent itself does not outlive its
+    // turn. A kill without a wait leaves it unreaped, so its pid stays its own.
+    let _ = child.start_kill();
     // Cleared before reaping, under the lock quitting holds while it ends turns,
     // so no one uses the pid once it could belong to someone else.
     if let Ok(mut pid) = leader.lock() {
@@ -568,6 +590,29 @@ pub fn studio_cancel(turns: State<'_, Turns>, project: String) -> Result<(), Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const SETTLE: std::time::Duration = std::time::Duration::from_millis(50);
+
+    /// The updater restarts the app only once no build and no turn holds the gate.
+    #[tokio::test]
+    async fn an_update_waits_for_a_running_turn_and_refuses_a_new_one_while_it_installs() {
+        let gate = BuildGate::default();
+        let (finish, finished) = tokio::sync::oneshot::channel::<()>();
+        let mut turn = std::pin::pin!(gated(&gate, async {
+            finished.await.expect("the test finishes the turn");
+            Ok(())
+        }));
+        assert!(tokio::time::timeout(SETTLE, &mut turn).await.is_err(), "the turn runs");
+        let mut close = std::pin::pin!(gate.close_when_idle(|_| {}));
+        assert!(tokio::time::timeout(SETTLE, &mut close).await.is_err(), "the update waits for the turn");
+        finish.send(()).expect("the turn listens");
+        turn.await.expect("the turn ends");
+        let closed = tokio::time::timeout(SETTLE, &mut close).await.expect("the update goes ahead once the turn ends");
+        let refused = gated(&gate, async { Ok::<_, String>(()) }).await;
+        assert!(refused.expect_err("a turn is refused while the update installs").contains("update is installing"));
+        drop(closed);
+        assert!(gated(&gate, async { Ok::<_, String>(()) }).await.is_ok(), "a failed install lets turns start again");
+    }
 
     #[test]
     fn a_reopened_transcript_numbers_lines_on_and_knows_an_unfinished_turn() {
