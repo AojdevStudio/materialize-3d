@@ -8,7 +8,7 @@
  * action run exactly once. `run` passes the id on as `M3D_OPERATION_ID`, for a script that wants to check for itself.
  */
 import { createHash } from 'node:crypto'
-import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, renameSync, writeFileSync } from 'node:fs'
+import { closeSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, readSync, realpathSync, renameSync, writeFileSync } from 'node:fs'
 import { basename, dirname, isAbsolute, join, relative } from 'node:path'
 import type { Context, JsonValue } from '@earendil-works/chord'
 import {
@@ -62,11 +62,45 @@ const GUARD = [
 /** How often a running command's log is read for its new output. */
 const LOG_POLL_MS = 200
 
+/** The bytes of a file from `from` to its end, at most the last `OUTPUT_TAIL` of them, read without the rest. */
+function readEnd(path: string, from: number): { bytes: Uint8Array; start: number; end: number } {
+  const fd = openSync(path, 'r')
+  try {
+    const end = fstatSync(fd).size
+    const start = Math.max(from, end - OUTPUT_TAIL)
+    const bytes = new Uint8Array(Math.max(0, end - start))
+    let read = 0
+    while (read < bytes.length) {
+      const got = readSync(fd, bytes, read, bytes.length - read, start + read)
+      if (got === 0) break
+      read += got
+    }
+    return { bytes: bytes.subarray(0, read), start, end: start + read }
+  } finally {
+    closeSync(fd)
+  }
+}
+
 /** The end of a command's log, where errors are. */
-function tailOf(log: string): string {
-  if (!existsSync(log)) return ''
-  const bytes = readFileSync(log)
-  return new TextDecoder().decode(bytes.subarray(Math.max(0, bytes.length - OUTPUT_TAIL)))
+export function tailOf(log: string): string {
+  return existsSync(log) ? new TextDecoder().decode(readEnd(log, 0).bytes) : ''
+}
+
+/**
+ * A command's log as it grows. Each call gives what was added since the last, read from where that one stopped. A
+ * burst longer than the model ever sees is skipped to its newest `OUTPUT_TAIL` bytes.
+ */
+export function logFollower(log: string): () => string {
+  let shown = 0
+  let decoder = new TextDecoder()
+  return () => {
+    if (!existsSync(log)) return ''
+    const { bytes, start, end } = readEnd(log, shown)
+    // A skip starts mid-stream, so a character cut there is not joined to the one before.
+    if (start > shown) decoder = new TextDecoder()
+    shown = end
+    return decoder.decode(bytes, { stream: true })
+  }
 }
 
 /** Longer than the watch takes to end a command after its sidecar ends. */
@@ -202,11 +236,10 @@ export function agentTools({ host, projectOf, signedIn, loginSaves }: AgentHost)
         if (existsSync(exited)) return { exitCode: Number(readFileSync(exited, 'utf8')), output: tailOf(log) }
         mkdirSync(dirname(op.receipt), { recursive: true })
         await api.memo('started', true, context)
-        let shown = 0
+        const added = logFollower(log)
         const show = () => {
-          const bytes = existsSync(log) ? readFileSync(log) : new Uint8Array()
-          if (bytes.length > shown) api.output(new TextDecoder().decode(bytes.subarray(shown)))
-          shown = bytes.length
+          const text = added()
+          if (text !== '') api.output(text)
         }
         const poll = setInterval(show, LOG_POLL_MS)
         const ran = await env

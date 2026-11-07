@@ -1,8 +1,8 @@
 import { describe, expect, test } from 'bun:test'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { once, operationId } from '../src/agent'
+import { logFollower, once, operationId, tailOf } from '../src/agent'
 import type { ChatEntry, ChatView } from '../src/protocol'
 import { spawnSidecar } from './sidecar'
 
@@ -121,6 +121,27 @@ describe('the run tool', () => {
     expect((await toolResults(second, project))[0]).toMatchObject({ name: 'run', failed: false, text: 'exit code 0\nmeasured-value=42\n' })
     await second.quit()
   }, 30_000)
+})
+
+describe("a command's log", () => {
+  test('is followed from where the last read stopped, and a long burst or a recovery gets only its end', () => {
+    const log = join(mkdtempSync(join(tmpdir(), 'm3d-log-')), 'op.json.log')
+    const added = logFollower(log)
+    expect(added()).toBe('')
+    writeFileSync(log, 'first\n')
+    expect(added()).toBe('first\n')
+    expect(added()).toBe('')
+    appendFileSync(log, 'second\n')
+    expect(added()).toBe('second\n')
+    const burst = `${'x'.repeat(1_000_000)}end\n`
+    appendFileSync(log, burst)
+    const shown = added()
+    expect(shown).toHaveLength(20_000)
+    expect(shown.endsWith('xend\n')).toBe(true)
+    expect(added()).toBe('')
+    expect(tailOf(log)).toBe(shown)
+    expect(tailOf(join(log, '..', 'missing.log'))).toBe('')
+  })
 })
 
 describe('the file tools', () => {
