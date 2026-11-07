@@ -648,6 +648,7 @@ mod tests {
         assert!(shell_path("/bin/sh", std::time::Duration::from_secs(5)).is_some_and(|path| !path.is_empty()));
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_login_shell_that_leaves_a_program_holding_its_output_still_gives_its_path_at_once() {
         let dir = tempfile::tempdir().unwrap();

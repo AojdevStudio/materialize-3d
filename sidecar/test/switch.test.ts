@@ -81,7 +81,8 @@ describe('the import of chats from before the store', () => {
     await app.quit()
   })
 
-  test('a projects folder that cannot be listed holds the start up for no one', async () => {
+  // Root can list a folder whatever its mode, so there the folder cannot be made unreadable.
+  test.skipIf(process.getuid?.() === 0)('a projects folder that cannot be listed holds the start up for no one', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'm3d-import-'))
     const projects = join(dir, 'projects')
     cpSync(CLIP, join(projects, '2026-11-06-a-wall-clip'), { recursive: true })
