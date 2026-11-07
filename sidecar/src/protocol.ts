@@ -21,10 +21,14 @@ export type Settings = {
 
 /** `conversation` is the project's Pi conversation id. */
 export type Project = { id: string; conversation: number; title: string; createdMs: number }
-/** A project just made, and the start screen's draft it took as its own, if it took one. */
-export type CreatedProject = Project & { draft: SavedDraft | null }
 
-/** An unsent message, by project id, or `new` for the start screen. Attachments are paths inside the project. */
+/** The draft key of the start screen, whose message has no project yet. Every other draft is keyed by its project id. */
+export const START = 'new'
+
+/**
+ * An unsent message, by project id, or `START` for the start screen. Attachments are the paths of its pictures where
+ * they are now: a dropped file, or a pasted picture the sidecar keeps. A send copies them into its project.
+ */
 export type Draft = { text: string; attachments: string[] }
 
 /**
@@ -123,7 +127,6 @@ export interface Methods {
   'setup.check': { params: Record<string, never>; result: Need[] }
   /** Imports the chats from before the store again, as after the person let the app read the projects folder. */
   'legacy.import': { params: Record<string, never>; result: { imported: number; blocked: string | null } }
-  'projects.create': { params: { title: string; rev?: number }; result: CreatedProject }
   'auth.status': { params: Record<string, never>; result: Login[] }
   /** A key, or for Anthropic a proxy's base URL and token. */
   'auth.setKey': { params: { provider: ProviderId; key: string; baseUrl?: string }; result: Login[] }
@@ -131,12 +134,12 @@ export interface Methods {
   'auth.answer': { params: { provider: ProviderId; text: string }; result: null }
   'auth.logout': { params: { provider: ProviderId }; result: Login[] }
   'chat.open': { params: { project: string }; result: ChatView }
-  /** `requestId` is the window's own id for this message: sending it again never sends twice. */
   /**
-   * Sends a message. `draftRev` names the saved draft it went out with, which the send removes in the same commit. A
-   * draft saved after it, newer, stays.
+   * Sends the draft saved as revision `rev` under `key`, and answers the project it went to. From the start screen it
+   * makes that project first. Sent again with the same revision, as after a lost answer, it sends nothing more and
+   * answers the same project.
    */
-  'chat.send': { params: { project: string; requestId: string; text: string; attachments: string[]; draftRev?: number }; result: null }
+  'chat.send': { params: { key: string; rev: number }; result: { project: Project } }
   'chat.stop': { params: { project: string }; result: null }
   'chat.retry': { params: { project: string }; result: null }
   /** The tools a project's agent is offered, as Pi resolves them. */

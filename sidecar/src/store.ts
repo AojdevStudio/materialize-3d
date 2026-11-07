@@ -13,7 +13,7 @@ import { type Conversation, defineDoc, type HarnessOptions, Harness, type Regist
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node'
 import type { LoginIndex } from './inference'
 import type { LegacyProject } from './legacy'
-import type { CreatedProject, Draft, LoginKind, Project, SavedDraft, Settings, Setup, StoredState, Turn, Waiting } from './protocol'
+import { type Draft, type LoginKind, type Project, type SavedDraft, type Settings, type Setup, START, type StoredState, type Turn, type Waiting } from './protocol'
 
 const context = BACKGROUND_CONTEXT
 
@@ -47,7 +47,7 @@ export const SettingsDoc = defineDoc<Settings>({
   checkpointWhen: always,
 })
 
-/** The projects, and the project each first message's draft revision made, so a send of it again makes no other. */
+/** The projects, and the project each start screen draft revision made, so a send of it again makes no other. */
 const ProjectsDoc = defineDoc<{ projects: Project[]; madeFor?: Record<string, string> }>({
   kind: 'm3d.projects',
   version: 1,
@@ -119,6 +119,9 @@ const LoginsDoc = defineDoc<{ logins: Record<string, LoginKind> }>({
 
 /** The store's SQLite storage, through Pi's own async adapter, which queues every operation and transaction. */
 export const openStorage = (path: string) => openNodeSqliteStorage(path)
+
+/** Why a send names a draft revision the store no longer holds: the person changed the draft since that save. */
+export const DRAFT_CHANGED = 'The draft changed before it went out. Send it again.'
 
 /** Another process owns the store. */
 export class StoreInUse extends Error {}
@@ -238,42 +241,45 @@ export class Store implements LoginIndex {
   }
 
   /**
-   * Makes a project: its conversation, its place in the index, and the start screen's draft moved to it when that
-   * draft holds the project's first message, in one commit. A start screen draft with other text is the person's next
-   * idea, so it stays. The folder is made inside that commit, before anything is kept, so a folder that cannot be made
-   * keeps nothing. A crash after the folder leaves an empty folder, which the next id skips. It answers with the draft it
-   * moved, so the window shows what the project holds rather than guessing. A first message's draft revision makes one
-   * project only: asked again for it, as after an answer that was lost, it answers with that project.
+   * The project the start screen's draft saved as `rev` goes to. The first time, it makes the project, titled by the
+   * draft's first line, and moves that draft to it, in one commit. Only the draft saved as `rev` moves, so a newer
+   * start screen draft is never sent in its place. The folder is made inside that commit, before anything is kept, so a
+   * folder that cannot be made keeps nothing. A crash after the folder leaves an empty folder, which the next id skips.
+   * Asked again for the same revision, as after a lost answer, it answers the project that revision made and changes
+   * nothing.
    */
-  async createProject(title: string, rev?: number): Promise<CreatedProject> {
-    const firstLine = (title.split('\n')[0] ?? '').trim().slice(0, 80) || 'New part'
+  async startProject(rev: number): Promise<Project> {
     const now = new Date()
     // The person's own date, as the folder name shows it.
     const today = new Date(now.getTime() - now.getTimezoneOffset() * 60_000).toISOString().slice(0, 10)
-    const base = `${today}-${slug(firstLine)}`
-    const project = await this.harness.commit(async (tx) => {
+    return this.harness.commit(async (tx) => {
       const index = await tx.doc(ProjectsDoc, this.root.id)
-      const before = rev === undefined ? undefined : index.madeFor?.[rev]
-      const again = index.projects.find((p) => p.id === before)
-      if (again !== undefined) return { ...again, draft: null }
+      const made = index.projects.find((p) => p.id === index.madeFor?.[rev])
+      // A plain copy, since the documents a commit hands out are only valid inside it.
+      if (made !== undefined) return { ...made }
+      const { drafts } = await tx.doc(DraftsDoc, this.root.id)
+      const draft = drafts[START]
+      if (draft?.rev !== rev) throw new Error(DRAFT_CHANGED)
+      const title = (draft.text.split('\n')[0] ?? '').trim().slice(0, 80) || 'New part'
+      const base = `${today}-${slug(title)}`
       const taken = new Set(index.projects.map((p) => p.id))
       let id = base
       // A folder already on disk, which the store may not list, is never taken over.
       for (let n = 2; taken.has(id) || existsSync(join(this.projectsDir, id)); n++) id = `${base}-${n}`
       this.projectFolder(id)
       const conversation = await tx.createConversation({ ownership: { kind: 'ownerless' } })
-      const created: Project = { id, conversation: conversation.id, title: firstLine, createdMs: now.getTime() }
+      const created: Project = { id, conversation: conversation.id, title, createdMs: now.getTime() }
       index.projects.push(created)
-      if (rev !== undefined) index.madeFor = { ...index.madeFor, [rev]: id }
-      const { drafts } = await tx.doc(DraftsDoc, this.root.id)
-      const draft = drafts.new
-      if (draft === undefined || draft.text.trim() !== title.trim()) return { ...created, draft: null }
+      index.madeFor = { ...index.madeFor, [rev]: id }
       drafts[id] = draft
-      delete drafts.new
-      // A plain copy, since the documents a commit hands out are only valid inside it.
-      return { ...created, draft: { text: draft.text, attachments: [...draft.attachments], rev: draft.rev } }
+      delete drafts[START]
+      return { ...created }
     }, context)
-    return project
+  }
+
+  /** The draft saved under `key`, a project id or `START`. */
+  async draft(key: string): Promise<SavedDraft | undefined> {
+    return (await this.harness.snapshot(DraftsDoc, this.root.id, context))?.drafts[key]
   }
 
   async projects(): Promise<Project[]> {

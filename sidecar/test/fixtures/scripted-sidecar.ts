@@ -110,7 +110,12 @@ await runSidecar({
   argv: process.argv.slice(2),
   addProviders: (models) => {
     const faux = fauxProvider({ provider: 'faux', models: [{ id: 'faux-a' }, { id: 'faux-b' }] })
-    faux.setResponses(Array.from({ length: 200 }, () => (context, _options, _state, model) => script(context.messages, model)))
+    // Every script answers `make the project` with `made`, so a test can make a project before its first real message.
+    faux.setResponses(
+      Array.from({ length: 200 }, () => (context, _options, _state, model) =>
+        sinceUser(context.messages).text === 'make the project' ? fauxAssistantMessage(fauxText('made')) : script(context.messages, model),
+      ),
+    )
     models.setProvider(faux.provider)
     const astra = fauxProvider({ provider: 'openai-codex', models: [{ id: 'gpt-6-astra' }] })
     // Astra runs a command of its own first, in the project folder it shares. The provider refuses the key `refused`,

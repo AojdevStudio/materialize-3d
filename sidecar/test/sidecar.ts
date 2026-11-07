@@ -108,6 +108,15 @@ export function spawnSidecar(
       return message.value
     }
   }
+  /**
+   * Saves a screen's draft and sends it, as the window does: `key` is a project id, or `new` for the start screen.
+   * Answers the project it went to and the draft revision it went out as.
+   */
+  const sendDraft = async (key: string, text: string, attachments: string[] = []) => {
+    const { rev } = (await call('drafts.set', { key, text, attachments })) as { rev: number }
+    const { project } = (await call('chat.send', { key, rev })) as { project: { id: string } }
+    return { project: project.id, rev }
+  }
   /** Reads events until one matches, or fails after `ms`. */
   const until = async (match: (event: Message) => boolean, ms = 15_000) => {
     const deadline = Date.now() + ms
@@ -128,5 +137,5 @@ export function spawnSidecar(
     await stderrDone
     return errors
   }
-  return { child, next, send, call, until, quit, stderr, gate }
+  return { child, next, send, call, sendDraft, until, quit, stderr, gate }
 }

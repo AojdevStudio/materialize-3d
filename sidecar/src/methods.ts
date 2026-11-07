@@ -79,7 +79,6 @@ export function handlers({ store, logins, chats, version, legacy, pictures }: Se
       params: compile(obj({ key: str(), text: str(), attachments: arr(str()) })),
       run: async ({ key, text, attachments }) => ({ rev: await store.setDraft(key, { text, attachments }) }),
     },
-    'projects.create': { params: compile(obj({ title: str(), rev: opt(int()) })), run: ({ title, rev }) => store.createProject(title, rev) },
     'auth.status': { params: compile(obj({})), run: () => logins.status() },
     'auth.setKey': {
       params: compile(obj({ provider, key: str({ minLength: 1 }), baseUrl: opt(str({ minLength: 1 })) })),
@@ -111,11 +110,8 @@ export function handlers({ store, logins, chats, version, legacy, pictures }: Se
     },
     'chat.open': { params: compile(obj({ project: str() })), run: ({ project }) => chats.open(project) },
     'chat.send': {
-      params: compile(obj({ project: str(), requestId: str({ minLength: 1 }), text: str(), attachments: arr(str()), draftRev: opt(int()) })),
-      run: async ({ project, requestId, text, attachments, draftRev }) => {
-        await chats.send(project, requestId, text, attachments, draftRev)
-        return null
-      },
+      params: compile(obj({ key: str({ minLength: 1 }), rev: int() })),
+      run: async ({ key, rev }) => ({ project: await chats.send(key, rev) }),
     },
     'chat.stop': {
       params: compile(obj({ project: str() })),

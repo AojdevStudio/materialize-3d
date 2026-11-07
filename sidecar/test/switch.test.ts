@@ -194,11 +194,9 @@ describe('the update gate', () => {
     const app = spawnSidecar(where.data, where.projects, new Map(), { script: 'models', env: where.env })
     await app.next()
     await app.call('settings.set', { model: { provider: 'faux', modelId: 'faux-a' } })
-    const { id: project } = (await app.call('projects.create', { title: 'A cube' })) as { id: string }
-    await app.call('chat.open', { project })
     expect(app.gate.requests).toEqual([])
 
-    await app.call('chat.send', { project, requestId: 'r1', text: 'please wait', attachments: [] })
+    const { project } = await app.sendDraft('new', 'please wait')
     expect(app.gate.requests).toEqual([true])
     const started = join(where.projects, project, 'started')
     while (!existsSync(started)) await Bun.sleep(25)
@@ -209,8 +207,8 @@ describe('the update gate', () => {
     expect(app.gate.requests).toEqual([true, false])
 
     app.gate.installing = true
-    await app.call('drafts.set', { key: project, text: 'make it red', attachments: [] })
-    await expect(app.call('chat.send', { project, requestId: 'r2', text: 'make it red', attachments: [] })).rejects.toThrow('An update is installing.')
+    const { rev } = (await app.call('drafts.set', { key: project, text: 'make it red', attachments: [] })) as { rev: number }
+    await expect(app.call('chat.send', { key: project, rev })).rejects.toThrow('An update is installing.')
     const view = (await app.call('chat.open', { project })) as ChatView
     expect(view.entries.filter((entry) => entry.kind === 'user')).toHaveLength(1)
     expect(((await app.call('state.get')) as { drafts: Record<string, unknown> }).drafts[project]).toMatchObject({ text: 'make it red', attachments: [] })
@@ -222,8 +220,7 @@ describe('the update gate', () => {
     const first = spawnSidecar(where.data, where.projects, new Map(), { script: 'models', env: where.env })
     await first.next()
     await first.call('settings.set', { model: { provider: 'faux', modelId: 'faux-a' } })
-    const { id: project } = (await first.call('projects.create', { title: 'A cube' })) as { id: string }
-    await first.call('chat.send', { project, requestId: 'r1', text: 'please wait', attachments: [] })
+    const { project } = await first.sendDraft('new', 'please wait')
     const started = join(where.projects, project, 'started')
     while (!existsSync(started)) await Bun.sleep(25)
     first.child.kill('SIGKILL')
@@ -252,8 +249,7 @@ describe('the update gate', () => {
     const first = spawnSidecar(where.data, where.projects, new Map(), { script: 'models', env: where.env })
     await first.next()
     await first.call('settings.set', { model: { provider: 'faux', modelId: 'faux-a' } })
-    const { id: project } = (await first.call('projects.create', { title: 'A cube' })) as { id: string }
-    await first.call('chat.send', { project, requestId: 'r1', text: 'please wait', attachments: [] })
+    const { project } = await first.sendDraft('new', 'please wait')
     const started = join(where.projects, project, 'started')
     while (!existsSync(started)) await Bun.sleep(25)
     first.child.kill('SIGKILL')
@@ -275,8 +271,7 @@ describe('the update gate', () => {
     const app = spawnSidecar(where.data, where.projects, new Map(), { script: 'astra', env: where.env })
     await app.next()
     await app.call('settings.set', { model: { provider: 'faux', modelId: 'faux-a' } })
-    const { id: project } = (await app.call('projects.create', { title: 'A cube' })) as { id: string }
-    await app.call('chat.send', { project, requestId: 'r1', text: 'go', attachments: [] })
+    const { project } = await app.sendDraft('new', 'go')
     await app.until((event) => event.type === 'chat' && event.waiting !== null)
     app.gate.installing = true
     await app.call('auth.setKey', { provider: 'openai-codex', key: 'astra-key' })
@@ -294,8 +289,7 @@ describe('the update gate', () => {
     const app = spawnSidecar(where.data, where.projects, keychain, { script: 'astra', env: where.env })
     await app.next()
     await app.call('settings.set', { model: { provider: 'faux', modelId: 'faux-a' } })
-    const { id: project } = (await app.call('projects.create', { title: 'A cube' })) as { id: string }
-    await app.call('chat.send', { project, requestId: 'r1', text: 'go', attachments: [] })
+    const { project } = await app.sendDraft('new', 'go')
     await app.until((event) => event.type === 'chat' && event.waiting !== null)
     app.gate.installing = true
     await app.call('auth.setKey', { provider: 'openai-codex', key: 'astra-key' })
@@ -331,9 +325,7 @@ describe('the update gate', () => {
     const app = spawnSidecar(where.data, where.projects, new Map(), { script: 'astra-and-read', env: where.env })
     await app.next()
     await app.call('settings.set', { model: { provider: 'faux', modelId: 'faux-a' } })
-    const { id: project } = (await app.call('projects.create', { title: 'A cube' })) as { id: string }
-    writeFileSync(join(where.projects, project, 'note.txt'), 'a note')
-    await app.call('chat.send', { project, requestId: 'r1', text: 'go', attachments: [] })
+    const { project } = await app.sendDraft('new', 'go')
     await app.until((event) => event.type === 'chat' && event.waiting !== null)
     const deadline = Date.now() + 5_000
     while (app.gate.requests.at(-1) !== false && Date.now() < deadline) await Bun.sleep(25)
@@ -346,8 +338,7 @@ describe('the update gate', () => {
     const app = spawnSidecar(where.data, where.projects, new Map(), { script: 'astra', env: where.env })
     await app.next()
     await app.call('settings.set', { model: { provider: 'faux', modelId: 'faux-a' } })
-    const { id: project } = (await app.call('projects.create', { title: 'A cube' })) as { id: string }
-    await app.call('chat.send', { project, requestId: 'r1', text: 'go', attachments: [] })
+    const { project } = await app.sendDraft('new', 'go')
     await app.until((event) => event.type === 'chat' && event.waiting !== null)
     const deadline = Date.now() + 5_000
     while (app.gate.requests.at(-1) !== false && Date.now() < deadline) await Bun.sleep(25)

@@ -3,9 +3,9 @@
  * removal of the draft that holds the message together. A turn that stops before its answer waits with the fix named,
  * and continues once it is fixed. The window sees committed entries only.
  */
-import { mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs'
+import { constants, copyFileSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { extname, isAbsolute, join, relative } from 'node:path'
+import { basename, extname, join, relative } from 'node:path'
 import type { Context } from '@earendil-works/chord'
 import { awaitWithContext, BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
 import type { ImageContent, Models, TextContent } from '@earendil-works/pi-ai'
@@ -24,9 +24,9 @@ import {
 import type { ConversationView } from '@earendil-works/pi-durable'
 import { leaves, WORKFLOW, WORKFLOW_VERSION } from './agent'
 import type { Busy } from './busy'
-import type { ChatEntry, ChatView, SidecarEvent, Turn, Waiting } from './protocol'
+import { type ChatEntry, type ChatView, type Project, type SidecarEvent, START, type Turn, type Waiting } from './protocol'
 import { isLoginFailure } from './inference'
-import { DraftsDoc, LoginSavesDoc, SettingsDoc, type Store, TurnDoc, WaitingDoc } from './store'
+import { DRAFT_CHANGED, DraftsDoc, LoginSavesDoc, SettingsDoc, type Store, TurnDoc, WaitingDoc } from './store'
 import { chatEntry } from './transcript'
 
 const context: Context = BACKGROUND_CONTEXT
@@ -81,6 +81,45 @@ function userContent(folder: string, text: string, attachments: string[]): strin
   const images = attachments.flatMap((rel) => picture(folder, rel) ?? [])
   const note = `\n\n(Pictures attached, saved in this folder as: ${attachments.join(', ')})`
   return [{ type: 'text', text: `${text}${note}` }, ...images]
+}
+
+/**
+ * Copies a draft's pictures into the project, as `refs/draft-<rev>/<name>`, and answers those paths. Each copy is
+ * written beside its place and then renamed into it, so a send of the same revision again, as after a crash or a
+ * refused send, finds every finished copy and makes no second one.
+ */
+function copyPictures(folder: string, rev: number, sources: string[]): string[] {
+  if (sources.length === 0) return []
+  const rel = join('refs', `draft-${rev}`)
+  const dir = join(folder, rel)
+  // The agent could have made either folder a link. Pictures land inside the project or nowhere, so each folder is
+  // checked before anything is made in it.
+  for (const path of [join(folder, 'refs'), dir]) {
+    mkdirSync(path, { recursive: true })
+    if (leaves(relative(realpathSync.native(folder), realpathSync.native(path)))) throw new Error('refs/ leads outside the project folder')
+  }
+  const names = new Set<string>()
+  return sources.map((source) => {
+    const clean = basename(source).replace(/[^A-Za-z0-9._-]/g, '-')
+    const file = clean.replace(/\./g, '') === '' ? 'picture.png' : clean
+    const dot = file.lastIndexOf('.')
+    const [stem, ext] = dot > 0 ? [file.slice(0, dot), file.slice(dot)] : [file, '']
+    let name = file
+    for (let n = 2; names.has(name); n++) name = `${stem}-${n}${ext}`
+    names.add(name)
+    const target = join(dir, name)
+    if (lstatSync(target, { throwIfNoEntry: false }) === undefined) {
+      // A picture that is gone can't be sent. Nor can a file that is not regular, such as a pipe, which would hold the copy.
+      if (statSync(source, { throwIfNoEntry: false })?.isFile() !== true) {
+        throw new Error(`A picture in this message can't be read: ${basename(source)}. Take it out and send again.`)
+      }
+      const part = join(dir, `.${name}.part`)
+      rmSync(part, { force: true })
+      copyFileSync(source, part, constants.COPYFILE_EXCL)
+      renameSync(part, target)
+    }
+    return join(rel, name)
+  })
 }
 
 export class Chats {
@@ -203,19 +242,26 @@ export class Chats {
   }
 
   /**
-   * Sends a message. The message, the settings its turn runs with, and the removal of the draft it went out with
-   * (`draftRev`) commit together. A send whose `requestId` was already committed changes nothing, so the window can send again after any
-   * failure, even once a picture it sent is gone.
+   * Sends the draft saved as revision `rev` under `key`, a project id or `START`, and answers the project it went to.
+   * Each step is safe to run again after a crash or a lost answer: the project a start screen revision made is found,
+   * not made again, a message already committed as `draft-<rev>` is not sent again, and the pictures are copied once.
+   * The message, the settings its turn runs with, and the removal of the draft commit together. Only that revision's
+   * content goes out. A draft saved after it is the next message and stays, even one that reads the same.
    */
-  async send(project: string, requestId: string, text: string, attachments: string[], draftRev: number | undefined): Promise<void> {
+  async send(key: string, rev: number): Promise<Project> {
     const { store, extension, tools, version, busy } = this.#o
-    const conversation = await this.#conversation(project)
+    const project = key === START ? await store.startProject(rev) : await store.project(key)
+    const conversation = await this.#conversation(project.id)
+    const requestId = `draft-${rev}`
     if ((await store.harness.commit((tx) => tx.submissionByRequest(conversation.id, requestId), context)) !== undefined) {
-      await this.#watch(project, conversation)
-      return
+      await this.#watch(project.id, conversation)
+      return project
     }
-    const folder = store.projectFolder(project)
-    const content = userContent(folder, text, attachments)
+    const draft = await store.draft(project.id)
+    if (draft?.rev !== rev) throw new Error(DRAFT_CHANGED)
+    const folder = store.projectFolder(project.id)
+    const attachments = copyPictures(folder, rev, draft.attachments)
+    const content = userContent(folder, draft.text, attachments)
     try {
       await busy.during(() => store.harness.commit(async (tx) => {
         if ((await tx.submissionByRequest(conversation.id, requestId)) !== undefined) return
@@ -227,15 +273,13 @@ export class Chats {
           content,
           requestId,
           whenBusy: 'reject',
-          entry: { kind: 'm3d.user', data: { text, images: attachments } },
+          entry: { kind: 'm3d.user', data: { text: draft.text, images: attachments } },
         })
         await configure(tx, conversation.id, { model, thinkingLevel: thinking, extensions: [extension], tools, instructions: WORKFLOW, cwd: folder })
         const turn: Turn = { requestId, model, thinking, tools: tools.map((t) => t.name), instructions: WORKFLOW_VERSION, app: version, startedMs: Date.now() }
         ;(await tx.doc(TurnDoc, conversation.id)).turn = turn
-        // Only the draft this message went out with goes. One saved after it is the next message, even one that reads
-        // the same, so it stays.
         const { drafts } = await tx.doc(DraftsDoc, store.root.id)
-        if (draftRev !== undefined && drafts[project]?.rev === draftRev) delete drafts[project]
+        if (drafts[project.id]?.rev === rev) delete drafts[project.id]
         const waiting = await tx.doc(WaitingDoc, conversation.id)
         waiting.waiting = null
         waiting.tool = false
@@ -245,7 +289,8 @@ export class Chats {
       if (error instanceof ConversationBusy) throw new Error('The agent is still working on the last message.')
       throw error
     }
-    await this.#watch(project, conversation)
+    await this.#watch(project.id, conversation)
+    return project
   }
 
   /**

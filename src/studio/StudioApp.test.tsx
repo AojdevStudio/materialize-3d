@@ -25,6 +25,7 @@ vi.mock('@tauri-apps/api/webview', () => ({
   }),
 }))
 
+import type { Project } from '../../sidecar/src/protocol'
 import StudioApp from './StudioApp'
 
 // jsdom has no layout, so the chat's scroll to its newest line is a no-op here, and no object URLs for previews.
@@ -50,75 +51,110 @@ const emit = (event: object) => act(() => listeners.sidecar.forEach((listener) =
 
 const prompt = () => screen.getByTestId('prompt') as HTMLTextAreaElement
 const type = (text: string) => fireEvent.change(prompt(), { target: { value: text } })
+const drop = (paths: string[]) => act(async () => listeners.drop.forEach((listener) => listener({ payload: { type: 'drop', paths } })))
+const pause = (ms: number) => act(() => new Promise((resolve) => setTimeout(resolve, ms)))
 
-type Calls = Record<string, (params: Record<string, unknown>) => Promise<unknown>>
+type Params = Record<string, unknown>
+/** A call's own answer from the mocked sidecar, which an override may hold, fail, or pass on. */
+type Calls = Record<string, (params: Params, real: () => Promise<unknown>) => Promise<unknown>>
+type StoredDraft = { text: string; attachments: string[]; rev: number }
 
-/** The sidecar as the window sees it: one `sidecar` command, by method. */
 /** The revisions the mocked sidecar gives saved drafts, growing as the real one's do. */
 let draftRevs = 0
 
-function mockSidecar(overrides: Calls = {}, projects = [projectB], drafts: Record<string, { text: string; attachments?: string[]; rev?: number }> = {}) {
-  // The drafts the sidecar holds, as the window saved them, so a new project takes the start screen's draft by the
-  // sidecar's own rule: when its text is the project's title.
-  const held: Record<string, { text: string; attachments: string[]; rev: number }> = {}
-  const madeFor = new Map<number, object>()
-  for (const [key, draft] of Object.entries(drafts)) held[key] = { text: draft.text, attachments: draft.attachments ?? [], rev: draft.rev ?? 0 }
-  const call = (method: string, params: Record<string, unknown>): Promise<unknown> => {
-    const override = overrides[method]
-    if (method === 'drafts.set') {
-      const saved = override ? override(params) : Promise.resolve({ rev: ++draftRevs })
-      return saved.then((value) => {
-        const { rev } = value as { rev: number }
-        const draft = { text: String(params.text), attachments: params.attachments as string[], rev }
-        if (draft.text === '' && draft.attachments.length === 0) delete held[String(params.key)]
-        else held[String(params.key)] = draft
-        return value
-      })
-    }
-    if (method === 'projects.create') {
-      const again = typeof params.rev === 'number' ? madeFor.get(params.rev) : undefined
-      if (again !== undefined) return Promise.resolve({ ...again, draft: null })
-      const made = override ? override(params) : Promise.resolve(null)
-      return made.then((project) => {
-        if (project === null || typeof project !== 'object') return project
-        if (typeof params.rev === 'number') madeFor.set(params.rev, project as object)
-        if ('draft' in project) return project
-        const id = (project as { id: string }).id
-        const start = held.new
-        if (start === undefined || start.text.trim() !== String(params.title).trim()) return { ...project, draft: null }
-        held[id] = start
-        delete held.new
-        return { ...project, draft: start }
-      })
-    }
-    if (override) return override(params)
-    return defaults(method, params)
+const CHANGED = 'The draft changed before it went out. Send it again.'
+const LOST = 'The engine restarted before it answered. Try again.'
+
+/** Holds each call until `release`, then answers as the mocked sidecar would. */
+function held() {
+  let release = () => {}
+  return {
+    call: (_: Params, real: () => Promise<unknown>) => new Promise((resolve) => (release = () => resolve(real()))),
+    release: () => act(async () => release()),
   }
-  const defaults = (method: string, params: Record<string, unknown>): Promise<unknown> => {
+}
+
+/** A send whose first answer is lost after the sidecar sent it, as when the engine restarts. Later sends answer. */
+function lostOnce() {
+  let sends = 0
+  return (_: Params, real: () => Promise<unknown>) => (sends++ === 0 ? real().then(() => Promise.reject(LOST)) : real())
+}
+
+/**
+ * The sidecar as the window sees it: one `sidecar` command, by method. It keeps the drafts the window saves, and sends
+ * one by its revision as the real sidecar does: a start screen send makes the project for that revision, or finds the
+ * one it made, and moves the start draft there only when it is that revision. A send already made changes nothing. A
+ * send removes the draft it sent. It answers with what it keeps, for a test to read.
+ */
+function mockSidecar(overrides: Calls = {}, projects: Project[] = [projectB], drafts: Record<string, { text: string; attachments?: string[]; rev?: number }> = {}) {
+  const store = {
+    projects: [...projects],
+    drafts: Object.fromEntries(
+      Object.entries(drafts).map(([key, draft]) => [key, { text: draft.text, attachments: draft.attachments ?? [], rev: draft.rev ?? ++draftRevs }]),
+    ) as Record<string, StoredDraft>,
+    madeFor: new Map<number, Project>(),
+    /** Each message that went out. */
+    sent: [] as { project: string; rev: number; text: string; attachments: string[] }[],
+  }
+  const send = (key: string, rev: number): Promise<unknown> => {
+    let project = key === 'new' ? store.madeFor.get(rev) : store.projects.find((p) => p.id === key)
+    if (project === undefined) {
+      const start = store.drafts.new
+      if (key !== 'new' || start?.rev !== rev) return Promise.reject(CHANGED)
+      const title = start.text.split('\n')[0]?.trim() || 'New part'
+      project = { id: `2026-11-06-${title.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`, conversation: 10 + store.projects.length, title, createdMs: 10 + store.projects.length }
+      store.projects.push(project)
+      store.madeFor.set(rev, project)
+      store.drafts[project.id] = start
+      delete store.drafts.new
+    }
+    const id = project.id
+    if (store.sent.some((message) => message.project === id && message.rev === rev)) return Promise.resolve({ project })
+    const draft = store.drafts[id]
+    if (draft?.rev !== rev) return Promise.reject(CHANGED)
+    store.sent.push({ project: id, rev, text: draft.text, attachments: draft.attachments })
+    delete store.drafts[id]
+    return Promise.resolve({ project })
+  }
+  const defaults = (method: string, params: Params): Promise<unknown> => {
     switch (method) {
       case 'app.ping':
         return Promise.resolve({ version: '1.2.3' })
       case 'state.get':
-        return Promise.resolve({ setup: { step: 'ready', done: true }, settings, projects, drafts, importBlocked: null })
+        return Promise.resolve(JSON.parse(JSON.stringify({ setup: { step: 'ready', done: true }, settings, projects: store.projects, drafts: store.drafts, importBlocked: null })))
       case 'chat.open':
         return Promise.resolve(view(String(params.project)))
       case 'setup.check':
         return Promise.resolve([])
+      case 'drafts.set': {
+        const rev = ++draftRevs
+        const draft = { text: String(params.text), attachments: params.attachments as string[], rev }
+        if (draft.text === '' && draft.attachments.length === 0) delete store.drafts[String(params.key)]
+        else store.drafts[String(params.key)] = draft
+        return Promise.resolve({ rev })
+      }
+      case 'chat.send':
+        return send(String(params.key), Number(params.rev))
       default:
         return Promise.resolve(null)
     }
   }
-  invokeMock.mockImplementation((command: string, args: { method: string; params: Record<string, unknown> }) => {
+  invokeMock.mockImplementation((command: string, args: { method: string; params: Params }) => {
     if (command === 'update_check') return Promise.resolve({ status: 'upToDate' })
     if (command === 'studio_files') return Promise.resolve([])
-    if (overrides[command]) return overrides[command](args as unknown as Record<string, unknown>)
     if (command !== 'sidecar') return Promise.resolve(undefined)
-    return call(args.method, args.params)
+    const real = () => defaults(args.method, args.params)
+    const override = overrides[args.method]
+    return override ? override(args.params, real) : real()
   })
+  return store
 }
 
 const sidecarCalls = (method: string) =>
   invokeMock.mock.calls.filter(([command, args]) => command === 'sidecar' && args.method === method).map(([, args]) => args.params)
+const sends = () => sidecarCalls('chat.send')
+const saves = (key?: string) => sidecarCalls('drafts.set').filter((save) => key === undefined || save.key === key)
+const last = <T,>(items: T[]) => items[items.length - 1]
 
 describe('StudioApp', () => {
   it('shows the engine version the sidecar answers with', async () => {
@@ -138,65 +174,60 @@ describe('StudioApp', () => {
   })
 
   it('leaves the project the person moved to alone when a slow send from the start screen finishes', async () => {
-    let finishCreate: (project: unknown) => void = () => {}
-    mockSidecar({ 'projects.create': () => new Promise((resolve) => (finishCreate = resolve)) })
+    const send = held()
+    mockSidecar({ 'chat.send': send.call })
     render(<StudioApp />)
     await screen.findByText('Project B')
 
-    fireEvent.change(screen.getByTestId('prompt'), { target: { value: 'A clip for my desk' } })
+    type('A clip for my desk')
     fireEvent.click(screen.getByTestId('send'))
+    await waitFor(() => expect(sends()).toEqual([{ key: 'new', rev: expect.any(Number) }]))
     fireEvent.click(screen.getByText('Project B'))
     await screen.findByRole('banner')
-    fireEvent.change(screen.getByTestId('prompt'), { target: { value: 'draft for B' } })
+    type('draft for B')
 
-    await act(async () => finishCreate({ id: '2026-11-06-a-clip', conversation: 4, title: 'A clip for my desk', createdMs: 2 }))
-    await waitFor(() => expect(sidecarCalls('chat.send')).toEqual([expect.objectContaining({ project: '2026-11-06-a-clip', text: 'A clip for my desk' })]))
-    expect(sidecarCalls('chat.send')[0]?.requestId).toEqual(expect.any(String))
-
+    await send.release()
+    const sidebar = within(screen.getByRole('navigation', { name: 'Projects' }))
+    await waitFor(() => expect(sidebar.getByText('A clip for my desk')).toBeTruthy())
     expect(screen.getByRole('banner').textContent).toBe('Project B')
-    expect((screen.getByTestId('prompt') as HTMLTextAreaElement).value).toBe('draft for B')
+    expect(prompt().value).toBe('draft for B')
   })
 
-  it("keeps a slow send's failure with the project it was sent to, and sending again reuses its request id", async () => {
+  it("keeps a slow send's failure with the project it was sent to, and sending again names the same revision", async () => {
     let failSend: (reason: string) => void = () => {}
-    let sends = 0
-    mockSidecar(
-      { 'chat.send': () => (++sends === 1 ? new Promise((_, reject) => (failSend = reject)) : Promise.resolve(null)) },
-      [projectA, projectB],
-    )
+    let tries = 0
+    mockSidecar({ 'chat.send': (_, real) => (++tries === 1 ? new Promise((_, reject) => (failSend = reject)) : real()) }, [projectA, projectB])
     render(<StudioApp />)
     fireEvent.click(await screen.findByText('Project A'))
     await screen.findByRole('banner')
-    fireEvent.change(screen.getByTestId('prompt'), { target: { value: 'A clip for my desk' } })
+    type('A clip for my desk')
     fireEvent.click(screen.getByTestId('send'))
-    await waitFor(() => expect(sidecarCalls('chat.send')).toHaveLength(1))
+    await waitFor(() => expect(sends()).toHaveLength(1))
     fireEvent.click(screen.getByText('Project B'))
     await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project B'))
 
-    await act(async () => failSend('The engine restarted before it answered. Try again.'))
+    await act(async () => failSend(LOST))
     expect(screen.queryByRole('alert')).toBeNull()
 
     fireEvent.click(screen.getByText('Project A'))
     expect((await screen.findByRole('alert')).textContent).toContain('The engine restarted before it answered.')
-    fireEvent.change(screen.getByTestId('prompt'), { target: { value: 'A clip for my desk' } })
     fireEvent.click(screen.getByTestId('send'))
-    await waitFor(() => expect(sidecarCalls('chat.send')).toHaveLength(2))
-    const [first, second] = sidecarCalls('chat.send')
-    expect(second?.requestId).toBe(first?.requestId)
+    await waitFor(() => expect(sends()).toHaveLength(2))
+    const [first, second] = sends()
+    expect(second).toEqual(first)
+    expect(saves()).toHaveLength(1)
     // The send went through this time, so its failure is no longer shown.
     await waitFor(() => expect(screen.queryByRole('alert')).toBeNull())
   })
 
   it('keeps a project made while the saved state was still on its way', async () => {
     let finishState: (state: unknown) => void = () => {}
-    mockSidecar({
-      'state.get': () => new Promise((resolve) => (finishState = resolve)),
-      'projects.create': () => Promise.resolve({ id: '2026-11-06-a-clip', conversation: 4, title: 'A clip for my desk', createdMs: 3 }),
-    })
+    mockSidecar({ 'state.get': () => new Promise((resolve) => (finishState = resolve)) })
     render(<StudioApp />)
-    fireEvent.change(await screen.findByTestId('prompt'), { target: { value: 'A clip for my desk' } })
+    type('A clip for my desk')
+    await waitFor(() => expect((screen.getByTestId('send') as HTMLButtonElement).disabled).toBe(false))
     fireEvent.click(screen.getByTestId('send'))
-    await waitFor(() => expect(sidecarCalls('chat.send')).toHaveLength(1))
+    await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('A clip for my desk'))
     await act(async () => finishState({ setup: { step: 'ready', done: true }, settings, projects: [projectB], drafts: {} }))
     const sidebar = within(screen.getByRole('navigation', { name: 'Projects' }))
     expect(sidebar.getByText('A clip for my desk')).toBeTruthy()
@@ -219,30 +250,26 @@ describe('StudioApp', () => {
     mockSidecar({}, [projectB], { [projectB.id]: { text: 'make it red' } })
     render(<StudioApp />)
     fireEvent.click(await screen.findByText('Project B'))
-    await waitFor(() => expect((screen.getByTestId('prompt') as HTMLTextAreaElement).value).toBe('make it red'))
-    fireEvent.change(screen.getByTestId('prompt'), { target: { value: 'make it blue' } })
-    await waitFor(() => expect(sidecarCalls('drafts.set')).toEqual([{ key: projectB.id, text: 'make it blue', attachments: [] }]))
+    await waitFor(() => expect(prompt().value).toBe('make it red'))
+    type('make it blue')
+    await waitFor(() => expect(saves()).toEqual([{ key: projectB.id, text: 'make it blue', attachments: [] }]))
   })
 
-  it('sending again after a lost reply sends the same pictures under the same request id', async () => {
-    let sends = 0
-    let imports = 0
-    mockSidecar({
-      studio_import_file: () => Promise.resolve(imports++ === 0 ? 'refs/photo.jpg' : `refs/photo-${imports}.jpg`),
-      'chat.send': () => (sends++ === 0 ? Promise.reject('The engine restarted before it answered. Try again.') : Promise.resolve(null)),
-    })
+  it('sends again after a lost answer under the same revision, with no new save', async () => {
+    const store = mockSidecar({ 'chat.send': lostOnce() })
     render(<StudioApp />)
     fireEvent.click(await screen.findByText('Project B'))
     await screen.findByRole('banner')
-    await act(async () => listeners.drop.forEach((listener) => listener({ payload: { type: 'drop', paths: ['/Users/me/photo.jpg'] } })))
+    await drop(['/Users/me/photo.jpg'])
     type('A clip like this')
     fireEvent.click(screen.getByTestId('send'))
     await screen.findByRole('alert')
     fireEvent.click(screen.getByTestId('send'))
-    await waitFor(() => expect(sidecarCalls('chat.send')).toHaveLength(2))
-    const [first, second] = sidecarCalls('chat.send')
+    await waitFor(() => expect(sends()).toHaveLength(2))
+    const [first, second] = sends()
     expect(second).toEqual(first)
-    expect(first?.attachments).toEqual(['refs/photo.jpg'])
+    expect(saves()).toEqual([{ key: projectB.id, text: 'A clip like this', attachments: ['/Users/me/photo.jpg'] }])
+    expect(store.sent).toEqual([{ project: projectB.id, rev: first?.rev, text: 'A clip like this', attachments: ['/Users/me/photo.jpg'] }])
   })
 
   it("keeps a draft's pictures, and brings them back when the project opens again", async () => {
@@ -250,11 +277,8 @@ describe('StudioApp', () => {
     const first = render(<StudioApp />)
     fireEvent.click(await screen.findByText('Project B'))
     await screen.findByRole('banner')
-    await act(async () => listeners.drop.forEach((listener) => listener({ payload: { type: 'drop', paths: ['/Users/me/photo.jpg'] } })))
-    await waitFor(() => {
-      const saves = sidecarCalls('drafts.set')
-      expect(saves[saves.length - 1]).toEqual({ key: projectB.id, text: '', attachments: ['/Users/me/photo.jpg'] })
-    })
+    await drop(['/Users/me/photo.jpg'])
+    await waitFor(() => expect(last(saves())).toEqual({ key: projectB.id, text: '', attachments: ['/Users/me/photo.jpg'] }))
     first.unmount()
 
     mockSidecar({}, [projectB], { [projectB.id]: { text: 'like this', attachments: ['/Users/me/photo.jpg'] } })
@@ -273,7 +297,7 @@ describe('StudioApp', () => {
     type('half a thought')
     await act(async () => listeners.flush.forEach((listener) => listener({ payload: null })))
     await waitFor(() => expect(invokeMock.mock.calls.some(([command]) => command === 'studio_flushed')).toBe(true))
-    expect(sidecarCalls('drafts.set')).toEqual([{ key: projectB.id, text: 'half a thought', attachments: [] }])
+    expect(saves()).toEqual([{ key: projectB.id, text: 'half a thought', attachments: [] }])
   })
 
   it('keeps Send off until the agent can run, and names the fix', async () => {
@@ -332,42 +356,23 @@ describe('StudioApp', () => {
   })
 
   it('never brings a sent picture back in the next draft', async () => {
-    let finishSend: (value: unknown) => void = () => {}
-    mockSidecar({ 'chat.send': () => new Promise((resolve) => (finishSend = resolve)), studio_import_file: () => Promise.resolve('refs/photo.jpg') }, [projectA, projectB])
+    const send = held()
+    mockSidecar({ 'chat.send': send.call }, [projectA, projectB])
     render(<StudioApp />)
     fireEvent.click(await screen.findByText('Project B'))
     await screen.findByRole('banner')
-    await act(async () => listeners.drop.forEach((listener) => listener({ payload: { type: 'drop', paths: ['/Users/me/photo.jpg'] } })))
+    await drop(['/Users/me/photo.jpg'])
     type('Like this')
     fireEvent.click(screen.getByTestId('send'))
-    await waitFor(() => expect(sidecarCalls('chat.send')).toHaveLength(1))
+    await waitFor(() => expect(sends()).toHaveLength(1))
     type('And thinner')
-    await act(async () => finishSend(null))
-    await new Promise((resolve) => setTimeout(resolve, 500))
-    const saves = sidecarCalls('drafts.set')
-    expect(saves[saves.length - 1]).toEqual({ key: projectB.id, text: 'And thinner', attachments: [] })
+    await send.release()
+    await pause(500)
+    expect(last(saves())).toEqual({ key: projectB.id, text: 'And thinner', attachments: [] })
     fireEvent.click(screen.getByText('Project A'))
     fireEvent.click(screen.getByText('Project B'))
     await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project B'))
     expect(screen.queryByTestId('attachments')).toBeNull()
-  })
-
-  it('takes a picture sent as a first message off the start screen', async () => {
-    mockSidecar({
-      'projects.create': () => Promise.resolve({ id: '2026-11-06-new-part', conversation: 4, title: 'New part', createdMs: 3 }),
-      studio_import_file: () => Promise.resolve('refs/photo.jpg'),
-    })
-    render(<StudioApp />)
-    await screen.findByText('Project B')
-    await act(async () => listeners.drop.forEach((listener) => listener({ payload: { type: 'drop', paths: ['/Users/me/photo.jpg'] } })))
-    fireEvent.click(screen.getByTestId('send'))
-    await waitFor(() => expect(sidecarCalls('chat.send')).toHaveLength(1))
-    fireEvent.click(screen.getByTestId('new-project'))
-    expect(screen.queryByTestId('attachments')).toBeNull()
-    await waitFor(() => {
-      const saves = sidecarCalls('drafts.set').filter((save) => save.key === 'new')
-      expect(saves[saves.length - 1]).toEqual({ key: 'new', text: '', attachments: [] })
-    })
   })
 
   it('keeps a pasted picture on the screen it was pasted on, even when the person leaves before it is kept', async () => {
@@ -384,9 +389,27 @@ describe('StudioApp', () => {
     await act(async () => finishPicture('/state/pictures/1/shot.png'))
     expect(screen.queryByTestId('attachments')).toBeNull()
     // It lands in the draft of the screen it was pasted on, and is there when the person goes back.
-    await waitFor(() => expect(sidecarCalls('drafts.set')).toContainEqual({ key: projectA.id, text: '', attachments: ['/state/pictures/1/shot.png'] }))
+    await waitFor(() => expect(saves()).toContainEqual({ key: projectA.id, text: '', attachments: ['/state/pictures/1/shot.png'] }))
     fireEvent.click(screen.getByText('Project A'))
-    await waitFor(() => expect(screen.getByTestId('attachments').textContent).toContain('shot.png'))
+    await waitFor(() => expect(screen.getByLabelText('Remove shot.png')).toBeTruthy())
+  })
+
+  it('keeps a paste that lands after the person left in that screen\'s draft, beside the text typed there', async () => {
+    let finishPicture: (path: unknown) => void = () => {}
+    mockSidecar({ 'drafts.picture': () => new Promise((resolve) => (finishPicture = resolve)) }, [projectA, projectB])
+    render(<StudioApp />)
+    fireEvent.click(await screen.findByText('Project A'))
+    await screen.findByRole('banner')
+    type('like this')
+    fireEvent.paste(prompt(), { clipboardData: { files: [new File(['png'], 'shot.png', { type: 'image/png' })] } })
+    await waitFor(() => expect(sidecarCalls('drafts.picture')).toHaveLength(1))
+    fireEvent.click(screen.getByText('Project B'))
+    await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project B'))
+    await act(async () => finishPicture('/state/pictures/1/shot.png'))
+    await waitFor(() => expect(last(saves(projectA.id))).toEqual({ key: projectA.id, text: 'like this', attachments: ['/state/pictures/1/shot.png'] }))
+    fireEvent.click(screen.getByText('Project A'))
+    await waitFor(() => expect(screen.getByLabelText('Remove shot.png')).toBeTruthy())
+    expect(prompt().value).toBe('like this')
   })
 
   it("brings the start screen's saved pictures back even when the person typed before the saved state arrived", async () => {
@@ -395,49 +418,45 @@ describe('StudioApp', () => {
     render(<StudioApp />)
     type('a hook')
     await act(async () =>
-      finishState({ setup: { step: 'ready', done: true }, settings, projects: [projectB], drafts: { new: { text: 'older', attachments: ['/Users/me/hook.jpg'] } }, importBlocked: null }),
+      finishState({ setup: { step: 'ready', done: true }, settings, projects: [projectB], drafts: { new: { text: 'older', attachments: ['/Users/me/hook.jpg'], rev: 1 } }, importBlocked: null }),
     )
     expect(screen.getByTestId('attachments').textContent).toContain('hook.jpg')
     expect(prompt().value).toBe('a hook')
-    await waitFor(() => {
-      const saves = sidecarCalls('drafts.set')
-      expect(saves[saves.length - 1]).toEqual({ key: 'new', text: 'a hook', attachments: ['/Users/me/hook.jpg'] })
-    })
+    await waitFor(() => expect(last(saves())).toEqual({ key: 'new', text: 'a hook', attachments: ['/Users/me/hook.jpg'] }))
   })
 
   it("leaves another project's same picture alone when a send goes through", async () => {
-    let finishSend: (value: unknown) => void = () => {}
-    mockSidecar({ 'chat.send': () => new Promise((resolve) => (finishSend = resolve)), studio_import_file: () => Promise.resolve('refs/photo.jpg') }, [projectA, projectB])
+    const send = held()
+    mockSidecar({ 'chat.send': send.call }, [projectA, projectB])
     render(<StudioApp />)
     fireEvent.click(await screen.findByText('Project A'))
     await screen.findByRole('banner')
-    await act(async () => listeners.drop.forEach((listener) => listener({ payload: { type: 'drop', paths: ['/Users/me/photo.jpg'] } })))
+    await drop(['/Users/me/photo.jpg'])
     type('Like this')
     fireEvent.click(screen.getByTestId('send'))
-    await waitFor(() => expect(sidecarCalls('chat.send')).toHaveLength(1))
+    await waitFor(() => expect(sends()).toHaveLength(1))
     fireEvent.click(screen.getByText('Project B'))
     await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project B'))
-    await act(async () => listeners.drop.forEach((listener) => listener({ payload: { type: 'drop', paths: ['/Users/me/photo.jpg'] } })))
-    await act(async () => finishSend(null))
-    await new Promise((resolve) => setTimeout(resolve, 500))
-    const saves = sidecarCalls('drafts.set').filter((save) => save.key === projectB.id)
-    expect(saves[saves.length - 1]).toEqual({ key: projectB.id, text: '', attachments: ['/Users/me/photo.jpg'] })
+    await drop(['/Users/me/photo.jpg'])
+    await send.release()
+    await pause(500)
+    expect(last(saves(projectB.id))).toEqual({ key: projectB.id, text: '', attachments: ['/Users/me/photo.jpg'] })
   })
 
   it('keeps a newer saved draft that reads the same as the sent text', async () => {
-    let finishSend: (value: unknown) => void = () => {}
-    mockSidecar({ 'chat.send': () => new Promise((resolve) => (finishSend = resolve)), studio_import_file: () => Promise.resolve('refs/a.jpg') }, [projectA, projectB])
+    const send = held()
+    mockSidecar({ 'chat.send': send.call }, [projectA, projectB])
     render(<StudioApp />)
     fireEvent.click(await screen.findByText('Project B'))
     await screen.findByRole('banner')
     type('Make it red')
     fireEvent.click(screen.getByTestId('send'))
-    await waitFor(() => expect(sidecarCalls('chat.send')).toHaveLength(1))
+    await waitFor(() => expect(sends()).toHaveLength(1))
     type('Make it blue')
     type('Make it red')
-    await act(async () => listeners.drop.forEach((listener) => listener({ payload: { type: 'drop', paths: ['/Users/me/new.jpg'] } })))
-    await new Promise((resolve) => setTimeout(resolve, 500))
-    await act(async () => finishSend(null))
+    await drop(['/Users/me/new.jpg'])
+    await pause(500)
+    await send.release()
     fireEvent.click(screen.getByText('Project A'))
     fireEvent.click(screen.getByText('Project B'))
     await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project B'))
@@ -457,7 +476,7 @@ describe('StudioApp', () => {
     fireEvent.click(screen.getByText('Project B'))
     await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project B'))
     await act(async () => finishRead(new ArrayBuffer(3)))
-    await new Promise((resolve) => setTimeout(resolve, 50))
+    await pause(50)
     expect(screen.queryByTestId('attachments')).toBeNull()
   })
 
@@ -466,84 +485,55 @@ describe('StudioApp', () => {
     mockSidecar({ 'state.get': () => new Promise((resolve) => (finishState = resolve)) })
     render(<StudioApp />)
     type('a hook')
-    await new Promise((resolve) => setTimeout(resolve, 500))
+    await pause(500)
     await act(async () =>
-      finishState({ setup: { step: 'ready', done: true }, settings, projects: [projectB], drafts: { new: { text: 'older', attachments: ['/Users/me/hook.jpg'] } }, importBlocked: null }),
+      finishState({ setup: { step: 'ready', done: true }, settings, projects: [projectB], drafts: { new: { text: 'older', attachments: ['/Users/me/hook.jpg'], rev: 1 } }, importBlocked: null }),
     )
     expect(screen.getByTestId('attachments').textContent).toContain('hook.jpg')
-    await waitFor(() => {
-      const saves = sidecarCalls('drafts.set')
-      expect(saves[saves.length - 1]).toEqual({ key: 'new', text: 'a hook', attachments: ['/Users/me/hook.jpg'] })
-    })
+    await waitFor(() => expect(last(saves())).toEqual({ key: 'new', text: 'a hook', attachments: ['/Users/me/hook.jpg'] }))
   })
 
   it('takes the sent pictures out of the composer when the person left and came back before the send went through', async () => {
-    let finishSend: (value: unknown) => void = () => {}
-    mockSidecar({ 'chat.send': () => new Promise((resolve) => (finishSend = resolve)), studio_import_file: () => Promise.resolve('refs/photo.jpg') }, [projectA, projectB])
+    const send = held()
+    mockSidecar({ 'chat.send': send.call }, [projectA, projectB])
     render(<StudioApp />)
     fireEvent.click(await screen.findByText('Project A'))
     await screen.findByRole('banner')
-    await act(async () => listeners.drop.forEach((listener) => listener({ payload: { type: 'drop', paths: ['/Users/me/photo.jpg'] } })))
+    await drop(['/Users/me/photo.jpg'])
     type('Like this')
     fireEvent.click(screen.getByTestId('send'))
-    await waitFor(() => expect(sidecarCalls('chat.send')).toHaveLength(1))
+    await waitFor(() => expect(sends()).toHaveLength(1))
     fireEvent.click(screen.getByText('Project B'))
     await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project B'))
     fireEvent.click(screen.getByText('Project A'))
     await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project A'))
-    await act(async () => finishSend(null))
+    await send.release()
     expect(screen.queryByTestId('attachments')).toBeNull()
   })
 
-  it('names the saved draft a send went out with, so the sidecar removes that one and no newer one', async () => {
+  it('sends the revision the draft was saved as, and names nothing else', async () => {
     mockSidecar()
     render(<StudioApp />)
     fireEvent.click(await screen.findByText('Project B'))
     await screen.findByRole('banner')
     type('Make it red')
     fireEvent.click(screen.getByTestId('send'))
-    await waitFor(() => expect(sidecarCalls('chat.send')).toHaveLength(1))
-    const saved = invokeMock.mock.results.filter((_, i) => invokeMock.mock.calls[i]?.[1]?.method === 'drafts.set')
-    const rev = ((await saved[saved.length - 1]?.value) as { rev: number }).rev
-    expect(sidecarCalls('chat.send')[0]?.draftRev).toBe(rev)
-  })
-
-  it("leaves a newer start screen draft with the same picture alone when a first send goes through", async () => {
-    let finishSend: (value: unknown) => void = () => {}
-    mockSidecar({
-      'projects.create': () => Promise.resolve({ id: '2026-11-06-a-clip', conversation: 4, title: 'A clip', createdMs: 3 }),
-      'chat.send': () => new Promise((resolve) => (finishSend = resolve)),
-      studio_import_file: () => Promise.resolve('refs/photo.jpg'),
-    })
-    render(<StudioApp />)
-    await screen.findByText('Project B')
-    await act(async () => listeners.drop.forEach((listener) => listener({ payload: { type: 'drop', paths: ['/Users/me/photo.jpg'] } })))
-    type('A clip')
-    fireEvent.click(screen.getByTestId('send'))
-    await waitFor(() => expect(sidecarCalls('chat.send')).toHaveLength(1))
-    fireEvent.click(screen.getByTestId('new-project'))
-    type('A hook')
-    await act(async () => listeners.drop.forEach((listener) => listener({ payload: { type: 'drop', paths: ['/Users/me/photo.jpg'] } })))
-    await new Promise((resolve) => setTimeout(resolve, 500))
-    await act(async () => finishSend(null))
-    expect(prompt().value).toBe('A hook')
-    expect(screen.getByTestId('attachments').textContent).toContain('photo.jpg')
-    const saves = sidecarCalls('drafts.set').filter((save) => save.key === 'new')
-    expect(saves[saves.length - 1]).toEqual({ key: 'new', text: 'A hook', attachments: ['/Users/me/photo.jpg'] })
+    await waitFor(() => expect(sends()).toHaveLength(1))
+    expect(sends()).toEqual([{ key: projectB.id, rev: draftRevs }])
   })
 
   it('keeps the composer and the saved draft the same when a picture was added during a send', async () => {
-    let finishSend: (value: unknown) => void = () => {}
-    mockSidecar({ 'chat.send': () => new Promise((resolve) => (finishSend = resolve)) }, [projectA, projectB])
+    const send = held()
+    mockSidecar({ 'chat.send': send.call }, [projectA, projectB])
     render(<StudioApp />)
     fireEvent.click(await screen.findByText('Project B'))
     await screen.findByRole('banner')
     type('Make it red')
     fireEvent.click(screen.getByTestId('send'))
-    await waitFor(() => expect(sidecarCalls('chat.send')).toHaveLength(1))
-    await act(async () => listeners.drop.forEach((listener) => listener({ payload: { type: 'drop', paths: ['/Users/me/new.jpg'] } })))
-    await new Promise((resolve) => setTimeout(resolve, 500))
-    await act(async () => finishSend(null))
+    await waitFor(() => expect(sends()).toHaveLength(1))
+    await drop(['/Users/me/new.jpg'])
+    await pause(500)
+    await send.release()
     const shown = { text: prompt().value, pictures: screen.getByTestId('attachments').textContent }
     fireEvent.click(screen.getByText('Project A'))
     fireEvent.click(screen.getByText('Project B'))
@@ -552,32 +542,28 @@ describe('StudioApp', () => {
   })
 
   it('clears a picture-only first message from the start screen the person went back to', async () => {
-    let finishSend: (value: unknown) => void = () => {}
-    mockSidecar({
-      'projects.create': () => Promise.resolve({ id: '2026-11-06-new-part', conversation: 4, title: 'New part', createdMs: 3 }),
-      'chat.send': () => new Promise((resolve) => (finishSend = resolve)),
-      studio_import_file: () => Promise.resolve('refs/photo.jpg'),
-    })
+    const send = held()
+    mockSidecar({ 'chat.send': send.call })
     render(<StudioApp />)
     await screen.findByText('Project B')
-    await act(async () => listeners.drop.forEach((listener) => listener({ payload: { type: 'drop', paths: ['/Users/me/photo.jpg'] } })))
+    await drop(['/Users/me/photo.jpg'])
     fireEvent.click(screen.getByTestId('send'))
-    await waitFor(() => expect(sidecarCalls('chat.send')).toHaveLength(1))
+    await waitFor(() => expect(sends()).toHaveLength(1))
+    fireEvent.click(screen.getByText('Project B'))
     fireEvent.click(screen.getByTestId('new-project'))
-    await act(async () => finishSend(null))
+    await send.release()
+    await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('New part'))
+    fireEvent.click(screen.getByTestId('new-project'))
     expect(screen.queryByTestId('attachments')).toBeNull()
   })
 
-  it('sends a saved picture again under the same request id after its answer was lost and the project was left and opened again', async () => {
-    let sends = 0
-    mockSidecar(
-      {
-        'chat.send': () => (sends++ === 0 ? Promise.reject('The engine restarted before it answered. Try again.') : Promise.resolve(null)),
-        studio_import_file: () => Promise.resolve('refs/pic.jpg'),
-      },
-      [projectA, projectB],
-      { [projectA.id]: { text: 'A clip like this', attachments: ['/Users/me/pic.jpg'], rev: 7 } },
-    )
+  // The cases of #205: each is a way a window that named its own messages sent one twice, took a new one for an old
+  // one, or lost or kept a draft by mistake.
+
+  it('sends pictures restored by moving away and back as the same message: the same revision, with no new save', async () => {
+    const store = mockSidecar({ 'chat.send': lostOnce() }, [projectA, projectB], {
+      [projectA.id]: { text: 'A clip like this', attachments: ['/Users/me/pic.jpg'], rev: 7 },
+    })
     render(<StudioApp />)
     fireEvent.click(await screen.findByText('Project A'))
     await waitFor(() => expect(prompt().value).toBe('A clip like this'))
@@ -588,63 +574,53 @@ describe('StudioApp', () => {
     fireEvent.click(screen.getByText('Project A'))
     await waitFor(() => expect(prompt().value).toBe('A clip like this'))
     fireEvent.click(screen.getByTestId('send'))
-    await waitFor(() => expect(sidecarCalls('chat.send')).toHaveLength(2))
-    const [first, second] = sidecarCalls('chat.send')
-    expect(second?.requestId).toBe(first?.requestId)
+    await waitFor(() => expect(sends()).toHaveLength(2))
+    expect(sends()).toEqual([
+      { key: projectA.id, rev: 7 },
+      { key: projectA.id, rev: 7 },
+    ])
+    expect(saves()).toEqual([])
+    expect(store.sent).toHaveLength(1)
   })
 
-  it('sends a picture taken out and put back after a lost answer as a new message, as it may be a new file', async () => {
-    let sends = 0
-    let imports = 0
-    mockSidecar(
-      {
-        'chat.send': () => (sends++ === 0 ? Promise.reject('The engine restarted before it answered. Try again.') : Promise.resolve(null)),
-        studio_import_file: () => Promise.resolve(`refs/pic-${++imports}.jpg`),
-      },
-      [projectA, projectB],
-      { [projectA.id]: { text: 'A clip like this', attachments: ['/Users/me/pic.jpg'], rev: 7 } },
-    )
+  it('leaves no draft in the store when the person left the start screen before its first send finished', async () => {
+    const send = held()
+    const store = mockSidecar({ 'chat.send': send.call })
+    render(<StudioApp />)
+    await screen.findByText('Project B')
+    type('A clip')
+    fireEvent.click(screen.getByTestId('send'))
+    await waitFor(() => expect(sends()).toHaveLength(1))
+    fireEvent.click(screen.getByText('Project B'))
+    await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project B'))
+    await send.release()
+    await pause(500)
+    expect(store.drafts).toEqual({})
+    expect(saves('new')).toEqual([{ key: 'new', text: 'A clip', attachments: [] }])
+    fireEvent.click(screen.getByTestId('new-project'))
+    expect(prompt().value).toBe('')
+  })
+
+  it('sends a picture taken out and put back as a new message, under a new revision', async () => {
+    mockSidecar({ 'chat.send': lostOnce() }, [projectA, projectB], { [projectA.id]: { text: 'A clip like this', attachments: ['/Users/me/pic.jpg'], rev: 7 } })
     render(<StudioApp />)
     fireEvent.click(await screen.findByText('Project A'))
     await waitFor(() => expect(prompt().value).toBe('A clip like this'))
     fireEvent.click(screen.getByTestId('send'))
     await screen.findByRole('alert')
     fireEvent.click(screen.getByLabelText('Remove pic.jpg'))
-    await act(async () => listeners.drop.forEach((listener) => listener({ payload: { type: 'drop', paths: ['/Users/me/pic.jpg'] } })))
+    await drop(['/Users/me/pic.jpg'])
     fireEvent.click(screen.getByTestId('send'))
-    await waitFor(() => expect(sidecarCalls('chat.send')).toHaveLength(2))
-    const [first, second] = sidecarCalls('chat.send')
-    expect(second?.requestId).not.toBe(first?.requestId)
-    expect(second?.attachments).toEqual(['refs/pic-2.jpg'])
+    await waitFor(() => expect(sends()).toHaveLength(2))
+    expect(last(saves())).toEqual({ key: projectA.id, text: 'A clip like this', attachments: ['/Users/me/pic.jpg'] })
+    expect(sends()[1]).toEqual({ key: projectA.id, rev: draftRevs })
+    expect(draftRevs).not.toBe(7)
   })
 
-  it('sends a first message of only a picture again under the same request id from the project it made', async () => {
-    let sends = 0
-    mockSidecar({
-      'projects.create': () => Promise.resolve({ id: '2026-11-06-new-part', conversation: 4, title: 'New part', createdMs: 3 }),
-      'chat.send': () => (sends++ === 0 ? Promise.reject('The engine restarted before it answered. Try again.') : Promise.resolve(null)),
-      studio_import_file: () => Promise.resolve('refs/pic.jpg'),
-    })
-    render(<StudioApp />)
-    await screen.findByText('Project B')
-    await act(async () => listeners.drop.forEach((listener) => listener({ payload: { type: 'drop', paths: ['/Users/me/pic.jpg'] } })))
-    fireEvent.click(screen.getByTestId('send'))
-    await screen.findByRole('alert')
-    await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('New part'))
-    fireEvent.click(screen.getByTestId('send'))
-    await waitFor(() => expect(sidecarCalls('chat.send')).toHaveLength(2))
-    const [first, second] = sidecarCalls('chat.send')
-    expect(second?.requestId).toBe(first?.requestId)
-  })
-
-  it('sends text changed after a lost answer as a new message, even when the change could not be saved', async () => {
-    let sends = 0
-    let saves = 0
+  it('fails a send whose draft save fails, and sends nothing under the older revision', async () => {
+    let tries = 0
     mockSidecar(
-      {
-        'chat.send': () => (sends++ === 0 ? Promise.reject('The engine restarted before it answered. Try again.') : Promise.resolve(null)),
-        'drafts.set': () => (++saves === 2 ? Promise.reject('The engine is starting.') : Promise.resolve({ rev: 100 + saves })),
-      },
+      { 'chat.send': lostOnce(), 'drafts.set': (_, real) => (++tries === 2 || tries === 3 ? Promise.reject('The engine is starting.') : real()) },
       [projectA, projectB],
     )
     render(<StudioApp />)
@@ -654,186 +630,171 @@ describe('StudioApp', () => {
     fireEvent.click(screen.getByTestId('send'))
     await screen.findByRole('alert')
     type('A clip for my shelf')
-    // The pause after typing saves the change, and that save fails.
-    await waitFor(() => expect(sidecarCalls('drafts.set')).toHaveLength(2))
-    await new Promise((resolve) => setTimeout(resolve, 20))
+    // The pause after typing saves the change, and that save fails. So does the one the send makes.
+    await waitFor(() => expect(saves()).toHaveLength(2))
     fireEvent.click(screen.getByTestId('send'))
-    await waitFor(() => expect(sidecarCalls('chat.send')).toHaveLength(2))
-    const [first, second] = sidecarCalls('chat.send')
-    expect(second).toMatchObject({ text: 'A clip for my shelf' })
-    expect(second?.requestId).not.toBe(first?.requestId)
+    await waitFor(() => expect(saves()).toHaveLength(3))
+    await pause(50)
+    expect(sends()).toHaveLength(1)
+    expect(screen.getByRole('alert').textContent).toContain('The engine is starting.')
+    fireEvent.click(screen.getByTestId('send'))
+    await waitFor(() => expect(sends()).toHaveLength(2))
+    expect(last(saves())).toEqual({ key: projectA.id, text: 'A clip for my shelf', attachments: [] })
+    expect(sends()[1]).toEqual({ key: projectA.id, rev: draftRevs })
   })
 
-  it('opens a first message\'s project with the draft the sidecar moved there, not a newer start draft', async () => {
-    let finishCreate: (project: unknown) => void = () => {}
-    let sends = 0
-    let imports = 0
-    mockSidecar({
-      'projects.create': () => new Promise((resolve) => (finishCreate = resolve)),
-      'chat.send': () => (sends++ === 0 ? Promise.reject('The engine restarted before it answered. Try again.') : Promise.resolve(null)),
-      studio_import_file: () => Promise.resolve(`refs/pic-${++imports}.jpg`),
-    })
+  it('keeps a start draft changed while its first send runs as a newer draft, exactly as it is, and never sends it', async () => {
+    const send = held()
+    const store = mockSidecar({ 'chat.send': send.call })
     render(<StudioApp />)
     await screen.findByText('Project B')
-    type('A knob')
-    await act(async () => listeners.drop.forEach((listener) => listener({ payload: { type: 'drop', paths: ['/Users/me/a.jpg'] } })))
+    await drop(['/Users/me/photo.jpg'])
+    type('A clip')
     fireEvent.click(screen.getByTestId('send'))
-    await waitFor(() => expect(sidecarCalls('projects.create')).toHaveLength(1))
-    const sentRev = draftRevs
-    // While the project is made, the person swaps the picture and leaves.
-    fireEvent.click(screen.getByLabelText('Remove a.jpg'))
-    await act(async () => listeners.drop.forEach((listener) => listener({ payload: { type: 'drop', paths: ['/Users/me/b.jpg'] } })))
+    await waitFor(() => expect(sends()).toHaveLength(1))
+    type('A hook')
     fireEvent.click(screen.getByText('Project B'))
-    const made = { id: '2026-11-06-a-knob', conversation: 4, title: 'A knob', createdMs: 3 }
-    await act(async () => finishCreate({ ...made, draft: { text: 'A knob', attachments: ['/Users/me/a.jpg'], rev: sentRev } }))
-    await waitFor(() => expect(sidecarCalls('chat.send')).toHaveLength(1))
-    fireEvent.click(await screen.findByText('A knob'))
-    await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('A knob'))
-    expect(screen.getByTestId('attachments').textContent).toContain('a.jpg')
-    expect(screen.getByTestId('attachments').textContent).not.toContain('b.jpg')
-    fireEvent.click(screen.getByTestId('send'))
-    await waitFor(() => expect(sidecarCalls('chat.send')).toHaveLength(2))
-    const [first, second] = sidecarCalls('chat.send')
-    expect(second?.requestId).toBe(first?.requestId)
-    // The start screen keeps the newer draft with b.jpg.
+    await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project B'))
+    expect(saves('new')).toEqual([{ key: 'new', text: 'A clip', attachments: ['/Users/me/photo.jpg'] }])
+    await send.release()
+    await waitFor(() => expect(store.drafts.new).toMatchObject({ text: 'A hook', attachments: ['/Users/me/photo.jpg'] }))
+    expect(store.drafts.new?.rev).toBeGreaterThan(Number(sends()[0]?.rev))
+    expect(sends()).toHaveLength(1)
+    expect(store.sent.map((message) => message.text)).toEqual(['A clip'])
+    expect(Object.keys(store.drafts)).toEqual(['new'])
     fireEvent.click(screen.getByTestId('new-project'))
-    await waitFor(() => expect(screen.getByTestId('attachments').textContent).toContain('b.jpg'))
+    expect(prompt().value).toBe('A hook')
+    expect(screen.getByTestId('attachments').textContent).toContain('photo.jpg')
   })
 
-  it('sends a newer draft the sidecar moved to a first message\'s project as a new message', async () => {
-    let finishCreate: (project: unknown) => void = () => {}
-    let sends = 0
-    let imports = 0
-    const revs: number[] = []
-    mockSidecar({
-      'projects.create': () => new Promise((resolve) => (finishCreate = resolve)),
-      'chat.send': () => (sends++ === 0 ? Promise.reject('The engine restarted before it answered. Try again.') : Promise.resolve(null)),
-      'drafts.set': () => {
-        revs.push(++draftRevs)
-        return Promise.resolve({ rev: draftRevs })
-      },
-      studio_import_file: () => Promise.resolve(`refs/pic-${++imports}.jpg`),
-    })
+  it('sends a picture-only first message again after a lost answer to the same project, once', async () => {
+    const store = mockSidecar({ 'chat.send': lostOnce() })
     render(<StudioApp />)
     await screen.findByText('Project B')
-    type('A knob')
-    await act(async () => listeners.drop.forEach((listener) => listener({ payload: { type: 'drop', paths: ['/Users/me/a.jpg'] } })))
-    fireEvent.click(screen.getByTestId('send'))
-    await waitFor(() => expect(sidecarCalls('projects.create')).toHaveLength(1))
-    fireEvent.click(screen.getByLabelText('Remove a.jpg'))
-    await act(async () => listeners.drop.forEach((listener) => listener({ payload: { type: 'drop', paths: ['/Users/me/b.jpg'] } })))
-    fireEvent.click(screen.getByText('Project B'))
-    await waitFor(() => expect(revs).toHaveLength(2))
-    const made = { id: '2026-11-06-a-knob', conversation: 4, title: 'A knob', createdMs: 3 }
-    // The sidecar made the project after the newer draft was saved, so it took that one.
-    await act(async () => finishCreate({ ...made, draft: { text: 'A knob', attachments: ['/Users/me/b.jpg'], rev: revs[1] } }))
-    await waitFor(() => expect(sidecarCalls('chat.send')).toHaveLength(1))
-    fireEvent.click(await screen.findByText('A knob'))
-    await waitFor(() => expect(screen.getByTestId('attachments').textContent).toContain('b.jpg'))
-    fireEvent.click(screen.getByTestId('send'))
-    await waitFor(() => expect(sidecarCalls('chat.send')).toHaveLength(2))
-    const [first, second] = sidecarCalls('chat.send')
-    expect(second?.requestId).not.toBe(first?.requestId)
-    expect(second?.attachments).toEqual(['refs/pic-2.jpg'])
-  })
-
-  it('sends a picture-only first message again from the start screen into the same project under the same request id', async () => {
-    let sends = 0
-    let made = 0
-    mockSidecar({
-      // Each call makes a project of its own, as the sidecar does.
-      'projects.create': () => Promise.resolve({ id: `2026-11-06-new-part-${++made}`, conversation: 3 + made, title: 'New part', createdMs: 3 }),
-      'chat.send': () => (sends++ === 0 ? Promise.reject('The engine restarted before it answered. Try again.') : Promise.resolve(null)),
-      studio_import_file: () => Promise.resolve('refs/pic.jpg'),
-    })
-    render(<StudioApp />)
-    await screen.findByText('Project B')
-    await act(async () => listeners.drop.forEach((listener) => listener({ payload: { type: 'drop', paths: ['/Users/me/pic.jpg'] } })))
+    await drop(['/Users/me/pic.jpg'])
     fireEvent.click(screen.getByTestId('send'))
     await screen.findByRole('alert')
+    fireEvent.click(screen.getByText('Project B'))
     fireEvent.click(screen.getByTestId('new-project'))
     await waitFor(() => expect(screen.getByTestId('attachments').textContent).toContain('pic.jpg'))
     fireEvent.click(screen.getByTestId('send'))
-    await waitFor(() => expect(sidecarCalls('chat.send')).toHaveLength(2))
-    const [first, second] = sidecarCalls('chat.send')
-    expect(second?.project).toBe(first?.project)
-    expect(second?.requestId).toBe(first?.requestId)
+    await waitFor(() => expect(sends()).toHaveLength(2))
+    const [first, second] = sends()
+    expect(second).toEqual(first)
+    expect(saves()).toHaveLength(1)
+    await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('New part'))
+    expect(store.projects.filter((p) => p.title === 'New part')).toHaveLength(1)
+    expect(store.sent).toHaveLength(1)
   })
 
-  it('names the start draft a first send went out with, even when the person saved a newer one and left before the project was made', async () => {
-    let finishCreate: (project: unknown) => void = () => {}
-    const revs: number[] = []
-    mockSidecar({
-      'projects.create': () => new Promise((resolve) => (finishCreate = resolve)),
-      'drafts.set': () => {
-        revs.push(++draftRevs)
-        return Promise.resolve({ rev: draftRevs })
-      },
-    })
+  it('never saves one screen twice at once when Send comes while an autosave is on its way, and sends an unchanged message once', async () => {
+    const save = held()
+    const store = mockSidecar({ 'drafts.set': save.call }, [projectA, projectB])
     render(<StudioApp />)
-    await screen.findByText('Project B')
-    type('A knob')
+    fireEvent.click(await screen.findByText('Project B'))
+    await screen.findByRole('banner')
+    type('Make it red')
+    await waitFor(() => expect(saves()).toHaveLength(1))
     fireEvent.click(screen.getByTestId('send'))
-    await waitFor(() => expect(sidecarCalls('projects.create')).toHaveLength(1))
-    const sent = revs[0]
-    type('Then a dial')
-    fireEvent.click(screen.getByText('Project B'))
-    await waitFor(() => expect(sidecarCalls('drafts.set')).toHaveLength(2))
-    await act(async () => finishCreate({ id: '2026-11-06-a-knob', conversation: 4, title: 'A knob', createdMs: 3 }))
-    await waitFor(() => expect(sidecarCalls('chat.send')).toHaveLength(1))
-    expect(sidecarCalls('chat.send')[0]).toMatchObject({ text: 'A knob', draftRev: sent })
+    await pause(50)
+    expect(saves()).toHaveLength(1)
+    await save.release()
+    await waitFor(() => expect(sends()).toEqual([{ key: projectB.id, rev: draftRevs }]))
+    await pause(500)
+    expect(saves()).toHaveLength(1)
+    expect(store.sent).toHaveLength(1)
+  })
+
+  it('sends pictures restored from a late saved state under a new revision, never as a repeat of a sent one', async () => {
+    let finishState: (state: unknown) => void = () => {}
+    const store = mockSidecar({ 'state.get': () => new Promise((resolve) => (finishState = resolve)), 'chat.send': lostOnce() })
+    render(<StudioApp />)
+    type('a hook')
+    await pause(500)
+    fireEvent.click(screen.getByTestId('send'))
+    await screen.findByRole('alert')
+    await act(async () =>
+      finishState({ setup: { step: 'ready', done: true }, settings, projects: [projectB], drafts: { new: { text: 'older', attachments: ['/Users/me/hook.jpg'], rev: 1 } }, importBlocked: null }),
+    )
+    expect(screen.getByTestId('attachments').textContent).toContain('hook.jpg')
+    fireEvent.click(screen.getByTestId('send'))
+    await waitFor(() => expect(sends()).toHaveLength(2))
+    const [first, second] = sends()
+    expect(second?.rev).not.toBe(first?.rev)
+    expect(last(saves('new'))).toEqual({ key: 'new', text: 'a hook', attachments: ['/Users/me/hook.jpg'] })
+    expect(last(store.sent)).toMatchObject({ rev: second?.rev, attachments: ['/Users/me/hook.jpg'] })
+  })
+
+  it('takes a picture-only first message to its project and leaves the start screen empty, after a relaunch too', async () => {
+    const store = mockSidecar()
+    const first = render(<StudioApp />)
+    await screen.findByText('Project B')
+    await drop(['/Users/me/photo.jpg'])
+    fireEvent.click(screen.getByTestId('send'))
+    await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('New part'))
+    expect(screen.queryByTestId('attachments')).toBeNull()
+    fireEvent.click(screen.getByTestId('new-project'))
+    expect(screen.queryByTestId('attachments')).toBeNull()
+    await pause(500)
+    expect(store.drafts).toEqual({})
+    first.unmount()
+
+    mockSidecar({}, store.projects, store.drafts)
+    render(<StudioApp />)
+    await screen.findByText('New part')
+    expect(screen.queryByTestId('attachments')).toBeNull()
+    expect(prompt().value).toBe('')
   })
 
   it('waits for a draft save already on its way before it says a quit may go on', async () => {
-    let finishSave: (value: unknown) => void = () => {}
-    mockSidecar({ 'drafts.set': () => new Promise((resolve) => (finishSave = resolve)) })
+    const save = held()
+    mockSidecar({ 'drafts.set': save.call })
     render(<StudioApp />)
     fireEvent.click(await screen.findByText('Project B'))
     await screen.findByRole('banner')
     type('half a thought')
     // The pause after typing starts the save, which the sidecar has not answered yet.
-    await waitFor(() => expect(sidecarCalls('drafts.set')).toHaveLength(1))
+    await waitFor(() => expect(saves()).toHaveLength(1))
     await act(async () => listeners.flush.forEach((listener) => listener({ payload: null })))
-    await new Promise((resolve) => setTimeout(resolve, 50))
+    await pause(50)
     const flushed = () => invokeMock.mock.calls.some(([command]) => command === 'studio_flushed')
     expect(flushed()).toBe(false)
-    await act(async () => finishSave({ rev: 1 }))
+    await save.release()
     await waitFor(() => expect(flushed()).toBe(true))
   })
 
-  it('keeps text typed while the draft before a send was still being saved', async () => {
-    let finishSave: (value: unknown) => void = () => {}
-    let saves = 0
-    mockSidecar({ 'drafts.set': () => (++saves === 1 ? new Promise((resolve) => (finishSave = resolve)) : Promise.resolve({ rev: 100 + saves })) })
+  it('keeps text typed while the draft before a send was still being saved, and saves it once the send is done', async () => {
+    let finishSave = () => {}
+    let tries = 0
+    mockSidecar({ 'drafts.set': (_, real) => (++tries === 1 ? new Promise((resolve) => (finishSave = () => resolve(real()))) : real()) })
     render(<StudioApp />)
     fireEvent.click(await screen.findByText('Project B'))
     await screen.findByRole('banner')
     type('Make it red')
     fireEvent.click(screen.getByTestId('send'))
-    await waitFor(() => expect(sidecarCalls('drafts.set')).toHaveLength(1))
+    await waitFor(() => expect(saves()).toHaveLength(1))
     type('Make it blue')
-    // The newer text's own save ends first, so only the send's first save names what went out.
-    await waitFor(() => expect(sidecarCalls('drafts.set')).toHaveLength(2))
-    await act(async () => finishSave({ rev: 1 }))
-    await waitFor(() => expect(sidecarCalls('chat.send')).toHaveLength(1))
-    expect(sidecarCalls('chat.send')[0]).toMatchObject({ text: 'Make it red', draftRev: 1 })
-    await new Promise((resolve) => setTimeout(resolve, 50))
+    await pause(500)
+    expect(saves()).toHaveLength(1)
+    await act(async () => finishSave())
+    await waitFor(() => expect(sends()).toEqual([{ key: projectB.id, rev: expect.any(Number) }]))
+    await waitFor(() => expect(last(saves())).toEqual({ key: projectB.id, text: 'Make it blue', attachments: [] }))
     expect(prompt().value).toBe('Make it blue')
   })
 
-  it('keeps a picture added while the project of a first message was being made', async () => {
-    let finishCreate: (project: unknown) => void = () => {}
-    mockSidecar({ 'projects.create': () => new Promise((resolve) => (finishCreate = resolve)), studio_import_file: () => Promise.resolve('refs/photo.jpg') })
+  it("keeps a picture added while a first message was on its way, as its project's draft", async () => {
+    const send = held()
+    mockSidecar({ 'chat.send': send.call })
     render(<StudioApp />)
     await screen.findByText('Project B')
     type('A clip')
     fireEvent.click(screen.getByTestId('send'))
-    await waitFor(() => expect(sidecarCalls('projects.create')).toHaveLength(1))
-    await act(async () => listeners.drop.forEach((listener) => listener({ payload: { type: 'drop', paths: ['/Users/me/later.jpg'] } })))
-    await act(async () => finishCreate({ id: '2026-11-06-a-clip', conversation: 4, title: 'A clip', createdMs: 3 }))
-    await waitFor(() => expect(sidecarCalls('chat.send')).toHaveLength(1))
-    await new Promise((resolve) => setTimeout(resolve, 50))
+    await waitFor(() => expect(sends()).toHaveLength(1))
+    await drop(['/Users/me/later.jpg'])
+    await send.release()
+    await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('A clip'))
     expect(screen.getByTestId('attachments').textContent).toContain('later.jpg')
+    await waitFor(() => expect(saves('2026-11-06-a-clip')).toEqual([{ key: '2026-11-06-a-clip', text: 'A clip', attachments: ['/Users/me/later.jpg'] }]))
   })
 
   it('keeps chat changes that arrive while the chat opens', async () => {
@@ -890,35 +851,35 @@ describe('StudioApp', () => {
   })
 
   it("clears a sent project's saved draft even when the person typed in another project meanwhile", async () => {
-    let finishSend: (value: unknown) => void = () => {}
-    mockSidecar({ 'chat.send': () => new Promise((resolve) => (finishSend = resolve)) }, [projectA, projectB])
+    const send = held()
+    mockSidecar({ 'chat.send': send.call }, [projectA, projectB])
     render(<StudioApp />)
     fireEvent.click(await screen.findByText('Project B'))
     await screen.findByRole('banner')
     type('Make it red')
     fireEvent.click(screen.getByTestId('send'))
-    await waitFor(() => expect(sidecarCalls('chat.send')).toHaveLength(1))
+    await waitFor(() => expect(sends()).toHaveLength(1))
     fireEvent.click(screen.getByText('Project A'))
     await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project A'))
     type('something for A')
-    await act(async () => finishSend(null))
+    await send.release()
     fireEvent.click(screen.getByText('Project B'))
     await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project B'))
     expect(prompt().value).toBe('')
   })
 
   it('keeps text typed during a send as the next message, even when it reads the same as the sent one', async () => {
-    let finishSend: (value: unknown) => void = () => {}
-    mockSidecar({ 'chat.send': () => new Promise((resolve) => (finishSend = resolve)) })
+    const send = held()
+    mockSidecar({ 'chat.send': send.call })
     render(<StudioApp />)
     fireEvent.click(await screen.findByText('Project B'))
     await screen.findByRole('banner')
     type('Make it red')
     fireEvent.click(screen.getByTestId('send'))
-    await waitFor(() => expect(sidecarCalls('chat.send')).toHaveLength(1))
+    await waitFor(() => expect(sends()).toHaveLength(1))
     type('Make it blue')
     type('Make it red')
-    await act(async () => finishSend(null))
+    await send.release()
     expect(prompt().value).toBe('Make it red')
   })
 
@@ -943,20 +904,20 @@ describe('StudioApp', () => {
     await screen.findByRole('banner')
     type('make it blue')
     fireEvent.click(screen.getByText('Project A'))
-    expect(sidecarCalls('drafts.set')).toEqual([{ key: projectB.id, text: 'make it blue', attachments: [] }])
+    expect(saves()).toEqual([{ key: projectB.id, text: 'make it blue', attachments: [] }])
   })
 
   it('keeps text typed while a send goes through as the draft', async () => {
-    let finishSend: (value: null) => void = () => {}
-    mockSidecar({ 'chat.send': () => new Promise((resolve) => (finishSend = resolve)) }, [projectA, projectB])
+    const send = held()
+    mockSidecar({ 'chat.send': send.call }, [projectA, projectB])
     render(<StudioApp />)
     fireEvent.click(await screen.findByText('Project B'))
     await screen.findByRole('banner')
     type('make it red')
     fireEvent.click(screen.getByTestId('send'))
-    await waitFor(() => expect(sidecarCalls('chat.send')).toHaveLength(1))
+    await waitFor(() => expect(sends()).toHaveLength(1))
     type('make it blue')
-    await act(async () => finishSend(null))
+    await send.release()
     fireEvent.click(screen.getByText('Project A'))
     fireEvent.click(screen.getByText('Project B'))
     await waitFor(() => expect(prompt().value).toBe('make it blue'))
@@ -967,81 +928,57 @@ describe('StudioApp', () => {
     mockSidecar({ 'state.get': () => new Promise((resolve) => (finishState = resolve)) })
     render(<StudioApp />)
     type('A clip for my desk')
-    await act(async () => finishState({ setup: { step: 'ready', done: true }, settings, projects: [projectB], drafts: { new: { text: 'an older draft' } } }))
+    await act(async () => finishState({ setup: { step: 'ready', done: true }, settings, projects: [projectB], drafts: { new: { text: 'an older draft', attachments: [], rev: 1 } } }))
     expect(prompt().value).toBe('A clip for my desk')
   })
 
   it('leaves the start screen empty after its message was sent', async () => {
-    mockSidecar({ 'projects.create': () => Promise.resolve(projectA) })
+    mockSidecar()
     render(<StudioApp />)
     await screen.findByText('Project B')
     type('A clip for my desk')
-    await waitFor(() => expect(sidecarCalls('drafts.set')).toEqual([{ key: 'new', text: 'A clip for my desk', attachments: [] }]))
+    await waitFor(() => expect(saves()).toEqual([{ key: 'new', text: 'A clip for my desk', attachments: [] }]))
     fireEvent.click(screen.getByTestId('send'))
-    await waitFor(() => expect(sidecarCalls('chat.send')).toHaveLength(1))
+    await waitFor(() => expect(sends()).toHaveLength(1))
     fireEvent.click(screen.getByTestId('new-project'))
     expect(prompt().value).toBe('')
   })
 
-  it("keeps text typed while a new project is made as that project's draft", async () => {
-    let finishCreate: (project: unknown) => void = () => {}
-    mockSidecar({ 'projects.create': () => new Promise((resolve) => (finishCreate = resolve)) })
+  it("keeps text typed during a first send as its project's draft, and never saves it on the start screen", async () => {
+    const send = held()
+    mockSidecar({ 'chat.send': send.call })
     render(<StudioApp />)
     await screen.findByText('Project B')
     type('A clip for my desk')
     fireEvent.click(screen.getByTestId('send'))
-    await waitFor(() => expect(sidecarCalls('projects.create')).toHaveLength(1))
+    await waitFor(() => expect(sends()).toHaveLength(1))
     type('second message')
-    // The pause saves it as the start screen's draft before the project is there.
-    await waitFor(() => expect(sidecarCalls('drafts.set')).toContainEqual({ key: 'new', text: 'second message', attachments: [] }))
-    await act(async () => finishCreate(projectA))
-    await waitFor(() => expect(sidecarCalls('chat.send')).toHaveLength(1))
-    expect(sidecarCalls('drafts.set')).toContainEqual({ key: projectA.id, text: 'second message', attachments: [] })
-    const saves = sidecarCalls('drafts.set')
-    expect(saves[saves.length - 1]).toEqual({ key: 'new', text: '', attachments: [] })
+    await pause(500)
+    await send.release()
+    const made = '2026-11-06-a-clip-for-my-desk'
+    await waitFor(() => expect(saves(made)).toEqual([{ key: made, text: 'second message', attachments: [] }]))
+    expect(saves('new')).toEqual([{ key: 'new', text: 'A clip for my desk', attachments: [] }])
     fireEvent.click(screen.getByText('Project B'))
     await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project B'))
-    fireEvent.click(screen.getByText('Project A'))
+    fireEvent.click(screen.getByText('A clip for my desk'))
     await waitFor(() => expect(prompt().value).toBe('second message'))
   })
 
-  it('never puts a sent message back on the start screen when text typed while the project was made was taken back', async () => {
-    let finishCreate: (project: unknown) => void = () => {}
-    mockSidecar({ 'projects.create': () => new Promise((resolve) => (finishCreate = resolve)) })
+  it('never puts a sent message back on the start screen when text typed during it was taken back', async () => {
+    const send = held()
+    mockSidecar({ 'chat.send': send.call })
     render(<StudioApp />)
     await screen.findByText('Project B')
     type('A clip for my desk')
     fireEvent.click(screen.getByTestId('send'))
-    await waitFor(() => expect(sidecarCalls('projects.create')).toHaveLength(1))
+    await waitFor(() => expect(sends()).toHaveLength(1))
     type('A clip for my desk, and')
     type('A clip for my desk')
-    await act(async () => finishCreate(projectA))
-    await waitFor(() => expect(sidecarCalls('chat.send')).toHaveLength(1))
-    await new Promise((resolve) => setTimeout(resolve, 600))
-    const restored = sidecarCalls('drafts.set').filter((save) => save.key === 'new' && save.text === 'A clip for my desk')
-    expect(restored).toHaveLength(1)
+    await send.release()
+    await pause(600)
+    expect(saves('new')).toEqual([{ key: 'new', text: 'A clip for my desk', attachments: [] }])
     fireEvent.click(screen.getByTestId('new-project'))
     expect(prompt().value).toBe('')
-  })
-
-  it('leaves a start screen draft typed after leaving and coming back alone when the earlier project is made', async () => {
-    let finishCreate: (project: unknown) => void = () => {}
-    mockSidecar({ 'projects.create': () => new Promise((resolve) => (finishCreate = resolve)) })
-    render(<StudioApp />)
-    await screen.findByText('Project B')
-    type('A clip for my desk')
-    fireEvent.click(screen.getByTestId('send'))
-    await waitFor(() => expect(sidecarCalls('projects.create')).toHaveLength(1))
-    fireEvent.click(screen.getByText('Project B'))
-    await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project B'))
-    fireEvent.click(screen.getByTestId('new-project'))
-    type('A shelf bracket')
-    await act(async () => finishCreate(projectA))
-    await waitFor(() => expect(sidecarCalls('chat.send')).toHaveLength(1))
-    expect(prompt().value).toBe('A shelf bracket')
-    // Once typing pauses, the bracket is the start screen's draft, never the new project's.
-    await waitFor(() => expect(sidecarCalls('drafts.set')).toContainEqual({ key: 'new', text: 'A shelf bracket', attachments: [] }))
-    expect(sidecarCalls('drafts.set')).not.toContainEqual(expect.objectContaining({ key: projectA.id, text: 'A shelf bracket' }))
   })
 
   it('leaves the start screen empty when the person cleared it before the saved state arrived', async () => {
@@ -1050,16 +987,13 @@ describe('StudioApp', () => {
     render(<StudioApp />)
     type('A clip for my desk')
     type('')
-    await act(async () => finishState({ setup: { step: 'ready', done: true }, settings, projects: [projectB], drafts: { new: { text: 'an older draft' } } }))
+    await act(async () => finishState({ setup: { step: 'ready', done: true }, settings, projects: [projectB], drafts: { new: { text: 'an older draft', attachments: [], rev: 1 } } }))
     expect(prompt().value).toBe('')
   })
 
-  it("keeps each project's unsent message, so sending it again after another project's send reuses its request id", async () => {
-    let sends = 0
-    mockSidecar(
-      { 'chat.send': () => (sends++ === 0 ? Promise.reject('The engine restarted before it answered. Try again.') : Promise.resolve(null)) },
-      [projectA, projectB],
-    )
+  it("keeps each project's unsent message, so sending it again after another project's send names its revision", async () => {
+    let tries = 0
+    mockSidecar({ 'chat.send': (_, real) => (++tries === 1 ? Promise.reject(LOST) : real()) }, [projectA, projectB])
     render(<StudioApp />)
     fireEvent.click(await screen.findByText('Project A'))
     await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project A'))
@@ -1070,14 +1004,14 @@ describe('StudioApp', () => {
     await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project B'))
     type('make it blue')
     fireEvent.click(screen.getByTestId('send'))
-    await waitFor(() => expect(sidecarCalls('chat.send')).toHaveLength(2))
+    await waitFor(() => expect(sends()).toHaveLength(2))
     fireEvent.click(screen.getByText('Project A'))
-    await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project A'))
-    type('A clip for my desk')
+    await waitFor(() => expect(prompt().value).toBe('A clip for my desk'))
     fireEvent.click(screen.getByTestId('send'))
-    await waitFor(() => expect(sidecarCalls('chat.send')).toHaveLength(3))
-    const [first, , third] = sidecarCalls('chat.send')
-    expect(third?.requestId).toBe(first?.requestId)
+    await waitFor(() => expect(sends()).toHaveLength(3))
+    const [first, , third] = sends()
+    expect(third).toEqual(first)
+    expect(saves(projectA.id)).toHaveLength(1)
   })
 
   it('shows the code a device sign-in asks for, with its page', async () => {
