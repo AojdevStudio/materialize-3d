@@ -217,11 +217,11 @@ export class Chats {
   }
 
   /**
-   * Resolves once the person is signed in to `provider`, for a running tool. When they are not, it holds the turn where
-   * it is, with the fix named on its chat, and goes on once they sign in. A stop ends the wait. A wait the tool held
-   * before a restart is let go once the sign-in is there.
+   * Resolves once the person is signed in to `provider`, for a running tool. When they are not, or the provider
+   * `refused` the saved sign-in, it holds the turn where it is, with the fix named on its chat, and goes on once they
+   * sign in. A stop ends the wait. A wait the tool held before a restart is let go once the sign-in is there.
    */
-  async loginFor(conversation: number, provider: string, waiting: Context): Promise<void> {
+  async loginFor(conversation: number, provider: string, waiting: Context, refused: boolean): Promise<void> {
     const { models, store } = this.#o
     const id = conversation as ConversationId
     const name = models.getProvider(provider)?.name ?? provider
@@ -232,7 +232,7 @@ export class Chats {
         record.waiting = wait
         record.tool = wait !== null
       }, context)
-    if ((await models.getAuth(provider).catch(() => undefined)) !== undefined) {
+    if (!refused && (await models.getAuth(provider).catch(() => undefined)) !== undefined) {
       if ((await store.harness.snapshot(WaitingDoc, id, context))?.tool) {
         await hold(null)
         await this.#show(project)
@@ -242,7 +242,8 @@ export class Chats {
     const { promise, resolve } = Promise.withResolvers<void>()
     const waiters = this.#signIns.get(provider) ?? new Set()
     this.#signIns.set(provider, waiters.add(resolve))
-    await hold({ kind: 'login', provider, name, fix: `Sign in to ${name}. Astra picks up where it stopped.` })
+    const fix = refused ? `${name} refused the saved sign-in. Sign in again. Astra picks up where it stopped.` : `Sign in to ${name}. Astra picks up where it stopped.`
+    await hold({ kind: 'login', provider, name, fix })
     await this.#show(project)
     try {
       await awaitWithContext(promise, waiting)

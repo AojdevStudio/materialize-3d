@@ -44,7 +44,7 @@ export async function runSidecar({ argv, addProviders }: SidecarOptions): Promis
   const tools = agentTools({
     host,
     projectOf: (conversation) => store.projectOf(conversation),
-    signedIn: (conversation, provider, context) => chats.loginFor(conversation, provider, context),
+    signedIn: (conversation, provider, context, refused) => chats.loginFor(conversation, provider, context, refused),
   })
   const extension = agentExtension(tools)
   registry.install(extension)

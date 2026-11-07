@@ -61,6 +61,7 @@ const scripts: Record<string, (messages: Message[], model: Model<string>) => Ass
     if (results.length === 1) return call('write', { path: 'linked/new.txt', content: 'x' })
     if (results.length === 2) return call('edit', { path: 'linked/secret.txt', edits: [{ oldText: 'secret', newText: 'leaked' }] })
     if (results.length === 3) return call('write', { path: 'dangling', content: 'x' })
+    if (results.length === 4) return call('write', { path: 'climb', content: 'x' })
     return fauxAssistantMessage(fauxText('tried'))
   },
   /** A tool that waits for `go`, then a model request that fails. */
@@ -87,11 +88,12 @@ await runSidecar({
     faux.setResponses(Array.from({ length: 200 }, () => (context, _options, _state, model) => script(context.messages, model)))
     models.setProvider(faux.provider)
     const astra = fauxProvider({ provider: 'openai-codex', models: [{ id: 'gpt-6-astra' }] })
-    // Astra runs a command of its own first, in the project folder it shares.
+    // Astra runs a command of its own first, in the project folder it shares. The provider refuses the key `refused`.
     astra.setResponses(
-      Array.from({ length: 50 }, () => (context) =>
-        sinceUser(context.messages).results.length === 0 ? run('echo astra-ran > astra.txt') : fauxAssistantMessage(fauxText('astra drew it')),
-      ),
+      Array.from({ length: 50 }, () => (context, options) => {
+        if (options?.apiKey === 'refused') return fauxAssistantMessage([], { stopReason: 'error', errorMessage: '401 Unauthorized: invalid token' })
+        return sinceUser(context.messages).results.length === 0 ? run('echo astra-ran > astra.txt') : fauxAssistantMessage(fauxText('astra drew it'))
+      }),
     )
     models.setProvider({
       ...astra.provider,

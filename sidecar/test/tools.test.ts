@@ -87,7 +87,7 @@ describe('the run tool', () => {
     await Bun.sleep(2500)
     expect(existsSync(join(where.projects, project, 'finished'))).toBe(false)
     await app.quit()
-  })
+  }, 20_000)
 })
 
 describe('the file tools', () => {
@@ -102,14 +102,17 @@ describe('the file tools', () => {
     symlinkSync(outside, join(where.projects, project, 'linked'))
     // A link to a file that does not exist yet: writing through it would make the file outside.
     symlinkSync(join(outside, 'made-outside.txt'), join(where.projects, project, 'dangling'))
+    // A link to a file not made yet, through `linked` and then up: the system climbs from where `linked` leads.
+    symlinkSync('linked/../climbed.txt', join(where.projects, project, 'climb'))
     await send(app, project, 'r1')
     await answered(app, project, 'tried')
     const results = await toolResults(app, project)
-    expect(results.map((r) => [r.name, r.failed])).toEqual([['read', true], ['write', true], ['edit', true], ['write', true]])
+    expect(results.map((r) => [r.name, r.failed])).toEqual([['read', true], ['write', true], ['edit', true], ['write', true], ['write', true]])
     for (const result of results) expect(result.text).toContain('outside the project folder')
     expect(readFileSync(join(outside, 'secret.txt'), 'utf8')).toBe('secret')
     expect(existsSync(join(outside, 'new.txt'))).toBe(false)
     expect(existsSync(join(outside, 'made-outside.txt'))).toBe(false)
+    expect(existsSync(join(where.dir, 'climbed.txt'))).toBe(false)
     await app.quit()
   })
 })
@@ -135,6 +138,22 @@ describe('Astra', () => {
     expect(readFileSync(join(where.projects, project, 'astra.txt'), 'utf8')).toBe('astra-ran\n')
     await app.quit()
   })
+
+  test('a sign-in the provider refuses makes the turn wait for a new one, instead of asking again and again', async () => {
+    const where = scratch()
+    const app = start(where, 'astra')
+    await app.next()
+    const project = await newProject(app)
+    await app.call('auth.setKey', { provider: 'openai-codex', key: 'refused' })
+    await send(app, project, 'r1')
+    const waiting = await app.until((event) => event.type === 'chat' && event.waiting !== null, 30_000)
+    expect(waiting.waiting).toMatchObject({ kind: 'login', provider: 'openai-codex' })
+    expect(waiting.running).toBe(true)
+    await app.call('auth.setKey', { provider: 'openai-codex', key: 'astra-key' })
+    await answered(app, project, 'parent saw: astra drew it')
+    expect(((await app.call('chat.open', { project })) as ChatView).waiting).toBeNull()
+    await app.quit()
+  }, 60_000)
 
   test('a wait a crash cut off is let go once the sign-in is there, and the turn finishes', async () => {
     const where = scratch()

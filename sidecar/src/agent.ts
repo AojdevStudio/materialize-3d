@@ -9,7 +9,7 @@
  */
 import { createHash } from 'node:crypto'
 import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, renameSync, writeFileSync } from 'node:fs'
-import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative } from 'node:path'
 import type { Context, JsonValue } from '@earendil-works/chord'
 import {
   AssistantEntry,
@@ -52,7 +52,8 @@ const MAX_LINKS = 40
 function realPath(path: string, links = 0): string {
   if (links > MAX_LINKS) throw new Error(`${path} passes through too many links`)
   try {
-    return realpathSync(path)
+    // The system's own answer: the JS version drops `..` before it follows the links ahead of it.
+    return realpathSync.native(path)
   } catch {
     let link = false
     try {
@@ -60,7 +61,11 @@ function realPath(path: string, links = 0): string {
     } catch {
       // Nothing is at this path yet.
     }
-    if (link) return realPath(resolve(dirname(path), readlinkSync(path)), links + 1)
+    if (link) {
+      // The target stays as written: `..` in it climbs from where the links before it lead, as the system climbs.
+      const target = readlinkSync(path)
+      return realPath(isAbsolute(target) ? target : `${dirname(path)}/${target}`, links + 1)
+    }
     const up = dirname(path)
     return up === path ? path : join(realPath(up, links), basename(path))
   }
@@ -77,7 +82,7 @@ export class ProjectEnv extends NodeExecutionEnv {
     } catch (error) {
       return err(new FileError('permission_denied', error instanceof Error ? error.message : String(error), path))
     }
-    const inside = relative(realpathSync(this.cwd), real)
+    const inside = relative(realpathSync.native(this.cwd), real)
     if (inside.startsWith('..') || isAbsolute(inside)) {
       return err(new FileError('permission_denied', `${path} is outside the project folder`, path))
     }
@@ -114,9 +119,10 @@ export interface AgentHost {
   projectOf(conversation: number): Promise<string>
   /**
    * Resolves once the person is signed in to `provider`: at once when they are, after holding the turn with the fix
-   * named on its chat when they are not. A stop ends the wait.
+   * named on its chat when they are not. After the provider `refused` the saved sign-in, only a new one will do. A stop
+   * ends the wait.
    */
-  signedIn(conversation: number, provider: string, context: Context): Promise<void>
+  signedIn(conversation: number, provider: string, context: Context, refused: boolean): Promise<void>
 }
 
 /** A call's operation id: a hash of the call id, since an id the model made can hold any character, and no two may share a receipt. */
@@ -219,7 +225,7 @@ export function agentTools({ host, projectOf, signedIn }: AgentHost) {
       const conversation = await api.conversation(child, context)
       if (conversation === undefined) throw new Error("Astra's conversation is gone")
       // Astra runs on the person's ChatGPT sign-in. Without it the turn waits here, with the fix named, and goes on.
-      await signedIn(api.conversationId, ASTRA_MODEL.provider, context)
+      await signedIn(api.conversationId, ASTRA_MODEL.provider, context, false)
       let submission = await conversation.submit({ type: 'input', content: task, requestId: `astra:${api.taskId}` }, context)
       // Each continue has its own request id, so a rerun after a crash finds the same one instead of sending another.
       for (let resumed = 0; ; resumed++) {
@@ -233,9 +239,12 @@ export function agentTools({ host, projectOf, signedIn }: AgentHost) {
         if (settled.reason !== 'model_error' || !isLoginFailure(detail)) {
           return { output: text(`Astra did not answer (${settled.reason}${detail === '' ? '' : `: ${detail}`}).`), isError: true }
         }
-        // The sign-in was missing or refused: once it is there, Astra goes on from where it stopped.
-        await signedIn(api.conversationId, ASTRA_MODEL.provider, context)
-        submission = await conversation.submit({ type: 'continue', requestId: `astra:${api.taskId}:continue:${resumed}` }, context)
+        // The sign-in was missing or refused, so Astra waits for a new one, then goes on from where it stopped. A rerun
+        // after a crash takes a continue it already sent as it was, without waiting again.
+        const requestId = `astra:${api.taskId}:continue:${resumed}`
+        const sent = await api.commit((tx) => tx.submissionByRequest(child, requestId), context)
+        if (sent === undefined) await signedIn(api.conversationId, ASTRA_MODEL.provider, context, true)
+        submission = await conversation.submit({ type: 'continue', requestId }, context)
       }
     },
   })
