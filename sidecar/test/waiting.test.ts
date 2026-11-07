@@ -100,6 +100,29 @@ describe('a turn whose provider is not signed in', () => {
     proxy.stop()
   }, 20_000)
 
+  test('a turn refused after a newer login was saved goes on with it only with the update pass', async () => {
+    const release = Promise.withResolvers<void>()
+    const proxy = anthropicProxy('Hello after the update', { token: 'old-token', release: release.promise })
+    const dir = mkdtempSync(join(tmpdir(), 'm3d-wait-'))
+    const app = spawnSidecar(join(dir, 'state'), join(dir, 'projects'), new Map())
+    await app.next()
+    const { id: project } = (await app.call('projects.create', { title: 'A cube' })) as { id: string }
+    await app.call('chat.open', { project })
+    await app.call('auth.setKey', { provider: 'anthropic', key: 'old-token', baseUrl: proxy.url })
+    await app.call('chat.send', { project, requestId: 'r1', text: 'A 20 mm cube', attachments: [] })
+    while (proxy.seen.length === 0) await Bun.sleep(10)
+    await app.call('auth.setKey', { provider: 'anthropic', key: 'new-token', baseUrl: proxy.url })
+    // An update starts installing while the old request is still out.
+    app.gate.installing = true
+    release.resolve()
+    const waiting = await app.until((event) => event.type === 'chat' && event.waiting !== null)
+    expect(waiting.waiting).toMatchObject({ kind: 'login', provider: 'anthropic' })
+    await Bun.sleep(500)
+    expect(proxy.seen).toHaveLength(1)
+    await app.quit()
+    proxy.stop()
+  }, 20_000)
+
   test('a turn that failed with no login goes on when one is saved while the failure is read', async () => {
     const proxy = anthropicProxy('Hello after the slow read')
     const dir = mkdtempSync(join(tmpdir(), 'm3d-wait-'))

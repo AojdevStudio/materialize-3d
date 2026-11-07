@@ -147,7 +147,11 @@ export class Chats {
     const recorded = (await this.#o.store.harness.snapshot(WaitingDoc, conversation.id, context))?.failure ?? null
     if (state.failure !== undefined && state.failure.reason !== 'aborted' && state.failure.taskId !== recorded) {
       // The waiting document is not part of the view a watch follows, so its commit wakes no one: read it here.
-      await this.#read(conversation, state.failure, state.turn)
+      // A login saved since the turn went out lets it go on now: the sign-in that saved it found no wait to let go.
+      // If an update is installing, the pass is refused and the wait stays, to go on after the restart.
+      if (await this.#read(conversation, state.failure, state.turn)) {
+        await this.#continue(project, 'login').catch((error: unknown) => console.error(`going on with a newer login failed: ${String(error)}`))
+      }
       state = await this.#state(conversation)
     }
     const entries = await this.#entries(conversation, this.#sent.get(project) ?? 0)
@@ -157,11 +161,11 @@ export class Chats {
 
   /**
    * Reads why a run stopped: a provider with no login, or a refused one, waits for a sign-in; anything else for a retry.
-   * A login missing or refused when a newer one was saved since the turn went out goes on with the newer one at once,
-   * since the sign-in that saved it found no wait to let go. The login read here may be older than that save, so only
-   * the save count, read in the commit, decides. A turn from another version of the app is left to wait.
+   * Resolves true when the login was missing or refused but a newer one was saved since the turn went out, so the
+   * wait can be let go at once. The login read here may be older than that save, so only the save count, read in the
+   * commit, decides. A turn from another version of the app is left to wait.
    */
-  async #read(conversation: Conversation, failure: RunFailure, turn: Turn | null): Promise<void> {
+  async #read(conversation: Conversation, failure: RunFailure, turn: Turn | null): Promise<boolean> {
     const { models, store, version } = this.#o
     const provider = turn?.model.provider ?? 'anthropic'
     const name = models.getProvider(provider)?.name ?? provider
@@ -172,21 +176,16 @@ export class Chats {
       login
         ? { kind: 'login', provider, name, fix: `Sign in to ${name}. The message picks up where it stopped.` }
         : { kind: 'error', detail, fix: 'Try again' }
-    await store.harness.commit(async (tx) => {
+    return store.harness.commit(async (tx) => {
       // A send that came after this failure started a new turn, which this failure must not hold.
-      if ((await tx.doc(TurnDoc, conversation.id)).turn?.requestId !== turn?.requestId) return
+      if ((await tx.doc(TurnDoc, conversation.id)).turn?.requestId !== turn?.requestId) return false
       const record = await tx.doc(WaitingDoc, conversation.id)
       record.failure = failure.taskId
       record.tool = false
+      record.waiting = waiting
       // Read in this commit, so a sign-in either lands before it and is seen here, or after it and finds this wait.
       const saves = (await tx.doc(LoginSavesDoc, store.root.id)).saves[provider] ?? 0
-      if (login && record.saves !== null && saves > record.saves && turn?.app === version) {
-        await conversation.submit(tx, { type: 'continue' })
-        record.waiting = null
-        record.saves = saves
-        return
-      }
-      record.waiting = waiting
+      return login && record.saves !== null && saves > record.saves && turn?.app === version
     }, context)
   }
 
@@ -237,15 +236,18 @@ export class Chats {
 
   /**
    * Goes on from where the turn stopped, with the model, tools, and instructions it started with, and clears what it
-   * waited on. The turn records the app version that goes on with it.
+   * waited on. The turn records the app version that goes on with it. With `only: 'login'`, it goes on only while the
+   * turn still waits on a sign-in, so when two paths let one wait go, as a sign-in and the read of a failure that
+   * crossed it, the turn goes on once.
    */
-  async #continue(project: string): Promise<void> {
+  async #continue(project: string, only?: 'login'): Promise<void> {
     const { store, version } = this.#o
     const conversation = await this.#conversation(project)
     await this.#o.busy.during(() =>
       store.harness.commit(async (tx) => {
-        await conversation.submit(tx, { type: 'continue' })
         const waiting = await tx.doc(WaitingDoc, conversation.id)
+        if (only === 'login' && waiting.waiting?.kind !== 'login') return
+        await conversation.submit(tx, { type: 'continue' })
         waiting.waiting = null
         const { turn } = await tx.doc(TurnDoc, conversation.id)
         if (turn !== null) {
@@ -356,7 +358,7 @@ export class Chats {
         await this.#outdated(conversation)
         await this.#show(project.id)
       } else {
-        await this.#continue(project.id)
+        await this.#continue(project.id, 'login')
       }
     }
   }
@@ -405,7 +407,7 @@ export class Chats {
       if (record === undefined || record.waiting?.kind !== 'login' || record.tool || running) continue
       const waiting = record.waiting
       if (state.turn !== null && state.turn.app !== version) await this.#outdated(conversation.id)
-      else if (await this.#savedSince(record, waiting.provider)) await this.#continue(project.id)
+      else if (await this.#savedSince(record, waiting.provider)) await this.#continue(project.id, 'login')
     }
   }
 
