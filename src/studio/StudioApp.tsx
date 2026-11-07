@@ -34,6 +34,8 @@ export default function StudioApp() {
   const [tab, setTab] = useState<Tab>('preview')
   const [attachments, setAttachments] = useState<Attachment[]>([])
   const [error, setError] = useState<string | null>(null)
+  /** A failed send's error, kept with the project it was sent to and shown only there. */
+  const [sendErrors, setSendErrors] = useState<Record<string, string>>({})
   /** The unsent message. It belongs to the open project and stays until a send succeeds. */
   const [text, setText] = useState('')
   const [sending, setSending] = useState(false)
@@ -153,6 +155,7 @@ export default function StudioApp() {
     // The view this send belongs to. A move to another project or the start screen
     // while it runs changes `loadRequest`, and then the send leaves that view alone.
     let view = loadRequest.current
+    let sentTo: string | null = null
     try {
       let project = current
       if (!project) {
@@ -164,6 +167,7 @@ export default function StudioApp() {
         }
       }
       const id = project.id
+      sentTo = id
       const outgoing = attachments
       const images = await Promise.all(
         outgoing.map((a) => (a.kind === 'path' ? studio.importFile(id, a.path) : studio.saveBytes(id, a.name, a.bytes))),
@@ -176,11 +180,24 @@ export default function StudioApp() {
       setAttachments((prev) => prev.filter((a) => !outgoing.includes(a)))
       outgoing.forEach(releaseAttachment)
     } catch (err) {
-      setError(String(err))
+      const message = String(err)
+      if (sentTo !== null) {
+        const project = sentTo
+        setSendErrors((prev) => ({ ...prev, [project]: message }))
+      } else if (loadRequest.current === view) {
+        // No project was made, so the error belongs to the start screen, if it is still open.
+        setError(message)
+      }
     } finally {
       sendingNow.current = false
       setSending(false)
     }
+  }
+
+  const shownError = error ?? (current ? sendErrors[current.id] : undefined)
+  const dismissError = () => {
+    setError(null)
+    if (current) setSendErrors(({ [current.id]: _, ...rest }) => rest)
   }
 
   const composer = (placeholder: string, autoFocus: boolean) => (
@@ -221,10 +238,10 @@ export default function StudioApp() {
 
       <main className="chat" aria-label="Chat">
         <UpdateBanner />
-        {error && (
+        {shownError && (
           <div className="error-bar" role="alert">
-            <span>{error}</span>
-            <button type="button" onClick={() => setError(null)} aria-label="Dismiss">×</button>
+            <span>{shownError}</span>
+            <button type="button" onClick={dismissError} aria-label="Dismiss">×</button>
           </div>
         )}
         {current ? (

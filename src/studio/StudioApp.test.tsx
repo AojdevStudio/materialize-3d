@@ -22,6 +22,23 @@ afterEach(() => {
   invokeMock.mockReset()
 })
 
+function mockStudio(overrides: Record<string, () => Promise<unknown>>) {
+  invokeMock.mockImplementation((command: string) => {
+    if (command in overrides) return overrides[command]()
+    switch (command) {
+      case 'studio_projects':
+        return Promise.resolve([projectB])
+      case 'studio_transcript':
+      case 'studio_files':
+        return Promise.resolve([])
+      case 'update_check':
+        return Promise.resolve({ status: 'upToDate' })
+      default:
+        return Promise.resolve(undefined)
+    }
+  })
+}
+
 describe('StudioApp', () => {
   it('leaves the project the person moved to alone when a slow send from the start screen finishes', async () => {
     let finishCreate: (project: unknown) => void = () => {}
@@ -54,5 +71,28 @@ describe('StudioApp', () => {
 
     expect(screen.getByRole('banner').textContent).toBe('Project B')
     expect((screen.getByTestId('prompt') as HTMLTextAreaElement).value).toBe('draft for B')
+  })
+
+  it("keeps a slow send's failure with the project it was sent to", async () => {
+    let failSend: (reason: string) => void = () => {}
+    const projectA = { id: '2026-11-06-a', title: 'Project A', createdMs: 2, path: '/p/a' }
+    mockStudio({
+      studio_projects: () => Promise.resolve([projectA, projectB]),
+      studio_send: () => new Promise((_, reject) => (failSend = reject)),
+    })
+    render(<StudioApp />)
+    fireEvent.click(await screen.findByText('Project A'))
+    await screen.findByRole('banner')
+    fireEvent.change(screen.getByTestId('prompt'), { target: { value: 'A clip for my desk' } })
+    fireEvent.click(screen.getByTestId('send'))
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('studio_send', expect.objectContaining({ project: projectA.id })))
+    fireEvent.click(screen.getByText('Project B'))
+    await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project B'))
+
+    await act(async () => failSend('The agent could not start.'))
+    expect(screen.queryByRole('alert')).toBeNull()
+
+    fireEvent.click(screen.getByText('Project A'))
+    expect((await screen.findByRole('alert')).textContent).toContain('The agent could not start.')
   })
 })

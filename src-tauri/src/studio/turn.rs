@@ -14,7 +14,7 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio_util::sync::CancellationToken;
 
 use super::{files, project_dir, read_meta, META_DIR};
-use crate::fabrication::build_gate::BuildGate;
+use crate::fabrication::build_gate::{BuildGate, OwnedRunning};
 use crate::state::AppState;
 
 const SYSTEM_PROMPT: &str = include_str!("system_prompt.md");
@@ -379,6 +379,8 @@ pub fn studio_send(app: AppHandle, turns: State<'_, Turns>, project: String, tex
     content.push(json!({ "type": "text", "text": prompt }));
     let message = json!({ "type": "user", "message": { "role": "user", "content": content } });
 
+    // Taken before anything is written and dropped after the last write, on every path.
+    let pass = take_pass(app.state::<Arc<AppState>>().inner().clone())?;
     let token = CancellationToken::new();
     let tag = uuid::Uuid::new_v4().to_string();
     let leader = Arc::new(Mutex::new(0));
@@ -424,8 +426,7 @@ pub fn studio_send(app: AppHandle, turns: State<'_, Turns>, project: String, tex
 
     tauri::async_runtime::spawn(async move {
         let before: HashMap<String, u64> = files::list(&dir).unwrap_or_default().into_iter().map(|f| (f.rel.clone(), f.modified_ms)).collect();
-        let state = app.state::<Arc<AppState>>().inner().clone();
-        let outcome = gated(&state.builds, run(&app, &project, &mut transcript, &started, command, message, token, &tag, &leader)).await;
+        let outcome = run(&app, &project, &mut transcript, &started, command, message, token, &tag, &leader).await;
         let changed: Vec<String> = files::list(&dir)
             .unwrap_or_default()
             .into_iter()
@@ -450,18 +451,29 @@ pub fn studio_send(app: AppHandle, turns: State<'_, Turns>, project: String, tex
                 running.remove(&project);
             }
         }
+        // The turn's last line is written, so the updater may go ahead.
+        drop(pass);
     });
     Ok(())
 }
 
-/// Runs a turn while it holds the build gate, so the updater waits for it before
-/// restarting the app, the same as for a model build. A turn that would start
-/// while an update installs is refused instead, since the restart would end it.
-async fn gated<T>(gate: &BuildGate, turn: impl std::future::Future<Output = Result<T, String>>) -> Result<T, String> {
-    let Some(_running) = gate.enter() else {
-        return Err("An update is installing, and the app restarts when it is done. Send this again after it opens.".to_owned());
-    };
-    turn.await
+/// The gate inside the app's state, so a turn's pass can own its way to it.
+struct StateGate(Arc<AppState>);
+
+impl std::ops::Deref for StateGate {
+    type Target = BuildGate;
+    fn deref(&self) -> &BuildGate {
+        &self.0.builds
+    }
+}
+
+/// A turn's build pass. The updater restarts the app only once no build and no
+/// turn holds one. A turn takes it before its first transcript line and drops it
+/// after its last, so a restart never cuts a turn's work or its record short.
+/// While an update installs, the gate is closed and a new turn is refused.
+fn take_pass(state: Arc<AppState>) -> Result<OwnedRunning<StateGate>, String> {
+    BuildGate::enter_owned(StateGate(state))
+        .ok_or_else(|| "An update is installing, and the app restarts when it is done. Send this again after it opens.".to_owned())
 }
 
 async fn run(
@@ -593,25 +605,20 @@ mod tests {
 
     const SETTLE: std::time::Duration = std::time::Duration::from_millis(50);
 
-    /// The updater restarts the app only once no build and no turn holds the gate.
+    /// The pass `studio_send` takes holds an update off until the turn drops it,
+    /// and while the update installs a new turn is refused before it writes anything.
     #[tokio::test]
-    async fn an_update_waits_for_a_running_turn_and_refuses_a_new_one_while_it_installs() {
-        let gate = BuildGate::default();
-        let (finish, finished) = tokio::sync::oneshot::channel::<()>();
-        let mut turn = std::pin::pin!(gated(&gate, async {
-            finished.await.expect("the test finishes the turn");
-            Ok(())
-        }));
-        assert!(tokio::time::timeout(SETTLE, &mut turn).await.is_err(), "the turn runs");
-        let mut close = std::pin::pin!(gate.close_when_idle(|_| {}));
-        assert!(tokio::time::timeout(SETTLE, &mut close).await.is_err(), "the update waits for the turn");
-        finish.send(()).expect("the turn listens");
-        turn.await.expect("the turn ends");
-        let closed = tokio::time::timeout(SETTLE, &mut close).await.expect("the update goes ahead once the turn ends");
-        let refused = gated(&gate, async { Ok::<_, String>(()) }).await;
-        assert!(refused.expect_err("a turn is refused while the update installs").contains("update is installing"));
+    async fn an_update_waits_for_a_turns_pass_and_a_turn_is_refused_while_it_installs() {
+        let state = Arc::new(AppState::default());
+        let pass = take_pass(state.clone()).expect("a turn starts");
+        let mut close = std::pin::pin!(state.builds.close_when_idle(|_| {}));
+        assert!(tokio::time::timeout(SETTLE, &mut close).await.is_err(), "the update waits while the turn holds its pass");
+        drop(pass);
+        let closed = tokio::time::timeout(SETTLE, &mut close).await.expect("the update goes ahead once the turn is done");
+        let refused = take_pass(state.clone()).err().expect("a turn is refused while the update installs");
+        assert!(refused.contains("update is installing"));
         drop(closed);
-        assert!(gated(&gate, async { Ok::<_, String>(()) }).await.is_ok(), "a failed install lets turns start again");
+        assert!(take_pass(state.clone()).is_ok(), "a failed install lets turns start again");
     }
 
     #[test]
