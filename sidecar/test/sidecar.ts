@@ -9,10 +9,10 @@ export function spawnSidecar(
   dataDir: string,
   projectsDir: string,
   keychain = new Map<string, string>(),
-  options: { script?: string; env?: Record<string, string> } = {},
+  options: { script?: string; env?: Record<string, string>; version?: string } = {},
 ) {
   const entry = options.script === undefined ? 'src/main.ts' : 'test/fixtures/scripted-sidecar.ts'
-  const child = Bun.spawn(['bun', entry, '--app-version', '9.9.9', '--data', dataDir, '--projects', projectsDir], {
+  const child = Bun.spawn(['bun', entry, '--app-version', options.version ?? '9.9.9', '--data', dataDir, '--projects', projectsDir], {
     cwd: `${import.meta.dir}/..`,
     env: { ...process.env, ...options.env, ...(options.script === undefined ? {} : { M3D_SCRIPT: options.script }) },
     stdin: 'pipe',

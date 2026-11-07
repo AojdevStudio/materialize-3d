@@ -41,7 +41,14 @@ export async function runSidecar({ argv, addProviders }: SidecarOptions): Promis
   addProviders?.(models)
 
   const registry = createRegistry()
-  const tools = agentTools({ host, projectOf: (conversation) => store.projectOf(conversation) })
+  const tools = agentTools({
+    host,
+    projectOf: async (conversation) => {
+      const id = await store.projectOf(conversation)
+      return { id, folder: store.projectFolder(id) }
+    },
+    waitForLogin: (conversation, provider, context) => chats.waitForLogin(conversation, provider, context),
+  })
   const extension = agentExtension(tools)
   registry.install(extension)
 

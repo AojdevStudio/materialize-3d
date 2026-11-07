@@ -6,7 +6,7 @@
 import { mkdirSync, readFileSync, statSync } from 'node:fs'
 import { extname, isAbsolute, join, relative } from 'node:path'
 import type { Context } from '@earendil-works/chord'
-import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
+import { awaitWithContext, BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
 import type { ImageContent, Models, TextContent } from '@earendil-works/pi-ai'
 import {
   type Conversation,
@@ -23,6 +23,7 @@ import {
 import type { ConversationView } from '@earendil-works/pi-durable'
 import { WORKFLOW, WORKFLOW_VERSION } from './agent'
 import type { ChatEntry, ChatView, SidecarEvent, Turn, Waiting } from './protocol'
+import { isLoginFailure } from './inference'
 import { DraftsDoc, SettingsDoc, type Store, TurnDoc, WaitingDoc } from './store'
 import { chatEntry } from './transcript'
 
@@ -31,9 +32,6 @@ const context: Context = BACKGROUND_CONTEXT
 const IMAGE_TYPES: Record<string, string> = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp' }
 /** Models read pictures up to about 5 MB. Larger ones, and HEIC photos, go as a smaller JPEG on macOS. */
 const MAX_IMAGE_BYTES = 3_500_000
-
-/** A failure the provider gave because the login was refused, not missing. */
-const REFUSED_LOGIN = /\b(401|403)\b|unauthori[sz]ed|authentication|invalid (api )?(key|token)|expired/i
 
 export interface ChatsOptions {
   store: Store
@@ -79,6 +77,8 @@ export class Chats {
   readonly #watches = new Map<string, WatchHandle<ConversationView>>()
   /** The newest entry each watched chat has sent the window. */
   readonly #sent = new Map<string, number>()
+  /** Tools waiting for a sign-in, by provider. */
+  readonly #signIns = new Map<string, Set<() => void>>()
 
   constructor(options: ChatsOptions) {
     this.#o = options
@@ -152,7 +152,7 @@ export class Chats {
     const auth = await models.getAuth(provider).catch(() => undefined)
     const detail = typeof failure.detail === 'string' ? failure.detail : failure.reason
     const waiting: Waiting =
-      auth === undefined || (failure.reason === 'model_error' && REFUSED_LOGIN.test(detail))
+      auth === undefined || (failure.reason === 'model_error' && isLoginFailure(detail))
         ? { kind: 'login', provider, name, fix: `Sign in to ${name}. The message picks up where it stopped.` }
         : { kind: 'error', detail, fix: 'Try again' }
     await store.harness.commit(async (tx) => {
@@ -197,14 +197,54 @@ export class Chats {
     await this.#watch(project, conversation)
   }
 
-  /** Goes on from where the turn stopped, with the settings it started with, and clears what it waited on. */
+  /**
+   * Goes on from where the turn stopped, with the model, tools, and instructions it started with, and clears what it
+   * waited on. The turn records the app version that goes on with it.
+   */
   async #continue(project: string): Promise<void> {
+    const { store, version } = this.#o
     const conversation = await this.#conversation(project)
-    await this.#o.store.harness.commit(async (tx) => {
+    await store.harness.commit(async (tx) => {
       await conversation.submit(tx, { type: 'continue' })
       ;(await tx.doc(WaitingDoc, conversation.id)).waiting = null
+      const { turn } = await tx.doc(TurnDoc, conversation.id)
+      if (turn !== null) turn.app = version
     }, context)
     await this.#watch(project, conversation)
+  }
+
+  /**
+   * Holds a running tool until the person signs in to `provider`, with the fix named on its chat. The turn stays where
+   * it is and goes on once the sign-in is done. A stop ends the wait.
+   */
+  async waitForLogin(conversation: number, provider: string, waiting: Context): Promise<void> {
+    const { models, store } = this.#o
+    const id = conversation as ConversationId
+    const name = models.getProvider(provider)?.name ?? provider
+    const project = await store.projectOf(conversation)
+    const hold = (wait: Waiting | null) =>
+      store.harness.commit(async (tx) => {
+        const record = await tx.doc(WaitingDoc, id)
+        record.waiting = wait
+        record.tool = wait !== null
+      }, context)
+    const { promise, resolve } = Promise.withResolvers<void>()
+    const waiters = this.#signIns.get(provider) ?? new Set()
+    this.#signIns.set(provider, waiters.add(resolve))
+    await hold({ kind: 'login', provider, name, fix: `Sign in to ${name}. Astra picks up where it stopped.` })
+    await this.#show(project)
+    try {
+      await awaitWithContext(promise, waiting)
+    } finally {
+      waiters.delete(resolve)
+      await hold(null)
+      await this.#show(project)
+    }
+  }
+
+  /** Sends the window a chat's state, for a change its watch does not see. */
+  async #show(project: string): Promise<void> {
+    await this.#changed(project, await this.#conversation(project))
   }
 
   async retry(project: string): Promise<void> {
@@ -220,30 +260,52 @@ export class Chats {
     await (await this.#conversation(project)).abort(context)
   }
 
-  /** After a sign-in: every turn that waited on that provider goes on. */
+  /** After a sign-in: every tool and every turn that waited on that provider goes on. */
   async signedIn(provider: string): Promise<void> {
+    for (const resolve of this.#signIns.get(provider) ?? []) resolve()
     for (const project of await this.#o.store.projects()) {
       const waiting = await this.#o.store.harness.snapshot(WaitingDoc, project.conversation as ConversationId, context)
-      if (waiting?.waiting?.kind === 'login' && waiting.waiting.provider === provider) await this.#continue(project.id)
+      if (waiting?.waiting?.kind === 'login' && waiting.waiting.provider === provider && !waiting.tool) await this.#continue(project.id)
     }
   }
 
   /**
-   * At start: runs a crash cut off go on from their last committed step, failures not yet read are read, and turns
-   * that waited on a login that is now there go on.
+   * At start: a turn that ran on another version of the app stops, waiting for the person to go on with this one,
+   * instead of going on with code it did not start with. Then runs a crash cut off go on from their last committed
+   * step, every chat is watched, failures not yet read are read, and turns that waited on a login that is now there
+   * go on.
    */
   async reconcile(): Promise<void> {
-    const { store, models } = this.#o
-    store.harness.resume()
-    for (const project of await store.projects()) {
+    const { store, models, version } = this.#o
+    const projects = await store.projects()
+    const outdated: Conversation[] = []
+    for (const project of projects) {
       const conversation = await this.#conversation(project.id)
+      const { running, turn } = await this.#state(conversation)
+      if (running && turn !== null && turn.app !== version) outdated.push(conversation)
+    }
+    await Promise.all(
+      outdated.map(async (conversation) => {
+        await conversation.abort(context)
+        await store.harness.commit(async (tx) => {
+          const record = await tx.doc(WaitingDoc, conversation.id)
+          record.waiting = { kind: 'error', detail: `Materialize 3D was updated to ${version} while this turn ran.`, fix: 'Go on' }
+          record.tool = false
+        }, context)
+      }),
+    )
+    store.harness.resume()
+    for (const project of projects) {
+      const conversation = await this.#conversation(project.id)
+      await this.#watch(project.id, conversation)
       const state = await this.#state(conversation)
       const recorded = (await store.harness.snapshot(WaitingDoc, conversation.id, context))?.failure ?? null
       if (state.failure !== undefined && state.failure.reason !== 'aborted' && state.failure.taskId !== recorded) {
         await this.#read(conversation, state.failure, state.turn)
       }
-      const waiting = (await store.harness.snapshot(WaitingDoc, conversation.id, context))?.waiting
-      if (waiting?.kind === 'login' && (await models.getAuth(waiting.provider).catch(() => undefined)) !== undefined) {
+      const record = await store.harness.snapshot(WaitingDoc, conversation.id, context)
+      const waiting = record?.waiting
+      if (waiting?.kind === 'login' && !record?.tool && (await models.getAuth(waiting.provider).catch(() => undefined)) !== undefined) {
         await this.#continue(project.id)
       }
     }

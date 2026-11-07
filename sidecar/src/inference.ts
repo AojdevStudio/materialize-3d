@@ -60,6 +60,11 @@ const credential = compile(
   ]),
 )
 
+/** A provider's answer that means the login itself is missing or refused, not that the request failed. */
+const LOGIN_FAILURE = /not configured|\b(401|403)\b|unauthori[sz]ed|authentication|invalid (api )?(key|token)|expired/i
+
+export const isLoginFailure = (detail: string) => LOGIN_FAILURE.test(detail)
+
 /** Which providers have a login. Not secret: it lives in the store. */
 export interface LoginIndex {
   logins(): Promise<Record<string, LoginKind>>

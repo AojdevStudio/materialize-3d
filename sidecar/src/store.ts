@@ -78,16 +78,17 @@ export const TurnDoc = defineDoc<{ turn: Turn | null }>({
 })
 
 /**
- * Why a project's turn stopped before its answer, and the run failure that was read, so one failure is read once.
- * Cleared in the commit that sends, retries, or resumes.
+ * Why a project's turn waits, and the run failure that was read, so one failure is read once. `tool` marks a wait a
+ * running tool holds, such as Astra's for a sign-in: the tool goes on by itself, so nothing continues the run. Cleared
+ * in the commit that sends, retries, or resumes, or by the tool once its wait ends.
  */
-export const WaitingDoc = defineDoc<{ waiting: Waiting | null; failure: number | null }>({
+export const WaitingDoc = defineDoc<{ waiting: Waiting | null; failure: number | null; tool: boolean }>({
   kind: 'm3d.waiting',
   version: 1,
   scope: 'conversation',
   history: 'latest',
   fork: 'initial',
-  initial: () => ({ waiting: null, failure: null }),
+  initial: () => ({ waiting: null, failure: null, tool: false }),
   checkpointWhen: always,
 })
 
