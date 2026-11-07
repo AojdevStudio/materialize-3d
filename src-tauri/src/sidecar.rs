@@ -104,6 +104,17 @@ fn take_pass(state: Arc<AppState>) -> Result<OwnedRunning<StateGate>, String> {
         .ok_or_else(|| "An update is installing, and the app restarts when it is done. Send this again after it opens.".to_owned())
 }
 
+/// Runs `work` under a pass of its own. Work Rust does for the sidecar can outlive the sidecar run that asked for it,
+/// as a slice does after a crash, so the run's pass cannot hold the update off for it.
+async fn with_own_pass<F, Fut, T>(state: Arc<AppState>, work: F) -> Result<T, String>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<T, String>>,
+{
+    let _pass = take_pass(state)?;
+    work().await
+}
+
 impl Default for Sidecar {
     fn default() -> Self {
         Self {
@@ -561,11 +572,14 @@ async fn answer(app: &AppHandle, run: u64, method: &str, params: Value) -> Resul
         "slice" => {
             let SliceCall { operation, request } = parse(method, params)?;
             let cache = app.path().app_cache_dir().map_err(|e| format!("finding the app's cache folder: {e}"))?.join("bambu-presets");
-            once_per_operation(&app.state::<Sidecar>().slices, operation, || async move {
-                let sliced = tauri::async_runtime::spawn_blocking(move || studio::slice::slice(&request, &cache))
-                    .await
-                    .map_err(|e| format!("the slice task failed: {e}"))??;
-                serde_json::to_value(sliced).map_err(|e| e.to_string())
+            let state = app.state::<Arc<AppState>>().inner().clone();
+            once_per_operation(&app.state::<Sidecar>().slices, operation, || {
+                with_own_pass(state, || async move {
+                    let sliced = tauri::async_runtime::spawn_blocking(move || studio::slice::slice(&request, &cache))
+                        .await
+                        .map_err(|e| format!("the slice task failed: {e}"))??;
+                    serde_json::to_value(sliced).map_err(|e| e.to_string())
+                })
             })
             .await
         }
@@ -658,6 +672,29 @@ mod tests {
         assert_eq!(runs.load(Ordering::SeqCst), 1);
         assert_eq!(once_per_operation(&operations, "other".to_owned(), work("other")).await, Ok(json!("other")));
         assert_eq!(runs.load(Ordering::SeqCst), 2);
+    }
+
+    /// A slice that outlives its sidecar run keeps the update off until it ends, and none starts while one installs.
+    #[tokio::test]
+    async fn work_under_its_own_pass_holds_an_update_until_it_ends() {
+        const SETTLE: Duration = Duration::from_millis(50);
+        let state = Arc::new(AppState::default());
+        let sidecar = Sidecar::default();
+        set_busy(&sidecar, &state, 0, true).expect("the sidecar takes the pass");
+        let (finish, finished) = oneshot::channel::<()>();
+        let slice = tokio::spawn(with_own_pass(state.clone(), || async move {
+            finished.await.map_err(|e| e.to_string())
+        }));
+        tokio::time::sleep(SETTLE).await;
+        sidecar.run_ended();
+        let mut close = std::pin::pin!(state.builds.close_when_idle(|_| {}));
+        assert!(tokio::time::timeout(SETTLE, &mut close).await.is_err(), "the update waits for the slice its sidecar left");
+        finish.send(()).expect("the slice is still running");
+        slice.await.expect("the slice task").expect("the slice");
+        let closed = tokio::time::timeout(SETTLE, &mut close).await.expect("the update goes ahead once the slice ends");
+        let refused = with_own_pass(state.clone(), || async { Ok(()) }).await.expect_err("no slice starts while the update installs");
+        assert!(refused.contains("update is installing"), "{refused}");
+        drop(closed);
     }
 
     #[test]
