@@ -53,7 +53,8 @@ const GUARD = [
   'watch=$!',
   '"$@"',
   'status=$?',
-  'kill "$watch" 2>/dev/null',
+  // Waiting on the stopped watch keeps bash, the macOS sh, from printing that it was terminated into the output.
+  'kill "$watch" 2>/dev/null; wait "$watch" 2>/dev/null',
   `printf '{"exitCode":%d,"output":""}' "$status" > "$receipt.new" && mv -f "$receipt.new" "$receipt"`,
   'exit "$status"',
 ].join('\n')
