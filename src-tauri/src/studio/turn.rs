@@ -431,11 +431,11 @@ pub fn studio_send(app: AppHandle, turns: State<'_, Turns>, project: String, tex
         // Only what the agent needs: a home, a shell, the locale, the login PATH,
         // the inference keys, and Astra's own home. Nothing else of the app's environment.
         .env_clear()
-        .envs(lean::KEPT_ENV.iter().filter_map(|&key| std::env::var_os(key).map(|value| (key, value))))
+        .envs(lean::KEPT_ENV.iter().copied().chain(astra.env.iter().map(String::as_str)).filter_map(|key| std::env::var_os(key).map(|value| (key, value))))
         .env("PATH", login_path())
         .envs(inference.env.iter().map(|(key, value)| (key, value)))
         .envs(lean::NO_MEMORY_ENV)
-        .env("CODEX_HOME", &astra)
+        .env("CODEX_HOME", &astra.dir)
         .env(TAG_VAR, &tag)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

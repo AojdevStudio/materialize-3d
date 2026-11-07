@@ -41,18 +41,26 @@ pub struct ClaudeInference {
 }
 
 impl ClaudeInference {
-    /// With no settings file, or none of these keys, the agent uses the normal keychain login.
+    /// The inference keys come from the settings, then from the app's own environment.
+    /// With none of them the agent uses the normal keychain login.
     pub fn read(home: &Path) -> Result<Self, String> {
         let path = std::env::var_os("CLAUDE_CONFIG_DIR").map_or_else(|| home.join(".claude"), PathBuf::from).join("settings.json");
-        let text = match std::fs::read_to_string(&path) {
-            Ok(text) => text,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Self::default()),
+        let settings: ClaudeSettings = match std::fs::read_to_string(&path) {
+            // Only the position: an error's own text can quote a value, and a value can be a token.
+            Ok(text) => serde_json::from_str(&text)
+                .map_err(|e| format!("{} is not valid settings JSON (line {}, column {})", path.display(), e.line(), e.column()))?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => ClaudeSettings::default(),
             Err(e) => return Err(format!("{}: {e}", path.display())),
         };
-        // Only the position: an error's own text can quote a value, and a value can be a token.
-        let settings: ClaudeSettings =
-            serde_json::from_str(&text).map_err(|e| format!("{} is not valid settings JSON (line {}, column {})", path.display(), e.line(), e.column()))?;
-        Ok(Self::from_settings(settings))
+        let mut inference = Self::from_settings(settings);
+        for key in CLAUDE_INFERENCE_KEYS {
+            if !inference.env.iter().any(|(k, _)| k == key) {
+                if let Some(value) = std::env::var_os(key).and_then(|v| v.into_string().ok()) {
+                    inference.env.push((key.to_owned(), value));
+                }
+            }
+        }
+        Ok(inference)
     }
 
     fn from_settings(mut settings: ClaudeSettings) -> Self {
@@ -90,13 +98,12 @@ impl ClaudeInference {
 /// The provider keys Astra's config keeps. Anything else, such as an inline
 /// bearer token or header, stays out, so no secret is written. The provider
 /// reads its key with `auth.command` or from the `env_key` variable instead.
-const PROVIDER_KEYS: [&str; 10] = [
+const PROVIDER_KEYS: [&str; 9] = [
     "name",
     "base_url",
     "wire_api",
     "env_key",
     "env_http_headers",
-    "query_params",
     "request_max_retries",
     "stream_max_retries",
     "stream_idle_timeout_ms",
@@ -109,7 +116,7 @@ const PROVIDER_AUTH_KEYS: [&str; 5] = ["command", "args", "cwd", "timeout_ms", "
 /// AGENTS.md, and turns off every skill under `~/.agents/skills`, which codex
 /// would otherwise load. With no cliproxy provider the home has no way to reach
 /// a model, so Astra fails and says so instead of running on the person's setup.
-pub fn astra_home(home: &Path, app_data: &Path) -> Result<PathBuf, String> {
+pub fn astra_home(home: &Path, app_data: &Path) -> Result<AstraHome, String> {
     let user_config = home.join(".codex").join("config.toml");
     let user: toml::Table = match std::fs::read_to_string(&user_config) {
         // Only the position: an error's own text quotes the line, and a line can hold a token.
@@ -124,15 +131,42 @@ pub fn astra_home(home: &Path, app_data: &Path) -> Result<PathBuf, String> {
     if !config.contains_key("model_providers") {
         log::warn!("studio: ~/.codex/config.toml has no cliproxy provider, so Astra cannot reach a model");
     }
+    let env = provider_env_names(&config);
     let dir = app_data.join("astra");
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     // Written whole and then renamed, so an Astra starting meanwhile reads the old file or the new one.
     let staged = dir.join(format!("config.toml.{}", uuid::Uuid::new_v4()));
     let text = toml::to_string(&config).map_err(|e| format!("Astra config: {e}"))?;
-    std::fs::write(&staged, text)
-        .and_then(|()| std::fs::rename(&staged, dir.join("config.toml")))
-        .map_err(|e| format!("{}: {e}", dir.display()))?;
-    Ok(dir)
+    if let Err(e) = write_private(&staged, &text).and_then(|()| std::fs::rename(&staged, dir.join("config.toml"))) {
+        let _ = std::fs::remove_file(&staged);
+        return Err(format!("{}: {e}", dir.display()));
+    }
+    Ok(AstraHome { dir, env })
+}
+
+/// Astra's home, and the variables its provider reads its key from, which the
+/// agent's process keeps when the app has them.
+pub struct AstraHome {
+    pub dir: PathBuf,
+    pub env: Vec<String>,
+}
+
+/// The copied provider can name a key command's arguments, so the file is the
+/// person's alone, like the config it came from.
+fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    std::io::Write::write_all(&mut options.open(path)?, text.as_bytes())
+}
+
+/// The variable names the provider reads: `env_key` and the values of `env_http_headers`.
+fn provider_env_names(config: &toml::Table) -> Vec<String> {
+    let Some(provider) = config.get("model_providers").and_then(|p| p.get("cliproxy")) else { return Vec::new() };
+    let key = provider.get("env_key").and_then(toml::Value::as_str).map(str::to_owned);
+    let headers = provider.get("env_http_headers").and_then(toml::Value::as_table).into_iter().flat_map(|table| table.values().filter_map(toml::Value::as_str).map(str::to_owned));
+    key.into_iter().chain(headers).collect()
 }
 
 fn astra_config(user: &toml::Table, skills: &[PathBuf]) -> toml::Table {
