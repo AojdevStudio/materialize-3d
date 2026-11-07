@@ -26,6 +26,10 @@ struct ProjectMeta {
     created_ms: i64,
     /// The Claude Code session every turn after the first resumes.
     session_id: String,
+    /// The session was started by the lean agent. A session from before carries
+    /// the person's coding setup in its history, so it is never resumed.
+    #[serde(default)]
+    lean: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -79,6 +83,28 @@ fn read_meta(dir: &Path) -> Result<ProjectMeta, String> {
     serde_json::from_str(&text).map_err(|e| format!("parsing {}: {e}", path.display()))
 }
 
+fn write_meta(dir: &Path, meta: &ProjectMeta) -> Result<(), String> {
+    let text = serde_json::to_string_pretty(meta).map_err(|e| e.to_string())?;
+    std::fs::write(dir.join(META_DIR).join("project.json"), text).map_err(|e| format!("writing project record: {e}"))
+}
+
+/// A project from before the lean agent gets a new session, so its next turn
+/// starts without the person's setup. Its transcript and files stay.
+fn lean_session(dir: &Path, mut meta: ProjectMeta) -> Result<ProjectMeta, String> {
+    if meta.lean {
+        return Ok(meta);
+    }
+    meta.session_id = uuid::Uuid::new_v4().to_string();
+    meta.lean = true;
+    match std::fs::remove_file(dir.join(META_DIR).join("session-started")) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("resetting the session: {e}")),
+    }
+    write_meta(dir, &meta)?;
+    Ok(meta)
+}
+
 fn slug(title: &str) -> String {
     let mut out = String::new();
     for c in title.chars() {
@@ -130,9 +156,8 @@ pub fn studio_create_project(title: String) -> Result<Project, String> {
         .expect("an unused folder name");
     std::fs::create_dir_all(path.join(META_DIR)).map_err(|e| format!("creating {}: {e}", path.display()))?;
     let title: String = title.lines().next().unwrap_or_default().chars().take(80).collect();
-    let meta = ProjectMeta { title: title.clone(), created_ms: now.timestamp_millis(), session_id: uuid::Uuid::new_v4().to_string() };
-    let text = serde_json::to_string_pretty(&meta).map_err(|e| e.to_string())?;
-    std::fs::write(path.join(META_DIR).join("project.json"), text).map_err(|e| format!("writing project record: {e}"))?;
+    let meta = ProjectMeta { title: title.clone(), created_ms: now.timestamp_millis(), session_id: uuid::Uuid::new_v4().to_string(), lean: true };
+    write_meta(&path, &meta)?;
     Ok(Project { id, title, created_ms: meta.created_ms, path })
 }
 
@@ -154,6 +179,19 @@ mod tests {
         assert!(may("m3dfile://2026-11-06-clip/guide.html"));
         assert!(!may("https://example.com/?leak=1"));
         assert!(!may("http://192.168.1.5/"));
+    }
+
+    #[test]
+    fn a_project_from_before_the_lean_agent_starts_a_new_session_once() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(dir.path().join(META_DIR)).expect("meta dir");
+        std::fs::write(dir.path().join(META_DIR).join("session-started"), b"").expect("started");
+        let old: ProjectMeta = serde_json::from_str(r#"{"title":"Clip","createdMs":1,"sessionId":"old"}"#).expect("old record");
+        let meta = lean_session(dir.path(), old).expect("lean");
+        assert_ne!(meta.session_id, "old");
+        assert!(!dir.path().join(META_DIR).join("session-started").exists(), "the next turn starts its session instead of resuming");
+        let again = lean_session(dir.path(), read_meta(dir.path()).expect("read")).expect("lean");
+        assert_eq!(again.session_id, meta.session_id, "a lean session is kept");
     }
 
     #[test]

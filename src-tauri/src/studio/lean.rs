@@ -9,8 +9,14 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 /// The only keys taken from the person's Claude Code settings: how inference
-/// is reached. The token is passed to the agent's process and never stored.
-const CLAUDE_INFERENCE_KEYS: [&str; 3] = ["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "API_TIMEOUT_MS"];
+/// is reached. A token is passed to the agent's process and never stored.
+const CLAUDE_INFERENCE_KEYS: [&str; 5] =
+    ["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "API_TIMEOUT_MS"];
+
+/// The only variables the agent's process keeps from the app's own environment.
+/// The app may have been started from a shell full of the person's setup, such
+/// as `CLAUDE_CONFIG_DIR` or `CLAUDE_ENV_FILE`, and none of that may pass.
+pub const KEPT_ENV: [&str; 9] = ["HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE", "TZ"];
 
 /// Set for the agent's process. `--setting-sources project` leaves out user
 /// settings but not memory: without these the person's `~/.claude/CLAUDE.md`
@@ -21,7 +27,7 @@ pub const NO_MEMORY_ENV: [(&str, &str); 2] = [("CLAUDE_CODE_DISABLE_CLAUDE_MDS",
 #[serde(rename_all = "camelCase")]
 struct ClaudeSettings {
     #[serde(default)]
-    env: HashMap<String, String>,
+    env: HashMap<String, serde_json::Value>,
     api_key_helper: Option<String>,
 }
 
@@ -43,12 +49,20 @@ impl ClaudeInference {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Self::default()),
             Err(e) => return Err(format!("{}: {e}", path.display())),
         };
-        let settings: ClaudeSettings = serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+        // Only the position: an error's own text can quote a value, and a value can be a token.
+        let settings: ClaudeSettings =
+            serde_json::from_str(&text).map_err(|e| format!("{} is not valid settings JSON (line {}, column {})", path.display(), e.line(), e.column()))?;
         Ok(Self::from_settings(settings))
     }
 
     fn from_settings(mut settings: ClaudeSettings) -> Self {
-        let env = CLAUDE_INFERENCE_KEYS.iter().filter_map(|&key| settings.env.remove(key).map(|value| (key.to_owned(), value))).collect();
+        let env = CLAUDE_INFERENCE_KEYS
+            .iter()
+            .filter_map(|&key| {
+                let value = settings.env.remove(key)?;
+                Some((key.to_owned(), value.as_str().map_or_else(|| value.to_string(), str::to_owned)))
+            })
+            .collect();
         Self { env, api_key_helper: settings.api_key_helper }
     }
 
@@ -73,44 +87,79 @@ impl ClaudeInference {
     }
 }
 
+/// The provider keys Astra's config keeps. Anything else, such as an inline
+/// bearer token or header, stays out, so no secret is written. The provider
+/// reads its key with `auth.command` or from the `env_key` variable instead.
+const PROVIDER_KEYS: [&str; 10] = [
+    "name",
+    "base_url",
+    "wire_api",
+    "env_key",
+    "env_http_headers",
+    "query_params",
+    "request_max_retries",
+    "stream_max_retries",
+    "stream_idle_timeout_ms",
+    "auth",
+];
+const PROVIDER_AUTH_KEYS: [&str; 5] = ["command", "args", "cwd", "timeout_ms", "refresh_interval_ms"];
+
 /// Writes Astra's own `CODEX_HOME` and returns it. Its `config.toml` holds only
-/// the model and the cliproxy provider from `~/.codex/config.toml`, and turns off
-/// every skill under `~/.agents/skills`, which codex would otherwise load. The
-/// provider reads its key from a file, so no secret is copied. Returns `None`
-/// when the person's codex has no cliproxy provider, and Astra then runs on
-/// their normal codex setup.
-pub fn astra_home(home: &Path, app_data: &Path) -> Result<Option<PathBuf>, String> {
-    let user_config = std::env::var_os("CODEX_HOME").map_or_else(|| home.join(".codex"), PathBuf::from).join("config.toml");
-    let text = match std::fs::read_to_string(&user_config) {
-        Ok(text) => text,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+/// the model and the cliproxy provider from `~/.codex/config.toml`, reads no
+/// AGENTS.md, and turns off every skill under `~/.agents/skills`, which codex
+/// would otherwise load. With no cliproxy provider the home has no way to reach
+/// a model, so Astra fails and says so instead of running on the person's setup.
+pub fn astra_home(home: &Path, app_data: &Path) -> Result<PathBuf, String> {
+    let user_config = home.join(".codex").join("config.toml");
+    let user: toml::Table = match std::fs::read_to_string(&user_config) {
+        // Only the position: an error's own text quotes the line, and a line can hold a token.
+        Ok(text) => text.parse().map_err(|e: toml::de::Error| {
+            let at = e.span().map_or(String::new(), |span| format!(" at byte {}", span.start));
+            format!("{} is not valid TOML{at}", user_config.display())
+        })?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => toml::Table::new(),
         Err(e) => return Err(format!("{}: {e}", user_config.display())),
     };
-    let user: toml::Table = text.parse().map_err(|e| format!("{}: {e}", user_config.display()))?;
-    let Some(config) = astra_config(&user, &host_skills(home)) else {
-        log::warn!("studio: ~/.codex/config.toml has no cliproxy provider, so Astra uses the normal codex setup");
-        return Ok(None);
-    };
+    let config = astra_config(&user, &host_skills(home));
+    if !config.contains_key("model_providers") {
+        log::warn!("studio: ~/.codex/config.toml has no cliproxy provider, so Astra cannot reach a model");
+    }
     let dir = app_data.join("astra");
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    std::fs::write(dir.join("config.toml"), config).map_err(|e| format!("{}: {e}", dir.display()))?;
-    Ok(Some(dir))
+    // Written whole and then renamed, so an Astra starting meanwhile reads the old file or the new one.
+    let staged = dir.join(format!("config.toml.{}", uuid::Uuid::new_v4()));
+    let text = toml::to_string(&config).map_err(|e| format!("Astra config: {e}"))?;
+    std::fs::write(&staged, text)
+        .and_then(|()| std::fs::rename(&staged, dir.join("config.toml")))
+        .map_err(|e| format!("{}: {e}", dir.display()))?;
+    Ok(dir)
 }
 
-fn astra_config(user: &toml::Table, skills: &[PathBuf]) -> Option<String> {
-    let provider = user.get("model_providers")?.get("cliproxy")?.clone();
+fn astra_config(user: &toml::Table, skills: &[PathBuf]) -> toml::Table {
+    let keep = |table: &toml::Table, keys: &[&str]| -> toml::Table {
+        table.iter().filter(|(key, _)| keys.contains(&key.as_str())).map(|(key, value)| (key.clone(), value.clone())).collect()
+    };
     let mut config = toml::Table::new();
     if let Some(model) = user.get("model") {
         config.insert("model".to_owned(), model.clone());
     }
-    config.insert("model_provider".to_owned(), "cliproxy".into());
-    config.insert("model_providers".to_owned(), toml::Table::from_iter([("cliproxy".to_owned(), provider)]).into());
+    // No AGENTS.md from the project folder or any folder above it.
+    config.insert("project_doc_max_bytes".to_owned(), 0.into());
+    if let Some(provider) = user.get("model_providers").and_then(|p| p.get("cliproxy")).and_then(toml::Value::as_table) {
+        let mut provider = keep(provider, &PROVIDER_KEYS);
+        if let Some(auth) = provider.get("auth").and_then(toml::Value::as_table) {
+            let auth = keep(auth, &PROVIDER_AUTH_KEYS);
+            provider.insert("auth".to_owned(), auth.into());
+        }
+        config.insert("model_provider".to_owned(), "cliproxy".into());
+        config.insert("model_providers".to_owned(), toml::Table::from_iter([("cliproxy".to_owned(), provider.into())]).into());
+    }
     let off: Vec<toml::Value> = skills
         .iter()
         .map(|path| toml::Table::from_iter([("path".to_owned(), path.display().to_string().into()), ("enabled".to_owned(), false.into())]).into())
         .collect();
     config.insert("skills".to_owned(), toml::Table::from_iter([("config".to_owned(), toml::Value::Array(off))]).into());
-    toml::to_string(&config).ok()
+    config
 }
 
 /// Every `SKILL.md` under `~/.agents/skills`, at any depth, as codex finds them.
@@ -131,13 +180,15 @@ mod tests {
     #[test]
     fn only_the_inference_keys_and_key_helper_leave_the_claude_settings() {
         let settings: ClaudeSettings = serde_json::from_str(
-            r#"{"env":{"ANTHROPIC_BASE_URL":"https://proxy","ANTHROPIC_AUTH_TOKEN":"t","API_TIMEOUT_MS":"60000","LIFEOS_DIR":"/x"},
+            r#"{"env":{"ANTHROPIC_BASE_URL":"https://proxy","ANTHROPIC_AUTH_TOKEN":"t","API_TIMEOUT_MS":60000,"LIFEOS_DIR":"/x"},
                 "apiKeyHelper":"/usr/local/bin/key","hooks":{"Stop":[]}}"#,
         )
         .expect("settings");
         let inference = ClaudeInference::from_settings(settings);
-        let keys: Vec<&str> = inference.env.iter().map(|(k, _)| k.as_str()).collect();
-        assert_eq!(keys, ["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "API_TIMEOUT_MS"]);
+        assert_eq!(
+            inference.env,
+            [("ANTHROPIC_BASE_URL", "https://proxy"), ("ANTHROPIC_AUTH_TOKEN", "t"), ("API_TIMEOUT_MS", "60000")].map(|(k, v)| (k.to_owned(), v.to_owned()))
+        );
         let args = inference.args(Path::new("/app/studio-plugin"));
         assert!(args.windows(2).any(|w| w == ["--setting-sources", "project"]));
         assert!(args.windows(2).any(|w| w == ["--plugin-dir", "/app/studio-plugin"]));
@@ -154,18 +205,22 @@ mod tests {
             [model_providers.cliproxy]
             base_url = "https://mini:8317/v1"
             wire_api = "responses"
+            experimental_bearer_token = "secret-token"
+            http_headers = { Authorization = "Bearer secret-token" }
             [model_providers.cliproxy.auth]
             command = "cat"
             args = ["/home/o/.config/codex/cliproxy-api-key"]
         "#
         .parse()
         .expect("toml");
-        let config: toml::Table = astra_config(&user, &[PathBuf::from("/home/o/.agents/skills/a/SKILL.md")]).expect("config").parse().expect("toml");
+        let config = astra_config(&user, &[PathBuf::from("/home/o/.agents/skills/a/SKILL.md")]);
         assert_eq!(config["model"].as_str(), Some("gpt-6.1-sol"));
         assert_eq!(config["model_providers"]["cliproxy"]["auth"]["command"].as_str(), Some("cat"));
+        assert!(!toml::to_string(&config).expect("toml").contains("secret-token"), "no inline secret is copied");
         assert!(config.get("mcp_servers").is_none(), "the person's MCP servers stay out");
+        assert_eq!(config["project_doc_max_bytes"].as_integer(), Some(0));
         assert_eq!(config["skills"]["config"][0]["enabled"].as_bool(), Some(false));
-        let no_proxy: toml::Table = "model = \"gpt\"".parse().expect("toml");
-        assert!(astra_config(&no_proxy, &[]).is_none());
+        let no_proxy = astra_config(&"model = \"gpt\"".parse().expect("toml"), &[]);
+        assert!(no_proxy.get("model_providers").is_none(), "with no cliproxy provider Astra reaches no model");
     }
 }

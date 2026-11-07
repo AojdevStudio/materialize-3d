@@ -13,7 +13,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio_util::sync::CancellationToken;
 
-use super::{files, lean, project_dir, read_meta, META_DIR};
+use super::{files, lean, lean_session, project_dir, read_meta, META_DIR};
 use crate::fabrication::build_gate::{BuildGate, OwnedRunning};
 use crate::state::AppState;
 
@@ -379,7 +379,7 @@ fn keep(event: &Value) -> bool {
 #[tauri::command]
 pub fn studio_send(app: AppHandle, turns: State<'_, Turns>, project: String, text: String, images: Vec<String>) -> Result<(), String> {
     let dir = project_dir(&project)?;
-    let meta = read_meta(&dir)?;
+    let meta = lean_session(&dir, read_meta(&dir)?)?;
     let mut content: Vec<Value> = images.iter().map(|rel| image_block(&dir, rel)).collect::<Result<_, _>>()?;
     let mut prompt = text.clone();
     if !images.is_empty() {
@@ -428,20 +428,19 @@ pub fn studio_send(app: AppHandle, turns: State<'_, Turns>, project: String, tex
         .args([session_flag, &meta.session_id])
         .args(inference.args(&plugin))
         .current_dir(&dir)
+        // Only what the agent needs: a home, a shell, the locale, the login PATH,
+        // the inference keys, and Astra's own home. Nothing else of the app's environment.
+        .env_clear()
+        .envs(lean::KEPT_ENV.iter().filter_map(|&key| std::env::var_os(key).map(|value| (key, value))))
         .env("PATH", login_path())
-        .env_remove("CLAUDECODE")
-        .env_remove("CLAUDE_CODE_ENTRYPOINT")
         .envs(inference.env.iter().map(|(key, value)| (key, value)))
         .envs(lean::NO_MEMORY_ENV)
+        .env("CODEX_HOME", &astra)
         .env(TAG_VAR, &tag)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
-    // Astra, the codex helper, finds its own home through the agent's environment.
-    if let Some(astra) = &astra {
-        command.env("CODEX_HOME", astra);
-    }
     // Its own process group, apart from the app's, so signals to it never reach the app.
     #[cfg(unix)]
     command.process_group(0);
