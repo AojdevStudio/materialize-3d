@@ -3,8 +3,8 @@ import { mkdtempSync, readdirSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { InMemoryCredentialStore, type OAuthAuth } from '@earendil-works/pi-ai'
-import { inferenceModels, keyCredential, Logins } from '../src/inference'
-import type { LoginEvent } from '../src/protocol'
+import { inferenceModels, KeychainCredentials, keyCredential, Logins } from '../src/inference'
+import type { LoginEvent, LoginKind } from '../src/protocol'
 import { spawnSidecar } from './sidecar'
 
 const TOKEN = 'sk-proxy-SENTINEL-7f3a9c'
@@ -114,5 +114,59 @@ describe('subscription sign-ins', () => {
     await settle()
     expect(await credentials.read('anthropic')).toBeUndefined()
     expect(events.filter((e) => e.step === 'done')).toHaveLength(1)
+  })
+
+  test('a sign-in cancelled after the provider answered saves nothing and shows nothing more', async () => {
+    let finish: () => void = () => {}
+    const { logins, events, credentials } = withSignIn(async (interaction) => {
+      await new Promise<void>((resolve) => (finish = resolve))
+      interaction.notify({ type: 'auth_url', url: 'https://example.com/old' })
+      return { type: 'oauth', refresh: 'r', access: 'late', expires: Date.now() + 60_000 }
+    })
+    logins.login('anthropic')
+    await settle()
+    await logins.logout('anthropic')
+    finish()
+    await settle()
+    expect(await credentials.read('anthropic')).toBeUndefined()
+    expect(events).toEqual([])
+  })
+})
+
+describe('the Keychain credential store', () => {
+  test('a cancelled save writes nothing, whether it was cancelled before its turn or while it ran', async () => {
+    const keychain = new Map<string, string>()
+    const request = async (method: string, params: { account: string; secret?: string }) => {
+      if (method === 'keychain.get') return { secret: keychain.get(params.account) ?? null }
+      if (method === 'keychain.set') keychain.set(params.account, params.secret ?? '')
+      if (method === 'keychain.delete') keychain.delete(params.account)
+      return null
+    }
+    const logins: Record<string, LoginKind> = {}
+    const store = new KeychainCredentials({ request } as never, {
+      logins: async () => logins,
+      setLogin: async (provider, kind) => {
+        if (kind === undefined) delete logins[provider]
+        else logins[provider] = kind
+      },
+    })
+    const credential = { type: 'oauth' as const, refresh: 'r', access: 'a', expires: 1 }
+
+    const before = new AbortController()
+    before.abort()
+    await expect(store.modify('anthropic', async () => credential, { signal: before.signal })).rejects.toThrow()
+
+    const during = new AbortController()
+    await expect(
+      store.modify('anthropic', async () => {
+        during.abort()
+        return credential
+      }, { signal: during.signal }),
+    ).rejects.toThrow()
+    expect(keychain.size).toBe(0)
+    expect(logins).toEqual({})
+
+    await store.modify('anthropic', async () => credential)
+    expect(JSON.parse(keychain.get('anthropic') ?? '{}')).toEqual(credential)
   })
 })

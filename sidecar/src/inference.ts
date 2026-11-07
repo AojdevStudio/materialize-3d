@@ -6,6 +6,7 @@
 import {
   type ApiKeyAuth,
   type AuthInteraction,
+  type AuthOperationOptions,
   type AuthContext,
   type Credential,
   type CredentialInfo,
@@ -69,11 +70,11 @@ export interface LoginIndex {
  * because OAuth refresh happens inside `modify`. One process owns the store, so a lock in memory is enough.
  */
 export class KeychainCredentials implements CredentialStore {
-  readonly #host: Host
+  readonly #host: Pick<Host, 'request'>
   readonly #index: LoginIndex
   readonly #queues = new Map<string, Promise<unknown>>()
 
-  constructor(host: Host, index: LoginIndex) {
+  constructor(host: Pick<Host, 'request'>, index: LoginIndex) {
     this.#host = host
     this.#index = index
   }
@@ -96,10 +97,13 @@ export class KeychainCredentials implements CredentialStore {
     return Object.entries(await this.#index.logins()).map(([providerId, type]) => ({ providerId, type }))
   }
 
-  modify(provider: string, change: (current: Credential | undefined) => Promise<Credential | undefined>) {
+  /** A sign-in that was cancelled, by a newer one or a sign-out, writes nothing, even once its turn in line comes. */
+  modify(provider: string, change: (current: Credential | undefined) => Promise<Credential | undefined>, options?: AuthOperationOptions) {
     return this.#serial(provider, async () => {
+      options?.signal?.throwIfAborted()
       const current = await this.read(provider)
       const next = await change(current)
+      options?.signal?.throwIfAborted()
       if (next === undefined) return current
       await this.#host.request('keychain.set', { account: provider, secret: JSON.stringify(next) })
       await this.#index.setLogin(provider, next.type)
@@ -182,12 +186,15 @@ export class Logins {
       signal,
       prompt: (prompt) =>
         new Promise<string>((resolve, reject) => {
+          // A cancelled sign-in asks nothing more: its question would land over the newer one's.
+          if (signal.aborted) return reject(new Error('the sign-in was cancelled'))
           signal.addEventListener('abort', () => reject(new Error('the sign-in was cancelled')), { once: true })
           attempt.answer = resolve
           const options = prompt.type === 'select' ? { options: prompt.options.map(({ id, label }) => ({ id, label })) } : {}
           this.#emit({ type: 'login', provider, step: 'ask', kind: prompt.type, message: prompt.message, ...options })
         }),
       notify: (event) => {
+        if (signal.aborted) return
         if (event.type === 'auth_url') this.#emit({ type: 'login', provider, step: 'open', url: event.url })
         if (event.type === 'device_code') {
           this.#emit({ type: 'login', provider, step: 'open', url: event.verificationUri, code: event.userCode })
