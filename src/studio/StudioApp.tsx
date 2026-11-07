@@ -261,11 +261,11 @@ export default function StudioApp() {
         setProjects((prev) => [created, ...prev])
         if (loadRequest.current === request) {
           // The person stayed on the screen this was sent from, so text typed while the project was made follows them
-          // to it, and the start screen is empty again.
+          // to it, and the start screen is empty again. A save still waiting belongs to that screen, so it goes too.
           const typed = composerText.current
+          if (unsaved.current !== null) window.clearTimeout(unsaved.current.timer)
+          unsaved.current = null
           if (typed.trim() !== message) {
-            if (unsaved.current !== null) window.clearTimeout(unsaved.current.timer)
-            unsaved.current = null
             drafts.current = { ...drafts.current, [created.id]: { text: typed }, [START]: { text: '' } }
             for (const [key, value] of [[created.id, typed], [START, '']]) {
               void sidecar('drafts.set', { key, text: value, attachments: [] }).catch((err: unknown) => setError(String(err)))

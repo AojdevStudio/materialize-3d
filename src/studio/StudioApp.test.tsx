@@ -249,6 +249,25 @@ describe('StudioApp', () => {
     await waitFor(() => expect(prompt().value).toBe('second message'))
   })
 
+  it('never puts a sent message back on the start screen when text typed while the project was made was taken back', async () => {
+    let finishCreate: (project: unknown) => void = () => {}
+    mockSidecar({ 'projects.create': () => new Promise((resolve) => (finishCreate = resolve)) })
+    render(<StudioApp />)
+    await screen.findByText('Project B')
+    type('A clip for my desk')
+    fireEvent.click(screen.getByTestId('send'))
+    await waitFor(() => expect(sidecarCalls('projects.create')).toHaveLength(1))
+    type('A clip for my desk, and')
+    type('A clip for my desk')
+    await act(async () => finishCreate(projectA))
+    await waitFor(() => expect(sidecarCalls('chat.send')).toHaveLength(1))
+    await new Promise((resolve) => setTimeout(resolve, 600))
+    const restored = sidecarCalls('drafts.set').filter((save) => save.key === 'new' && save.text === 'A clip for my desk')
+    expect(restored).toHaveLength(1)
+    fireEvent.click(screen.getByTestId('new-project'))
+    expect(prompt().value).toBe('')
+  })
+
   it('leaves a start screen draft typed after leaving and coming back alone when the earlier project is made', async () => {
     let finishCreate: (project: unknown) => void = () => {}
     mockSidecar({ 'projects.create': () => new Promise((resolve) => (finishCreate = resolve)) })
