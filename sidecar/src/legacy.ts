@@ -3,7 +3,7 @@
  * `.m3d/transcript.jsonl`, Claude Code stream-json events plus the app's own `m3d_*` events. Each one is imported
  * once, as display entries, and its files stay as they are.
  */
-import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import type { ImportedEntry } from './protocol'
 
@@ -82,7 +82,8 @@ export function readTranscript(text: string): ImportedEntry[] {
  * not read. A project whose files cannot be read is skipped and named on stderr, as the old app skipped it.
  */
 export function legacyProjects(projectsDir: string, known: ReadonlySet<string>): LegacyProject[] {
-  if (!existsSync(projectsDir)) return []
+  // No projects folder, or something else in its place, holds no old chats.
+  if (!existsSync(projectsDir) || !statSync(projectsDir).isDirectory()) return []
   return readdirSync(projectsDir, { withFileTypes: true }).flatMap((dir) => {
     const meta = join(projectsDir, dir.name, '.m3d')
     if (known.has(dir.name) || !dir.isDirectory() || !existsSync(join(meta, 'project.json')) || !existsSync(join(meta, 'transcript.jsonl'))) return []
