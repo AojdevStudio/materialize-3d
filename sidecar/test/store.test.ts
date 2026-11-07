@@ -125,6 +125,16 @@ describe('app state', () => {
     await app.quit()
   })
 
+  test('a project made from the start screen leaves a start screen draft that holds other text where it is', async () => {
+    const { data, projects } = scratch()
+    const app = spawnSidecar(data, projects)
+    await app.next()
+    await app.call('drafts.set', { key: 'new', text: 'A shelf bracket', attachments: [] })
+    await app.call('projects.create', { title: 'A knob' })
+    expect(((await app.call('state.get')) as { drafts: object }).drafts).toEqual({ new: { text: 'A shelf bracket', attachments: [] } })
+    await app.quit()
+  })
+
   test('a project made from the start screen takes the start screen draft with it', async () => {
     const { data, projects } = scratch()
     const app = spawnSidecar(data, projects)

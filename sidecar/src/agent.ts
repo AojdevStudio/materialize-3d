@@ -188,9 +188,9 @@ export interface AgentHost {
   /**
    * Resolves once the person is signed in to `provider`: at once when they are, after holding the turn with the fix
    * named on its chat when they are not. With `after`, only a login saved after that many saves will do, as the one
-   * then saved was refused. A stop ends the wait.
+   * then saved was refused. The tool's `task` gives the update pass back while it waits. A stop ends the wait.
    */
-  signedIn(conversation: number, provider: string, context: Context, after: number | undefined): Promise<void>
+  signedIn(conversation: number, task: string, provider: string, context: Context, after: number | undefined): Promise<void>
   /** How many times the provider's login was saved. */
   loginSaves(provider: string): Promise<number>
 }
@@ -307,7 +307,7 @@ export function agentTools({ host, projectOf, signedIn, loginSaves }: AgentHost)
       // The login save each request goes out with, kept with the request, so a rerun after a crash finds the same one.
       const savedWith = async (requestId: string) => api.memo<number>(`login:${requestId}`, await loginSaves(provider), context)
       // Astra runs on the person's ChatGPT sign-in. Without it the turn waits here, with the fix named, and goes on.
-      await signedIn(api.conversationId, provider, context, undefined)
+      await signedIn(api.conversationId, String(api.taskId), provider, context, undefined)
       const first = `astra:${api.taskId}`
       let saves = await savedWith(first)
       let submission = await conversation.submit({ type: 'input', content: task, requestId: first }, context)
@@ -328,7 +328,7 @@ export function agentTools({ host, projectOf, signedIn, loginSaves }: AgentHost)
         // a continue it already sent as it was, without waiting again.
         const requestId = `astra:${api.taskId}:continue:${resumed}`
         const sent = await api.commit((tx) => tx.submissionByRequest(child, requestId), context)
-        if (sent === undefined) await signedIn(api.conversationId, provider, context, saves)
+        if (sent === undefined) await signedIn(api.conversationId, String(api.taskId), provider, context, saves)
         saves = await savedWith(requestId)
         submission = await conversation.submit({ type: 'continue', requestId }, context)
       }

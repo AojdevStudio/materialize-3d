@@ -91,8 +91,6 @@ export function ChatView({ project, items, running, onPreview, onError }: ChatVi
                 ))}
               </ul>
             )
-          case 'error':
-            return <p key={i} className="msg-error">{item.text}</p>
         }
       })}
       {running && <p className="working" data-testid="working">Working…</p>}

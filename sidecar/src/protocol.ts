@@ -48,8 +48,15 @@ export type LoginEvent =
   | { type: 'login'; provider: ProviderId; step: 'done' }
   | { type: 'login'; provider: ProviderId; step: 'failed'; detail: string }
 
+/** A line of a chat from before the store, imported for show: the agent does not read it. */
+export type ImportedEntry =
+  | { role: 'user'; text: string; images: string[] }
+  | { role: 'assistant'; text: string }
+  | { role: 'tool'; name: string; text: string; result: string; failed: boolean }
+
 /** One committed line of a chat. Tool calls fold under their assistant line; each result is its own line. */
 export type ChatEntry =
+  | ({ id: number; kind: 'imported' } & ImportedEntry)
   | { id: number; kind: 'user'; text: string; images: string[] }
   | { id: number; kind: 'assistant'; text: string; calls: { id: string; name: string; args: unknown }[] }
   | { id: number; kind: 'tool'; callId: string; name: string; text: string; failed: boolean }
@@ -71,7 +78,12 @@ export type Turn = {
 }
 
 /** A chat as the window shows it: committed entries, and whether a turn runs, waits, or neither. */
-export type ChatView = { project: string; entries: ChatEntry[]; running: boolean; waiting: Waiting | null; turn: Turn | null }
+/**
+ * A chat as read at one point. `seq` grows with each read of a chat's state, across sidecar runs too, so a view read
+ * earlier, such as a change that arrives after `chat.open` answered, never takes the place of a newer one's `running`,
+ * `waiting`, and `turn`.
+ */
+export type ChatView = { project: string; entries: ChatEntry[]; running: boolean; waiting: Waiting | null; turn: Turn | null; seq: number }
 
 export type AppState = { setup: Setup; settings: Settings; projects: Project[]; drafts: Record<string, Draft> }
 
@@ -106,6 +118,8 @@ export interface HostRequests {
   'keychain.set': { params: { account: string; secret: string }; result: null }
   'keychain.delete': { params: { account: string }; result: null }
   slice: { params: SliceParams; result: SliceResult }
+  /** Holds or gives back the update gate's pass. Refused while an update installs. */
+  busy: { params: { busy: boolean }; result: null }
 }
 
 export type HostRequest = keyof HostRequests

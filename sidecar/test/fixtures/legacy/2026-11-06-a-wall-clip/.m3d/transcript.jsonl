@@ -1,0 +1,11 @@
+{"type":"m3d_user","text":"A wall clip for my cable","images":["refs/cable.jpg"]}
+{"type":"system","subtype":"init","session_id":"s"}
+{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"..."}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"uv run build/model.py","description":"Build the clip"}}]}}
+{"type":"assistant","parent_tool_use_id":"t1","message":{"content":[{"type":"text","text":"a helper's inner step"}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"clip.stl written","is_error":false}]}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"The clip is in clip.stl."}]}}
+{"type":"m3d_files","files":["clip.stl"]}
+{"type":"m3d_turn_end","ok":true}
+{"type":"m3d_user","text":"Make it thicker","images":[]}
+{"type":"m3d_turn_end","ok":false,"error":"This turn stopped when the app closed."}

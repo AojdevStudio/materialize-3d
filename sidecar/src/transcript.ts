@@ -3,7 +3,7 @@
  * nothing on screen can vanish after a crash.
  */
 import type { EntryRecord } from '@earendil-works/pi-durable'
-import type { ChatEntry } from './protocol'
+import type { ChatEntry, ImportedEntry } from './protocol'
 
 type Content = string | readonly ({ type: string; text?: string } | { type: 'toolCall'; id: string; name: string; arguments: unknown })[]
 
@@ -18,6 +18,8 @@ export function textOf(content: Content | undefined): string {
 export function chatEntry(entry: EntryRecord): ChatEntry | undefined {
   const message = entry.model?.[0]
   switch (entry.kind) {
+    case 'm3d.imported':
+      return { id: entry.id, kind: 'imported', ...(entry.data as ImportedEntry) }
     case 'm3d.user': {
       const data = entry.data as { text: string; images: string[] }
       return { id: entry.id, kind: 'user', text: data.text, images: data.images }

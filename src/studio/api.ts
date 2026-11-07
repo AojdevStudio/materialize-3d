@@ -9,37 +9,20 @@ export const sidecar = <M extends Method>(method: M, params: Methods[M]['params'
 export const onSidecarEvent = (handler: (event: SidecarEvent) => void) =>
   listen<SidecarEvent>('sidecar://event', ({ payload }) => handler(payload))
 
-export interface Project {
-  id: string
-  title: string
-  createdMs: number
-  path: string
-}
-
 export interface ProjectFile {
   rel: string
   size: number
   modifiedMs: number
 }
 
-/** One line of the project transcript: a Claude Code stream-json event, or one of the app's own `m3d_*` events. */
-export type StudioEvent = { type: string } & Record<string, unknown>
-
+/** The project folder's own files: the native edges Rust keeps. */
 export const studio = {
-  projects: () => invoke<Project[]>('studio_projects'),
-  createProject: (title: string) => invoke<Project>('studio_create_project', { title }),
-  transcript: (project: string) => invoke<StudioEvent[]>('studio_transcript', { project }),
-  send: (project: string, text: string, images: string[]) => invoke<void>('studio_send', { project, text, images }),
-  cancel: (project: string) => invoke<void>('studio_cancel', { project }),
   files: (project: string) => invoke<ProjectFile[]>('studio_files', { project }),
   importFile: (project: string, source: string) => invoke<string>('studio_import_file', { project, source }),
   saveBytes: (project: string, name: string, bytes: Uint8Array) =>
     invoke<string>('studio_save_bytes', bytes, { headers: { 'm3d-project': project, 'm3d-name': encodeURIComponent(name) } }),
   reveal: (project: string, rel: string) => invoke<void>('studio_reveal', { project, rel }),
   openInBambu: (project: string, rel: string) => invoke<void>('studio_open_in_bambu', { project, rel }),
-  /** `seq` is the event's line in the project transcript, so history and live events join without gaps or repeats. */
-  onEvent: (handler: (project: string, seq: number, event: StudioEvent) => void) =>
-    listen<{ project: string; seq: number; event: StudioEvent }>('studio://event', ({ payload }) => handler(payload.project, payload.seq, payload.event)),
 }
 
 /**

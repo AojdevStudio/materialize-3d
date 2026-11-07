@@ -1,7 +1,7 @@
 /**
  * Chats: one Pi conversation per project. A send commits the message, the settings its turn runs with, and the
- * draft's removal together. A turn that stops before its answer waits with the fix named, and continues once it is
- * fixed. The window sees committed entries only.
+ * removal of the draft that holds the message together. A turn that stops before its answer waits with the fix named,
+ * and continues once it is fixed. The window sees committed entries only.
  */
 import { mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -23,6 +23,7 @@ import {
 } from '@earendil-works/pi-durable'
 import type { ConversationView } from '@earendil-works/pi-durable'
 import { leaves, WORKFLOW, WORKFLOW_VERSION } from './agent'
+import type { Busy } from './busy'
 import type { ChatEntry, ChatView, SidecarEvent, Turn, Waiting } from './protocol'
 import { isLoginFailure } from './inference'
 import { DraftsDoc, LoginSavesDoc, SettingsDoc, type Store, TurnDoc, WaitingDoc } from './store'
@@ -40,6 +41,7 @@ export interface ChatsOptions {
   extension: Extension
   tools: readonly ToolRegistration[]
   version: string
+  busy: Busy
   emit(event: SidecarEvent): void
 }
 
@@ -86,6 +88,8 @@ export class Chats {
   readonly #watches = new Map<string, WatchHandle<ConversationView>>()
   /** The newest entry each watched chat has sent the window. */
   readonly #sent = new Map<string, number>()
+  /** The last `ChatView.seq` given. */
+  #seq = 0
   /** Tools waiting for a sign-in, by provider. */
   readonly #signIns = new Map<string, Set<() => void>>()
 
@@ -128,7 +132,7 @@ export class Chats {
     const entries = await this.#entries(conversation)
     this.#sent.set(project, Math.max(this.#sent.get(project) ?? 0, entries.at(-1)?.id ?? 0))
     const { running, waiting, turn } = await this.#state(conversation)
-    return { project, entries, running, waiting, turn }
+    return { project, entries, running, waiting, turn, seq: this.#nextSeq() }
   }
 
   async #watch(project: string, conversation: Conversation): Promise<void> {
@@ -140,26 +144,41 @@ export class Chats {
     })
   }
 
+  /**
+   * The order of a read of a chat's state. It grows across sidecar runs too: a sidecar that starts again after a crash
+   * reads after the one before it, so the window, which still holds that one's views, takes the new run's views. It
+   * starts from the clock in microseconds, and each read is after the last.
+   */
+  #nextSeq(): number {
+    this.#seq = Math.max(this.#seq + 1, Date.now() * 1000)
+    return this.#seq
+  }
+
   async #changed(project: string, conversation: Conversation): Promise<void> {
+    // Each read of the state takes its order at once, before anything else is awaited, so a chat.open that reads
+    // between them is ordered by when it read too.
     let state = await this.#state(conversation)
+    let seq = this.#nextSeq()
     const recorded = (await this.#o.store.harness.snapshot(WaitingDoc, conversation.id, context))?.failure ?? null
     if (state.failure !== undefined && state.failure.reason !== 'aborted' && state.failure.taskId !== recorded) {
       // The waiting document is not part of the view a watch follows, so its commit wakes no one: read it here.
-      await this.#read(conversation, state.failure, state.turn)
+      // A login saved since the turn went out lets it go on now: the sign-in that saved it found no wait to let go.
+      if (await this.#read(conversation, state.failure, state.turn)) this.#resume(project, state.failure.taskId)
       state = await this.#state(conversation)
+      seq = this.#nextSeq()
     }
     const entries = await this.#entries(conversation, this.#sent.get(project) ?? 0)
     if (entries.length > 0) this.#sent.set(project, entries.at(-1)?.id ?? 0)
-    this.#o.emit({ type: 'chat', project, entries, running: state.running, waiting: state.waiting, turn: state.turn })
+    this.#o.emit({ type: 'chat', project, entries, running: state.running, waiting: state.waiting, turn: state.turn, seq })
   }
 
   /**
    * Reads why a run stopped: a provider with no login, or a refused one, waits for a sign-in; anything else for a retry.
-   * A login missing or refused when a newer one was saved since the turn went out goes on with the newer one at once,
-   * since the sign-in that saved it found no wait to let go. The login read here may be older than that save, so only
-   * the save count, read in the commit, decides. A turn from another version of the app is left to wait.
+   * Resolves true when the login was missing or refused but a newer one was saved since the turn went out, so the
+   * wait can be let go at once. The login read here may be older than that save, so only the save count, read in the
+   * commit, decides. A turn from another version of the app is left to wait.
    */
-  async #read(conversation: Conversation, failure: RunFailure, turn: Turn | null): Promise<void> {
+  async #read(conversation: Conversation, failure: RunFailure, turn: Turn | null): Promise<boolean> {
     const { models, store, version } = this.#o
     const provider = turn?.model.provider ?? 'anthropic'
     const name = models.getProvider(provider)?.name ?? provider
@@ -170,31 +189,26 @@ export class Chats {
       login
         ? { kind: 'login', provider, name, fix: `Sign in to ${name}. The message picks up where it stopped.` }
         : { kind: 'error', detail, fix: 'Try again' }
-    await store.harness.commit(async (tx) => {
+    return store.harness.commit(async (tx) => {
       // A send that came after this failure started a new turn, which this failure must not hold.
-      if ((await tx.doc(TurnDoc, conversation.id)).turn?.requestId !== turn?.requestId) return
+      if ((await tx.doc(TurnDoc, conversation.id)).turn?.requestId !== turn?.requestId) return false
       const record = await tx.doc(WaitingDoc, conversation.id)
       record.failure = failure.taskId
       record.tool = false
+      record.waiting = waiting
       // Read in this commit, so a sign-in either lands before it and is seen here, or after it and finds this wait.
       const saves = (await tx.doc(LoginSavesDoc, store.root.id)).saves[provider] ?? 0
-      if (login && record.saves !== null && saves > record.saves && turn?.app === version) {
-        await conversation.submit(tx, { type: 'continue' })
-        record.waiting = null
-        record.saves = saves
-        return
-      }
-      record.waiting = waiting
+      return login && record.saves !== null && saves > record.saves && turn?.app === version
     }, context)
   }
 
   /**
-   * Sends a message. The message, the settings its turn runs with, and the draft's removal commit together. A send
-   * whose `requestId` was already committed changes nothing, so the window can send again after any failure, even
-   * once a picture it sent is gone.
+   * Sends a message. The message, the settings its turn runs with, and the removal of the draft that holds it commit
+   * together. A send whose `requestId` was already committed changes nothing, so the window can send again after any
+   * failure, even once a picture it sent is gone.
    */
   async send(project: string, requestId: string, text: string, attachments: string[]): Promise<void> {
-    const { store, extension, tools, version } = this.#o
+    const { store, extension, tools, version, busy } = this.#o
     const conversation = await this.#conversation(project)
     if ((await store.harness.commit((tx) => tx.submissionByRequest(conversation.id, requestId), context)) !== undefined) {
       await this.#watch(project, conversation)
@@ -203,7 +217,7 @@ export class Chats {
     const folder = store.projectFolder(project)
     const content = userContent(folder, text, attachments)
     try {
-      await store.harness.commit(async (tx) => {
+      await busy.during(() => store.harness.commit(async (tx) => {
         if ((await tx.submissionByRequest(conversation.id, requestId)) !== undefined) return
         const settings = await tx.doc(SettingsDoc, store.root.id)
         const model = { provider: settings.model.provider, modelId: settings.model.modelId }
@@ -218,12 +232,14 @@ export class Chats {
         await configure(tx, conversation.id, { model, thinkingLevel: thinking, extensions: [extension], tools, instructions: WORKFLOW, cwd: folder })
         const turn: Turn = { requestId, model, thinking, tools: tools.map((t) => t.name), instructions: WORKFLOW_VERSION, app: version, startedMs: Date.now() }
         ;(await tx.doc(TurnDoc, conversation.id)).turn = turn
-        delete (await tx.doc(DraftsDoc, store.root.id)).drafts[project]
+        // Text typed after this message was sent is a newer message, so only a draft of this text goes.
+        const { drafts } = await tx.doc(DraftsDoc, store.root.id)
+        if (drafts[project]?.text.trim() === text.trim()) delete drafts[project]
         const waiting = await tx.doc(WaitingDoc, conversation.id)
         waiting.waiting = null
         waiting.tool = false
         waiting.saves = (await tx.doc(LoginSavesDoc, store.root.id)).saves[model.provider] ?? 0
-      }, context)
+      }, context))
     } catch (error) {
       if (error instanceof ConversationBusy) throw new Error('The agent is still working on the last message.')
       throw error
@@ -233,22 +249,39 @@ export class Chats {
 
   /**
    * Goes on from where the turn stopped, with the model, tools, and instructions it started with, and clears what it
-   * waited on. The turn records the app version that goes on with it.
+   * waited on. The turn records the app version that goes on with it. With `login`, the run failure a sign-in wait was
+   * recorded for, it goes on only while the turn still waits on that one, so when two paths let one wait go, as a
+   * sign-in and the read of a failure that crossed it, the turn goes on once, and a late one never lets go a newer
+   * wait from the same refused login. Such a turn goes on by itself, so it waits for the pass while an update
+   * installs, instead of failing and being left waiting when the install fails.
    */
-  async #continue(project: string): Promise<void> {
+  async #continue(project: string, login?: number): Promise<void> {
     const { store, version } = this.#o
     const conversation = await this.#conversation(project)
-    await store.harness.commit(async (tx) => {
-      await conversation.submit(tx, { type: 'continue' })
-      const waiting = await tx.doc(WaitingDoc, conversation.id)
-      waiting.waiting = null
-      const { turn } = await tx.doc(TurnDoc, conversation.id)
-      if (turn !== null) {
-        turn.app = version
-        waiting.saves = (await tx.doc(LoginSavesDoc, store.root.id)).saves[turn.model.provider] ?? 0
-      }
-    }, context)
+    const commit = () =>
+      store.harness.commit(async (tx) => {
+        const waiting = await tx.doc(WaitingDoc, conversation.id)
+        if (login !== undefined && (waiting.waiting?.kind !== 'login' || waiting.failure !== login)) return
+        await conversation.submit(tx, { type: 'continue' })
+        waiting.waiting = null
+        const { turn } = await tx.doc(TurnDoc, conversation.id)
+        if (turn !== null) {
+          turn.app = version
+          waiting.saves = (await tx.doc(LoginSavesDoc, store.root.id)).saves[turn.model.provider] ?? 0
+        }
+      }, context)
+    if (login === undefined) await this.#o.busy.during(commit)
+    else await this.#o.busy.duringWhenAllowed(commit)
     await this.#watch(project, conversation)
+  }
+
+  /**
+   * Lets a sign-in wait go, in the background: it may wait out an installing update, which must not hold up the chat's
+   * other changes, the start, or a quit. The wait stays recorded until the turn goes on, so a failure here leaves the
+   * fix shown.
+   */
+  #resume(project: string, login: number): void {
+    this.#continue(project, login).catch((error: unknown) => console.error(`going on after a sign-in failed: ${String(error)}`))
   }
 
   /**
@@ -257,7 +290,7 @@ export class Chats {
    * named on its chat, and goes on once they sign in. A stop ends the wait. A wait the tool held before a restart is
    * let go once the sign-in is there.
    */
-  async loginFor(conversation: number, provider: string, waiting: Context, after: number | undefined): Promise<void> {
+  async loginFor(conversation: number, task: string, provider: string, waiting: Context, after: number | undefined): Promise<void> {
     const { models, store } = this.#o
     const id = conversation as ConversationId
     const name = models.getProvider(provider)?.name ?? provider
@@ -286,7 +319,7 @@ export class Chats {
             await hold({ kind: 'login', provider, name, fix })
             await this.#show(project)
           }
-          await awaitWithContext(promise, waiting)
+          await this.#o.busy.parked(task, () => awaitWithContext(promise, waiting), waiting.abortSignal)
         } finally {
           waiters.delete(resolve)
         }
@@ -349,8 +382,8 @@ export class Chats {
       if (turn !== null && turn !== undefined && turn.app !== version) {
         await this.#outdated(conversation)
         await this.#show(project.id)
-      } else {
-        await this.#continue(project.id)
+      } else if (waiting.failure !== null) {
+        this.#resume(project.id, waiting.failure)
       }
     }
   }
@@ -399,7 +432,7 @@ export class Chats {
       if (record === undefined || record.waiting?.kind !== 'login' || record.tool || running) continue
       const waiting = record.waiting
       if (state.turn !== null && state.turn.app !== version) await this.#outdated(conversation.id)
-      else if (await this.#savedSince(record, waiting.provider)) await this.#continue(project.id)
+      else if (record.failure !== null && (await this.#savedSince(record, waiting.provider))) this.#resume(project.id, record.failure)
     }
   }
 

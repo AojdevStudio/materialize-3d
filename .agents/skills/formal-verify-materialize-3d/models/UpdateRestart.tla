@@ -8,10 +8,14 @@
 (*                                            install_when_idle            *)
 (*   src-tauri/src/fabrication/pipeline.rs    build_as takes a pass        *)
 (*   src-tauri/src/commands.rs                slice_model takes a pass     *)
-(*   src-tauri/src/studio/turn.rs             a Studio turn takes a pass   *)
-(*                                            in studio_send, before its   *)
-(*                                            first transcript line, and   *)
-(*                                            drops it after its last      *)
+(*   src-tauri/src/sidecar.rs                 the sidecar's work takes a   *)
+(*   sidecar/src/busy.ts                      pass (set_busy) before a     *)
+(*   sidecar/src/chat.ts                      send's first commit and      *)
+(*   sidecar/src/app.ts                       before work a crash cut off  *)
+(*                                            resumes, and drops it once   *)
+(*                                            no task is pending or        *)
+(*                                            running, after its last      *)
+(*                                            commit                       *)
 (*   src-tauri/src/print_queue.rs             persist_queue                *)
 (* Tauri's AppHandle::restart from an async command asks the event loop to *)
 (* exit, then calls std::process::exit(0), which stops every other thread  *)
@@ -22,7 +26,7 @@ EXTENDS Naturals
 CONSTANTS
   Builds,      \* tasks that each hold at most one build pass at a time
   Slice,       \* the member of Builds that is commands.rs slice_model
-  Turn,        \* the member of Builds that is a Studio turn (studio/turn.rs)
+  Turn,        \* the member of Builds that is the sidecar's work (busy.ts)
   MaxStarts,   \* starts per build task. 0 means no limit.
   MaxUpdates,  \* how many times update_install can run
   Mutant       \* "none" is the code. The others are broken variants.
@@ -36,7 +40,8 @@ VARIABLES
   closed,     \* Builds.closed in the gate's watch channel
   unseen,     \* the updater's watch::Receiver holds a change it has not seen
   build,      \* build task -> "idle", "running", or "writing" (mutant
-              \* early-release: a turn still writing after its pass is gone)
+              \* early-release: the sidecar still committing after its pass
+              \* is gone)
   starts,     \* build task -> starts so far, counted only when MaxStarts > 0
   upd,        \* where update_install is
   updates,    \* update_install runs so far
@@ -62,15 +67,19 @@ Init ==
 
 ----------------------------------------------------------------------------
 (* Builds. build_as and slice_model each call BuildGate::enter first and   *)
-(* hold the Running pass until they return. A Studio turn calls            *)
-(* BuildGate::enter_owned in studio_send and drops the pass at the end of  *)
-(* its task, after its last transcript write.                              *)
+(* hold the Running pass until they return. The sidecar asks for a pass    *)
+(* (BuildGate::enter_owned in set_busy) before a send commits and before   *)
+(* work a crash cut off resumes, and gives it back once no task is pending *)
+(* or running, after its last commit. Turn is that work. A task that       *)
+(* waits, sleeps, or holds a sign-in wait does none until something wakes  *)
+(* it, and it resumes after a restart, so the model has no step for it. A  *)
+(* request from a sidecar run that ended takes no pass.                    *)
 
 Gated(b) ==
   /\ ~(Mutant = "ungated-slice" /\ b = Slice)
   /\ ~(Mutant = "ungated-turn" /\ b = Turn)
 
-\* Mutant early-release: a turn drops its pass before its last transcript write.
+\* Mutant early-release: the sidecar drops its pass before its last commit.
 EarlyRelease(b) == Mutant = "early-release" /\ b = Turn
 
 CanStart(b) ==
@@ -105,8 +114,8 @@ Leave(b) ==
        ELSE UNCHANGED <<running, unseen>>
   /\ UNCHANGED <<closed, starts, upd, updates, qlock, queueFile>>
 
-\* Mutant early-release: the pass drops while the turn still has its last
-\* transcript lines to write.
+\* Mutant early-release: the pass drops while the sidecar still has its last
+\* commit to make.
 ReleaseEarly(b) ==
   /\ Alive /\ build[b] = "running" /\ EarlyRelease(b)
   /\ build' = [build EXCEPT ![b] = "writing"]
@@ -256,8 +265,8 @@ Spec == Init /\ [][Next]_vars /\ Fairness
 ----------------------------------------------------------------------------
 (* Properties. Each is one check in scripts/check.sh.                      *)
 
-\* The restart never kills a build, a slice, or a Studio turn, nor cuts a
-\* turn's last transcript write.
+\* The restart never kills a build, a slice, or the sidecar's work, nor cuts
+\* its last commit.
 NoBuildCutOff == upd = "exited" => \A b \in Builds : build[b] = "idle"
 
 \* From the idle check to the restart, the gate is closed and no build runs.

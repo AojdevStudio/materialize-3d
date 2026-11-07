@@ -1,46 +1,17 @@
-//! The chat studio: one project folder per chat, a Claude Code agent that works
-//! in it, and the files it writes.
-//!
-//! The agent is the local `claude` CLI, so it runs on the person's own login and
-//! carries their skills, tools, and settings. Each turn is one `claude -p` run
-//! in the project folder; later turns resume the same session.
+//! The chat studio's native edges: the project folders the agent works in, the
+//! files it writes, the preview's navigation guard, and the slice step. The
+//! chats themselves live in the sidecar's store (`crate::sidecar`).
 
 pub mod files;
-mod lean;
 pub mod slice;
-pub mod turn;
 
-use std::path::{Path, PathBuf};
-
-use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
 pub use files::register_protocol;
-pub use turn::Turns;
 
-/// Hidden folder in each project for the app's own records.
+/// Hidden folder in each project for the app's own records: converted photos, and a chat from before the store.
+/// The preview and the file list never show it.
 const META_DIR: &str = ".m3d";
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ProjectMeta {
-    title: String,
-    created_ms: i64,
-    /// The Claude Code session every turn after the first resumes.
-    session_id: String,
-    /// The session was started by the lean agent. A session from before carries
-    /// the person's coding setup in its history, so it is never resumed.
-    #[serde(default)]
-    lean: bool,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Project {
-    id: String,
-    title: String,
-    created_ms: i64,
-    path: PathBuf,
-}
 
 /// Whether the main window, or a preview frame in it, may go to `url`. The
 /// app's own pages and project files may load. The internet may not, so a
@@ -78,99 +49,9 @@ pub(crate) fn project_dir(id: &str) -> Result<PathBuf, String> {
     Ok(projects_root()?.join(id))
 }
 
-fn read_meta(dir: &Path) -> Result<ProjectMeta, String> {
-    let path = dir.join(META_DIR).join("project.json");
-    let text = std::fs::read_to_string(&path).map_err(|e| format!("reading {}: {e}", path.display()))?;
-    serde_json::from_str(&text).map_err(|e| format!("parsing {}: {e}", path.display()))
-}
-
-fn write_meta(dir: &Path, meta: &ProjectMeta) -> Result<(), String> {
-    let text = serde_json::to_string_pretty(meta).map_err(|e| e.to_string())?;
-    std::fs::write(dir.join(META_DIR).join("project.json"), text).map_err(|e| format!("writing project record: {e}"))
-}
-
-/// A project from before the lean agent gets a new session, so its next turn
-/// starts without the person's setup. Its transcript and files stay.
-fn lean_session(dir: &Path, mut meta: ProjectMeta) -> Result<ProjectMeta, String> {
-    if meta.lean {
-        return Ok(meta);
-    }
-    meta.session_id = uuid::Uuid::new_v4().to_string();
-    meta.lean = true;
-    match std::fs::remove_file(dir.join(META_DIR).join("session-started")) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => return Err(format!("resetting the session: {e}")),
-    }
-    write_meta(dir, &meta)?;
-    Ok(meta)
-}
-
-fn slug(title: &str) -> String {
-    let mut out = String::new();
-    for c in title.chars() {
-        if c.is_ascii_alphanumeric() {
-            out.push(c.to_ascii_lowercase());
-        } else if !out.ends_with('-') && !out.is_empty() {
-            out.push('-');
-        }
-        if out.len() >= 40 {
-            break;
-        }
-    }
-    let out = out.trim_end_matches('-').to_owned();
-    if out.is_empty() { "project".to_owned() } else { out }
-}
-
-/// Every project, newest first. A folder without the app's record is not a project.
-#[tauri::command]
-pub fn studio_projects() -> Result<Vec<Project>, String> {
-    let root = projects_root()?;
-    let entries = match std::fs::read_dir(&root) {
-        Ok(entries) => entries,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(e) => return Err(format!("reading {}: {e}", root.display())),
-    };
-    let mut projects: Vec<Project> = entries
-        .filter_map(Result::ok)
-        .filter_map(|entry| {
-            let path = entry.path();
-            let meta = read_meta(&path).ok()?;
-            Some(Project { id: entry.file_name().to_string_lossy().into_owned(), title: meta.title, created_ms: meta.created_ms, path })
-        })
-        .collect();
-    projects.sort_by(|a, b| b.created_ms.cmp(&a.created_ms));
-    Ok(projects)
-}
-
-/// Makes a new project folder named after the first request.
-#[tauri::command]
-pub fn studio_create_project(title: String) -> Result<Project, String> {
-    let root = projects_root()?;
-    std::fs::create_dir_all(&root).map_err(|e| format!("creating {}: {e}", root.display()))?;
-    let now = chrono::Local::now();
-    let base = format!("{}-{}", now.format("%Y-%m-%d"), slug(&title));
-    let (id, path) = (1..)
-        .map(|n| if n == 1 { base.clone() } else { format!("{base}-{n}") })
-        .map(|id| (id.clone(), root.join(id)))
-        .find(|(_, path)| !path.exists())
-        .expect("an unused folder name");
-    std::fs::create_dir_all(path.join(META_DIR)).map_err(|e| format!("creating {}: {e}", path.display()))?;
-    let title: String = title.lines().next().unwrap_or_default().chars().take(80).collect();
-    let meta = ProjectMeta { title: title.clone(), created_ms: now.timestamp_millis(), session_id: uuid::Uuid::new_v4().to_string(), lean: true };
-    write_meta(&path, &meta)?;
-    Ok(Project { id, title, created_ms: meta.created_ms, path })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn slug_keeps_words_and_drops_the_rest() {
-        assert_eq!(slug("A wall mount for my UGREEN dock!"), "a-wall-mount-for-my-ugreen-dock");
-        assert_eq!(slug("   "), "project");
-    }
 
     #[test]
     fn the_window_stays_on_the_app_and_project_files() {
@@ -180,19 +61,6 @@ mod tests {
         assert!(may("m3dfile://2026-11-06-clip/guide.html"));
         assert!(!may("https://example.com/?leak=1"));
         assert!(!may("http://192.168.1.5/"));
-    }
-
-    #[test]
-    fn a_project_from_before_the_lean_agent_starts_a_new_session_once() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        std::fs::create_dir_all(dir.path().join(META_DIR)).expect("meta dir");
-        std::fs::write(dir.path().join(META_DIR).join("session-started"), b"").expect("started");
-        let old: ProjectMeta = serde_json::from_str(r#"{"title":"Clip","createdMs":1,"sessionId":"old"}"#).expect("old record");
-        let meta = lean_session(dir.path(), old).expect("lean");
-        assert_ne!(meta.session_id, "old");
-        assert!(!dir.path().join(META_DIR).join("session-started").exists(), "the next turn starts its session instead of resuming");
-        let again = lean_session(dir.path(), read_meta(dir.path()).expect("read")).expect("lean");
-        assert_eq!(again.session_id, meta.session_id, "a lean session is kept");
     }
 
     #[test]

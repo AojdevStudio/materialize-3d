@@ -765,18 +765,6 @@
           "markdownDescription": "Enables the store_credential command without any pre-configured scope."
         },
         {
-          "description": "Enables the studio_cancel command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-studio-cancel",
-          "markdownDescription": "Enables the studio_cancel command without any pre-configured scope."
-        },
-        {
-          "description": "Enables the studio_create_project command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-studio-create-project",
-          "markdownDescription": "Enables the studio_create_project command without any pre-configured scope."
-        },
-        {
           "description": "Enables the studio_files command without any pre-configured scope.",
           "type": "string",
           "const": "allow-studio-files",
@@ -795,12 +783,6 @@
           "markdownDescription": "Enables the studio_open_in_bambu command without any pre-configured scope."
         },
         {
-          "description": "Enables the studio_projects command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-studio-projects",
-          "markdownDescription": "Enables the studio_projects command without any pre-configured scope."
-        },
-        {
           "description": "Enables the studio_reveal command without any pre-configured scope.",
           "type": "string",
           "const": "allow-studio-reveal",
@@ -811,18 +793,6 @@
           "type": "string",
           "const": "allow-studio-save-bytes",
           "markdownDescription": "Enables the studio_save_bytes command without any pre-configured scope."
-        },
-        {
-          "description": "Enables the studio_send command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-studio-send",
-          "markdownDescription": "Enables the studio_send command without any pre-configured scope."
-        },
-        {
-          "description": "Enables the studio_transcript command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-studio-transcript",
-          "markdownDescription": "Enables the studio_transcript command without any pre-configured scope."
         },
         {
           "description": "Enables the switch_printer command without any pre-configured scope.",
@@ -1287,18 +1257,6 @@
           "markdownDescription": "Denies the store_credential command without any pre-configured scope."
         },
         {
-          "description": "Denies the studio_cancel command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-studio-cancel",
-          "markdownDescription": "Denies the studio_cancel command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the studio_create_project command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-studio-create-project",
-          "markdownDescription": "Denies the studio_create_project command without any pre-configured scope."
-        },
-        {
           "description": "Denies the studio_files command without any pre-configured scope.",
           "type": "string",
           "const": "deny-studio-files",
@@ -1317,12 +1275,6 @@
           "markdownDescription": "Denies the studio_open_in_bambu command without any pre-configured scope."
         },
         {
-          "description": "Denies the studio_projects command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-studio-projects",
-          "markdownDescription": "Denies the studio_projects command without any pre-configured scope."
-        },
-        {
           "description": "Denies the studio_reveal command without any pre-configured scope.",
           "type": "string",
           "const": "deny-studio-reveal",
@@ -1333,18 +1285,6 @@
           "type": "string",
           "const": "deny-studio-save-bytes",
           "markdownDescription": "Denies the studio_save_bytes command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the studio_send command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-studio-send",
-          "markdownDescription": "Denies the studio_send command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the studio_transcript command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-studio-transcript",
-          "markdownDescription": "Denies the studio_transcript command without any pre-configured scope."
         },
         {
           "description": "Denies the switch_printer command without any pre-configured scope.",

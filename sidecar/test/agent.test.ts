@@ -84,6 +84,17 @@ describe('a send', () => {
     await answered(app, project, 'answered by faux-a')
     await app.quit()
   })
+
+  test('leaves a draft that holds newer text than it sends', async () => {
+    const where = scratch()
+    const app = start(where, 'models')
+    await app.next()
+    const project = await newProject(app)
+    await app.call('drafts.set', { key: project, text: 'make it blue', attachments: [] })
+    await send(app, project, 'r1', 'make it red')
+    expect(((await app.call('state.get')) as { drafts: Record<string, unknown> }).drafts[project]).toEqual({ text: 'make it blue', attachments: [] })
+    await app.quit()
+  })
 })
 
 describe('a crash mid-turn', () => {
@@ -96,6 +107,7 @@ describe('a crash mid-turn', () => {
     const log = join(where.projects, project, 'ops.log')
     await waitForFile(log)
     while (!readFileSync(log, 'utf8').includes('op2')) await Bun.sleep(25)
+    const before = ((await first.call('chat.open', { project })) as ChatView).seq
     first.child.kill('SIGKILL')
     await first.child.exited
     // The watch on op2 ends it within a second of the crash, before `go` would let it finish.
@@ -103,7 +115,8 @@ describe('a crash mid-turn', () => {
 
     const reopened = start(where, 'ops')
     await reopened.next()
-    await reopened.call('chat.open', { project })
+    // The window still holds the views the crashed sidecar sent, so the new one's must come after them.
+    expect(((await reopened.call('chat.open', { project })) as ChatView).seq).toBeGreaterThan(before)
     writeFileSync(join(where.projects, project, 'go'), '')
     await answered(reopened, project, 'done')
 
