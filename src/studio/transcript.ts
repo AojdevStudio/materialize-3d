@@ -46,9 +46,10 @@ function written(name: string, args: Record<string, unknown>): string | undefine
 
 /**
  * Committed chat entries as chat items: one line per tool step with its result attached, and after each turn a card
- * of the files it wrote that open in the preview, print files first.
+ * of the files it wrote that open in the preview, print files first. Once the turn no longer `running`, a step left
+ * without a result, as a stop or a crash leaves it, shows as stopped.
  */
-export function buildChat(entries: ChatEntry[]): ChatItem[] {
+export function buildChat(entries: ChatEntry[], running = true): ChatItem[] {
   const items: ChatItem[] = []
   const tools = new Map<string, { item: ToolItem; writes: string | undefined }>()
   let files: string[] = []
@@ -93,5 +94,12 @@ export function buildChat(entries: ChatEntry[]): ChatItem[] {
     }
   }
   endTurn()
+  if (!running) {
+    for (const { item } of tools.values()) {
+      if (item.result !== undefined) continue
+      item.result = 'It stopped before it finished.'
+      item.failed = true
+    }
+  }
   return items
 }

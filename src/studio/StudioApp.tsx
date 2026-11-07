@@ -26,11 +26,16 @@ const START = 'new'
 const DRAFT_PAUSE_MS = 400
 
 /** A chat change on top of a view: entries joined by id, and the turn's state as the change gives it. */
+/**
+ * A chat with a change applied. Entries only grow, so each one is kept. The running state comes from whichever was read
+ * last, so a change read before the open chat, which can arrive after it, never puts back a turn that already ended.
+ */
 function merge(view: View, change: View): View {
   const byId = new Map(view.entries.map((entry) => [entry.id, entry]))
   for (const entry of change.entries) byId.set(entry.id, entry)
   const entries = [...byId.values()].sort((a, b) => a.id - b.id)
-  return { ...view, entries, running: change.running, waiting: change.waiting, turn: change.turn }
+  if (change.seq < view.seq) return { ...view, entries }
+  return { ...view, entries, running: change.running, waiting: change.waiting, turn: change.turn, seq: change.seq }
 }
 
 function newestAutoOpen(files: ProjectFile[]): ProjectFile | undefined {
@@ -82,7 +87,7 @@ export default function StudioApp() {
   const early = useRef<View[]>([])
 
   composerText.current = text
-  const items = useMemo(() => buildChat(view?.entries ?? []), [view?.entries])
+  const items = useMemo(() => buildChat(view?.entries ?? [], view?.running ?? true), [view?.entries, view?.running])
   const running = view?.running ?? false
 
   useUpdateEvents()

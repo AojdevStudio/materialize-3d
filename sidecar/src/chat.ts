@@ -88,6 +88,8 @@ export class Chats {
   readonly #watches = new Map<string, WatchHandle<ConversationView>>()
   /** The newest entry each watched chat has sent the window. */
   readonly #sent = new Map<string, number>()
+  /** Counts reads of a chat's state, in the order they were read, for `ChatView.seq`. */
+  #seq = 0
   /** Tools waiting for a sign-in, by provider. */
   readonly #signIns = new Map<string, Set<() => void>>()
 
@@ -130,7 +132,7 @@ export class Chats {
     const entries = await this.#entries(conversation)
     this.#sent.set(project, Math.max(this.#sent.get(project) ?? 0, entries.at(-1)?.id ?? 0))
     const { running, waiting, turn } = await this.#state(conversation)
-    return { project, entries, running, waiting, turn }
+    return { project, entries, running, waiting, turn, seq: ++this.#seq }
   }
 
   async #watch(project: string, conversation: Conversation): Promise<void> {
@@ -151,9 +153,10 @@ export class Chats {
       if (await this.#read(conversation, state.failure, state.turn)) this.#resume(project, state.failure.taskId)
       state = await this.#state(conversation)
     }
+    const seq = ++this.#seq
     const entries = await this.#entries(conversation, this.#sent.get(project) ?? 0)
     if (entries.length > 0) this.#sent.set(project, entries.at(-1)?.id ?? 0)
-    this.#o.emit({ type: 'chat', project, entries, running: state.running, waiting: state.waiting, turn: state.turn })
+    this.#o.emit({ type: 'chat', project, entries, running: state.running, waiting: state.waiting, turn: state.turn, seq })
   }
 
   /**

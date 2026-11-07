@@ -29,7 +29,7 @@ Element.prototype.scrollIntoView = vi.fn()
 
 const projectA = { id: '2026-11-06-a', conversation: 2, title: 'Project A', createdMs: 2 }
 const projectB = { id: '2026-11-06-b', conversation: 3, title: 'Project B', createdMs: 1 }
-const view = (project: string, more: object = {}) => ({ project, entries: [], running: false, waiting: null, turn: null, ...more })
+const view = (project: string, more: object = {}) => ({ project, entries: [], running: false, waiting: null, turn: null, seq: 1, ...more })
 const settings = { model: { provider: 'anthropic', modelId: 'claude-opus-5-5' }, thinking: 'high', printer: {} }
 
 afterEach(() => {
@@ -182,11 +182,25 @@ describe('StudioApp', () => {
     fireEvent.click(await screen.findByText('Project B'))
     await screen.findByRole('banner')
     const reply = { id: 2, kind: 'assistant', text: 'The clip is ready.', calls: [] }
-    await emit({ type: 'chat', ...view(projectB.id, { entries: [reply] }) })
+    await emit({ type: 'chat', ...view(projectB.id, { entries: [reply], seq: 3 }) })
     const asked = { id: 1, kind: 'user', text: 'A clip', images: [] }
-    await act(async () => finishOpen(view(projectB.id, { entries: [asked], running: true })))
+    await act(async () => finishOpen(view(projectB.id, { entries: [asked], running: true, seq: 2 })))
     expect(screen.getByText('The clip is ready.')).toBeTruthy()
     expect(screen.getByText('A clip')).toBeTruthy()
+    expect(screen.queryByTestId('working')).toBeNull()
+  })
+
+  it('never shows a turn as working again when a change read before the open chat arrives after it', async () => {
+    let finishOpen: (view: unknown) => void = () => {}
+    mockSidecar({ 'chat.open': () => new Promise((resolve) => (finishOpen = resolve)) })
+    render(<StudioApp />)
+    fireEvent.click(await screen.findByText('Project B'))
+    await screen.findByRole('banner')
+    const asked = { id: 1, kind: 'user', text: 'A clip', images: [] }
+    await emit({ type: 'chat', ...view(projectB.id, { entries: [asked], running: true, seq: 2 }) })
+    const reply = { id: 2, kind: 'assistant', text: 'The clip is ready.', calls: [] }
+    await act(async () => finishOpen(view(projectB.id, { entries: [asked, reply], running: false, seq: 3 })))
+    expect(screen.getByText('The clip is ready.')).toBeTruthy()
     expect(screen.queryByTestId('working')).toBeNull()
   })
 

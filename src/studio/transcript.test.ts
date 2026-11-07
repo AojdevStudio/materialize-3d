@@ -52,4 +52,13 @@ describe('buildChat', () => {
       { kind: 'tool', id: 'c1', label: 'Ran', summary: 'uv run python build/model.py', detail: 'uv run python build/model.py' },
     ])
   })
+
+  it('shows a step left without a result as stopped once its turn no longer runs', () => {
+    const entries = [
+      { id: 1, kind: 'user' as const, text: 'Thicker', images: [] },
+      { id: 2, kind: 'assistant' as const, text: '', calls: [{ id: 'c1', name: 'run', args: { args: ['run', 'python', 'build/model.py'] } }] },
+    ]
+    expect(buildChat(entries, false)[1]).toMatchObject({ kind: 'tool', id: 'c1', result: 'It stopped before it finished.', failed: true })
+    expect(buildChat(entries, true)[1]).not.toHaveProperty('result')
+  })
 })
