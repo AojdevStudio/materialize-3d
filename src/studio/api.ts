@@ -25,7 +25,6 @@ export interface ProjectFile {
 /** The project folder's own files: the native edges Rust keeps. */
 export const studio = {
   files: (project: string) => invoke<ProjectFile[]>('studio_files', { project }),
-  importFile: (project: string, source: string) => invoke<string>('studio_import_file', { project, source }),
   saveBytes: (project: string, name: string, bytes: Uint8Array) =>
     invoke<string>('studio_save_bytes', bytes, { headers: { 'm3d-project': project, 'm3d-name': encodeURIComponent(name) } }),
   reveal: (project: string, rel: string) => invoke<void>('studio_reveal', { project, rel }),
