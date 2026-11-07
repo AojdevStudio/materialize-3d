@@ -17,9 +17,9 @@ newline=$'\n'
 odd="$(cd "$app" && find . -name "*$newline*" -print -quit)"
 [[ -z "$odd" ]] || die "a path in the app bundle contains a newline: $(printf '%q' "$odd")"
 
-# The app binary, the CAD helper and its runtime, the icons (Assets.car for macOS 26, icon.icns as the
-# CFBundleIconFile), the license notices, the signature, and the stapled ticket (Contents/CodeResources). Every
-# entry that is not a directory counts, symlinks included.
+# The app binary, the CAD helper and its runtime, the agent's studio plugin, the icons (Assets.car for
+# macOS 26, icon.icns as the CFBundleIconFile), the license notices, the signature, and the stapled ticket
+# (Contents/CodeResources). Every entry that is not a directory counts, symlinks included.
 expected="$(printf '%s\n' \
   Contents/CodeResources Contents/Info.plist \
   Contents/MacOS/materialize-3d Contents/MacOS/materialize-cad-host \
@@ -27,6 +27,8 @@ expected="$(printf '%s\n' \
   Contents/Resources/THIRD_PARTY_NOTICES.md Contents/Resources/icon.icns \
   Contents/Resources/cad-runtime/Image Contents/Resources/cad-runtime/job.img \
   Contents/Resources/cad-runtime/rootfs.img \
+  Contents/Resources/studio-plugin/.claude-plugin/plugin.json \
+  Contents/Resources/studio-plugin/skills/fabricate/SKILL.md \
   Contents/_CodeSignature/CodeResources | sort)"
 actual="$(cd "$app" && find . ! -type d | sed 's|^\./||' | sort)"
 [[ "$actual" == "$expected" ]] || die "unexpected files in the app bundle:
