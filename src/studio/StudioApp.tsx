@@ -98,6 +98,8 @@ export default function StudioApp() {
   /** Counts the person's edits to the composer, so a send clears only the text it sent, not a later edit that reads the same. */
   const edits = useRef(0)
   const early = useRef<View[]>([])
+  /** Counts chat loads, so only the newest load of the open chat replaces its view, not an older one that answers late. */
+  const loads = useRef(0)
 
   composerText.current = text
   const items = useMemo(() => buildChat(view?.entries ?? [], view?.running ?? true), [view?.entries, view?.running])
@@ -305,8 +307,9 @@ export default function StudioApp() {
 
   /** Loads the open project's chat, with the changes that arrived while it loaded. */
   const load = async (project: string, request: number) => {
+    const load = ++loads.current
     const opened = await sidecar('chat.open', { project })
-    if (request !== loadRequest.current) return
+    if (request !== loadRequest.current || load !== loads.current) return
     setView(early.current.reduce(merge, opened))
     early.current = []
     loaded.current = project
@@ -382,10 +385,11 @@ export default function StudioApp() {
       setSendErrors(({ [id]: _, ...rest }) => rest)
       // Text typed while this was sending is a new message, even one that reads the same, so the sent text is cleared
       // only when nothing was typed since, and only in the view that sent it.
-      if (edits.current === sentEdits) {
-        if (drafts.current[id]?.text.trim() === message) drafts.current = { ...drafts.current, [id]: { text: '', attachments: [] } }
-        if (loadRequest.current === request) setText((now) => (now.trim() === message ? '' : now))
+      // The sent project's saved draft goes, unless a save of a newer draft for it still waits.
+      if (drafts.current[id]?.text.trim() === message && unsaved.current?.key !== id) {
+        drafts.current = { ...drafts.current, [id]: { text: '', attachments: [] } }
       }
+      if (edits.current === sentEdits && loadRequest.current === request) setText((now) => (now.trim() === message ? '' : now))
       // A picture added while these imported waits for the next message.
       setAttachments((prev) => prev.filter((a) => !outgoing.includes(a)))
       outgoing.forEach(releaseAttachment)

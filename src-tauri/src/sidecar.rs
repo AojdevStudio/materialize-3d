@@ -691,12 +691,16 @@ printf '__M3D_PATH__/opt/tools/bin__M3D_PATH__'
         std::fs::set_permissions(&shell, perms).unwrap();
         assert_eq!(shell_path(shell.to_str().unwrap(), std::time::Duration::from_secs(5)).as_deref(), Some("/opt/tools/bin"));
         let pid = std::fs::read_to_string(&pid).unwrap().trim().parse::<i32>().unwrap();
-        // Once nothing reads the pipe, the next write ends the writer.
+        // Once nothing reads the pipe, the next write ends the writer. An ended writer may wait as a zombie until the
+        // system reaps it, so that counts as ended too.
+        let ended = || {
+            let state = std::process::Command::new("ps").args(["-o", "stat=", "-p", &pid.to_string()]).output().expect("ps");
+            let state = String::from_utf8_lossy(&state.stdout);
+            state.trim().is_empty() || state.trim_start().starts_with('Z')
+        };
         let gone = (0..50).any(|_| {
             std::thread::sleep(std::time::Duration::from_millis(100));
-            // SAFETY: kill with signal 0 only asks whether the process still exists.
-            let alive = unsafe { libc::kill(pid, 0) } == 0;
-            !alive
+            ended()
         });
         if !gone {
             // SAFETY: ends the test's own writer, which outlived the lookup.

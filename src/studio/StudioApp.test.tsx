@@ -309,6 +309,45 @@ describe('StudioApp', () => {
     expect(sidecarCalls('chat.open')).toHaveLength(2)
   })
 
+  it('keeps the newer chat when an older load answers after the reload an engine restart made', async () => {
+    const asked = { id: 1, kind: 'user', text: 'A clip', images: [] }
+    const reply = { id: 2, kind: 'assistant', text: 'The clip is ready.', calls: [] }
+    let finishFirst: (view: unknown) => void = () => {}
+    let opens = 0
+    mockSidecar({
+      'chat.open': (params) =>
+        ++opens === 1
+          ? new Promise((resolve) => (finishFirst = resolve))
+          : Promise.resolve(view(String(params.project), { entries: [asked, reply], running: false, seq: 5 })),
+    })
+    render(<StudioApp />)
+    fireEvent.click(await screen.findByText('Project B'))
+    await screen.findByRole('banner')
+    await emit({ type: 'ready', version: '1.2.3' })
+    await screen.findByText('The clip is ready.')
+    await act(async () => finishFirst(view(projectB.id, { entries: [asked], running: true, seq: 1 })))
+    expect(screen.getByText('The clip is ready.')).toBeTruthy()
+    expect(screen.queryByTestId('working')).toBeNull()
+  })
+
+  it("clears a sent project's saved draft even when the person typed in another project meanwhile", async () => {
+    let finishSend: (value: unknown) => void = () => {}
+    mockSidecar({ 'chat.send': () => new Promise((resolve) => (finishSend = resolve)) }, [projectA, projectB])
+    render(<StudioApp />)
+    fireEvent.click(await screen.findByText('Project B'))
+    await screen.findByRole('banner')
+    type('Make it red')
+    fireEvent.click(screen.getByTestId('send'))
+    await waitFor(() => expect(sidecarCalls('chat.send')).toHaveLength(1))
+    fireEvent.click(screen.getByText('Project A'))
+    await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project A'))
+    type('something for A')
+    await act(async () => finishSend(null))
+    fireEvent.click(screen.getByText('Project B'))
+    await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project B'))
+    expect(prompt().value).toBe('')
+  })
+
   it('keeps text typed during a send as the next message, even when it reads the same as the sent one', async () => {
     let finishSend: (value: unknown) => void = () => {}
     mockSidecar({ 'chat.send': () => new Promise((resolve) => (finishSend = resolve)) })
