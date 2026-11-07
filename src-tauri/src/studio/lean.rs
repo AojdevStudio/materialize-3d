@@ -118,14 +118,20 @@ const PROVIDER_AUTH_KEYS: [&str; 5] = ["command", "args", "cwd", "timeout_ms", "
 /// a model, so Astra fails and says so instead of running on the person's setup.
 pub fn astra_home(home: &Path, app_data: &Path) -> Result<AstraHome, String> {
     let user_config = home.join(".codex").join("config.toml");
+    // Astra runs only when the agent asks for it, so a codex config it cannot read
+    // never stops a turn. Astra then has no model and says so when it is called.
     let user: toml::Table = match std::fs::read_to_string(&user_config) {
         // Only the position: an error's own text quotes the line, and a line can hold a token.
-        Ok(text) => text.parse().map_err(|e: toml::de::Error| {
+        Ok(text) => text.parse().unwrap_or_else(|e: toml::de::Error| {
             let at = e.span().map_or(String::new(), |span| format!(" at byte {}", span.start));
-            format!("{} is not valid TOML{at}", user_config.display())
-        })?,
+            log::warn!("studio: {} is not valid TOML{at}, so Astra cannot reach a model", user_config.display());
+            toml::Table::new()
+        }),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => toml::Table::new(),
-        Err(e) => return Err(format!("{}: {e}", user_config.display())),
+        Err(e) => {
+            log::warn!("studio: cannot read {}: {e}, so Astra cannot reach a model", user_config.display());
+            toml::Table::new()
+        }
     };
     let config = astra_config(&user, &host_skills(home));
     if !config.contains_key("model_providers") {
@@ -227,6 +233,17 @@ mod tests {
         assert!(args.windows(2).any(|w| w == ["--setting-sources", "project"]));
         assert!(args.windows(2).any(|w| w == ["--plugin-dir", "/app/studio-plugin"]));
         assert!(args.contains(&r#"{"apiKeyHelper":"/usr/local/bin/key"}"#.to_owned()));
+    }
+
+    #[test]
+    fn a_codex_config_astra_cannot_read_never_stops_a_turn() {
+        let home = tempfile::tempdir().expect("home");
+        let data = tempfile::tempdir().expect("data");
+        std::fs::create_dir_all(home.path().join(".codex")).expect("codex dir");
+        std::fs::write(home.path().join(".codex/config.toml"), "model = \"unterminated").expect("config");
+        let astra = astra_home(home.path(), data.path()).expect("the turn goes on");
+        let config: toml::Table = std::fs::read_to_string(astra.dir.join("config.toml")).expect("written").parse().expect("toml");
+        assert!(config.get("model_providers").is_none(), "Astra has no model to reach");
     }
 
     #[test]
