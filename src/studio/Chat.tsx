@@ -5,13 +5,18 @@ import { FileActions } from './RightPanel'
 import type { ChatItem } from './transcript'
 
 /** A picture waiting to be sent: a dropped file on disk, or pasted bytes. */
-export type Attachment =
-  | { kind: 'path'; name: string; path: string }
-  | { kind: 'bytes'; name: string; bytes: Uint8Array; previewUrl: string }
+/**
+ * A picture waiting to go with the next message: a file on disk, so a draft can keep it. A pasted picture is first kept
+ * in a file of the sidecar's, and shows its preview while the window has it.
+ */
+export type Attachment = { name: string; path: string; previewUrl?: string }
 
-/** Frees a pasted picture's preview once it is sent or removed. */
+/** The picture a draft keeps at `path`. */
+export const savedAttachment = (path: string): Attachment => ({ name: path.split(/[\\/]/).pop() ?? path, path })
+
+/** Frees a pasted picture's preview once it is sent, removed, or left. */
 export function releaseAttachment(attachment: Attachment): void {
-  if (attachment.kind === 'bytes') URL.revokeObjectURL(attachment.previewUrl)
+  if (attachment.previewUrl !== undefined) URL.revokeObjectURL(attachment.previewUrl)
 }
 
 function inline(text: string): ReactNode[] {
@@ -104,6 +109,8 @@ interface ComposerProps {
   onText: (text: string) => void
   attachments: Attachment[]
   onAttach: (files: Attachment[]) => void
+  /** Keeps a pasted picture in a file, and answers its path. */
+  onPaste: (name: string, bytes: Uint8Array) => Promise<string>
   onRemove: (index: number) => void
   /** Sends the text and pictures. The owner clears them only once the send succeeds. */
   onSend: () => void
@@ -115,7 +122,7 @@ interface ComposerProps {
   autoFocus?: boolean
 }
 
-export function Composer({ text, onText, attachments, onAttach, onRemove, onSend, onStop, busy, running, placeholder, autoFocus }: ComposerProps) {
+export function Composer({ text, onText, attachments, onAttach, onPaste, onRemove, onSend, onStop, busy, running, placeholder, autoFocus }: ComposerProps) {
   const empty = !text.trim() && attachments.length === 0
 
   const paste = async (event: React.ClipboardEvent) => {
@@ -124,19 +131,18 @@ export function Composer({ text, onText, attachments, onAttach, onRemove, onSend
     event.preventDefault()
     onAttach(
       await Promise.all(
-        pictures.map(async (file, i) => ({
-          kind: 'bytes' as const,
-          name: file.name && file.name !== 'image.png' ? file.name : `pasted-${Date.now()}-${i}.${file.type.split('/')[1] ?? 'png'}`,
-          bytes: new Uint8Array(await file.arrayBuffer()),
-          previewUrl: URL.createObjectURL(file),
-        })),
+        pictures.map(async (file, i) => {
+          const name = file.name && file.name !== 'image.png' ? file.name : `pasted-${Date.now()}-${i}.${file.type.split('/')[1] ?? 'png'}`
+          const path = await onPaste(name, new Uint8Array(await file.arrayBuffer()))
+          return { name, path, previewUrl: URL.createObjectURL(file) }
+        }),
       ),
     )
   }
 
   const pick = async () => {
     const path = await pickFile({ filters: [{ name: 'Pictures', extensions: ['png', 'jpg', 'jpeg', 'heic', 'webp', 'gif'] }] })
-    if (path) onAttach([{ kind: 'path', name: path.split(/[\\/]/).pop() ?? path, path }])
+    if (path) onAttach([savedAttachment(path)])
   }
 
   return (
@@ -145,7 +151,7 @@ export function Composer({ text, onText, attachments, onAttach, onRemove, onSend
         <ul className="attachments" data-testid="attachments">
           {attachments.map((a, i) => (
             <li key={`${a.name}-${i}`}>
-              {a.kind === 'bytes' ? <img src={a.previewUrl} alt={a.name} /> : <span>{a.name}</span>}
+              {a.previewUrl !== undefined ? <img src={a.previewUrl} alt={a.name} /> : <span>{a.name}</span>}
               <button type="button" aria-label={`Remove ${a.name}`} onClick={() => onRemove(i)}>×</button>
             </li>
           ))}

@@ -91,21 +91,25 @@ export function readTranscript(text: string): ImportedEntry[] {
 /**
  * Every old project in the projects folder that has a record, but those in `known`, whose files are not read. One with
  * no transcript yet comes with an empty chat. A project whose files cannot be read is skipped and named on stderr, as
- * the old app skipped it.
+ * the old app skipped it. `blocked` names the folder when it could not be read at all, as when macOS keeps Documents
+ * from the app until the person allows it. The app still starts, and the import runs again at each start and when the
+ * person asks, so it comes once the folder can be read.
  */
-export function legacyProjects(projectsDir: string, known: ReadonlySet<string>): LegacyProject[] {
-  // No projects folder, or something else in its place, holds no old chats.
-  if (!existsSync(projectsDir) || !statSync(projectsDir).isDirectory()) return []
+export function legacyProjects(projectsDir: string, known: ReadonlySet<string>): { found: LegacyProject[]; blocked: string | null } {
+  const blocked = (error: unknown) => {
+    console.error(`could not list ${projectsDir} for chats from before the store: ${error instanceof Error ? error.message : String(error)}`)
+    return { found: [], blocked: projectsDir }
+  }
   let dirs: Dirent[]
   try {
+    // No projects folder, or something else in its place, holds no old chats.
+    if (!statSync(projectsDir).isDirectory()) return { found: [], blocked: null }
     dirs = readdirSync(projectsDir, { withFileTypes: true })
   } catch (error) {
-    // The app still starts, as macOS can keep the folder from it until the person allows it. The import runs at each
-    // start, so it comes once the folder can be listed.
-    console.error(`could not list ${projectsDir} for chats from before the store: ${error instanceof Error ? error.message : String(error)}`)
-    return []
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return { found: [], blocked: null }
+    return blocked(error)
   }
-  return dirs.flatMap((dir) => {
+  const found = dirs.flatMap((dir) => {
     const meta = join(projectsDir, dir.name, '.m3d')
     if (known.has(dir.name) || !dir.isDirectory() || !existsSync(join(meta, 'project.json'))) return []
     const transcript = join(meta, 'transcript.jsonl')
@@ -124,4 +128,5 @@ export function legacyProjects(projectsDir: string, known: ReadonlySet<string>):
       return []
     }
   })
+  return { found, blocked: null }
 }

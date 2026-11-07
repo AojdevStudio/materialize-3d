@@ -99,5 +99,7 @@ const APP_COMMANDS: &[&str] = &[
     "studio_save_bytes",
     "studio_reveal",
     "studio_open_in_bambu",
+    "studio_flushed",
+    "studio_open_files_privacy",
     "sidecar",
 ];

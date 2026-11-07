@@ -40,6 +40,20 @@ describe('chats from before the store', () => {
   })
 })
 
+describe('a picture pasted into a draft', () => {
+  test('is kept in a file of its own, outside any project, so the draft can keep it', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'm3d-picture-'))
+    const app = spawnSidecar(join(dir, 'state'), join(dir, 'projects'))
+    await app.next()
+    const path = (await app.call('drafts.picture', { name: 'pasted.png', data: Buffer.from('png bytes').toString('base64') })) as string
+    expect(path.startsWith(dir)).toBe(true)
+    expect(path.endsWith('pasted.png')).toBe(true)
+    expect(readFileSync(path, 'utf8')).toBe('png bytes')
+    await expect(app.call('drafts.picture', { name: '../escape.png', data: '' })).rejects.toThrow()
+    await app.quit()
+  })
+})
+
 describe('the import of chats from before the store', () => {
   const CLIP = join(LEGACY, '2026-11-06-a-wall-clip')
 
@@ -89,7 +103,15 @@ describe('the import of chats from before the store', () => {
     chmodSync(projects, 0o000)
     try {
       const app = spawnSidecar(join(dir, 'state'), projects)
-      expect(((await app.call('state.get')) as { projects: unknown[] }).projects).toEqual([])
+      const state = (await app.call('state.get')) as { projects: unknown[]; importBlocked: string | null }
+      expect(state.projects).toEqual([])
+      expect(state.importBlocked).toContain(projects)
+      // The person allows the folder, and the import runs again at once.
+      chmodSync(projects, 0o755)
+      expect(await app.call('legacy.import', {})).toEqual({ imported: 1, blocked: null })
+      const after = (await app.call('state.get')) as { projects: { id: string }[]; importBlocked: string | null }
+      expect(after.projects.map((p) => p.id)).toEqual(['2026-11-06-a-wall-clip'])
+      expect(after.importBlocked).toBeNull()
       await app.quit()
       expect(await app.stderr()).toContain('could not list')
     } finally {

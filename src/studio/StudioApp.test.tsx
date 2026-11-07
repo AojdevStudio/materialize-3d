@@ -3,12 +3,15 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 
 type Listener = (event: { payload: unknown }) => void
-const { invokeMock, listeners } = vi.hoisted(() => ({ invokeMock: vi.fn(), listeners: { sidecar: [] as Listener[], drop: [] as Listener[] } }))
+const { invokeMock, listeners } = vi.hoisted(() => ({
+  invokeMock: vi.fn(),
+  listeners: { sidecar: [] as Listener[], drop: [] as Listener[], flush: [] as Listener[] },
+}))
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: invokeMock }))
 vi.mock('@tauri-apps/api/event', () => ({
-  listen: (_name: string, listener: Listener) => {
-    listeners.sidecar.push(listener)
+  listen: (name: string, listener: Listener) => {
+    ;(name === 'studio://flush' ? listeners.flush : listeners.sidecar).push(listener)
     return Promise.resolve(() => {})
   },
 }))
@@ -37,6 +40,7 @@ afterEach(() => {
   invokeMock.mockReset()
   listeners.sidecar.length = 0
   listeners.drop.length = 0
+  listeners.flush.length = 0
 })
 
 /** An event from the sidecar, as Rust forwards it to the window. */
@@ -48,7 +52,7 @@ const type = (text: string) => fireEvent.change(prompt(), { target: { value: tex
 type Calls = Record<string, (params: Record<string, unknown>) => Promise<unknown>>
 
 /** The sidecar as the window sees it: one `sidecar` command, by method. */
-function mockSidecar(overrides: Calls = {}, projects = [projectB], drafts: Record<string, { text: string }> = {}) {
+function mockSidecar(overrides: Calls = {}, projects = [projectB], drafts: Record<string, { text: string; attachments?: string[] }> = {}) {
   invokeMock.mockImplementation((command: string, args: { method: string; params: Record<string, unknown> }) => {
     if (command === 'update_check') return Promise.resolve({ status: 'upToDate' })
     if (command === 'studio_files') return Promise.resolve([])
@@ -60,9 +64,11 @@ function mockSidecar(overrides: Calls = {}, projects = [projectB], drafts: Recor
       case 'app.ping':
         return Promise.resolve({ version: '1.2.3' })
       case 'state.get':
-        return Promise.resolve({ setup: { step: 'ready', done: true }, settings, projects, drafts })
+        return Promise.resolve({ setup: { step: 'ready', done: true }, settings, projects, drafts, importBlocked: null })
       case 'chat.open':
         return Promise.resolve(view(String(args.params.project)))
+      case 'setup.check':
+        return Promise.resolve([])
       default:
         return Promise.resolve(null)
     }
@@ -195,6 +201,80 @@ describe('StudioApp', () => {
     const [first, second] = sidecarCalls('chat.send')
     expect(second).toEqual(first)
     expect(first?.attachments).toEqual(['refs/photo.jpg'])
+  })
+
+  it("keeps a draft's pictures, and brings them back when the project opens again", async () => {
+    mockSidecar()
+    const first = render(<StudioApp />)
+    fireEvent.click(await screen.findByText('Project B'))
+    await screen.findByRole('banner')
+    await act(async () => listeners.drop.forEach((listener) => listener({ payload: { type: 'drop', paths: ['/Users/me/photo.jpg'] } })))
+    await waitFor(() => {
+      const saves = sidecarCalls('drafts.set')
+      expect(saves[saves.length - 1]).toEqual({ key: projectB.id, text: '', attachments: ['/Users/me/photo.jpg'] })
+    })
+    first.unmount()
+
+    mockSidecar({}, [projectB], { [projectB.id]: { text: 'like this', attachments: ['/Users/me/photo.jpg'] } })
+    render(<StudioApp />)
+    fireEvent.click(await screen.findByText('Project B'))
+    await screen.findByRole('banner')
+    expect(prompt().value).toBe('like this')
+    expect(screen.getByTestId('attachments').textContent).toContain('photo.jpg')
+  })
+
+  it('saves the text still waiting to be saved when the app quits, then says it is done', async () => {
+    mockSidecar()
+    render(<StudioApp />)
+    fireEvent.click(await screen.findByText('Project B'))
+    await screen.findByRole('banner')
+    type('half a thought')
+    await act(async () => listeners.flush.forEach((listener) => listener({ payload: null })))
+    await waitFor(() => expect(invokeMock.mock.calls.some(([command]) => command === 'studio_flushed')).toBe(true))
+    expect(sidecarCalls('drafts.set')).toEqual([{ key: projectB.id, text: 'half a thought', attachments: [] }])
+  })
+
+  it('keeps Send off until the agent can run, and names the fix', async () => {
+    let needs: unknown[] = [{ kind: 'uv', fix: 'Install uv, then check again.' }]
+    mockSidecar({ 'setup.check': () => Promise.resolve(needs) })
+    render(<StudioApp />)
+    fireEvent.click(await screen.findByText('Project B'))
+    expect((await screen.findByTestId('readiness')).textContent).toContain('Install uv, then check again.')
+    type('A clip')
+    expect((screen.getByTestId('send') as HTMLButtonElement).disabled).toBe(true)
+    needs = []
+    fireEvent.click(screen.getByText('Check again'))
+    await waitFor(() => expect(screen.queryByTestId('readiness')).toBeNull())
+    expect((screen.getByTestId('send') as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  it('asks for the sign-in a provider needs before a send, and checks again once it is done', async () => {
+    let needs: unknown[] = [{ kind: 'login', provider: 'anthropic', name: 'Anthropic', fix: 'Sign in to Anthropic before you send.' }]
+    mockSidecar({ 'setup.check': () => Promise.resolve(needs) })
+    render(<StudioApp />)
+    fireEvent.click(await screen.findByText('Project B'))
+    const notice = await screen.findByTestId('readiness')
+    expect(notice.textContent).toContain('Sign in to Anthropic before you send.')
+    expect(screen.getByLabelText('API key or token')).toBeTruthy()
+    needs = []
+    await emit({ type: 'login', provider: 'anthropic', step: 'done' })
+    await waitFor(() => expect(screen.queryByTestId('readiness')).toBeNull())
+  })
+
+  it('says when macOS keeps the old chats from the app, and imports them once the person allows it', async () => {
+    let blocked: string | null = '/Users/me/Documents/Materialize 3D'
+    mockSidecar({
+      'state.get': () => Promise.resolve({ setup: { step: 'ready', done: true }, settings, projects: blocked === null ? [projectA, projectB] : [projectB], drafts: {}, importBlocked: blocked }),
+      'legacy.import': () => {
+        blocked = null
+        return Promise.resolve({ imported: 1, blocked: null })
+      },
+    })
+    render(<StudioApp />)
+    expect((await screen.findByTestId('import-blocked')).textContent).toContain('Documents')
+    fireEvent.click(screen.getByText('Try again'))
+    await waitFor(() => expect(screen.queryByTestId('import-blocked')).toBeNull())
+    expect(await screen.findByText('Project A')).toBeTruthy()
   })
 
   it('keeps chat changes that arrive while the chat opens', async () => {

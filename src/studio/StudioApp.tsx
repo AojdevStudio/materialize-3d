@@ -1,12 +1,12 @@
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { LoginEvent, ChatView as View, Project } from '../../sidecar/src/protocol'
-import { autoOpens, onSidecarEvent, sidecar, studio, type ProjectFile } from './api'
-import { ChatView, Composer, releaseAttachment, type Attachment } from './Chat'
+import type { AppState, Draft, LoginEvent, Need, ChatView as View, Project } from '../../sidecar/src/protocol'
+import { autoOpens, onQuitFlush, onSidecarEvent, sidecar, studio, type ProjectFile } from './api'
+import { ChatView, Composer, releaseAttachment, savedAttachment, type Attachment } from './Chat'
 import RightPanel, { type Tab } from './RightPanel'
 import { buildChat } from './transcript'
-import { SignInAsk, WaitingBanner } from './Waiting'
+import { ImportBlockedBanner, ReadinessBanner, SignInAsk, WaitingBanner } from './Waiting'
 import { UpdateBanner } from '../components/UpdateBanner'
 import { checkForUpdatesAtLaunch, useUpdateEvents } from '../stores/updates'
 import './studio.css'
@@ -25,7 +25,6 @@ const START = 'new'
 /** How long typing pauses before the draft is saved. */
 const DRAFT_PAUSE_MS = 400
 
-/** A chat change on top of a view: entries joined by id, and the turn's state as the change gives it. */
 /**
  * A chat with a change applied. Entries only grow, so each one is kept. The running state comes from whichever was read
  * last, so a change read before the open chat, which can arrive after it, never puts back a turn that already ended.
@@ -36,6 +35,13 @@ function merge(view: View, change: View): View {
   const entries = [...byId.values()].sort((a, b) => a.id - b.id)
   if (change.seq < view.seq) return { ...view, entries }
   return { ...view, entries, running: change.running, waiting: change.waiting, turn: change.turn, seq: change.seq }
+}
+
+/** A pasted picture's bytes as base64, to cross the sidecar's pipe. */
+function toBase64(bytes: Uint8Array): string {
+  let binary = ''
+  for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
+  return btoa(binary)
 }
 
 function newestAutoOpen(files: ProjectFile[]): ProjectFile | undefined {
@@ -59,6 +65,10 @@ export default function StudioApp() {
   const [engine, setEngine] = useState('Engine starting')
   /** What a sign-in needs from the person: the code to enter on its page, or an answer. */
   const [signIn, setSignIn] = useState<Extract<LoginEvent, { step: 'open' | 'ask' }> | null>(null)
+  /** What the agent needs before a send, from the sidecar's check. Null until the check answers, and Send waits. */
+  const [needs, setNeeds] = useState<Need[] | null>(null)
+  /** The folder the chats from before the store could not be read from, when macOS keeps it from the app. */
+  const [importBlocked, setImportBlocked] = useState<string | null>(null)
   const sendingNow = useRef(false)
   const currentId = useRef<string | null>(null)
   /** Bumped on every switch, so a slow load for a project already left is dropped. */
@@ -68,11 +78,12 @@ export default function StudioApp() {
   /**
    * Drafts by project, or `new` for the start screen, to fill the composer when a screen opens. The rules: typing saves
    * the draft of its screen once typing pauses, or at once when the person leaves the screen or sends. A send removes
-   * the draft only when it holds the sent text. Making a project moves the start screen's draft to it.
+   * the draft only when it holds the sent text. Making a project moves the start screen's draft to it. A draft keeps
+   * its pictures too, as the paths of their files.
    */
-  const drafts = useRef<Record<string, { text: string }>>({})
-  /** Typed text not saved yet, and the timer that saves it. */
-  const unsaved = useRef<{ key: string; text: string; timer: number } | null>(null)
+  const drafts = useRef<Record<string, Draft>>({})
+  /** A draft not saved yet, and the timer that saves it. */
+  const unsaved = useRef<{ key: string; draft: Draft; timer: number } | null>(null)
   /**
    * Messages whose send has not gone through, by project. Sending one again sends the same pictures under the same
    * request id, so a send whose reply was lost never sends it twice.
@@ -97,16 +108,39 @@ export default function StudioApp() {
     void checkForUpdatesAtLaunch()
   }, [])
 
+  /** Takes the app's saved state: projects, drafts, and whether the old chats could be read. */
+  const takeState = (state: AppState) => {
+    // Drafts saved in this window since are newer, and text already typed stays.
+    drafts.current = { ...state.drafts, ...drafts.current }
+    // A project made while this was on its way is newer than the saved list, so it stays.
+    setProjects((made) => [...made.filter((p) => !state.projects.some((saved) => saved.id === p.id)), ...state.projects])
+    setImportBlocked(state.importBlocked)
+    if (currentId.current === null && !typedOnStart.current) {
+      const draft = drafts.current[START]
+      setText(draft?.text ?? '')
+      setAttachments((now) => (now.length === 0 ? (draft?.attachments ?? []).map(savedAttachment) : now))
+    }
+  }
+
+  /** Asks the sidecar what the agent still needs before a send. */
+  const checkReady = () => {
+    void sidecar('setup.check', {})
+      .then(setNeeds)
+      .catch((err: unknown) => setError(String(err)))
+  }
+
+  const retryImport = () => {
+    void sidecar('legacy.import', {})
+      .then(() => sidecar('state.get', {}))
+      .then(takeState)
+      .catch((err: unknown) => setError(String(err)))
+  }
+
   useEffect(() => {
     sidecar('state.get', {})
-      .then((state) => {
-        // Drafts saved in this window since are newer, and text already typed stays.
-        drafts.current = { ...state.drafts, ...drafts.current }
-        // A project made while this was on its way is newer than the saved list, so it stays.
-        setProjects((made) => [...made.filter((p) => !state.projects.some((saved) => saved.id === p.id)), ...state.projects])
-        if (currentId.current === null && !typedOnStart.current) setText(drafts.current[START]?.text ?? '')
-      })
+      .then(takeState)
       .catch((err: unknown) => setError(String(err)))
+    checkReady()
     // The listener is in place before the ping, so no engine change is missed, and a ping that answers late never
     // hides one.
     let engineChanged = false
@@ -143,7 +177,10 @@ export default function StudioApp() {
             setSignIn(event.code === undefined ? null : event)
           }
           if (event.step === 'ask') setSignIn(event)
-          if (event.step === 'done') setSignIn(null)
+          if (event.step === 'done') {
+            setSignIn(null)
+            checkReady()
+          }
           if (event.step === 'failed') {
             setSignIn(null)
             setError(event.detail)
@@ -160,30 +197,50 @@ export default function StudioApp() {
     }
   }, [])
 
-  /** Saves the typed text now, if any waits to be saved. */
+  /** Saves the draft now, if one waits to be saved. */
   const saveDraft = async () => {
-    const draft = unsaved.current
-    if (draft === null) return
-    window.clearTimeout(draft.timer)
+    const waiting = unsaved.current
+    if (waiting === null) return
+    window.clearTimeout(waiting.timer)
     unsaved.current = null
-    drafts.current = { ...drafts.current, [draft.key]: { text: draft.text } }
-    await sidecar('drafts.set', { key: draft.key, text: draft.text, attachments: [] })
+    drafts.current = { ...drafts.current, [waiting.key]: waiting.draft }
+    await sidecar('drafts.set', { key: waiting.key, ...waiting.draft })
+  }
+
+  // The composer's pictures as they are now, for a draft saved from outside a render, and to free their previews.
+  const unsent = useRef(attachments)
+  unsent.current = attachments
+  useEffect(() => () => unsent.current.forEach(releaseAttachment), [])
+
+  /** Saves the open screen's draft once typing pauses: its text and its pictures. */
+  const queueDraft = (text: string, pictures: Attachment[]) => {
+    if (unsaved.current !== null) window.clearTimeout(unsaved.current.timer)
+    const timer = window.setTimeout(() => void saveDraft().catch((err: unknown) => setError(String(err))), DRAFT_PAUSE_MS)
+    unsaved.current = { key: currentId.current ?? START, draft: { text, attachments: pictures.map((a) => a.path) }, timer }
   }
 
   const type = (value: string) => {
     edits.current += 1
     setText(value)
-    if (unsaved.current !== null) window.clearTimeout(unsaved.current.timer)
-    const timer = window.setTimeout(() => void saveDraft().catch((err: unknown) => setError(String(err))), DRAFT_PAUSE_MS)
-    unsaved.current = { key: currentId.current ?? START, text: value, timer }
+    queueDraft(value, unsent.current)
     if (currentId.current === null) typedOnStart.current = true
   }
   useEffect(() => () => window.clearTimeout(unsaved.current?.timer), [])
 
-  // Pasted pictures still waiting when the studio closes give their previews back.
-  const unsent = useRef(attachments)
-  unsent.current = attachments
-  useEffect(() => () => unsent.current.forEach(releaseAttachment), [])
+  /** Changes the composer's pictures, and saves them with the draft. */
+  const setPictures = (next: Attachment[]) => {
+    unsent.current = next
+    setAttachments(next)
+    queueDraft(composerText.current, next)
+  }
+
+  // A quit or the window's close first saves the draft still waiting, then lets the quit go on.
+  useEffect(() => {
+    const unlisten = onQuitFlush(saveDraft)
+    return () => {
+      void unlisten.then((stop) => stop())
+    }
+  }, [])
 
   // Pictures dropped anywhere on the window join the next message.
   useEffect(() => {
@@ -194,7 +251,7 @@ export default function StudioApp() {
         setError('Drop a picture: PNG, JPG, HEIC, WebP, or GIF.')
         return
       }
-      setAttachments((prev) => [...prev, ...pictures.map((path) => ({ kind: 'path' as const, name: path.split(/[\\/]/).pop() ?? path, path }))])
+      setPictures([...unsent.current, ...pictures.map(savedAttachment)])
     })
     return () => {
       void unlisten.then((stop) => stop())
@@ -228,9 +285,10 @@ export default function StudioApp() {
   const show = (project: Project | null, keepText = false) => {
     void saveDraft().catch((err: unknown) => setError(String(err)))
     if (!keepText) {
-      setText(drafts.current[project?.id ?? START]?.text ?? '')
+      const draft = drafts.current[project?.id ?? START]
+      setText(draft?.text ?? '')
       attachments.forEach(releaseAttachment)
-      setAttachments([])
+      setAttachments((draft?.attachments ?? []).map(savedAttachment))
     }
     loadRequest.current += 1
     currentId.current = project?.id ?? null
@@ -266,7 +324,7 @@ export default function StudioApp() {
 
   const send = async () => {
     const message = text.trim()
-    if ((!message && attachments.length === 0) || sendingNow.current || running) return
+    if ((!message && attachments.length === 0) || sendingNow.current || running || notReady) return
     sendingNow.current = true
     setSending(true)
     // The view this send belongs to. A move to another project or the start screen
@@ -291,7 +349,7 @@ export default function StudioApp() {
           if (unsaved.current !== null) window.clearTimeout(unsaved.current.timer)
           unsaved.current = null
           if (typed.trim() !== message) {
-            drafts.current = { ...drafts.current, [created.id]: { text: typed }, [START]: { text: '' } }
+            drafts.current = { ...drafts.current, [created.id]: { text: typed, attachments: [] }, [START]: { text: '', attachments: [] } }
             for (const [key, value] of [[created.id, typed], [START, '']]) {
               void sidecar('drafts.set', { key, text: value, attachments: [] }).catch((err: unknown) => setError(String(err)))
             }
@@ -315,9 +373,7 @@ export default function StudioApp() {
         : {
             text: message,
             outgoing,
-            images: await Promise.all(
-              outgoing.map((a) => (a.kind === 'path' ? studio.importFile(id, a.path) : studio.saveBytes(id, a.name, a.bytes))),
-            ),
+            images: await Promise.all(outgoing.map((a) => studio.importFile(id, a.path))),
             id: crypto.randomUUID(),
           }
       pending.current.set(id, sendable)
@@ -327,7 +383,7 @@ export default function StudioApp() {
       // Text typed while this was sending is a new message, even one that reads the same, so the sent text is cleared
       // only when nothing was typed since, and only in the view that sent it.
       if (edits.current === sentEdits) {
-        if (drafts.current[id]?.text.trim() === message) drafts.current = { ...drafts.current, [id]: { text: '' } }
+        if (drafts.current[id]?.text.trim() === message) drafts.current = { ...drafts.current, [id]: { text: '', attachments: [] } }
         if (loadRequest.current === request) setText((now) => (now.trim() === message ? '' : now))
       }
       // A picture added while these imported waits for the next message.
@@ -354,23 +410,29 @@ export default function StudioApp() {
     if (current) setSendErrors(({ [current.id]: _, ...rest }) => rest)
   }
 
+  // Send waits for the check, and stays off while the agent lacks a sign-in, uv, or Python.
+  const notReady = needs === null || needs.length > 0
   const composer = (placeholder: string, autoFocus: boolean) => (
-    <Composer
-      text={text}
-      onText={type}
-      attachments={attachments}
-      onAttach={(more) => setAttachments((prev) => [...prev, ...more])}
-      onRemove={(index) => {
-        releaseAttachment(attachments[index])
-        setAttachments((prev) => prev.filter((_, i) => i !== index))
-      }}
-      onSend={() => void send()}
-      onStop={current ? () => void sidecar('chat.stop', { project: current.id }).catch((err: unknown) => setError(String(err))) : undefined}
-      busy={sending || running}
-      running={running}
-      placeholder={placeholder}
-      autoFocus={autoFocus}
-    />
+    <>
+      {needs !== null && <ReadinessBanner needs={needs} onCheck={checkReady} onError={setError} />}
+      <Composer
+        text={text}
+        onText={type}
+        attachments={attachments}
+        onAttach={(more) => setPictures([...unsent.current, ...more])}
+        onPaste={(name, bytes) => sidecar('drafts.picture', { name, data: toBase64(bytes) })}
+        onRemove={(index) => {
+          releaseAttachment(attachments[index])
+          setPictures(unsent.current.filter((_, i) => i !== index))
+        }}
+        onSend={() => void send()}
+        onStop={current ? () => void sidecar('chat.stop', { project: current.id }).catch((err: unknown) => setError(String(err))) : undefined}
+        busy={sending || running || notReady}
+        running={running}
+        placeholder={placeholder}
+        autoFocus={autoFocus}
+      />
+    </>
   )
 
   return (
@@ -401,6 +463,7 @@ export default function StudioApp() {
             <button type="button" onClick={dismissError} aria-label="Dismiss">×</button>
           </div>
         )}
+        {importBlocked !== null && <ImportBlockedBanner folder={importBlocked} onRetry={retryImport} onError={setError} />}
         {signIn && (
           <SignInAsk
             key={signIn.step === 'ask' ? signIn.message : signIn.url}

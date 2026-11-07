@@ -1,3 +1,4 @@
+import { dirname, join } from 'node:path'
 import { parseArgs } from 'node:util'
 import type { MutableModels } from '@earendil-works/pi-ai'
 import { createRegistry } from '@earendil-works/pi-durable'
@@ -88,13 +89,26 @@ export async function runSidecar({ argv, addProviders }: SidecarOptions): Promis
   console.error(`agent tools: ${tools.map((tool) => tool.name).join(', ')}`)
 
   // The import asks Rust for nothing, so it ends before the pipe opens and the first call sees every old chat. Projects
-  // already in the index were imported before, and their transcripts are not read again.
-  const known = new Set((await store.projects()).map((project) => project.id))
-  const imported = await store.importLegacy(legacyProjects(projects, known))
-  if (imported.length > 0) console.error(`imported ${imported.length} chats from before the store: ${imported.join(', ')}`)
+  // already in the index were imported before, and their transcripts are not read again. It runs again when the person
+  // asks, as after letting the app read a projects folder macOS kept from it.
+  const importOld = async () => {
+    const known = new Set((await store.projects()).map((project) => project.id))
+    const { found, blocked } = legacyProjects(projects, known)
+    const imported = await store.importLegacy(found)
+    if (imported.length > 0) console.error(`imported ${imported.length} chats from before the store: ${imported.join(', ')}`)
+    return { imported: imported.length, blocked }
+  }
+  let oldChats = await importOld()
+  const legacy = {
+    blocked: () => oldChats.blocked,
+    retry: async () => {
+      oldChats = await importOld()
+      return oldChats
+    },
+  }
   // The pipe opens before the pass is asked for and before the reconcile, which asks Rust's Keychain whether a
   // waited-on login is there now.
-  const serving = host.serve(handlers({ store, logins, chats, version }), process.stdin)
+  const serving = host.serve(handlers({ store, logins, chats, version, legacy, pictures: join(dirname(data), 'pictures') }), process.stdin)
   // Work a crash cut off resumes only with the pass. Without it an update is installing, and the work resumes after
   // the restart.
   const resumable = await busy.watch(store.harness)

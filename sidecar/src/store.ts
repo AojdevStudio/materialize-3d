@@ -13,7 +13,7 @@ import { type Conversation, defineDoc, type HarnessOptions, Harness, type Regist
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node'
 import type { LoginIndex } from './inference'
 import type { LegacyProject } from './legacy'
-import type { AppState, Draft, LoginKind, Project, Settings, Setup, Turn, Waiting } from './protocol'
+import type { Draft, LoginKind, Project, Settings, Setup, StoredState, Turn, Waiting } from './protocol'
 
 const context = BACKGROUND_CONTEXT
 
@@ -180,9 +180,9 @@ export class Store implements LoginIndex {
   }
 
   /** The app's state at one point in the store's history: the four documents are read in one commit. */
-  async state(): Promise<AppState> {
+  async state(): Promise<StoredState> {
     const id = this.root.id
-    const state: AppState = await this.harness.commit(
+    const state: StoredState = await this.harness.commit(
       async (tx) =>
         // A plain copy, since the documents a commit hands out are only valid inside it.
         JSON.parse(

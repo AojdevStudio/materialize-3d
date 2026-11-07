@@ -125,6 +125,39 @@ describe('the run tool', () => {
   }, 30_000)
 })
 
+describe('the check before a send', () => {
+  /** A uv on PATH that knows its version, and finds a Python only when `python` is true. */
+  function toolchain(python: boolean) {
+    const dir = mkdtempSync(join(tmpdir(), 'm3d-uv-'))
+    writeFileSync(join(dir, 'uv'), `#!/bin/sh\n[ "$1" = --version ] && { echo "uv 0.9.0"; exit 0; }\n[ "$1 $2" = "python find" ] && { ${python ? 'echo /usr/bin/python3; exit 0' : 'exit 2'}; }\nexit 1\n`)
+    chmodSync(join(dir, 'uv'), 0o755)
+    return `${dir}:/usr/bin:/bin`
+  }
+  const check = async (path: string, key: boolean) => {
+    const dir = mkdtempSync(join(tmpdir(), 'm3d-check-'))
+    const app = spawnSidecar(join(dir, 'state'), join(dir, 'projects'), new Map(), { env: { PATH: path } })
+    await app.next()
+    if (key) await app.call('auth.setKey', { provider: 'anthropic', key: 'token' })
+    const needs = (await app.call('setup.check', {})) as { kind: string; fix: string }[]
+    await app.quit()
+    return needs
+  }
+
+  test('names a missing sign-in and a missing uv, each with its fix', async () => {
+    const needs = await check('/usr/bin:/bin', false)
+    expect(needs.map((need) => need.kind)).toEqual(['login', 'uv'])
+    expect(needs.every((need) => need.fix.length > 0)).toBe(true)
+  })
+
+  test('names a missing Python once uv is there', async () => {
+    expect((await check(toolchain(false), true)).map((need) => need.kind)).toEqual(['python'])
+  })
+
+  test('has nothing to name when the sign-in, uv, and Python are all there', async () => {
+    expect(await check(toolchain(true), true)).toEqual([])
+  })
+})
+
 describe("a command's log", () => {
   test('is followed from where the last read stopped, and a long burst or a recovery gets only its end', () => {
     const log = join(mkdtempSync(join(tmpdir(), 'm3d-log-')), 'op.json.log')

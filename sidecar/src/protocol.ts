@@ -85,7 +85,20 @@ export type Turn = {
  */
 export type ChatView = { project: string; entries: ChatEntry[]; running: boolean; waiting: Waiting | null; turn: Turn | null; seq: number }
 
-export type AppState = { setup: Setup; settings: Settings; projects: Project[]; drafts: Record<string, Draft> }
+/** What the store keeps of the app. */
+export type StoredState = { setup: Setup; settings: Settings; projects: Project[]; drafts: Record<string, Draft> }
+
+/**
+ * The app as the window sees it. `importBlocked` names the projects folder when the chats from before the store could
+ * not be read from it, as when macOS keeps Documents from the app, so the window can say how to let them in.
+ */
+export type AppState = StoredState & { importBlocked: string | null }
+
+/** Something the agent needs before a message can go out, and the one thing that gives it. */
+export type Need =
+  | { kind: 'login'; provider: ProviderId; name: string; fix: string }
+  | { kind: 'uv'; fix: string }
+  | { kind: 'python'; fix: string }
 
 /** What the window can ask the sidecar, by method name. */
 export interface Methods {
@@ -94,6 +107,12 @@ export interface Methods {
   'setup.set': { params: Setup; result: AppState }
   'settings.set': { params: Partial<Settings>; result: AppState }
   'drafts.set': { params: { key: string } & Draft; result: null }
+  /** Keeps a pasted picture in a file of its own, outside any project, and answers its path, for a draft to keep. */
+  'drafts.picture': { params: { name: string; data: string }; result: string }
+  /** What the agent needs before a send: the chosen model's sign-in, uv, and a Python uv can run. Empty when ready. */
+  'setup.check': { params: Record<string, never>; result: Need[] }
+  /** Imports the chats from before the store again, as after the person let the app read the projects folder. */
+  'legacy.import': { params: Record<string, never>; result: { imported: number; blocked: string | null } }
   'projects.create': { params: { title: string }; result: Project }
   'auth.status': { params: Record<string, never>; result: Login[] }
   /** A key, or for Anthropic a proxy's base URL and token. */

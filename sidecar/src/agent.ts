@@ -24,6 +24,7 @@ import { NodeExecutionEnv } from '@earendil-works/pi-durable/env/node'
 import { createEditTool, createReadTool, createWriteTool } from '@earendil-works/pi-durable/tools'
 import { arr, int, obj, opt, str } from '@earendil-works/pi-schema'
 import type { Host } from './host'
+import type { Need } from './protocol'
 import { isLoginFailure } from './inference'
 import { textOf } from './transcript'
 import workflow from './workflow.md' with { type: 'text' }
@@ -40,6 +41,40 @@ const OUTPUT_TAIL = 20_000
 
 /** The only variables a command the agent runs gets. */
 const COMMAND_ENV = ['PATH', 'HOME', 'USER', 'LANG', 'TMPDIR'] as const
+
+/** The environment a command the agent runs gets: the sidecar's own values of `COMMAND_ENV`, and nothing else. */
+function commandEnv(): Record<string, string> {
+  const vars: Record<string, string> = {}
+  for (const name of COMMAND_ENV) {
+    const value = process.env[name]
+    if (value !== undefined) vars[name] = value
+  }
+  return vars
+}
+
+/** Whether `command` runs to a zero exit in the environment the agent's commands get. A missing program does not. */
+function succeeds(command: string[]): boolean {
+  try {
+    return Bun.spawnSync(command, { env: commandEnv(), stdout: 'ignore', stderr: 'ignore' }).exitCode === 0
+  } catch {
+    return false
+  }
+}
+
+/**
+ * What the `run` tool lacks in this sidecar's environment: uv, which runs every build and check script, and a Python
+ * that uv can run them with. A Python uv would have to download first counts as missing, as a turn could not count on
+ * the network for it.
+ */
+export function toolchainNeeds(): Need[] {
+  if (!succeeds(['uv', '--version'])) {
+    return [{ kind: 'uv', fix: 'Install uv, the tool the agent runs its build scripts with (docs.astral.sh/uv), then check again.' }]
+  }
+  if (!succeeds(['uv', 'python', 'find'])) {
+    return [{ kind: 'python', fix: 'Install a Python for uv: run "uv python install" in Terminal, then check again.' }]
+  }
+  return []
+}
 
 /**
  * Runs a command under a watch on the sidecar. Pi starts each command in a process group of its own, so it can end the
@@ -228,11 +263,7 @@ export function agentTools({ host, projectOf, signedIn, loginSaves }: AgentHost)
     execute: async ({ args, timeoutSeconds }, api, context) => {
       const op = operation<{ exitCode: number; output: string }>(api, context)
       const { env } = op
-      const vars: Record<string, string> = { M3D_OPERATION_ID: op.id }
-      for (const name of COMMAND_ENV) {
-        const value = process.env[name]
-        if (value !== undefined) vars[name] = value
-      }
+      const vars: Record<string, string> = { ...commandEnv(), M3D_OPERATION_ID: op.id }
       const log = `${op.receipt}.log`
       const exited = `${op.receipt}.exit`
       // A command a crash cut off may still be ending: wait until its watch has ended it or it left its exit code.

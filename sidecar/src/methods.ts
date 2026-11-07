@@ -1,7 +1,11 @@
+import { mkdirSync, writeFileSync } from 'node:fs'
+import { basename, join } from 'node:path'
 import { arr, bool, compile, lit, obj, opt, str, union } from '@earendil-works/pi-schema'
+import { toolchainNeeds } from './agent'
 import type { Chats } from './chat'
 import type { Handlers } from './host'
 import type { Logins } from './inference'
+import type { AppState, Need } from './protocol'
 import type { Store } from './store'
 
 export interface Services {
@@ -9,6 +13,10 @@ export interface Services {
   logins: Logins
   chats: Chats
   version: string
+  /** The import of the chats from before the store: the folder it could not read, and a way to run it again. */
+  legacy: { blocked(): string | null; retry(): Promise<{ imported: number; blocked: string | null }> }
+  /** The folder pasted pictures are kept in until they are sent, outside every project. */
+  pictures: string
 }
 
 const step = union([lit('welcome'), lit('check'), lit('model'), lit('printer'), lit('ready')])
@@ -18,22 +26,49 @@ const printer = obj({ machine: str(), process: str(), filament: str() })
 const provider = union([lit('anthropic'), lit('openai-codex'), lit('opencode-go')])
 
 /** Every method the window can call, each parsed at the pipe before it runs. */
-export function handlers({ store, logins, chats, version }: Services): Handlers {
+export function handlers({ store, logins, chats, version, legacy, pictures }: Services): Handlers {
+  const state = async (): Promise<AppState> => ({ ...(await store.state()), importBlocked: legacy.blocked() })
   return {
     'app.ping': { params: compile(obj({})), run: async () => ({ version }) },
-    'state.get': { params: compile(obj({})), run: () => store.state() },
+    'state.get': { params: compile(obj({})), run: state },
     'setup.set': {
       params: compile(obj({ step, done: bool() })),
       run: async (setup) => {
         await store.setSetup(setup)
-        return store.state()
+        return state()
       },
     },
     'settings.set': {
       params: compile(obj({ model: opt(model), thinking: opt(thinking), printer: opt(printer) })),
       run: async (change) => {
         await store.setSettings(change)
-        return store.state()
+        return state()
+      },
+    },
+    'setup.check': {
+      params: compile(obj({})),
+      run: async () => {
+        // The chosen model's provider must have a login. A refused or expired one still waits in the turn, with its fix.
+        const { settings } = await store.state()
+        const login = (await logins.status()).find((l) => l.provider === settings.model.provider)
+        const needs: Need[] =
+          login !== undefined && login.login === null
+            ? [{ kind: 'login', provider: login.provider, name: login.name, fix: `Sign in to ${login.name} before you send.` }]
+            : []
+        return [...needs, ...toolchainNeeds()]
+      },
+    },
+    'legacy.import': { params: compile(obj({})), run: () => legacy.retry() },
+    'drafts.picture': {
+      params: compile(obj({ name: str({ minLength: 1 }), data: str() })),
+      run: async ({ name, data }) => {
+        // Only a plain file name: the picture's folder is the sidecar's, not one the window names.
+        if (basename(name) !== name || name.startsWith('.')) throw new Error(`${name} is not a picture's file name`)
+        const folder = join(pictures, crypto.randomUUID())
+        mkdirSync(folder, { recursive: true })
+        const path = join(folder, name)
+        writeFileSync(path, Buffer.from(data, 'base64'))
+        return path
       },
     },
     'drafts.set': {

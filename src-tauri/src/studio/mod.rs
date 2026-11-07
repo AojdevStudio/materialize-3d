@@ -3,6 +3,7 @@
 //! chats themselves live in the sidecar's store (`crate::sidecar`).
 
 pub mod files;
+pub mod quit;
 pub mod slice;
 
 use std::path::PathBuf;
