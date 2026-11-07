@@ -741,6 +741,12 @@
           "markdownDescription": "Enables the set_default_printer command without any pre-configured scope."
         },
         {
+          "description": "Enables the sidecar command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-sidecar",
+          "markdownDescription": "Enables the sidecar command without any pre-configured scope."
+        },
+        {
           "description": "Enables the slice_model command without any pre-configured scope.",
           "type": "string",
           "const": "allow-slice-model",
@@ -1255,6 +1261,12 @@
           "type": "string",
           "const": "deny-set-default-printer",
           "markdownDescription": "Denies the set_default_printer command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the sidecar command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-sidecar",
+          "markdownDescription": "Denies the sidecar command without any pre-configured scope."
         },
         {
           "description": "Denies the slice_model command without any pre-configured scope.",

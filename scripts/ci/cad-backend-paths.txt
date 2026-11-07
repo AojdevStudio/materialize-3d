@@ -16,3 +16,5 @@ scripts/ci/install-bambu-linux.sh
 scripts/ci/install-bambu-macos.sh
 scripts/ci/cad-runtime-cache.sh
 scripts/ci/cad-backend-paths.txt
+sidecar/
+scripts/build-sidecar.sh

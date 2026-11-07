@@ -305,28 +305,78 @@ fn app_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
     app.path().app_data_dir().map_err(|e| format!("app data folder: {e}"))
 }
 
+/// How long the login shell may take to tell its PATH before the app goes on without it.
+const LOGIN_SHELL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// The PATH of the person's login shell. An app opened from Finder starts with
 /// only the system folders, where `claude`, `codex`, and `uv` are not.
-fn login_path() -> &'static str {
+pub(crate) fn login_path() -> &'static str {
     static PATH: OnceLock<String> = OnceLock::new();
     PATH.get_or_init(|| {
         let current = std::env::var("PATH").unwrap_or_default();
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_owned());
-        let marker = "__M3D_PATH__";
-        let from_shell = std::process::Command::new(shell)
-            .args(["-ilc", &format!("printf '{marker}%s' \"$PATH\"")])
-            .stdin(Stdio::null())
-            .stderr(Stdio::null())
-            .output()
-            .ok()
-            .and_then(|out| String::from_utf8_lossy(&out.stdout).rsplit_once(marker).map(|(_, path)| path.trim().to_owned()))
-            .filter(|path| !path.is_empty());
-        match from_shell {
+        match shell_path(&shell, LOGIN_SHELL_DEADLINE) {
             Some(path) if current.is_empty() => path,
             Some(path) => format!("{path}:{current}"),
             None => current,
         }
     })
+}
+
+/// The PATH `shell` reports as a login shell, or none when it fails, says nothing, or does not end within
+/// `deadline`. A shell whose startup files hang is ended with all it started, so the sidecar and the runner still
+/// start.
+fn shell_path(shell: &str, deadline: std::time::Duration) -> Option<String> {
+    let marker = "__M3D_PATH__";
+    let end = std::time::Instant::now() + deadline;
+    let mut command = std::process::Command::new(shell);
+    command
+        .args(["-ilc", &format!("printf '{marker}%s' \"$PATH\"")])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    // The shell leads a session of its own, so the deadline ends what its startup files started too. A session, not
+    // only a group: a shell in a background group of the terminal the app started from stops before its startup
+    // files, and one in a session of its own has no terminal to stop for.
+    #[cfg(unix)]
+    // SAFETY: setsid is async-signal-safe and only makes the child a session leader before it runs the shell.
+    unsafe {
+        std::os::unix::process::CommandExt::pre_exec(&mut command, || {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let mut child = command.spawn().ok()?;
+    let mut stdout = child.stdout.take()?;
+    let (sent, said) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut out = Vec::new();
+        let _ = std::io::Read::read_to_end(&mut stdout, &mut out);
+        let _ = sent.send(out);
+    });
+    let out = said.recv_timeout(deadline).ok();
+    // Startup files can send stdout elsewhere and go on running, so the shell's end has the same deadline.
+    let ended = loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break true,
+            Ok(None) if std::time::Instant::now() < end => std::thread::sleep(std::time::Duration::from_millis(20)),
+            _ => break false,
+        }
+    };
+    if !ended {
+        #[cfg(unix)]
+        if let Ok(group) = i32::try_from(child.id()) {
+            // SAFETY: killpg only sends a signal, to the group this shell leads, as its session leader, and has not been
+            // reaped from.
+            unsafe { libc::killpg(group, libc::SIGKILL) };
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    let out = out?;
+    String::from_utf8_lossy(&out).rsplit_once(marker).map(|(_, path)| path.trim().to_owned()).filter(|path| !path.is_empty())
 }
 
 /// The image the model gets for a picture in `refs/`. Claude reads JPEG, PNG,
@@ -639,6 +689,27 @@ pub fn studio_cancel(turns: State<'_, Turns>, project: String) -> Result<(), Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn a_login_shell_that_hangs_is_ended_at_its_deadline() {
+        let dir = tempfile::tempdir().unwrap();
+        let shell = dir.path().join("slow-shell");
+        std::fs::write(&shell, "#!/bin/sh\nsleep 30\n").unwrap();
+        let mut perms = std::fs::metadata(&shell).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+        std::fs::set_permissions(&shell, perms).unwrap();
+        let started = std::time::Instant::now();
+        assert_eq!(shell_path(shell.to_str().unwrap(), std::time::Duration::from_millis(300)), None);
+        assert!(started.elapsed() < std::time::Duration::from_secs(5), "took {:?}", started.elapsed());
+
+        // Startup files that send stdout elsewhere and then hang end at the deadline too.
+        std::fs::write(&shell, "#!/bin/sh\nexec >/dev/null\nsleep 30\n").unwrap();
+        let started = std::time::Instant::now();
+        assert_eq!(shell_path(shell.to_str().unwrap(), std::time::Duration::from_millis(300)), None);
+        assert!(started.elapsed() < std::time::Duration::from_secs(5), "took {:?}", started.elapsed());
+        assert!(shell_path("/bin/sh", std::time::Duration::from_secs(5)).is_some_and(|path| !path.is_empty()));
+    }
 
     const SETTLE: std::time::Duration = std::time::Duration::from_millis(50);
 

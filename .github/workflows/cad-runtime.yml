@@ -389,6 +389,20 @@ jobs:
           cache-targets: false
           cache-bin: false
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      # A job-local bun, for the sidecar build below. setup-bun would otherwise replace the bun in the runner
+      # user's ~/.bun/bin, which other jobs on this host also run.
+      - uses: oven-sh/setup-bun@v2
+        if: env.WORK == 'full'
+        env:
+          HOME: ${{ runner.temp }}/bun-home
+        with:
+          bun-version: "1.4.4"
+      # After the Rust toolchain, which build-sidecar.sh asks for the target. tauri-build refuses to build the app crate,
+      # tests included, until the bundled sidecar exists.
+      - name: Build the sidecar
+        if: env.WORK == 'full'
+        working-directory: .
+        run: scripts/build-sidecar.sh
       - name: The runner can boot a microVM (KVM, vhost-vsock, QEMU)
         if: env.WORK == 'full'
         run: |
@@ -456,6 +470,19 @@ jobs:
         run: |
           printf 'Part-kind jobs reused: run %s passed both with full work under the key %s (%s/%s). The tests are skipped and this check passes.\n' \
             "$SOURCE_RUN" "$KEY" "$RUN_URL" "$SOURCE_RUN" | tee -a "$GITHUB_STEP_SUMMARY"
+      # A job-local bun, for the sidecar build below. setup-bun would otherwise replace the bun in the runner
+      # user's ~/.bun/bin, which other jobs on this host also run.
+      - uses: oven-sh/setup-bun@v2
+        if: env.WORK == 'full'
+        env:
+          HOME: ${{ runner.temp }}/bun-home
+        with:
+          bun-version: "1.4.4"
+      # tauri-build refuses to build the app crate, tests included, until the bundled sidecar exists.
+      - name: Build the sidecar
+        if: env.WORK == 'full'
+        working-directory: .
+        run: scripts/build-sidecar.sh
       - uses: actions/download-artifact@v4
         if: env.WORK == 'full'
         with:

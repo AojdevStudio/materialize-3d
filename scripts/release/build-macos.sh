@@ -156,6 +156,7 @@ RUSTFLAGS="--remap-path-prefix=$HOME=~" M3D_CAD_HELPER_TEAM="$team" env -u VITE_
 app="$target/release/bundle/macos/Materialize 3D.app"
 bin="$app/Contents/MacOS/materialize-3d"
 helper="$app/Contents/MacOS/materialize-cad-host"
+sidecar="$app/Contents/MacOS/materialize-sidecar"
 install -m 0755 "$helper_bin" "$helper"
 mkdir -p "$app/Contents/Resources/cad-runtime"
 for file in Image rootfs.img job.img; do
@@ -164,11 +165,15 @@ done
 
 echo "release: signing and notarizing the app"
 # Inside out: the helper gets its own signature with the virtualization
-# entitlement, then the app's signature seals it with the rest of the bundle.
-# One notarization covers both, and the staple on the app covers the helper,
-# which as a bare executable could not carry a staple of its own.
+# entitlement and the sidecar its own with the JIT entitlement, then the app's
+# signature seals both with the rest of the bundle.
+# One notarization covers all three, and the staple on the app covers the
+# helper and the sidecar, which as bare executables could not carry their own.
 sign --options runtime --identifier com.aojdevstudio.materialize3d.cad-host \
   --entitlements cad-host/entitlements.plist "$helper"
+# Tauri bundles the sidecar (bundle.externalBin). It gets its own signature too, with the JIT entitlement Bun needs.
+sign --options runtime --identifier com.aojdevstudio.materialize3d.sidecar \
+  --entitlements sidecar/entitlements.plist "$sidecar"
 sign --options runtime "$app"
 ditto -c -k --keepParent "$app" "$workdir/app.zip"
 notarize "$workdir/app.zip"
@@ -186,7 +191,7 @@ plist="$app/Contents/Info.plist"
 [[ "$(plutil -extract CFBundleShortVersionString raw "$plist")" == "$version" ]] || die "Info.plist version is not $version"
 # grep reads a saved copy: piping strings into grep -q would fail on SIGPIPE
 # under pipefail exactly when a match is found.
-for exe in "$bin" "$helper"; do
+for exe in "$bin" "$helper" "$sidecar"; do
   strings "$exe" > "$workdir/strings.txt"
   if grep -qE 'M3D_E2E_(TOKEN|PORT|DATA_DIR|UPDATE_FEED)' "$workdir/strings.txt"; then die "the e2e harness is in $exe"; fi
   if grep -qF "$HOME" "$workdir/strings.txt"; then die "$exe embeds the build machine's home path"; fi

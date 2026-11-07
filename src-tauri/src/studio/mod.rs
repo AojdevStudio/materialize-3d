@@ -7,6 +7,7 @@
 
 pub mod files;
 mod lean;
+pub mod slice;
 pub mod turn;
 
 use std::path::{Path, PathBuf};
@@ -70,7 +71,7 @@ fn projects_root() -> Result<PathBuf, String> {
 /// A project id is one plain folder name, never a path. Ids are `<date>-<slug>`,
 /// which is also a valid host name that starts with a digit: the preview serves
 /// each project as its own host.
-fn project_dir(id: &str) -> Result<PathBuf, String> {
+pub(crate) fn project_dir(id: &str) -> Result<PathBuf, String> {
     if id.is_empty() || id.starts_with('.') || id.contains(['/', '\\']) {
         return Err(format!("bad project id {id:?}"));
     }
