@@ -16,7 +16,7 @@ export const savedAttachment = (path: string): Attachment => ({ name: path.split
 
 /** Frees a pasted picture's preview once it is sent, removed, or left. */
 /** A picture pasted into the composer, before it is kept in a file. */
-export type PastedPicture = { name: string; bytes: Uint8Array; previewUrl: string }
+export type PastedPicture = { name: string; file: File }
 
 export function releaseAttachment(attachment: Attachment): void {
   if (attachment.previewUrl !== undefined) URL.revokeObjectURL(attachment.previewUrl)
@@ -128,18 +128,16 @@ interface ComposerProps {
 export function Composer({ text, onText, attachments, onAttach, onPaste, onRemove, onSend, onStop, busy, running, placeholder, autoFocus }: ComposerProps) {
   const empty = !text.trim() && attachments.length === 0
 
-  const paste = async (event: React.ClipboardEvent) => {
+  const paste = (event: React.ClipboardEvent) => {
     const pictures = [...event.clipboardData.files].filter((f) => f.type.startsWith('image/'))
     if (pictures.length === 0) return
     event.preventDefault()
+    // Handed over at once, before any wait, so the pictures stay with the screen they were pasted on.
     onPaste(
-      await Promise.all(
-        pictures.map(async (file, i) => ({
-          name: file.name && file.name !== 'image.png' ? file.name : `pasted-${Date.now()}-${i}.${file.type.split('/')[1] ?? 'png'}`,
-          bytes: new Uint8Array(await file.arrayBuffer()),
-          previewUrl: URL.createObjectURL(file),
-        })),
-      ),
+      pictures.map((file, i) => ({
+        name: file.name && file.name !== 'image.png' ? file.name : `pasted-${Date.now()}-${i}.${file.type.split('/')[1] ?? 'png'}`,
+        file,
+      })),
     )
   }
 

@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, rmSync } from 'node:fs'
+import { existsSync, readdirSync, rmSync, statSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { parseArgs } from 'node:util'
 import type { MutableModels } from '@earendil-works/pi-ai'
@@ -100,13 +100,16 @@ export async function runSidecar({ argv, addProviders }: SidecarOptions): Promis
     return { imported: imported.length, blocked }
   }
   let oldChats = await importOld()
-  // A pasted picture is kept until it is sent, which copies it into its project, or its draft lets it go. At the start
-  // no window has one pending, so each kept picture no draft names is removed.
+  // A pasted picture is kept until it is sent, which copies it into its project, or its draft lets it go. A window that
+  // outlived a crash may still hold one it has not saved in a draft yet, so only pictures older than a day that no
+  // draft names are removed.
   const pictures = join(dirname(data), 'pictures')
   const named = new Set(Object.values((await store.state()).drafts).flatMap((draft) => draft.attachments))
+  const dayAgo = Date.now() - 86_400_000
   for (const folder of existsSync(pictures) ? readdirSync(pictures) : []) {
-    const files = readdirSync(join(pictures, folder))
-    if (!files.some((file) => named.has(join(pictures, folder, file)))) rmSync(join(pictures, folder), { recursive: true, force: true })
+    const path = join(pictures, folder)
+    if (statSync(path).mtimeMs > dayAgo) continue
+    if (!readdirSync(path).some((file) => named.has(join(path, file)))) rmSync(path, { recursive: true, force: true })
   }
   const legacy = {
     blocked: () => oldChats.blocked,

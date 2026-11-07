@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import type { ChatEntry, ChatView } from '../src/protocol'
 import { spawnSidecar } from './sidecar'
 
@@ -64,8 +64,15 @@ describe('a picture pasted into a draft', () => {
     const second = spawnSidecar(join(dir, 'state'), join(dir, 'projects'))
     await second.next()
     expect(existsSync(kept)).toBe(true)
-    expect(existsSync(dropped)).toBe(false)
+    // A picture from a moment ago may still wait in a window that outlived a crash, so only old ones go.
+    expect(existsSync(dropped)).toBe(true)
     await second.quit()
+    utimesSync(dirname(dropped), new Date(Date.now() - 2 * 86_400_000), new Date(Date.now() - 2 * 86_400_000))
+    const third = spawnSidecar(join(dir, 'state'), join(dir, 'projects'))
+    await third.next()
+    expect(existsSync(kept)).toBe(true)
+    expect(existsSync(dropped)).toBe(false)
+    await third.quit()
   })
 })
 

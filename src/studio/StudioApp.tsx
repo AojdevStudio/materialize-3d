@@ -91,6 +91,8 @@ export default function StudioApp() {
   const pending = useRef(new Map<string, { text: string; outgoing: Attachment[]; images: string[]; id: string }>())
   /** Whether the person typed on the start screen, so the saved draft no longer fills it. */
   const typedOnStart = useRef(false)
+  /** Whether the person changed the start screen's pictures, so its saved ones no longer fill it. */
+  const startPicturesTouched = useRef(false)
   /** The composer's text as it is now, for a send that finishes after the person typed more. */
   const composerText = useRef('')
   /** The project whose chat view is loaded. Chat changes for the open project wait in `early` until it is. */
@@ -112,8 +114,13 @@ export default function StudioApp() {
 
   /** Takes the app's saved state: projects, drafts, and whether the old chats could be read. */
   const takeState = (state: AppState) => {
-    // Drafts saved in this window since are newer, and text already typed stays.
+    // Drafts saved in this window since are newer, and text already typed stays. The start screen's saved pictures
+    // still come back when the person only typed there, even if that typing was saved.
+    const saved = state.drafts[START]
+    const local = drafts.current[START]
+    const restoreStart = !startPicturesTouched.current && saved !== undefined && saved.attachments.length > 0 && (local?.attachments.length ?? 0) === 0
     drafts.current = { ...state.drafts, ...drafts.current }
+    if (restoreStart) drafts.current = { ...drafts.current, [START]: { text: local?.text ?? saved.text, attachments: saved.attachments } }
     // A project made while this was on its way is newer than the saved list, so it stays.
     setProjects((made) => [...made.filter((p) => !state.projects.some((saved) => saved.id === p.id)), ...state.projects])
     setImportBlocked(state.importBlocked)
@@ -124,7 +131,8 @@ export default function StudioApp() {
       // then keeps them too.
       const restored = (draft?.attachments ?? []).map(savedAttachment)
       if (unsent.current.length === 0 && restored.length > 0) {
-        if (unsaved.current?.key === START) setPictures(restored)
+        // Typing already saved, or waiting to be, gets the pictures too.
+        if (typedOnStart.current) setPictures(restored)
         else {
           unsent.current = restored
           setAttachments(restored)
@@ -242,6 +250,7 @@ export default function StudioApp() {
 
   /** Changes the composer's pictures, and saves them with the draft. */
   const setPictures = (next: Attachment[]) => {
+    if (currentId.current === null) startPicturesTouched.current = true
     unsent.current = next
     setAttachments(next)
     queueDraft(composerText.current, next)
@@ -250,19 +259,18 @@ export default function StudioApp() {
   /** Keeps pasted pictures in files, then adds them to the screen they were pasted on, if the person is still there. */
   const pastePictures = (pasted: PastedPicture[]) => {
     const request = loadRequest.current
-    void Promise.all(pasted.map(({ name, bytes }) => sidecar('drafts.picture', { name, data: toBase64(bytes) })))
-      .then((paths) => {
-        const added = pasted.map(({ name, previewUrl }, i) => ({ name, path: paths[i] ?? '', previewUrl }))
-        if (request !== loadRequest.current) {
-          added.forEach(releaseAttachment)
-          return
-        }
-        setPictures([...unsent.current, ...added])
+    void Promise.all(
+      pasted.map(async ({ name, file }) => ({
+        name,
+        path: await sidecar('drafts.picture', { name, data: toBase64(new Uint8Array(await file.arrayBuffer())) }),
+        file,
+      })),
+    )
+      .then((kept) => {
+        if (request !== loadRequest.current) return
+        setPictures([...unsent.current, ...kept.map(({ name, path, file }) => ({ name, path, previewUrl: URL.createObjectURL(file) }))])
       })
-      .catch((err: unknown) => {
-        pasted.forEach(({ previewUrl }) => URL.revokeObjectURL(previewUrl))
-        setError(String(err))
-      })
+      .catch((err: unknown) => setError(String(err)))
   }
 
   // A quit or the window's close first saves the draft still waiting, then lets the quit go on.
@@ -366,6 +374,10 @@ export default function StudioApp() {
     try {
       await saveDraft()
       const sentEdits = edits.current
+      // The saved draft this send went out with: the open project's, or the start screen's, which may move to the new
+      // project. A save after it is a newer draft, which the send leaves alone.
+      const sentDraft = drafts.current[current?.id ?? START]
+      const createdHere = current === null
       let project = current
       if (!project) {
         const title = message || 'New part'
@@ -416,8 +428,8 @@ export default function StudioApp() {
       setSendErrors(({ [id]: _, ...rest }) => rest)
       // Text typed while this was sending is a new message, even one that reads the same, so the sent text is cleared
       // only when nothing was typed since, and only in the view that sent it.
-      // The sent project's saved draft goes, unless a save of a newer draft for it still waits.
-      if (drafts.current[id]?.text.trim() === message && unsaved.current?.key !== id) {
+      // The sent project's saved draft goes, unless a newer draft for it was saved since, or waits to be.
+      if (sentDraft !== undefined && drafts.current[id] === sentDraft && unsaved.current?.key !== id) {
         drafts.current = { ...drafts.current, [id]: { text: '', attachments: [] } }
       }
       if (edits.current === sentEdits && loadRequest.current === request) setText((now) => (now.trim() === message ? '' : now))
@@ -426,8 +438,12 @@ export default function StudioApp() {
       // while these imported waits for the next message.
       const sent = new Set(outgoing.map((a) => a.path))
       const unsentNames = (draft: Draft) => draft.attachments.filter((path) => !sent.has(path))
-      if (unsaved.current !== null) unsaved.current.draft = { ...unsaved.current.draft, attachments: unsentNames(unsaved.current.draft) }
-      for (const key of [id, START]) {
+      // Only this send's drafts: its project's, and the start screen's when this send made the project from it.
+      const keys = createdHere ? [id, START] : [id]
+      if (unsaved.current !== null && keys.includes(unsaved.current.key)) {
+        unsaved.current.draft = { ...unsaved.current.draft, attachments: unsentNames(unsaved.current.draft) }
+      }
+      for (const key of keys) {
         const draft = drafts.current[key]
         if (draft === undefined || draft.attachments.every((path) => !sent.has(path))) continue
         drafts.current = { ...drafts.current, [key]: { ...draft, attachments: unsentNames(draft) } }
@@ -435,8 +451,9 @@ export default function StudioApp() {
           void sidecar('drafts.set', { key, ...drafts.current[key] }).catch((err: unknown) => setError(String(err)))
         }
       }
-      if (loadRequest.current === request) {
-        unsent.current = unsent.current.filter((a) => !outgoing.includes(a))
+      // The composer of the sent project, if it is open now, even after a visit elsewhere brought its draft back.
+      if (currentId.current === id) {
+        unsent.current = unsent.current.filter((a) => !sent.has(a.path))
         setAttachments(unsent.current)
       }
       outgoing.forEach(releaseAttachment)

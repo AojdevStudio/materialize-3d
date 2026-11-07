@@ -361,6 +361,96 @@ describe('StudioApp', () => {
     })
   })
 
+  it("leaves another project's same picture alone when a send goes through", async () => {
+    let finishSend: (value: unknown) => void = () => {}
+    mockSidecar({ 'chat.send': () => new Promise((resolve) => (finishSend = resolve)), studio_import_file: () => Promise.resolve('refs/photo.jpg') }, [projectA, projectB])
+    render(<StudioApp />)
+    fireEvent.click(await screen.findByText('Project A'))
+    await screen.findByRole('banner')
+    await act(async () => listeners.drop.forEach((listener) => listener({ payload: { type: 'drop', paths: ['/Users/me/photo.jpg'] } })))
+    type('Like this')
+    fireEvent.click(screen.getByTestId('send'))
+    await waitFor(() => expect(sidecarCalls('chat.send')).toHaveLength(1))
+    fireEvent.click(screen.getByText('Project B'))
+    await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project B'))
+    await act(async () => listeners.drop.forEach((listener) => listener({ payload: { type: 'drop', paths: ['/Users/me/photo.jpg'] } })))
+    await act(async () => finishSend(null))
+    await new Promise((resolve) => setTimeout(resolve, 500))
+    const saves = sidecarCalls('drafts.set').filter((save) => save.key === projectB.id)
+    expect(saves[saves.length - 1]).toEqual({ key: projectB.id, text: '', attachments: ['/Users/me/photo.jpg'] })
+  })
+
+  it('keeps a newer saved draft that reads the same as the sent text', async () => {
+    let finishSend: (value: unknown) => void = () => {}
+    mockSidecar({ 'chat.send': () => new Promise((resolve) => (finishSend = resolve)), studio_import_file: () => Promise.resolve('refs/a.jpg') }, [projectA, projectB])
+    render(<StudioApp />)
+    fireEvent.click(await screen.findByText('Project B'))
+    await screen.findByRole('banner')
+    type('Make it red')
+    fireEvent.click(screen.getByTestId('send'))
+    await waitFor(() => expect(sidecarCalls('chat.send')).toHaveLength(1))
+    type('Make it blue')
+    type('Make it red')
+    await act(async () => listeners.drop.forEach((listener) => listener({ payload: { type: 'drop', paths: ['/Users/me/new.jpg'] } })))
+    await new Promise((resolve) => setTimeout(resolve, 500))
+    await act(async () => finishSend(null))
+    fireEvent.click(screen.getByText('Project A'))
+    fireEvent.click(screen.getByText('Project B'))
+    await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project B'))
+    expect(prompt().value).toBe('Make it red')
+    expect(screen.getByTestId('attachments').textContent).toContain('new.jpg')
+  })
+
+  it('keeps a paste on its screen even when the person leaves while its bytes are read', async () => {
+    mockSidecar({ 'drafts.picture': () => Promise.resolve('/state/pictures/1/shot.png') }, [projectA, projectB])
+    render(<StudioApp />)
+    fireEvent.click(await screen.findByText('Project A'))
+    await screen.findByRole('banner')
+    let finishRead: (bytes: ArrayBuffer) => void = () => {}
+    const file = new File(['png'], 'shot.png', { type: 'image/png' })
+    file.arrayBuffer = () => new Promise((resolve) => (finishRead = resolve))
+    fireEvent.paste(prompt(), { clipboardData: { files: [file] } })
+    fireEvent.click(screen.getByText('Project B'))
+    await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project B'))
+    await act(async () => finishRead(new ArrayBuffer(3)))
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(screen.queryByTestId('attachments')).toBeNull()
+  })
+
+  it("brings the start screen's saved pictures back when the person typed and paused before the saved state arrived", async () => {
+    let finishState: (state: unknown) => void = () => {}
+    mockSidecar({ 'state.get': () => new Promise((resolve) => (finishState = resolve)) })
+    render(<StudioApp />)
+    type('a hook')
+    await new Promise((resolve) => setTimeout(resolve, 500))
+    await act(async () =>
+      finishState({ setup: { step: 'ready', done: true }, settings, projects: [projectB], drafts: { new: { text: 'older', attachments: ['/Users/me/hook.jpg'] } }, importBlocked: null }),
+    )
+    expect(screen.getByTestId('attachments').textContent).toContain('hook.jpg')
+    await waitFor(() => {
+      const saves = sidecarCalls('drafts.set')
+      expect(saves[saves.length - 1]).toEqual({ key: 'new', text: 'a hook', attachments: ['/Users/me/hook.jpg'] })
+    })
+  })
+
+  it('takes the sent pictures out of the composer when the person left and came back before the send went through', async () => {
+    let finishSend: (value: unknown) => void = () => {}
+    mockSidecar({ 'chat.send': () => new Promise((resolve) => (finishSend = resolve)), studio_import_file: () => Promise.resolve('refs/photo.jpg') }, [projectA, projectB])
+    render(<StudioApp />)
+    fireEvent.click(await screen.findByText('Project A'))
+    await screen.findByRole('banner')
+    await act(async () => listeners.drop.forEach((listener) => listener({ payload: { type: 'drop', paths: ['/Users/me/photo.jpg'] } })))
+    type('Like this')
+    fireEvent.click(screen.getByTestId('send'))
+    await waitFor(() => expect(sidecarCalls('chat.send')).toHaveLength(1))
+    fireEvent.click(screen.getByText('Project B'))
+    await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project B'))
+    fireEvent.click(screen.getByText('Project A'))
+    await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project A'))
+    await act(async () => finishSend(null))
+    expect(screen.queryByTestId('attachments')).toBeNull()
+  })
+
   it('keeps chat changes that arrive while the chat opens', async () => {
     let finishOpen: (view: unknown) => void = () => {}
     mockSidecar({ 'chat.open': () => new Promise((resolve) => (finishOpen = resolve)) })
