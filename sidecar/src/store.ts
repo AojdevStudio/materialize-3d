@@ -126,20 +126,24 @@ export class Store {
     return new Store(lock, harness, root, options.projectsDir)
   }
 
+  /** The app's state at one point in the store's history: the four documents are read in one commit. */
   async state(): Promise<AppState> {
     const id = this.root.id
-    const [setup, settings, projects, drafts] = await Promise.all([
-      this.harness.snapshot(SetupDoc, id, context),
-      this.harness.snapshot(SettingsDoc, id, context),
-      this.harness.snapshot(ProjectsDoc, id, context),
-      this.harness.snapshot(DraftsDoc, id, context),
-    ])
-    return {
-      setup: setup ?? SetupDoc.definition.initial(),
-      settings: settings ?? SettingsDoc.definition.initial(),
-      projects: [...(projects?.projects ?? [])].sort((a, b) => b.createdMs - a.createdMs),
-      drafts: drafts?.drafts ?? {},
-    }
+    const state: AppState = await this.harness.commit(
+      async (tx) =>
+        // A plain copy, since the documents a commit hands out are only valid inside it.
+        JSON.parse(
+          JSON.stringify({
+            setup: await tx.doc(SetupDoc, id),
+            settings: await tx.doc(SettingsDoc, id),
+            projects: (await tx.doc(ProjectsDoc, id)).projects,
+            drafts: (await tx.doc(DraftsDoc, id)).drafts,
+          }),
+        ),
+      context,
+    )
+    state.projects.sort((a, b) => b.createdMs - a.createdMs)
+    return state
   }
 
   async setSetup(setup: Setup): Promise<void> {
@@ -169,7 +173,9 @@ export class Store {
   async createProject(title: string): Promise<Project> {
     const firstLine = (title.split('\n')[0] ?? '').trim().slice(0, 80) || 'New part'
     const now = new Date()
-    const base = `${now.toISOString().slice(0, 10)}-${slug(firstLine)}`
+    // The person's own date, as the folder name shows it.
+    const today = new Date(now.getTime() - now.getTimezoneOffset() * 60_000).toISOString().slice(0, 10)
+    const base = `${today}-${slug(firstLine)}`
     const project = await this.harness.commit(async (tx) => {
       const index = await tx.doc(ProjectsDoc, this.root.id)
       const taken = new Set(index.projects.map((p) => p.id))

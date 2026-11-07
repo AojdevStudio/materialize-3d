@@ -76,6 +76,31 @@ describe('app state', () => {
     await afterCrash.quit()
   })
 
+  test('the app state is read at one point in the store, never half before and half after a commit', async () => {
+    const { data, projects } = scratch()
+    const app = spawnSidecar(data, projects)
+    await app.next()
+    for (let round = 0; round < 20; round++) {
+      await app.call('drafts.set', { key: 'new', text: `Knob ${round}`, attachments: [] })
+      // The read goes out right behind the commit that moves the draft, without waiting for it.
+      app.send({ kind: 'call', id: 1000 + round, method: 'projects.create', params: { title: `Knob ${round}` } })
+      app.send({ kind: 'call', id: 2000 + round, method: 'state.get', params: {} })
+      const replies = new Map<number, unknown>()
+      while (replies.size < 2) {
+        const message = await app.next()
+        if (message?.kind === 'reply') replies.set(message.id as number, message.value)
+      }
+      const { id } = replies.get(1000 + round) as { id: string }
+      const state = replies.get(2000 + round) as { projects: { id: string }[]; drafts: Record<string, { text: string }> }
+      const made = state.projects.some((p) => p.id === id)
+      // Before the commit: no project, the draft on the start screen. After it: the project holds the draft.
+      expect({ made, onProject: state.drafts[id]?.text, onStart: state.drafts.new?.text }).toEqual(
+        made ? { made, onProject: `Knob ${round}`, onStart: undefined } : { made, onProject: undefined, onStart: `Knob ${round}` },
+      )
+    }
+    await app.quit()
+  })
+
   test('a project made from the start screen takes the start screen draft with it', async () => {
     const { data, projects } = scratch()
     const app = spawnSidecar(data, projects)

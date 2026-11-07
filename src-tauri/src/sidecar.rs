@@ -29,6 +29,9 @@ const BINARY: &str = "materialize-sidecar";
 const EXIT_STORE_IN_USE: i32 = 75;
 /// Crashes in a row, each within a minute of its start, before Rust stops starting it again.
 const MAX_CRASHES: u32 = 5;
+/// Tries, a second apart, while the store is in use. A sidecar that just ended can still be closing it; another
+/// copy of the app holds it for longer than this.
+const IN_USE_TRIES: u32 = 10;
 /// Keychain items the sidecar may touch. Any other item, such as a printer's access code, is out of its reach.
 const KEYCHAIN_PREFIX: &str = "inference.";
 
@@ -103,6 +106,7 @@ impl Sidecar {
 pub fn start(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         let mut crashes = 0;
+        let mut in_use = 0;
         loop {
             if app.state::<Sidecar>().quitting.load(Ordering::SeqCst) {
                 return;
@@ -115,12 +119,19 @@ pub fn start(app: AppHandle) {
             }
             let why = match outcome {
                 Ok(status) if status.code() == Some(EXIT_STORE_IN_USE) => {
-                    sidecar.stop(&app, "Another copy of Materialize 3D is open. Quit it, then open this one again.".to_owned());
-                    return;
+                    in_use += 1;
+                    if in_use >= IN_USE_TRIES {
+                        sidecar.stop(&app, "Another copy of Materialize 3D is open. Quit it, then open this one again.".to_owned());
+                        return;
+                    }
+                    log::warn!("sidecar: the store is still in use, trying again");
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    continue;
                 }
                 Ok(status) => format!("the engine exited with {status}"),
                 Err(e) => e,
             };
+            in_use = 0;
             crashes = if started.elapsed() > Duration::from_secs(60) { 1 } else { crashes + 1 };
             if crashes >= MAX_CRASHES {
                 sidecar.stop(&app, format!("The engine stopped {crashes} times in a row. The last time: {why}"));
