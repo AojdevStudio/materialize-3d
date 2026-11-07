@@ -48,6 +48,31 @@ export type LoginEvent =
   | { type: 'login'; provider: ProviderId; step: 'done' }
   | { type: 'login'; provider: ProviderId; step: 'failed'; detail: string }
 
+/** One committed line of a chat. Tool calls fold under their assistant line; each result is its own line. */
+export type ChatEntry =
+  | { id: number; kind: 'user'; text: string; images: string[] }
+  | { id: number; kind: 'assistant'; text: string; calls: { id: string; name: string; args: unknown }[] }
+  | { id: number; kind: 'tool'; callId: string; name: string; text: string; failed: boolean }
+
+/** Why a turn stopped before its answer, and the one thing that lets it go on. */
+export type Waiting =
+  | { kind: 'login'; provider: string; name: string; fix: string }
+  | { kind: 'error'; detail: string; fix: string }
+
+/** What a turn runs with, frozen when it was sent. */
+export type Turn = {
+  requestId: string
+  model: ModelChoice
+  thinking: Thinking
+  tools: string[]
+  instructions: string
+  app: string
+  startedMs: number
+}
+
+/** A chat as the window shows it: committed entries, and whether a turn runs, waits, or neither. */
+export type ChatView = { project: string; entries: ChatEntry[]; running: boolean; waiting: Waiting | null; turn: Turn | null }
+
 export type AppState = { setup: Setup; settings: Settings; projects: Project[]; drafts: Record<string, Draft> }
 
 /** What the window can ask the sidecar, by method name. */
@@ -64,6 +89,13 @@ export interface Methods {
   'auth.login': { params: { provider: ProviderId }; result: null }
   'auth.answer': { params: { provider: ProviderId; text: string }; result: null }
   'auth.logout': { params: { provider: ProviderId }; result: Login[] }
+  'chat.open': { params: { project: string }; result: ChatView }
+  /** `requestId` is the window's own id for this message: sending it again never sends twice. */
+  'chat.send': { params: { project: string; requestId: string; text: string; attachments: string[] }; result: null }
+  'chat.stop': { params: { project: string }; result: null }
+  'chat.retry': { params: { project: string }; result: null }
+  /** The tools a project's agent is offered, as Pi resolves them. */
+  'agent.tools': { params: { project: string }; result: string[] }
 }
 
 export type Method = keyof Methods
@@ -78,8 +110,12 @@ export interface HostRequests {
 
 export type HostRequest = keyof HostRequests
 
-/** Paths are relative to the project folder, which Rust resolves from the project id. */
+/**
+ * Paths are relative to the project folder, which Rust resolves from the project id. Rust slices once per operation:
+ * a request that repeats one waits for the first and gets its result.
+ */
 export interface SliceParams {
+  operation: string
   project: string
   inputs: string[]
   output: string
@@ -96,6 +132,7 @@ export interface SliceResult {
 export type SidecarEvent =
   | { type: 'ready'; version: string }
   | LoginEvent
+  | ({ type: 'chat' } & ChatView)
   | { type: 'engine'; state: 'restarting' | 'stopped'; detail: string }
 
 /** Rust to sidecar. */

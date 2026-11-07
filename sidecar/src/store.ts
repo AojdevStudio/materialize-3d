@@ -9,10 +9,10 @@ import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
 import type { Models } from '@earendil-works/pi-ai'
-import { type Conversation, defineDoc, Harness, type Registry } from '@earendil-works/pi-durable'
+import { type Conversation, defineDoc, type HarnessOptions, Harness, type Registry } from '@earendil-works/pi-durable'
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node'
 import type { LoginIndex } from './inference'
-import type { AppState, Draft, LoginKind, Project, Settings, Setup } from './protocol'
+import type { AppState, Draft, LoginKind, Project, Settings, Setup, Turn, Waiting } from './protocol'
 
 const context = BACKGROUND_CONTEXT
 
@@ -28,7 +28,7 @@ const SetupDoc = defineDoc<Setup>({
   checkpointWhen: always,
 })
 
-const SettingsDoc = defineDoc<Settings>({
+export const SettingsDoc = defineDoc<Settings>({
   kind: 'm3d.settings',
   version: 1,
   scope: 'conversation',
@@ -63,6 +63,44 @@ export const DraftsDoc = defineDoc<{ drafts: Record<string, Draft> }>({
   history: 'latest',
   fork: 'initial',
   initial: () => ({ drafts: {} }),
+  checkpointWhen: always,
+})
+
+/** What a project's current turn runs with, frozen in the commit that sent it. */
+export const TurnDoc = defineDoc<{ turn: Turn | null }>({
+  kind: 'm3d.turn',
+  version: 1,
+  scope: 'conversation',
+  history: 'latest',
+  fork: 'initial',
+  initial: () => ({ turn: null }),
+  checkpointWhen: always,
+})
+
+/**
+ * Why a project's turn waits, and the run failure that was read, so one failure is read once. `tool` marks a wait a
+ * running tool holds, such as Astra's for a sign-in: the tool goes on by itself, so nothing continues the run. Cleared
+ * in the commit that sends, retries, or resumes, or by the tool once its wait ends. `saves` is how many times the
+ * turn's provider login was saved when the turn last went out, so a refusal can tell a login saved since then.
+ */
+export const WaitingDoc = defineDoc<{ waiting: Waiting | null; failure: number | null; tool: boolean; saves: number | null }>({
+  kind: 'm3d.waiting',
+  version: 1,
+  scope: 'conversation',
+  history: 'latest',
+  fork: 'initial',
+  initial: () => ({ waiting: null, failure: null, tool: false, saves: null }),
+  checkpointWhen: always,
+})
+
+/** How many times each provider's login was saved, so a wait can tell a new sign-in from the one a provider refused. */
+export const LoginSavesDoc = defineDoc<{ saves: Record<string, number> }>({
+  kind: 'm3d.login-saves',
+  version: 1,
+  scope: 'conversation',
+  history: 'latest',
+  fork: 'initial',
+  initial: () => ({ saves: {} }),
   checkpointWhen: always,
 })
 
@@ -114,6 +152,8 @@ export interface StoreOptions {
   projectsDir: string
   models: Models
   registry: Registry
+  /** The files and processes a conversation's tools work in. */
+  env: NonNullable<HarnessOptions['env']>
 }
 
 export class Store implements LoginIndex {
@@ -133,7 +173,7 @@ export class Store implements LoginIndex {
     mkdirSync(options.dataDir, { recursive: true })
     const lock = own(options.dataDir)
     const storage = await openStorage(join(options.dataDir, 'store.sqlite'))
-    const harness = await Harness.open(storage, { models: options.models, registry: options.registry }, context)
+    const harness = await Harness.open(storage, { models: options.models, registry: options.registry, env: options.env }, context)
     const root = await harness.root(context)
     return new Store(lock, harness, root, options.projectsDir)
   }
@@ -210,6 +250,22 @@ export class Store implements LoginIndex {
     return project
   }
 
+  async projects(): Promise<Project[]> {
+    return (await this.harness.snapshot(ProjectsDoc, this.root.id, context))?.projects ?? []
+  }
+
+  async project(id: string): Promise<Project> {
+    const project = (await this.projects()).find((p) => p.id === id)
+    if (project === undefined) throw new Error(`no project ${id}`)
+    return project
+  }
+
+  async projectOf(conversation: number): Promise<string> {
+    const project = (await this.projects()).find((p) => p.conversation === conversation)
+    if (project === undefined) throw new Error(`conversation ${conversation} is no project's`)
+    return project.id
+  }
+
   async logins(): Promise<Record<string, LoginKind>> {
     return (await this.harness.snapshot(LoginsDoc, this.root.id, context))?.logins ?? {}
   }
@@ -218,8 +274,17 @@ export class Store implements LoginIndex {
     await this.harness.commit(async (tx) => {
       const { logins } = await tx.doc(LoginsDoc, this.root.id)
       if (kind === undefined) delete logins[provider]
-      else logins[provider] = kind
+      else {
+        logins[provider] = kind
+        const { saves } = await tx.doc(LoginSavesDoc, this.root.id)
+        saves[provider] = (saves[provider] ?? 0) + 1
+      }
     }, context)
+  }
+
+  /** How many times the provider's login was saved. */
+  async loginSaves(provider: string): Promise<number> {
+    return (await this.harness.snapshot(LoginSavesDoc, this.root.id, context))?.saves[provider] ?? 0
   }
 
   /** The project's folder, made if it is missing. */

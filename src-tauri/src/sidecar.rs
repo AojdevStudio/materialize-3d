@@ -9,7 +9,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::future::Future;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde::de::DeserializeOwned;
@@ -17,7 +18,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::sync::{mpsc, oneshot, watch, Notify};
+use tokio::sync::{mpsc, oneshot, watch, Notify, OnceCell};
 
 use crate::credentials;
 use crate::studio;
@@ -54,6 +55,23 @@ pub struct Sidecar {
     alive: watch::Sender<bool>,
     /// Ends the running sidecar through its process handle, which never signals a reused pid.
     kill: Notify,
+    /// Each slice by its operation id, running or done, for as long as the app runs.
+    slices: Operations,
+}
+
+/// Outside work by operation id: one result each, shared by every request that names the id.
+type Operations = Mutex<HashMap<String, Arc<OnceCell<Result<Value, String>>>>>;
+
+/// Runs `work` once per operation id. A sidecar that crashed mid-slice leaves Rust's slice running, and its resumed
+/// turn asks again with the same id: that request waits for the first and gets its result, so two slices never write
+/// the same output, and a result that came after the crash is not lost.
+async fn once_per_operation<F, Fut>(operations: &Operations, id: String, work: F) -> Result<Value, String>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<Value, String>>,
+{
+    let cell = operations.lock().unwrap_or_else(|e| e.into_inner()).entry(id).or_default().clone();
+    cell.get_or_init(work).await.clone()
 }
 
 impl Default for Sidecar {
@@ -65,6 +83,7 @@ impl Default for Sidecar {
             quitting: AtomicBool::new(false),
             alive: watch::Sender::new(false),
             kill: Notify::new(),
+            slices: Mutex::default(),
         }
     }
 }
@@ -345,6 +364,14 @@ fn parse<T: DeserializeOwned>(method: &str, params: Value) -> Result<T, String> 
     serde_json::from_value(params).map_err(|e| format!("bad params for {method}: {e}"))
 }
 
+/// A slice the agent asked for, under its tool call's operation id.
+#[derive(Deserialize)]
+struct SliceCall {
+    operation: String,
+    #[serde(flatten)]
+    request: studio::slice::Request,
+}
+
 #[derive(Deserialize)]
 struct Account {
     account: String,
@@ -387,12 +414,15 @@ async fn answer(app: &AppHandle, method: &str, params: Value) -> Result<Value, S
             Ok(Value::Null)
         }
         "slice" => {
-            let request: studio::slice::Request = parse(method, params)?;
+            let SliceCall { operation, request } = parse(method, params)?;
             let cache = app.path().app_cache_dir().map_err(|e| format!("finding the app's cache folder: {e}"))?.join("bambu-presets");
-            let sliced = tauri::async_runtime::spawn_blocking(move || studio::slice::slice(&request, &cache))
-                .await
-                .map_err(|e| format!("the slice task failed: {e}"))??;
-            serde_json::to_value(sliced).map_err(|e| e.to_string())
+            once_per_operation(&app.state::<Sidecar>().slices, operation, || async move {
+                let sliced = tauri::async_runtime::spawn_blocking(move || studio::slice::slice(&request, &cache))
+                    .await
+                    .map_err(|e| format!("the slice task failed: {e}"))??;
+                serde_json::to_value(sliced).map_err(|e| e.to_string())
+            })
+            .await
         }
         other => Err(format!("no host request {other}")),
     }
@@ -439,6 +469,37 @@ mod tests {
         let names: Vec<&str> = kept_env().into_iter().map(|(name, _)| name).collect();
         assert!(names.contains(&"PATH"));
         assert!(names.iter().all(|name| ["PATH", "HOME", "USER", "LANG", "TMPDIR"].contains(name)), "{names:?}");
+    }
+
+    #[tokio::test]
+    async fn a_repeated_operation_waits_for_the_first_and_gets_its_result() {
+        let operations = Operations::default();
+        let runs = AtomicU64::new(0);
+        let work = |answer: &'static str| {
+            let runs = &runs;
+            move || async move {
+                runs.fetch_add(1, Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                Ok(json!(answer))
+            }
+        };
+        let (first, again) = tokio::join!(
+            once_per_operation(&operations, "op".to_owned(), work("first")),
+            once_per_operation(&operations, "op".to_owned(), work("again")),
+        );
+        assert_eq!((first, again), (Ok(json!("first")), Ok(json!("first"))));
+        assert_eq!(once_per_operation(&operations, "op".to_owned(), work("later")).await, Ok(json!("first")));
+        assert_eq!(runs.load(Ordering::SeqCst), 1);
+        assert_eq!(once_per_operation(&operations, "other".to_owned(), work("other")).await, Ok(json!("other")));
+        assert_eq!(runs.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn a_slice_call_carries_its_operation_id() {
+        let call: SliceCall =
+            serde_json::from_value(json!({ "operation": "abc", "project": "p", "inputs": ["a.stl"], "output": "out.3mf" })).expect("slice call");
+        assert_eq!(call.operation, "abc");
+        assert!(serde_json::from_value::<SliceCall>(json!({ "project": "p", "inputs": ["a.stl"], "output": "out.3mf" })).is_err());
     }
 
     #[test]

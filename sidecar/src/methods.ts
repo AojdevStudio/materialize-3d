@@ -1,7 +1,15 @@
 import { arr, bool, compile, lit, obj, opt, str, union } from '@earendil-works/pi-schema'
+import type { Chats } from './chat'
 import type { Handlers } from './host'
 import type { Logins } from './inference'
 import type { Store } from './store'
+
+export interface Services {
+  store: Store
+  logins: Logins
+  chats: Chats
+  version: string
+}
 
 const step = union([lit('welcome'), lit('check'), lit('model'), lit('printer'), lit('ready')])
 const thinking = union([lit('off'), lit('minimal'), lit('low'), lit('medium'), lit('high'), lit('xhigh'), lit('max')])
@@ -10,7 +18,7 @@ const printer = obj({ machine: str(), process: str(), filament: str() })
 const provider = union([lit('anthropic'), lit('openai-codex'), lit('opencode-go')])
 
 /** Every method the window can call, each parsed at the pipe before it runs. */
-export function handlers(store: Store, logins: Logins, version: string): Handlers {
+export function handlers({ store, logins, chats, version }: Services): Handlers {
   return {
     'app.ping': { params: compile(obj({})), run: async () => ({ version }) },
     'state.get': { params: compile(obj({})), run: () => store.state() },
@@ -65,5 +73,28 @@ export function handlers(store: Store, logins: Logins, version: string): Handler
         return logins.status()
       },
     },
+    'chat.open': { params: compile(obj({ project: str() })), run: ({ project }) => chats.open(project) },
+    'chat.send': {
+      params: compile(obj({ project: str(), requestId: str({ minLength: 1 }), text: str(), attachments: arr(str()) })),
+      run: async ({ project, requestId, text, attachments }) => {
+        await chats.send(project, requestId, text, attachments)
+        return null
+      },
+    },
+    'chat.stop': {
+      params: compile(obj({ project: str() })),
+      run: async ({ project }) => {
+        await chats.stop(project)
+        return null
+      },
+    },
+    'chat.retry': {
+      params: compile(obj({ project: str() })),
+      run: async ({ project }) => {
+        await chats.retry(project)
+        return null
+      },
+    },
+    'agent.tools': { params: compile(obj({ project: str() })), run: ({ project }) => chats.tools(project) },
   }
 }
