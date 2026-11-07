@@ -155,15 +155,18 @@ export class Chats {
   }
 
   async #changed(project: string, conversation: Conversation): Promise<void> {
+    // Each read of the state takes its order at once, before anything else is awaited, so a chat.open that reads
+    // between them is ordered by when it read too.
     let state = await this.#state(conversation)
+    let seq = this.#nextSeq()
     const recorded = (await this.#o.store.harness.snapshot(WaitingDoc, conversation.id, context))?.failure ?? null
     if (state.failure !== undefined && state.failure.reason !== 'aborted' && state.failure.taskId !== recorded) {
       // The waiting document is not part of the view a watch follows, so its commit wakes no one: read it here.
       // A login saved since the turn went out lets it go on now: the sign-in that saved it found no wait to let go.
       if (await this.#read(conversation, state.failure, state.turn)) this.#resume(project, state.failure.taskId)
       state = await this.#state(conversation)
+      seq = this.#nextSeq()
     }
-    const seq = this.#nextSeq()
     const entries = await this.#entries(conversation, this.#sent.get(project) ?? 0)
     if (entries.length > 0) this.#sent.set(project, entries.at(-1)?.id ?? 0)
     this.#o.emit({ type: 'chat', project, entries, running: state.running, waiting: state.waiting, turn: state.turn, seq })
