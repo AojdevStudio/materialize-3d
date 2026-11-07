@@ -251,7 +251,7 @@ fn shell_path(shell: &str, deadline: std::time::Duration) -> Option<String> {
     let end = std::time::Instant::now() + deadline;
     let mut command = std::process::Command::new(shell);
     command
-        .args(["-ilc", &format!("printf '{marker}%s' \"$PATH\"")])
+        .args(["-ilc", &format!("printf '{marker}%s{marker}' \"$PATH\"")])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
@@ -271,14 +271,20 @@ fn shell_path(shell: &str, deadline: std::time::Duration) -> Option<String> {
     let mut child = command.spawn().ok()?;
     let mut stdout = child.stdout.take()?;
     // What the shell printed so far. A program its startup files started, such as an agent, can keep stdout open long
-    // after the shell ends, so the reader is not waited on for its end.
+    // after the shell ends, so the reader is not waited on for its end. Once the lookup is done the reader stops at its
+    // next read and closes the pipe, so a program that keeps writing is never read again.
     let printed = std::sync::Arc::new(Mutex::new(Vec::new()));
+    let done = std::sync::Arc::new(AtomicBool::new(false));
     let (closed, eof) = std::sync::mpsc::channel::<()>();
     std::thread::spawn({
         let printed = printed.clone();
+        let done = done.clone();
         move || {
             let mut chunk = [0u8; 4096];
             while let Ok(n @ 1..) = std::io::Read::read(&mut stdout, &mut chunk) {
+                if done.load(Ordering::Relaxed) {
+                    break;
+                }
                 printed.lock().unwrap_or_else(|e| e.into_inner()).extend_from_slice(&chunk[..n]);
             }
             let _ = closed.send(());
@@ -295,6 +301,7 @@ fn shell_path(shell: &str, deadline: std::time::Duration) -> Option<String> {
     // The shell has ended, so all it printed is in the pipe: a short wait lets the reader take it.
     let _ = eof.recv_timeout(std::time::Duration::from_millis(100));
     let out = ended.then(|| std::mem::take(&mut *printed.lock().unwrap_or_else(|e| e.into_inner())));
+    done.store(true, Ordering::Relaxed);
     if !ended {
         #[cfg(unix)]
         if let Ok(group) = i32::try_from(child.id()) {
@@ -306,7 +313,13 @@ fn shell_path(shell: &str, deadline: std::time::Duration) -> Option<String> {
         let _ = child.wait();
     }
     let out = out?;
-    String::from_utf8_lossy(&out).rsplit_once(marker).map(|(_, path)| path.trim().to_owned()).filter(|path| !path.is_empty())
+    // The PATH is what the shell printed between the two markers. A program its startup files left running can write
+    // after it, so nothing past the second marker counts.
+    String::from_utf8_lossy(&out)
+        .split_once(marker)
+        .and_then(|(_, rest)| rest.split_once(marker))
+        .map(|(path, _)| path.trim().to_owned())
+        .filter(|path| !path.is_empty())
 }
 
 /// The only variables the sidecar gets. Its tools need a PATH that finds `uv` and a HOME for
@@ -656,7 +669,7 @@ mod tests {
         // Startup files that start an agent, which keeps the shell's stdout open after the shell ends.
         std::fs::write(&shell, "#!/bin/sh
 sleep 30 &
-printf '__M3D_PATH__/opt/tools/bin'
+printf '__M3D_PATH__/opt/tools/bin__M3D_PATH__'
 ").unwrap();
         let mut perms = std::fs::metadata(&shell).unwrap().permissions();
         std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
@@ -664,6 +677,32 @@ printf '__M3D_PATH__/opt/tools/bin'
         let started = std::time::Instant::now();
         assert_eq!(shell_path(shell.to_str().unwrap(), std::time::Duration::from_secs(5)).as_deref(), Some("/opt/tools/bin"));
         assert!(started.elapsed() < std::time::Duration::from_secs(2), "took {:?}", started.elapsed());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_program_that_keeps_writing_to_the_login_shells_output_is_not_read_after_the_lookup() {
+        let dir = tempfile::tempdir().unwrap();
+        let shell = dir.path().join("noisy-shell");
+        let pid = dir.path().join("pid");
+        std::fs::write(&shell, format!("#!/bin/sh\nyes &\necho $! > {}\nprintf '__M3D_PATH__/opt/tools/bin__M3D_PATH__'\n", pid.display())).unwrap();
+        let mut perms = std::fs::metadata(&shell).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+        std::fs::set_permissions(&shell, perms).unwrap();
+        assert_eq!(shell_path(shell.to_str().unwrap(), std::time::Duration::from_secs(5)).as_deref(), Some("/opt/tools/bin"));
+        let pid = std::fs::read_to_string(&pid).unwrap().trim().parse::<i32>().unwrap();
+        // Once nothing reads the pipe, the next write ends the writer.
+        let gone = (0..50).any(|_| {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            // SAFETY: kill with signal 0 only asks whether the process still exists.
+            let alive = unsafe { libc::kill(pid, 0) } == 0;
+            !alive
+        });
+        if !gone {
+            // SAFETY: ends the test's own writer, which outlived the lookup.
+            unsafe { libc::kill(pid, libc::SIGKILL) };
+        }
+        assert!(gone, "the lookup still read the output of a program its shell left running");
     }
 
     #[test]
