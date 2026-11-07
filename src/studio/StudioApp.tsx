@@ -88,7 +88,7 @@ export default function StudioApp() {
    * Messages whose send has not gone through, by project. Sending one again sends the same pictures under the same
    * request id, so a send whose reply was lost never sends it twice.
    */
-  const pending = useRef(new Map<string, { text: string; outgoing: Attachment[]; images: string[]; id: string }>())
+  const pending = useRef(new Map<string, { text: string; paths: string[]; images: string[]; id: string }>())
   /** Whether the person typed on the start screen, so the saved draft no longer fills it. */
   const typedOnStart = useRef(false)
   /** Whether the person changed the start screen's pictures, so its saved ones no longer fill it. */
@@ -298,9 +298,13 @@ export default function StudioApp() {
       .catch((err: unknown) => setError(String(err)))
   }
 
-  // A quit or the window's close first saves the draft still waiting, then lets the quit go on.
+  // A quit or the window's close first saves the draft still waiting, and waits for every save already on its way,
+  // then lets the quit go on.
   useEffect(() => {
-    const unlisten = onQuitFlush(saveDraft)
+    const unlisten = onQuitFlush(async () => {
+      await saveDraft()
+      await Promise.all(Object.values(saving.current))
+    })
     return () => {
       void unlisten.then((stop) => stop())
     }
@@ -446,19 +450,20 @@ export default function StudioApp() {
       // Edits on the project's screen after this send went out make a newer draft. A project this send made had none
       // before it, so text typed while it was made counts as one.
       const projectEdits = createdHere ? 0 : fromEdits
-      const draftRev = createdHere ? (moved ? fromRev : undefined) : fromRev
+      // The sidecar removes the project's draft only if it is still the one this send went out with, so a draft the start
+      // screen did not move to the project, or a newer one, stays.
+      const draftRev = fromRev
       const outgoing = attachments
+      const paths = outgoing.map((a) => a.path)
+      // The same text and pictures as an unsent message is that message again, even with the pictures brought back from
+      // its saved draft, so it keeps its request id and the sidecar sends it once.
       const last = pending.current.get(id)
-      const again =
-        last !== undefined &&
-        last.text === message &&
-        last.outgoing.length === outgoing.length &&
-        last.outgoing.every((a, i) => a === outgoing[i])
+      const again = last !== undefined && last.text === message && last.paths.length === paths.length && last.paths.every((path, i) => path === paths[i])
       const sendable = again
         ? last
         : {
             text: message,
-            outgoing,
+            paths,
             images: await Promise.all(outgoing.map((a) => studio.importFile(id, a.path))),
             id: crypto.randomUUID(),
           }

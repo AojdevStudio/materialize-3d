@@ -529,6 +529,72 @@ describe('StudioApp', () => {
     expect(screen.queryByTestId('attachments')).toBeNull()
   })
 
+  it('sends a saved picture again under the same request id after its answer was lost and the project was left and opened again', async () => {
+    let sends = 0
+    mockSidecar(
+      {
+        'chat.send': () => (sends++ === 0 ? Promise.reject('The engine restarted before it answered. Try again.') : Promise.resolve(null)),
+        studio_import_file: () => Promise.resolve('refs/pic.jpg'),
+      },
+      [projectA, projectB],
+      { [projectA.id]: { text: 'A clip like this', attachments: ['/Users/me/pic.jpg'] } },
+    )
+    render(<StudioApp />)
+    fireEvent.click(await screen.findByText('Project A'))
+    await waitFor(() => expect(prompt().value).toBe('A clip like this'))
+    fireEvent.click(screen.getByTestId('send'))
+    await screen.findByRole('alert')
+    fireEvent.click(screen.getByText('Project B'))
+    await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project B'))
+    fireEvent.click(screen.getByText('Project A'))
+    await waitFor(() => expect(prompt().value).toBe('A clip like this'))
+    fireEvent.click(screen.getByTestId('send'))
+    await waitFor(() => expect(sidecarCalls('chat.send')).toHaveLength(2))
+    const [first, second] = sidecarCalls('chat.send')
+    expect(second?.requestId).toBe(first?.requestId)
+  })
+
+  it('names the start draft a first send went out with, even when the person saved a newer one and left before the project was made', async () => {
+    let finishCreate: (project: unknown) => void = () => {}
+    const revs: number[] = []
+    mockSidecar({
+      'projects.create': () => new Promise((resolve) => (finishCreate = resolve)),
+      'drafts.set': () => {
+        revs.push(++draftRevs)
+        return Promise.resolve({ rev: draftRevs })
+      },
+    })
+    render(<StudioApp />)
+    await screen.findByText('Project B')
+    type('A knob')
+    fireEvent.click(screen.getByTestId('send'))
+    await waitFor(() => expect(sidecarCalls('projects.create')).toHaveLength(1))
+    const sent = revs[0]
+    type('Then a dial')
+    fireEvent.click(screen.getByText('Project B'))
+    await waitFor(() => expect(sidecarCalls('drafts.set')).toHaveLength(2))
+    await act(async () => finishCreate({ id: '2026-11-06-a-knob', conversation: 4, title: 'A knob', createdMs: 3 }))
+    await waitFor(() => expect(sidecarCalls('chat.send')).toHaveLength(1))
+    expect(sidecarCalls('chat.send')[0]).toMatchObject({ text: 'A knob', draftRev: sent })
+  })
+
+  it('waits for a draft save already on its way before it says a quit may go on', async () => {
+    let finishSave: (value: unknown) => void = () => {}
+    mockSidecar({ 'drafts.set': () => new Promise((resolve) => (finishSave = resolve)) })
+    render(<StudioApp />)
+    fireEvent.click(await screen.findByText('Project B'))
+    await screen.findByRole('banner')
+    type('half a thought')
+    // The pause after typing starts the save, which the sidecar has not answered yet.
+    await waitFor(() => expect(sidecarCalls('drafts.set')).toHaveLength(1))
+    await act(async () => listeners.flush.forEach((listener) => listener({ payload: null })))
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    const flushed = () => invokeMock.mock.calls.some(([command]) => command === 'studio_flushed')
+    expect(flushed()).toBe(false)
+    await act(async () => finishSave({ rev: 1 }))
+    await waitFor(() => expect(flushed()).toBe(true))
+  })
+
   it('keeps text typed while the draft before a send was still being saved', async () => {
     let finishSave: (value: unknown) => void = () => {}
     let saves = 0

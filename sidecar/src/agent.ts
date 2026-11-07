@@ -42,12 +42,21 @@ const OUTPUT_TAIL = 20_000
 /** The only variables a command the agent runs gets. */
 const COMMAND_ENV = ['PATH', 'HOME', 'USER', 'LANG', 'TMPDIR'] as const
 
-/** The environment a command the agent runs gets: the sidecar's own values of `COMMAND_ENV`, and nothing else. */
+/**
+ * The environment a command the agent runs gets: the sidecar's own values of `COMMAND_ENV`, and nothing else, but for
+ * ~/.local/bin at the end of PATH. uv's installer puts uv there and adds it to the shell's startup files, which the
+ * PATH the app read at its start comes from, so a uv installed while the app runs is found without a restart.
+ */
 function commandEnv(): Record<string, string> {
   const vars: Record<string, string> = {}
   for (const name of COMMAND_ENV) {
     const value = process.env[name]
     if (value !== undefined) vars[name] = value
+  }
+  if (vars.HOME !== undefined) {
+    const local = join(vars.HOME, '.local', 'bin')
+    const path = vars.PATH === undefined ? [] : vars.PATH.split(':')
+    if (!path.includes(local)) vars.PATH = [...path, local].join(':')
   }
   return vars
 }

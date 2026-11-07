@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { logFollower, once, operationId, tailOf } from '../src/agent'
@@ -133,9 +133,10 @@ describe('the check before a send', () => {
     chmodSync(join(dir, 'uv'), 0o755)
     return `${dir}:/usr/bin:/bin`
   }
-  const check = async (path: string, key: boolean) => {
+  // A home of its own, so a uv the machine has in ~/.local/bin is not found.
+  const check = async (path: string, key: boolean, home = mkdtempSync(join(tmpdir(), 'm3d-home-'))) => {
     const dir = mkdtempSync(join(tmpdir(), 'm3d-check-'))
-    const app = spawnSidecar(join(dir, 'state'), join(dir, 'projects'), new Map(), { env: { PATH: path } })
+    const app = spawnSidecar(join(dir, 'state'), join(dir, 'projects'), new Map(), { env: { PATH: path, HOME: home } })
     await app.next()
     if (key) await app.call('auth.setKey', { provider: 'anthropic', key: 'token' })
     const needs = (await app.call('setup.check', {})) as { kind: string; fix: string }[]
@@ -147,6 +148,13 @@ describe('the check before a send', () => {
     const needs = await check('/usr/bin:/bin', false)
     expect(needs.map((need) => need.kind)).toEqual(['login', 'uv'])
     expect(needs.every((need) => need.fix.length > 0)).toBe(true)
+  })
+
+  test("finds a uv its installer put in ~/.local/bin, which the app's PATH from before the install lacks", async () => {
+    const home = mkdtempSync(join(tmpdir(), 'm3d-home-'))
+    mkdirSync(join(home, '.local'))
+    renameSync(toolchain(true).split(':')[0] ?? '', join(home, '.local', 'bin'))
+    expect(await check('/usr/bin:/bin', true, home)).toEqual([])
   })
 
   test('names a missing Python once uv is there', async () => {
