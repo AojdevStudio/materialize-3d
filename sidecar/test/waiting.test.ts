@@ -5,14 +5,22 @@ import { join } from 'node:path'
 import type { ChatEntry, ChatView } from '../src/protocol'
 import { spawnSidecar } from './sidecar'
 
-/** A proxy that speaks Anthropic's Messages API, as Ossie's Mac reaches Anthropic, and remembers who called. */
-function anthropicProxy(reply: string) {
+/**
+ * A proxy that speaks Anthropic's Messages API, as Ossie's Mac reaches Anthropic, and remembers who called. A request
+ * with a token in `refuse` waits for `release`, then is refused as a bad login.
+ */
+function anthropicProxy(reply: string, refuse: { token: string; release: Promise<void> } | undefined = undefined) {
   const seen: { authorization: string | null; path: string }[] = []
   const event = (name: string, data: unknown) => `event: ${name}\ndata: ${JSON.stringify(data)}\n\n`
   const server = Bun.serve({
     port: 0,
-    fetch(request) {
-      seen.push({ authorization: request.headers.get('authorization'), path: new URL(request.url).pathname })
+    async fetch(request) {
+      const authorization = request.headers.get('authorization')
+      seen.push({ authorization, path: new URL(request.url).pathname })
+      if (refuse !== undefined && authorization === `Bearer ${refuse.token}`) {
+        await refuse.release
+        return Response.json({ type: 'error', error: { type: 'authentication_error', message: 'invalid x-api-key' } }, { status: 401 })
+      }
       const body =
         event('message_start', {
           type: 'message_start',
@@ -67,4 +75,45 @@ describe('a turn whose provider is not signed in', () => {
     await second.quit()
     proxy.stop()
   })
+
+  test('a request refused after a newer login was saved goes on with that login, without waiting', async () => {
+    const release = Promise.withResolvers<void>()
+    const proxy = anthropicProxy('Hello with the new key', { token: 'old-token', release: release.promise })
+    const dir = mkdtempSync(join(tmpdir(), 'm3d-wait-'))
+    const app = spawnSidecar(join(dir, 'state'), join(dir, 'projects'), new Map())
+    await app.next()
+    const { id: project } = (await app.call('projects.create', { title: 'A cube' })) as { id: string }
+    await app.call('chat.open', { project })
+    await app.call('auth.setKey', { provider: 'anthropic', key: 'old-token', baseUrl: proxy.url })
+    await app.call('chat.send', { project, requestId: 'r1', text: 'A 20 mm cube', attachments: [] })
+    while (proxy.seen.length === 0) await Bun.sleep(10)
+    await app.call('auth.setKey', { provider: 'anthropic', key: 'new-token', baseUrl: proxy.url })
+    await Bun.sleep(200)
+    release.resolve()
+    const answered = await app.until(
+      (event) => event.type === 'chat' && (event.entries as ChatEntry[]).some((entry) => entry.kind === 'assistant'),
+      10_000,
+    )
+    expect((answered.entries as ChatEntry[]).find((entry) => entry.kind === 'assistant')).toMatchObject({ text: 'Hello with the new key' })
+    expect(proxy.seen.map((call) => call.authorization)).toEqual(['Bearer old-token', 'Bearer new-token'])
+    await app.quit()
+    proxy.stop()
+  }, 20_000)
+
+  test('a refused login with no newer one saved waits for a sign-in, and is not tried again', async () => {
+    const proxy = anthropicProxy('never', { token: 'old-token', release: Promise.resolve() })
+    const dir = mkdtempSync(join(tmpdir(), 'm3d-wait-'))
+    const app = spawnSidecar(join(dir, 'state'), join(dir, 'projects'), new Map())
+    await app.next()
+    const { id: project } = (await app.call('projects.create', { title: 'A cube' })) as { id: string }
+    await app.call('chat.open', { project })
+    await app.call('auth.setKey', { provider: 'anthropic', key: 'old-token', baseUrl: proxy.url })
+    await app.call('chat.send', { project, requestId: 'r1', text: 'A 20 mm cube', attachments: [] })
+    const waiting = await app.until((event) => event.type === 'chat' && event.waiting !== null)
+    expect(waiting.waiting).toMatchObject({ kind: 'login', provider: 'anthropic' })
+    await Bun.sleep(500)
+    expect(proxy.seen).toHaveLength(1)
+    await app.quit()
+    proxy.stop()
+  }, 20_000)
 })

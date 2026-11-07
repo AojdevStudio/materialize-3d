@@ -80,20 +80,21 @@ export const TurnDoc = defineDoc<{ turn: Turn | null }>({
 /**
  * Why a project's turn waits, and the run failure that was read, so one failure is read once. `tool` marks a wait a
  * running tool holds, such as Astra's for a sign-in: the tool goes on by itself, so nothing continues the run. Cleared
- * in the commit that sends, retries, or resumes, or by the tool once its wait ends.
+ * in the commit that sends, retries, or resumes, or by the tool once its wait ends. `saves` is how many times the
+ * turn's provider login was saved when the turn last went out, so a refusal can tell a login saved since then.
  */
-export const WaitingDoc = defineDoc<{ waiting: Waiting | null; failure: number | null; tool: boolean }>({
+export const WaitingDoc = defineDoc<{ waiting: Waiting | null; failure: number | null; tool: boolean; saves: number | null }>({
   kind: 'm3d.waiting',
   version: 1,
   scope: 'conversation',
   history: 'latest',
   fork: 'initial',
-  initial: () => ({ waiting: null, failure: null, tool: false }),
+  initial: () => ({ waiting: null, failure: null, tool: false, saves: null }),
   checkpointWhen: always,
 })
 
 /** How many times each provider's login was saved, so a wait can tell a new sign-in from the one a provider refused. */
-const LoginSavesDoc = defineDoc<{ saves: Record<string, number> }>({
+export const LoginSavesDoc = defineDoc<{ saves: Record<string, number> }>({
   kind: 'm3d.login-saves',
   version: 1,
   scope: 'conversation',

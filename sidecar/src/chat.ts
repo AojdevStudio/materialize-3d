@@ -25,7 +25,7 @@ import type { ConversationView } from '@earendil-works/pi-durable'
 import { WORKFLOW, WORKFLOW_VERSION } from './agent'
 import type { ChatEntry, ChatView, SidecarEvent, Turn, Waiting } from './protocol'
 import { isLoginFailure } from './inference'
-import { DraftsDoc, SettingsDoc, type Store, TurnDoc, WaitingDoc } from './store'
+import { DraftsDoc, LoginSavesDoc, SettingsDoc, type Store, TurnDoc, WaitingDoc } from './store'
 import { chatEntry } from './transcript'
 
 const context: Context = BACKGROUND_CONTEXT
@@ -150,22 +150,35 @@ export class Chats {
     this.#o.emit({ type: 'chat', project, entries, running: state.running, waiting: state.waiting, turn: state.turn })
   }
 
-  /** Reads why a run stopped: a provider with no login, or a refused one, waits for a sign-in; anything else for a retry. */
+  /**
+   * Reads why a run stopped: a provider with no login, or a refused one, waits for a sign-in; anything else for a retry.
+   * A login refused after a newer one was saved, while the request was out, goes on with the newer one at once, since
+   * the sign-in that saved it found no wait to let go. A turn from another version of the app is left to wait.
+   */
   async #read(conversation: Conversation, failure: RunFailure, turn: Turn | null): Promise<void> {
-    const { models, store } = this.#o
+    const { models, store, version } = this.#o
     const provider = turn?.model.provider ?? 'anthropic'
     const name = models.getProvider(provider)?.name ?? provider
     const auth = await models.getAuth(provider).catch(() => undefined)
     const detail = typeof failure.detail === 'string' ? failure.detail : failure.reason
+    const refused = failure.reason === 'model_error' && isLoginFailure(detail)
     const waiting: Waiting =
-      auth === undefined || (failure.reason === 'model_error' && isLoginFailure(detail))
+      auth === undefined || refused
         ? { kind: 'login', provider, name, fix: `Sign in to ${name}. The message picks up where it stopped.` }
         : { kind: 'error', detail, fix: 'Try again' }
     await store.harness.commit(async (tx) => {
       const record = await tx.doc(WaitingDoc, conversation.id)
-      record.waiting = waiting
       record.failure = failure.taskId
       record.tool = false
+      // Read in this commit, so a sign-in either lands before it and is seen here, or after it and finds this wait.
+      const saves = (await tx.doc(LoginSavesDoc, store.root.id)).saves[provider] ?? 0
+      if (refused && auth !== undefined && record.saves !== null && saves > record.saves && turn?.app === version) {
+        await conversation.submit(tx, { type: 'continue' })
+        record.waiting = null
+        record.saves = saves
+        return
+      }
+      record.waiting = waiting
     }, context)
   }
 
@@ -198,6 +211,7 @@ export class Chats {
         const waiting = await tx.doc(WaitingDoc, conversation.id)
         waiting.waiting = null
         waiting.tool = false
+        waiting.saves = (await tx.doc(LoginSavesDoc, store.root.id)).saves[model.provider] ?? 0
       }, context)
     } catch (error) {
       if (error instanceof ConversationBusy) throw new Error('The agent is still working on the last message.')
@@ -215,9 +229,13 @@ export class Chats {
     const conversation = await this.#conversation(project)
     await store.harness.commit(async (tx) => {
       await conversation.submit(tx, { type: 'continue' })
-      ;(await tx.doc(WaitingDoc, conversation.id)).waiting = null
+      const waiting = await tx.doc(WaitingDoc, conversation.id)
+      waiting.waiting = null
       const { turn } = await tx.doc(TurnDoc, conversation.id)
-      if (turn !== null) turn.app = version
+      if (turn !== null) {
+        turn.app = version
+        waiting.saves = (await tx.doc(LoginSavesDoc, store.root.id)).saves[turn.model.provider] ?? 0
+      }
     }, context)
     await this.#watch(project, conversation)
   }
