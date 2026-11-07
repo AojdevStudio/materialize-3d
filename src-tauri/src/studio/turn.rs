@@ -335,9 +335,19 @@ fn shell_path(shell: &str, deadline: std::time::Duration) -> Option<String> {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
-    // The shell leads a process group of its own, so the deadline ends what its startup files started too.
+    // The shell leads a session of its own, so the deadline ends what its startup files started too. A session, not
+    // only a group: a shell in a background group of the terminal the app started from stops before its startup
+    // files, and one in a session of its own has no terminal to stop for.
     #[cfg(unix)]
-    std::os::unix::process::CommandExt::process_group(&mut command, 0);
+    // SAFETY: setsid is async-signal-safe and only makes the child a session leader before it runs the shell.
+    unsafe {
+        std::os::unix::process::CommandExt::pre_exec(&mut command, || {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
     let mut child = command.spawn().ok()?;
     let mut stdout = child.stdout.take()?;
     let (sent, said) = std::sync::mpsc::channel();
@@ -358,7 +368,8 @@ fn shell_path(shell: &str, deadline: std::time::Duration) -> Option<String> {
     if !ended {
         #[cfg(unix)]
         if let Ok(group) = i32::try_from(child.id()) {
-            // SAFETY: killpg only sends a signal, to the group this shell leads and has not been reaped from.
+            // SAFETY: killpg only sends a signal, to the group this shell leads, as its session leader, and has not been
+            // reaped from.
             unsafe { libc::killpg(group, libc::SIGKILL) };
         }
         let _ = child.kill();
