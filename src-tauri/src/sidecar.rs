@@ -197,16 +197,11 @@ async fn run(app: &AppHandle) -> Result<std::process::ExitStatus, String> {
     let (input, mut lines_in) = mpsc::unbounded_channel::<String>();
     // Requests answer through a weak handle, so the link alone keeps stdin open and quitting closes it.
     let answers = input.downgrade();
-    // A quit that came while this sidecar started has already stopped the link: it must not reopen it.
-    let opened = sidecar.link.send_if_modified(|link| {
-        let open = matches!(link, Link::Starting);
-        if open {
-            *link = Link::Up(input.clone());
-        }
-        open
-    });
-    drop(input);
-    if !opened {
+    // Calls wait for the sidecar's ready event, which comes once it owns its store. A sidecar that exits because
+    // another one still holds the store, as after a quick relaunch or an update, so never takes a call.
+    let mut pending = Some(input);
+    // A quit that came while this sidecar started has already stopped the link.
+    if !matches!(*sidecar.link.borrow(), Link::Starting) {
         let _ = child.start_kill();
     }
     let writer = tokio::spawn(async move {
@@ -228,7 +223,24 @@ async fn run(app: &AppHandle) -> Result<std::process::ExitStatus, String> {
     let read = loop {
         tokio::select! {
             line = lines.next_line() => match line {
-                Ok(Some(line)) => dispatch(app, &answers, &line),
+                Ok(Some(line)) => {
+                    if dispatch(app, &answers, &line) {
+                        if let Some(input) = pending.take() {
+                            // A quit that came while this sidecar started has already stopped the link: it must not
+                            // reopen it.
+                            let opened = sidecar.link.send_if_modified(|link| {
+                                let open = matches!(link, Link::Starting);
+                                if open {
+                                    *link = Link::Up(input.clone());
+                                }
+                                open
+                            });
+                            if !opened {
+                                let _ = child.start_kill();
+                            }
+                        }
+                    }
+                }
                 Ok(None) => break Ok(()),
                 Err(e) => break Err(format!("reading the engine's output: {e}")),
             },
@@ -286,13 +298,14 @@ enum Outbound {
     },
 }
 
-fn dispatch(app: &AppHandle, answers: &mpsc::WeakUnboundedSender<String>, line: &str) {
+/// Handles one line from the sidecar, and says whether it was the sidecar's ready event.
+fn dispatch(app: &AppHandle, answers: &mpsc::WeakUnboundedSender<String>, line: &str) -> bool {
     let message = match serde_json::from_str::<Outbound>(line) {
         Ok(message) => message,
         Err(e) => {
             let start: String = line.chars().take(200).collect();
             log::error!("sidecar: not a protocol line ({e}): {start}");
-            return;
+            return false;
         }
     };
     match message {
@@ -306,7 +319,9 @@ fn dispatch(app: &AppHandle, answers: &mpsc::WeakUnboundedSender<String>, line: 
             }
         }
         Outbound::Event { event } => {
+            let ready = event.get("type").and_then(Value::as_str) == Some("ready");
             let _ = app.emit(EVENT, event);
+            return ready;
         }
         Outbound::Request { id, method, params } => {
             let app = app.clone();
@@ -323,6 +338,7 @@ fn dispatch(app: &AppHandle, answers: &mpsc::WeakUnboundedSender<String>, line: 
             });
         }
     }
+    false
 }
 
 fn parse<T: DeserializeOwned>(method: &str, params: Value) -> Result<T, String> {
