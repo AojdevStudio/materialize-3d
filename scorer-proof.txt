@@ -1,0 +1,1 @@
+This file exists only to give the merge-danger scorer a non-empty diff. Its PR closes unmerged.
