@@ -746,20 +746,28 @@ describe('StudioApp', () => {
     expect(prompt().value).toBe('')
   })
 
-  it('saves text typed during a slow send at once when the app quits, before the send is done', async () => {
-    const sending = held()
-    mockSidecar({ 'chat.send': sending.call }, [projectA, projectB])
+  it('brings back an unsent start picture from a first saved state that arrives after a text send', async () => {
+    let answerState: () => void = () => {}
+    const store = mockSidecar(
+      {
+        'state.get': (_, real) => {
+          const before = real()
+          return new Promise((resolve) => (answerState = () => resolve(before)))
+        },
+      },
+      [projectB],
+      { new: { text: '', attachments: ['/Users/me/a.jpg'] } },
+    )
     render(<StudioApp />)
-    fireEvent.click(await screen.findByText('Project A'))
-    await screen.findByRole('banner')
-    type('A clip for my desk')
+    await screen.findByText('Engine 1.2.3')
+    type('A clip')
     fireEvent.click(screen.getByTestId('send'))
-    await waitFor(() => expect(sends()).toHaveLength(1))
-    type('A clip for my desk, and one for the shelf')
-    await act(async () => listeners.flush.forEach((listener) => listener({ payload: null })))
-    // The quit holds for 1.5 s at most, so the newer text must reach the store before the send answers.
-    await waitFor(() => expect(last(saves(projectA.id))).toMatchObject({ text: 'A clip for my desk, and one for the shelf' }))
-    await sending.release()
+    await waitFor(() => expect(store.sent).toHaveLength(1))
+    await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('A clip'))
+    await act(async () => answerState())
+    fireEvent.click(screen.getByTestId('new-project'))
+    // a.jpg was saved on the start screen but never shown or sent, so it is still the start screen's.
+    await waitFor(() => expect(screen.getByTestId('attachments').textContent).toContain('a.jpg'))
   })
 
   it('never brings back a sent start picture from a saved state that was read before the send', async () => {

@@ -283,6 +283,12 @@ export class Store implements LoginIndex {
     }, context)
   }
 
+  /** The drafts start screen sends moved to their projects, which a send of the same revision again still sends. */
+  async startedDrafts(): Promise<SavedDraft[]> {
+    const index = await this.harness.snapshot(ProjectsDoc, this.root.id, context)
+    return Object.values(index?.madeFor ?? {}).map(({ draft }) => draft)
+  }
+
   /** The draft saved under `key`, a project id or `START`. */
   async draft(key: string): Promise<SavedDraft | undefined> {
     return (await this.harness.snapshot(DraftsDoc, this.root.id, context))?.drafts[key]

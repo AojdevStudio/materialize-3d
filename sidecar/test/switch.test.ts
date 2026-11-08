@@ -2,7 +2,10 @@ import { describe, expect, test } from 'bun:test'
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
+import { createModels, InMemoryCredentialStore } from '@earendil-works/pi-ai'
+import { createRegistry } from '@earendil-works/pi-durable'
 import type { ChatEntry, ChatView } from '../src/protocol'
+import { Store } from '../src/store'
 import { spawnSidecar } from './sidecar'
 
 const LEGACY = join(import.meta.dir, 'fixtures', 'legacy')
@@ -85,6 +88,34 @@ describe('a picture pasted into a draft', () => {
     expect(await app.next()).toMatchObject({ kind: 'event', event: { type: 'ready' } })
     expect(existsSync(stray)).toBe(true)
     await app.quit()
+  })
+
+  test("is kept while a first send cut off after its project was made still names it, though the project's draft changed", async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'm3d-picture-'))
+    const first = spawnSidecar(join(dir, 'state'), join(dir, 'projects'))
+    await first.next()
+    const picture = (await first.call('drafts.picture', { name: 'knob.png', data: '' })) as string
+    const { rev } = (await first.call('drafts.set', { key: 'new', text: 'A knob', attachments: [picture] })) as { rev: number }
+    await first.quit()
+    // The sidecar made the project and moved the draft, then stopped before the message.
+    const store = await Store.open({
+      dataDir: join(dir, 'state'),
+      projectsDir: join(dir, 'projects'),
+      models: createModels({ credentials: new InMemoryCredentialStore() }),
+      registry: createRegistry(),
+      env: () => {
+        throw new Error('no conversation runs here')
+      },
+    })
+    const { project } = await store.startProject(rev)
+    // The person saved a newer draft in the project, without the picture, before sending from the start screen again.
+    await store.setDraft(project.id, { text: 'A knob, in black', attachments: [] })
+    await store.close()
+    utimesSync(dirname(picture), new Date(Date.now() - 2 * 86_400_000), new Date(Date.now() - 2 * 86_400_000))
+    const second = spawnSidecar(join(dir, 'state'), join(dir, 'projects'))
+    await second.next()
+    expect(existsSync(picture)).toBe(true)
+    await second.quit()
   })
 
   test('the cleanup at start passes over a link to nothing in the pictures folder', async () => {

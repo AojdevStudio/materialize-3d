@@ -96,11 +96,6 @@ export default function StudioApp() {
    * screen changed, then names the revision. A draft keeps its pictures as the paths of their files.
    */
   const screens = useRef<Record<string, Screen>>({})
-  /**
-   * The newest revision sent from or to each screen. A saved state read before that send still holds the draft that
-   * went out, so its drafts at or below it are passed over.
-   */
-  const sentRevs = useRef<Record<string, number>>({})
   /** The open screen's save that waits for typing to pause. */
   const pending = useRef<{ key: string; timer: number } | null>(null)
   /** The previews of pasted pictures, by path, freed when the window closes. */
@@ -183,7 +178,6 @@ export default function StudioApp() {
   const takeState = (state: AppState) => {
     // The saved state fills only the screens this window has not changed, since what it changed is newer.
     for (const [key, saved] of Object.entries(state.drafts)) {
-      if (saved.rev <= (sentRevs.current[key] ?? 0)) continue
       const local = screens.current[key]
       if (local === undefined) {
         const draft: Draft = { text: saved.text, attachments: saved.attachments }
@@ -195,6 +189,11 @@ export default function StudioApp() {
         autosave(START)
       }
     }
+    takeProjects(state)
+  }
+
+  /** Takes the saved projects, and whether the old chats could be read. */
+  const takeProjects = (state: AppState) => {
     // A project made while this was on its way is newer than the saved list, so it stays.
     setProjects((made) => [...made.filter((p) => !state.projects.some((saved) => saved.id === p.id)), ...state.projects])
     setImportBlocked(state.importBlocked)
@@ -207,10 +206,12 @@ export default function StudioApp() {
       .catch((err: unknown) => setError(String(err)))
   }
 
+  // An import retry brings old chats in as projects. Its saved state may be read before a send the person makes
+  // meanwhile, so it takes the projects only, never drafts, which this window already holds.
   const retryImport = () => {
     void sidecar('legacy.import', {})
       .then(() => sidecar('state.get', {}))
-      .then(takeState)
+      .then(takeProjects)
       .catch((err: unknown) => setError(String(err)))
   }
 
@@ -314,16 +315,13 @@ export default function StudioApp() {
       .catch((err: unknown) => setError(String(err)))
   }
 
-  // A quit or the window's close saves every changed screen, then waits for each send on its way and saves what it
-  // left, then lets the quit go on.
+  // A quit or the window's close waits for each send and save on its way, saves every changed screen, then lets the
+  // quit go on. Text typed during a send that outlasts Rust's hold on the quit is lost (#206).
   useEffect(() => {
     const unlisten = onQuitFlush(async () => {
       clearPause()
       await Promise.all(
         Object.entries(screens.current).map(async ([key, screen]) => {
-          // What the composer holds now is saved first, even during a send, as Rust holds a quit only briefly. A send
-          // that it overtakes fails with its draft changed, and the newer draft keeps what went into it.
-          await flush(key, true)
           await screen.sending
           await flush(key)
         }),
@@ -428,7 +426,6 @@ export default function StudioApp() {
       const sent = await flush(key, true)
       if (sent === undefined) return
       const { project } = await sidecar('chat.send', { key, rev: sent.rev })
-      for (const at of [key, project.id]) sentRevs.current[at] = Math.max(sentRevs.current[at] ?? 0, sent.rev)
       setSendErrors(({ [project.id]: _, ...rest }) => rest)
       setProjects((prev) => (prev.some((p) => p.id === project.id) ? prev : [project, ...prev]))
       // What changed since the save that went out is the next message. Only the pictures that went out leave it.

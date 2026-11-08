@@ -103,9 +103,11 @@ export async function runSidecar({ argv, addProviders }: SidecarOptions): Promis
   await store.reviseOldDrafts()
   // A pasted picture is kept until it is sent, which copies it into its project, or its draft lets it go. A window that
   // outlived a crash may still hold one it has not saved in a draft yet, so only pictures older than a day that no
-  // draft names are removed.
+  // draft names are removed. A start screen send cut off after its project was made still sends the draft it moved, so
+  // that draft's pictures stay too.
   const pictures = join(dirname(data), 'pictures')
-  const named = new Set(Object.values((await store.state()).drafts).flatMap((draft) => draft.attachments))
+  const kept = [...Object.values((await store.state()).drafts), ...(await store.startedDrafts())]
+  const named = new Set(kept.flatMap((draft) => draft.attachments))
   const dayAgo = Date.now() - 86_400_000
   for (const folder of existsSync(pictures) ? readdirSync(pictures) : []) {
     const path = join(pictures, folder)
