@@ -1,4 +1,4 @@
-// Polyfill ResizeObserver for test environments (needed by @react-three/fiber)
+// jsdom has no ResizeObserver (the studio's ModelView uses it)
 if (typeof globalThis.ResizeObserver === 'undefined') {
   globalThis.ResizeObserver = class ResizeObserver {
     callback: ResizeObserverCallback
@@ -9,12 +9,6 @@ if (typeof globalThis.ResizeObserver === 'undefined') {
     unobserve() {}
     disconnect() {}
   }
-}
-
-
-// jsdom has no Element.scrollTo (needed by assistant-ui's thread auto-scroll)
-if (typeof Element !== 'undefined' && !Element.prototype.scrollTo) {
-  Element.prototype.scrollTo = function scrollTo() {}
 }
 
 // jsdom parses its default stylesheet on the first getComputedStyle in each

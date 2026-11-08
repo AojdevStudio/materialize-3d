@@ -11,9 +11,7 @@ vi.mock('@tauri-apps/api/event', () => ({
     return () => listeners.delete(name)
   }),
 }))
-vi.mock('@tauri-apps/api/app', () => ({ getVersion: vi.fn(async () => '0.2.1') }))
 
-import { AboutSection } from '../components/AboutSection'
 import { UpdateBanner } from '../components/UpdateBanner'
 import {
   checkForUpdates,
@@ -106,13 +104,12 @@ describe('updates', () => {
     expect(installCalls()).toEqual([['update_install', { version: '0.3.0' }]])
   })
 
-  it('Update now says it waits for running builds, in the banner and in Settings > About', async () => {
+  it('Update now says it waits for running builds', async () => {
     feed(NEWER, () => new Promise(() => {}))
     render(
       <>
         <UpdateEvents />
         <UpdateBanner />
-        <AboutSection active />
       </>,
     )
     await act(() => checkForUpdatesAtLaunch())
@@ -122,13 +119,11 @@ describe('updates', () => {
     emit('update:waiting', 2)
     const waiting = 'Waiting for 2 builds to finish. Then the update installs and the app restarts.'
     expect(screen.getByTestId('update-progress').textContent).toBe(waiting)
-    expect(screen.getByTestId('about-status').textContent).toBe(waiting)
     emit('update:waiting', 1)
-    expect(screen.getByTestId('about-status').textContent).toBe('Waiting for 1 build to finish. Then the update installs and the app restarts.')
+    expect(screen.getByTestId('update-progress').textContent).toBe('Waiting for 1 build to finish. Then the update installs and the app restarts.')
 
     emit('update:waiting', 0)
     expect(screen.getByTestId('update-progress').textContent).not.toContain('Waiting')
-    expect(screen.getByTestId('about-status').textContent).toBe('Installing the update. The app restarts when it is done.')
   })
 
   it('a failed install shows the error, keeps the app running, and can be retried', async () => {
@@ -169,31 +164,5 @@ describe('updates', () => {
     feed(CURRENT)
     await Promise.all([checkForUpdates(), checkForUpdates(), checkForUpdatesAtLaunch()])
     expect(invokeMock.mock.calls.filter(([cmd]) => cmd === 'update_check')).toHaveLength(1)
-  })
-
-  describe('Settings > About', () => {
-    it('shows the installed version and reports up to date', async () => {
-      feed(CURRENT)
-      render(<AboutSection active />)
-      await waitFor(() => expect(screen.getByTestId('about-version').textContent).toBe('Materialize 3D 0.2.1'))
-      fireEvent.click(screen.getByTestId('about-check'))
-      await waitFor(() => expect(screen.getByTestId('about-status').textContent).toBe('Materialize 3D is up to date.'))
-    })
-
-    it('reports a newer version and offers Update now', async () => {
-      feed(NEWER)
-      render(<AboutSection active />)
-      fireEvent.click(screen.getByTestId('about-check'))
-      await waitFor(() => expect(screen.getByTestId('about-status').textContent).toBe('Version 0.3.0 is available.'))
-      fireEvent.click(screen.getByTestId('about-update-now'))
-      await waitFor(() => expect(installCalls()).toEqual([['update_install', { version: '0.3.0' }]]))
-    })
-
-    it('reports a failed check', async () => {
-      feed(new Error('Could not check for updates: 404 Not Found'))
-      render(<AboutSection active />)
-      fireEvent.click(screen.getByTestId('about-check'))
-      await waitFor(() => expect(screen.getByTestId('about-status').textContent).toBe('Could not check for updates: 404 Not Found'))
-    })
   })
 })

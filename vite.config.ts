@@ -8,11 +8,6 @@ const host = process.env.TAURI_DEV_HOST;
 export default defineConfig(async () => ({
   plugins: [react()],
 
-  // Pre-bundle monaco-editor so Vite resolves its workers locally (no CDN)
-  optimizeDeps: {
-    include: ['monaco-editor'],
-  },
-
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //
   // 1. prevent Vite from obscuring rust errors

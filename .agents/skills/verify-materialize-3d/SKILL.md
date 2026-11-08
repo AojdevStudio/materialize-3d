@@ -5,7 +5,7 @@ description: Launch and drive the real Materialize 3D Tauri desktop app (React U
 
 # Verify Materialize 3D
 
-This skill drives the actual desktop app: the debug Rust binary with the real backend, rendered by WebKitGTK on a private Xvfb display, controlled through `tauri-driver` → `WebKitWebDriver`. The browser IPC mock in `src/dev/tauriBrowserMock.ts` never installs here, because the real window has `__TAURI_INTERNALS__`.
+This skill drives the actual desktop app: the debug Rust binary with the real backend, rendered by WebKitGTK on a private Xvfb display, controlled through `tauri-driver` → `WebKitWebDriver`.
 
 For installed macOS release acceptance, follow [Verify the installed Mac app](../../../docs/verify-on-mac.md). It requires a part made through the studio's chat, sliced to a P2S 0.4 mm 3MF, and opened in Bambu Studio. Keep debug app evidence separate from release evidence.
 
@@ -139,7 +139,7 @@ $S/mac.ts count <sel>
 $S/mac.ts shot <name>            # WebKit snapshot
 $S/mac.ts eval <js>              # inspection only
 $S/mac.ts restart                # relaunch on the same data
-$S/mac.ts dialog <open-path> [save-path]
+$S/mac.ts dialog <open-path>
 $S/mac.ts down
 ```
 
