@@ -32,7 +32,7 @@
  * before gh or a cd the gate cannot follow can change the repo gh picks, or the command can change gh's
  * host or config.
  *
- * Limit: this is a static read of the command text. `eval "gh ..."`, `gh api "$P"`, aliases, shell
+ * Limit: this is a static read of the command text. `eval "gh ..."`, `trap "gh ..." EXIT`, `gh api "$P"`, aliases, shell
  * functions, globs, and profile settings are not followed. A script a shell runs as an operand
  * (`bash script.sh`), a program a shell reads through a pipe from any other command (`curl ... | bash`), or
  * one the outer shell splices an expansion into as an argument, is not read, and the gate allows it, as it
@@ -54,6 +54,8 @@
  * The literal /dev/stdin, /dev/fd/0, and /proc/self/fd/0 are the exception: stdin is then the program, and the gate reads it.
  * `< /dev/null` gives no text, so it leaves the operand a file.
  * A command name the shell computes, which can be a shell, is opaque when a later word or its stdin holds a PR command.
+ * A command name written as one quoted variable, `"$P"`, that this shell set to a literal word before it is read as that word,
+ * but only when nothing in the text can change P unseen (see `knownNames`).
  * A `-c` script or ssh command the outer shell computes is opaque when a command name in it is computed, since that can be gh.
  * Output the outer shell computes, piped into a shell, is opaque too, whatever command or group prints it.
  */
@@ -240,6 +242,8 @@ interface Segment {
   pipe?: Segment;
   /** The commands of the `{ }`, `( )`, or compound command this segment closes. They print to its pipe. */
   group?: Segment[];
+  /** By word index: the source text of a plain word, before quote removal. */
+  raw?: Record<number, string>;
 }
 
 /**
@@ -305,11 +309,106 @@ function envOf(scope: Scope, outer: Env): Env {
   return env;
 }
 
+/** Builtins that run code the gate does not read, or set variables it does not name: by arithmetic, a nameref, an alias, or a zsh option. */
+const HIDDEN_SETS = [...RUNS_CODE, "trap", "alias", "enable", "let", "declare", "typeset", "local", "integer", "float", "noglob", "nocorrect", "-", "vared", "zparseopts", "zstyle", "zformat", "zregexparse", "strftime", "zstat", "sysread", "getln", "zle", "zmodload", "autoload"];
+/** Builtins that set a variable named in an option or argument, where the name can be glued to an option letter, or that run a callback. */
+const VAR_SETTERS = ["printf", "print", "wait", "set", "read", "mapfile", "readarray", "getopts", "unset", "compgen", "select", "coproc"];
+/** Variables bash or zsh set or guard on their own, so a plain assignment may fail or not hold. */
+const SHELL_SET =
+  /^(?:_|HOME|(?:CD|F|MAN|MAIL|MODULE_)?PATH|BASH\w*|ZSH\w*|COMP\w*|PWD|OLDPWD|DIRSTACK|REPLY|MAPFILE|COPROC|OPT(?:ARG|IND)|(?:PIPE)?STATUS|ARGV|ARGC|FUNCNAME|FUNCSTACK|GROUPS|S?RANDOM|SECONDS|EPOCH\w+|LINENO|HISTCMD|COLUMNS|LINES|PPID|E?UID|E?GID|USERNAME|SHELLOPTS|SHLVL|TTY\w*|ERRNO|PSVAR|WATCH|FIGNORE|MATCH|MBEGIN|MEND)$/i;
+
+/**
+ * Gives a command name written as one quoted variable, `"$P"` or `"${P}"`, the literal word this command set P to before it,
+ * so `PY=/usr/bin/python3; "$PY" run.py` runs python, not a computed name that could be a shell. The literal is then read as
+ * if it were typed there, so gh, a shell, ssh, or a wrapper is checked as before. A name resolves only when all of these hold:
+ * - P is set only by plain `P=word` commands at the top of this shell: assignments alone, in no subshell, group, compound body,
+ *   pipeline, or background job, and not after `&&` or `||`. Each sets P in order. A value with an expansion, or none, leaves P unknown.
+ * - The text, both as written and after quote removal, names P nowhere else but in `$P` and `${P}` reads, so no prefix assignment,
+ *   `unset`, `read`, `export`, loop, or `${P:=x}` changes it, even with the name split by quotes, as in `read P'Y'`.
+ * - P is not a variable the shell sets or guards on its own, such as PWD, REPLY, PATH, or BASH_*.
+ * - No setter builtin (printf, print, read, mapfile, readarray, getopts, wait, set, unset, compgen, select, coproc) takes an
+ *   option that names a variable or a callback (-a, -A, -v, -p, -C, -V), or a computed word, since `printf -vP` hides the name P.
+ * - Nothing in the text can set a variable without naming it: no eval, source, trap, alias, declare, let, arithmetic, array,
+ *   function (zsh's anonymous `() { }` too), subscript assignment (zsh's `functions[f]=body` defines one), setter with a computed
+ *   word, or command name that stays computed. A function body would also run where it is called, and in zsh an EXIT trap set
+ *   in a function runs as that function returns.
+ *   A trap set only on EXIT (or 0) is the exception, since it runs as the shell exits, after every command a name resolves for.
+ *   A trap on any other signal, such as DEBUG or ERR, runs while the script still runs.
+ */
+function knownNames(scope: Scope, src: string): void {
+  const texts = [src, src.replaceAll("\\\n", "")];
+  if (scope.assigns.length > 0 || texts.some((t) => /\(\s*\)|\bfunction\b|=\(|\$\{\(|\w\[.*?\]\+?=/.test(t))) return;
+  const plain = (seg: Segment): boolean =>
+    seg.always &&
+    !seg.subshell &&
+    !seg.pipe &&
+    seg.after !== "|" &&
+    seg.after !== "&" &&
+    seg.stdin.length + seg.other.length + seg.out.length + seg.copies === 0 &&
+    seg.words.every((_, i) => /^[A-Za-z_]\w*=/.test(seg.raw?.[i] ?? ""));
+  const sets = new Map<string, number>();
+  for (const word of scope.segments.filter(plain).flatMap((s) => s.words)) {
+    const name = word.split("=")[0];
+    sets.set(name, (sets.get(name) ?? 0) + 1);
+  }
+  // Quote removal can join a name the source splits, as `read P'Y'` names PY, so the parsed words are counted too.
+  const words = [scope.segments, ...scope.subs.map((s) => s.segments)].flat().flatMap((s) => s.words.map((w) => w.replace(MARKER, " "))).join(" ");
+  const named = (name: string): boolean => {
+    const mention = new RegExp(`(?<!\\w)${name}(?!\\w)`, "g");
+    const read = new RegExp(`\\$(?:${name}(?!\\w)|\\{${name}\\})`, "g");
+    return !SHELL_SET.test(name) && [...texts.map((t) => t.replace(read, "")), words].every((t) => t.match(mention)?.length === sets.get(name));
+  };
+  const known = new Map<string, string>();
+  const resolved = new Map<Segment, string[]>();
+  for (const seg of scope.segments) {
+    const words = [...seg.words];
+    for (let found = head(words, (w) => computed(w, scope)); !found.sure && found.at >= 0; found = head(words, (w) => computed(w, scope))) {
+      const [, braced, bare] = /^"\$(?:\{([A-Za-z_]\w*)\}|([A-Za-z_]\w*))"$/.exec(seg.raw?.[found.at] ?? "") ?? [];
+      const value = known.get(braced ?? bare ?? "");
+      if (value === undefined) break;
+      words[found.at] = value;
+    }
+    resolved.set(seg, words);
+    if (!plain(seg)) continue;
+    for (const word of seg.words) {
+      const name = word.split("=")[0];
+      const value = word.slice(name.length + 1);
+      if (value !== "" && !value.includes("\0") && named(name)) known.set(name, value);
+      else known.delete(name);
+    }
+  }
+  // A setter builtin can set P where the name never stands apart, glued to an option letter as in `printf -vP gh` or `read -aP`,
+  // or through a callback as in `mapfile -C 'eval ...'`. So a setter word anywhere, under any wrapper, stops every resolution
+  // when an option after it holds a letter that takes a name or a callback, or when any word after it is computed.
+  // The words are read after resolution, since `P=printf; "$P" -vQ gh` reaches the setter through a name.
+  const all = [scope.segments, ...scope.subs.map((s) => s.segments)].flat();
+  const hides = (seg: Segment): boolean => {
+    const words = resolved.get(seg) ?? seg.words;
+    return words.some((w, i) => VAR_SETTERS.includes(w) && words.slice(i + 1).some((a) => computed(a, scope) || /^-[^-]*[aAvpCV]/.test(a)));
+  };
+  if (all.some(hides)) return;
+  for (const seg of all) {
+    const words = resolved.get(seg) ?? seg.words;
+    const found = head(words, (w) => computed(w, scope));
+    if (!found.sure) return;
+    if (found.at < 0) continue;
+    const [cmd, first = "", ...rest] = words.slice(found.at);
+    // An EXIT trap runs only as its shell exits, after every command here. Its text still counts as mentions above.
+    const trap = first === "--" ? rest : [first, ...rest];
+    const atExit = cmd === "trap" && trap.length > 1 && !trap[0].startsWith("-") && trap.slice(1).every((w) => w === "EXIT" || w === "0");
+    if (HIDDEN_SETS.includes(cmd) && !atExit) return;
+    if (cmd === "[[" && [first, ...rest].some((w) => /^-(?:eq|ne|lt|le|gt|ge)$/.test(w))) return;
+    if (["export", "readonly"].includes(cmd) && [first, ...rest].some((w) => w.split("=")[0].includes("\0"))) return;
+  }
+  for (const [seg, words] of resolved) seg.words = words;
+}
+
 /** Reads `src`. When its words can set HOME, it is read again with `~` and `$HOME` as computed text. */
 function lex(src: string, outer: Env = { names: new Set() }): Scope {
   const parse = (home: boolean): Scope => {
     const scope: Scope = { segments: [], docs: [], subs: [], assigns: [], tries: 0, home, env: outer };
     scope.segments = new Lexer(src, scope).commands(false);
+    knownNames(scope, src);
     return scope;
   };
   const first = parse(true);
@@ -495,6 +594,7 @@ class Lexer {
           this.caseHead = false;
           this.pattern = true;
         }
+        (seg.raw ??= {})[seg.words.length] = this.src.slice(start, this.pos);
         seg.words.push(word);
       }
     }
@@ -2004,6 +2104,7 @@ function command(seg: Segment, found: Head, ctx: Ctx): PrCommand[] {
   if (name !== undefined && found.sure && isGh(name)) {
     return ghCommand({ ...seg, words: words.slice(found.at) }, { ...ctx, lost, known: !ctx.wrapped && found.at === 0 }, false);
   }
+  if (found.sure && dataCommand(words, found)) return [];
   if (!found.sure && found.at >= 0 && hidesShell(seg, found.at, ctx)) return [{ ...at(seg, ctx), kind: "opaque", part: "shell" }];
   const start = gh >= 0 ? gh : found.sure ? -1 : found.at;
   if (start < 0) return [];

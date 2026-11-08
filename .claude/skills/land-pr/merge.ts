@@ -11,7 +11,10 @@
  *
  * The kit's source repo is the owner's curated settings repo, and no review bot gates it.
  * The owner also exempted two repos with no review bot installed, which take local reviews only
- * (2026-10-27), and six product meta (planning) repos with no review bot installed (2026-10-29). The list lives here in the kit, never in a file the target repo could edit. It holds SHA-256
+ * (2026-10-27), six product meta (planning) repos with no review bot installed (2026-10-29), motion-studio
+ * (2026-10-30), for now, acp-church-media while Pullfrog is paused for its org (2026-11-03), and desktop-commander, which has no
+ * Pullfrog (2026-11-05). An exempt merge
+ * still pins its head, since the local review is the only check of that head. The list lives here in the kit, never in a file the target repo could edit. It holds SHA-256
  * digests of lowercase `owner/name`, so the kit can ship to public repos without naming a
  * private one. The exemption holds only when the merge command names the repo itself,
  * because a repo guessed from the cwd or the environment can differ from the one gh merges.
@@ -50,6 +53,11 @@ const BOT_EXEMPT = new Set([
   "sha256:8a:60:35:cf:9f:fe:e9:f6:e6:73:7e:2b:f7:84:b6:13:af:92:3f:a7:e4:f4:28:ba:d5:3e:d5:de:f6:7a:9b:07",
   "sha256:51:1f:ed:46:6f:52:26:97:e0:71:43:ad:a6:19:ec:44:c7:32:52:01:90:5d:9c:ac:b5:5f:b5:76:35:fa:7c:a8",
   "sha256:af:68:ff:91:e8:1e:9f:10:fe:b5:34:02:ca:5f:43:53:b5:be:14:60:2f:2d:36:0c:a7:c6:a6:4b:8d:f4:67:e0",
+  // Temporary. The owner exempted ACP-Media/acp-church-media on 2026-11-03 while Pullfrog is paused for its org.
+  // Remove this entry once the Pullfrog replacement publishes the pass signal there (ACP-Media/acp-church-media#420).
+  "sha256:fa:b3:57:7b:6d:2f:98:ad:06:df:f2:08:3f:db:2a:f3:69:cd:c9:86:df:92:b8:c1:1a:89:46:e7:61:5b:19:53",
+  // AojdevStudio/desktop-commander has no Pullfrog. The owner exempted it on 2026-11-05.
+  "sha256:4a:c0:47:14:8a:92:08:ac:39:97:92:99:cf:6c:d0:c8:7c:99:98:3c:9f:c9:9f:c9:ff:5e:c5:b9:af:e1:3b:a2",
 ]);
 
 const CODERABBIT_GATED = new Set([

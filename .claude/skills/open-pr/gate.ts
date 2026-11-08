@@ -47,11 +47,21 @@ function parseInput(raw: string): HookInput {
 
 class Refusal extends Error {}
 
-function run(argv: string[], cwd: string): string {
-  const r = Bun.spawnSync(argv, { cwd, stdout: "pipe", stderr: "pipe", timeout: 8_000 });
+/** The hook gives the gate 120 s. Every call shares this deadline, so a slow GitHub refuses here before the hook times out. */
+const DEADLINE = Date.now() + 100_000;
+
+/** Runs a command for at most `limit` ms: 8 s for one read, longer for a read of every page. */
+function run(argv: string[], cwd: string, limit = 8_000): string {
+  const timeout = Math.min(limit, DEADLINE - Date.now());
+  if (timeout <= 0) throw new Refusal(`the gate ran out of time before \`${argv.join(" ")}\`, so it cannot check this command. Retry it.`);
+  const r = Bun.spawnSync(argv, { cwd, stdout: "pipe", stderr: "pipe", timeout });
+  if (r.exitedDueToTimeout) throw new Refusal(`\`${argv.join(" ")}\` did not finish in ${Math.round(timeout / 1000)} s, so the gate cannot check this command. Retry it.`);
   if (r.exitCode !== 0) throw new Refusal(`\`${argv.join(" ")}\` failed: ${(r.stderr.toString() || r.stdout.toString()).trim()}`);
   return r.stdout.toString().trim();
 }
+
+/** A `--paginate` read makes one request per page inside its one gh process, so it gets more time than a single read. */
+const PAGINATED = 45_000;
 
 const ghJson = (path: string, cwd: string): unknown => JSON.parse(run(["gh", "api", path], cwd));
 
@@ -301,7 +311,7 @@ const THREADS = `query($owner: String!, $name: String!, $number: Int!, $endCurso
 /** Every review thread on the PR, across all pages. */
 function allThreads(repo: string, number: number, cwd: string): Thread[] {
   const [owner, name] = repo.split("/");
-  const pages: unknown = JSON.parse(run(["gh", "api", "graphql", "--paginate", "--slurp", "-f", `query=${THREADS}`, "-F", `owner=${owner}`, "-F", `name=${name}`, "-F", `number=${number}`], cwd));
+  const pages: unknown = JSON.parse(run(["gh", "api", "graphql", "--paginate", "--slurp", "-f", `query=${THREADS}`, "-F", `owner=${owner}`, "-F", `name=${name}`, "-F", `number=${number}`], cwd, PAGINATED));
   if (!isArr(pages)) throw new Refusal("the review threads GitHub returned are not a list of pages, so this gate cannot read CodeRabbit's open findings.");
   return pages.flatMap((page) => {
     const pull = field(field(field(page, "data", isObj, "a thread page"), "repository", isObj, "a thread page"), "pullRequest", isObj, "a thread page");
@@ -318,7 +328,7 @@ function parsePaths(x: unknown): string[] {
 
 /** Every item of a paginated REST list, read with `--paginate --slurp`. */
 function allPages(path: string, what: string, cwd: string): unknown[] {
-  const pages: unknown = JSON.parse(run(["gh", "api", `${path}?per_page=100`, "--paginate", "--slurp"], cwd));
+  const pages: unknown = JSON.parse(run(["gh", "api", `${path}?per_page=100`, "--paginate", "--slurp"], cwd, PAGINATED));
   if (!isArr(pages) || !pages.every(isArr)) throw new Refusal(`the ${what} GitHub returned is not a list of pages, so this gate cannot read CodeRabbit's verdict.`);
   return pages.flat();
 }
@@ -406,12 +416,13 @@ function checkMerge(cmd: Extract<PrCommand, { kind: "merge" }>, cwd: string): vo
   if (named !== undefined && named.toLowerCase() !== sha.toLowerCase()) {
     throw new Refusal(`the merge names head ${named}, but the gate checked ${sha}, so it cannot vouch for the head gh would merge. Name the head the gate checked.`);
   }
-  if (botExempt(pull.baseRepo) && cmd.pinned) return;
-  const verdict = decideMerge({ repo: pull.baseRepo, pinned: cmd.pinned, sha, evidence: evidenceFor(repo, pull, cwd) });
-  if (!verdict.ok) throw new Refusal(`${repo}#${pull.number} cannot merge: ${verdict.reason} Follow the land-pr skill.`);
+  // Every merge pins its head, an exempt one too: without a review bot, the local review is the only check of that head.
   if (named === undefined) {
     throw new Refusal(`pin the approved head ${sha} with --match-head-commit for gh pr merge, or the sha field for the REST merge endpoint. Otherwise a concurrent push can change the head that merges.`);
   }
+  if (botExempt(pull.baseRepo) && cmd.pinned) return;
+  const verdict = decideMerge({ repo: pull.baseRepo, pinned: cmd.pinned, sha, evidence: evidenceFor(repo, pull, cwd) });
+  if (!verdict.ok) throw new Refusal(`${repo}#${pull.number} cannot merge: ${verdict.reason} Follow the land-pr skill.`);
 }
 
 function classifyIssue(cmd: Extract<PrCommand, { kind: "issue-edit" }>, cwd: string): "issue" | "pull-request" {

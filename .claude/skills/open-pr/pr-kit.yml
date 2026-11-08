@@ -12,6 +12,12 @@ on:
 permissions:
   contents: read
 
+# Each edit or push starts a new check of the PR's current body. The newest run is the one that
+# counts, so an older run for the same PR is cancelled and does not hold a runner slot.
+concurrency:
+  group: pr-kit-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   body:
     name: PR body contract

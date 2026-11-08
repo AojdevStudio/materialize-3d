@@ -83,7 +83,8 @@ function plain(line: string): string {
 
 interface Parsed {
   preamble: string;
-  sections: Array<{ heading: string; text: string }>;
+  /** `line` is the heading line as written, so a rebuilt body keeps it whole. */
+  sections: Array<{ heading: string; line: string; text: string }>;
 }
 
 function parse(body: string): Parsed {
@@ -93,7 +94,7 @@ function parse(body: string): Parsed {
   for (const [i, line] of lines.entries()) {
     const heading = !mask[i] && line.match(/^##\s+(.+?)\s*#*\s*$/);
     if (heading) {
-      out.sections.push({ heading: heading[1], text: "" });
+      out.sections.push({ heading: heading[1], line, text: "" });
       continue;
     }
     const last = out.sections.at(-1);
@@ -101,6 +102,15 @@ function parse(body: string): Parsed {
     else out.preamble += line + "\n";
   }
   return out;
+}
+
+/**
+ * The author's body without every section named `name`, read the way the contract reads sections:
+ * an unfenced `##` heading in any case, through the next one, its subheadings included.
+ */
+export function withoutSection(body: string, name: Section): string {
+  const { preamble, sections } = parse(authorBody(body));
+  return preamble + sections.filter((s) => s.heading.toLowerCase() !== name.toLowerCase()).map((s) => `${s.line}\n${s.text}`).join("");
 }
 
 function sentences(text: string): string[] {
@@ -171,13 +181,16 @@ function stripPrLens(body: string): string {
   return lines.join("\n");
 }
 
-/** Checks one pull request against the contract. Every violation carries the fix in its message. */
 // CodeRabbit appends its release notes inside these markers after the author's body.
 const CODERABBIT_SUMMARY =
   /\n*<!-- This is an auto-generated comment: release notes by coderabbit\.ai -->[\s\S]*?<!-- end of auto-generated comment: release notes by coderabbit\.ai -->\n*/g;
 
+/** The author's own body: the CodeRabbit and PR Lens blocks removed. The contract reads only this. */
+const authorBody = (body: string) => stripPrLens(body.replace(CODERABBIT_SUMMARY, "\n"));
+
+/** Checks one pull request against the contract. Every violation carries the fix in its message. */
 export function checkPullRequest(input: PullRequest): Verdict {
-  const pr = { ...input, body: stripPrLens(input.body.replace(CODERABBIT_SUMMARY, "\n")) };
+  const pr = { ...input, body: authorBody(input.body) };
   const v: Violation[] = [];
   if (pr.draft) v.push({ rule: "draft", message: "drafts get no review-bot coverage. Open the PR ready for review." });
   const title = pr.title === undefined ? null : titleViolation(pr.title);
