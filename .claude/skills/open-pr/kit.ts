@@ -23,6 +23,7 @@
  *   .agents/skills/{open-pr,land-pr}                  symlinks for Codex and Cursor
  *   .claude/settings.json                             the PreToolUse gate hook
  *   .github/workflows/pr-kit.yml                      the PR body check in CI
+ *   .github/workflows/merge-danger.yml                the merge-danger scorer, on the homelab Linux runners
  *   AGENTS.md (and CLAUDE.md when it does not load AGENTS.md)  the rule block
  *   only the real one of AGENTS.md and CLAUDE.md when the other is a symlink whose text is exactly its name
  */
@@ -253,8 +254,8 @@ function linkSkill(name: string): void {
 const isObj = (x: unknown): x is Record<string, unknown> => typeof x === "object" && x !== null && !Array.isArray(x);
 
 /**
- * The gate hook's settings. 120 seconds covers a merge check's chain of `gh` calls (8 seconds
- * each). `onFailure: "block"` makes a gate that times out, fails to start, or crashes deny
+ * The gate hook's settings. 120 seconds covers a merge check's chain of `gh` calls: 8 seconds
+ * for a single read, 45 for a paginated one, and 100 for all of them together. `onFailure: "block"` makes a gate that times out, fails to start, or crashes deny
  * the call, since Claude Code otherwise lets it run.
  */
 const HOOK_SETTINGS = { timeout: 120, onFailure: "block" } as const;
@@ -279,8 +280,8 @@ function wireHook(): void {
 const RUNS_ON = /^\s*runs-on:\s*(\S.*?)\s*$/gm;
 
 /**
- * The runner label: the flag, else the label the installed pr-kit.yml already uses, else the
- * one label most of the repo's other workflows use. Inference never picks a paid hosted
+ * The runner label for pr-kit.yml: the flag, else the label the installed pr-kit.yml already
+ * uses, else the one label most of the repo's other workflows use. Inference never picks a paid hosted
  * label, and a tie for most used is refused, so the result never depends on file order.
  */
 function runnerLabel(): string {
@@ -293,7 +294,8 @@ function runnerLabel(): string {
     return label;
   }
   const counts = new Map<string, number>();
-  for (const f of existsSync(dir) ? readdirSync(dir) : []) {
+  // merge-danger.yml is the kit's own and names its runners itself, so it never votes.
+  for (const f of existsSync(dir) ? readdirSync(dir).filter((f) => f !== "merge-danger.yml") : []) {
     for (const m of readFileSync(join(dir, f), "utf8").matchAll(RUNS_ON)) counts.set(m[1], (counts.get(m[1]) ?? 0) + 1);
   }
   const top = Math.max(0, ...counts.values());
@@ -316,11 +318,17 @@ function newer(a: string, b: string): boolean {
   return false;
 }
 
-/** Writes pr-kit.yml. A pin the installed copy has at a newer version stays, so an install never downgrades an action the repo's Dependabot moved ahead. */
-function writeWorkflow(label: string): void {
-  const path = join(repo, ".github", "workflows", "pr-kit.yml");
+/**
+ * The workflows the kit installs. Only pr-kit.yml takes the runner label. merge-danger.yml names
+ * the homelab Linux runners itself, since the label can name a Mac.
+ */
+const WORKFLOWS = ["pr-kit.yml", "merge-danger.yml"] as const;
+
+/** Writes one workflow. A pin the installed copy has at a newer version stays, so an install never downgrades an action the repo's Dependabot moved ahead. */
+function writeWorkflow(file: (typeof WORKFLOWS)[number], label: string): void {
+  const path = join(repo, ".github", "workflows", file);
   const installed = new Map(existsSync(path) ? [...readFileSync(path, "utf8").matchAll(PIN)].map((m) => [m[4], { pin: m[2], version: m[5] }] as const) : []);
-  const yml = readFileSync(join(SOURCE["open-pr"], "pr-kit.yml"), "utf8")
+  const yml = readFileSync(join(SOURCE["open-pr"], file), "utf8")
     .replace("__RUNS_ON__", label)
     .replaceAll(".claude/skills/", `${layout.directory}/`)
     // Only the pin moves over, so the template keeps its own indent and step layout.
@@ -376,7 +384,7 @@ function preflightDestinations(): InstructionWrite[] {
   }
   const alias = instructionAlias();
   const instructionFiles = alias ? [alias] : ["AGENTS.md", "CLAUDE.md"];
-  for (const file of [".claude/settings.json", ".github/workflows/pr-kit.yml", ...instructionFiles]) assertDestination(join(repo, file));
+  for (const file of [".claude/settings.json", ...WORKFLOWS.map((w) => `.github/workflows/${w}`), ...instructionFiles]) assertDestination(join(repo, file));
   if (layout.name === "skills") assertDestination(join(repo, ".agents", "skills"), true);
   return instructionFiles.flatMap((file) => {
     const path = join(repo, file);
@@ -406,8 +414,8 @@ guardInstalled();
 for (const name of SKILLS) copySkill(name);
 if (layout.name === "skills") for (const name of SKILLS) linkSkill(name);
 wireHook();
-writeWorkflow(label);
+for (const file of WORKFLOWS) writeWorkflow(file, label);
 for (const { path, text } of instructions) writeIfChanged(path, text);
 
 console.log(changes.length ? changes.map((c) => `- ${c}`).join("\n") : "PR kit already current.");
-console.log("Next: commit these files in their own PR, then make the pr-kit check required in the repo ruleset.");
+console.log("Next: commit these files in their own PR, then make the pr-kit check required in the repo ruleset. merge-danger needs a homelab-ci Linux runner with Jev's key file (ROLLOUT.md, step 4a).");
