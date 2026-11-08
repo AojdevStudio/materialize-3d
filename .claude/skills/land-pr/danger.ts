@@ -20,7 +20,8 @@
  *   A PR cannot start such a run with its own code. A merge-danger status from any other account,
  *   or one that links anything else, refuses.
  *   That attempt's own job log must record the current input fingerprint and the status's radius.
- *   A caller-supplied URL hash alone is not evidence. Missing log proof takes the owner's word.
+ *   A caller-supplied URL hash alone is not evidence. A log proof that contradicts its status refuses.
+ *   A score whose proof is gone may only raise the rating, and at least one verified score must exist.
  * The gate never reads this rating, so the rule stays the agent's to keep, as land-pr says.
  */
 
@@ -96,23 +97,35 @@ export function readStatus(statuses: readonly Status[], scorer: Scorer): StatusR
   if (newest === undefined) return scorer.installed ? { kind: "waiting", why: "the scorer has not rated the current base, title, and body. Wait for the run a push or edit started. If none is running, close and reopen the PR to request a fresh score" } : { kind: "absent" };
   if (newest.state === "error" || newest.state === "failure") return { kind: "refused", why: `the ${STATUS_CONTEXT} status is ${newest.state}: ${newest.description ?? "no description"}` };
   if (newest.state !== "success") return { kind: "waiting", why: `the ${STATUS_CONTEXT} status is ${newest.state}` };
-  let radius: Radius | undefined;
+  // A score whose proof is gone (logs expired, a run deleted, an attempt that failed or was
+  // cancelled after it posted) may still raise the rating, so a rerun never hides a higher score.
+  // It never lowers the rating, and a fresh verified score is still required.
+  let verified: Radius | undefined;
+  let claimed: Radius | undefined;
+  let unproven: string | undefined;
+  const higher = (a: Radius | undefined, b: Radius) => (a === undefined || rank(b) > rank(a) ? b : a);
   for (const s of current.filter((s) => s.state === "success")) {
     const id = runAttemptOf(scorer.repo, s.targetUrl);
     const run = id === undefined ? undefined : scorer.runs.get(id);
-    if (run === undefined) return { kind: "refused", why: `a ${STATUS_CONTEXT} status links ${JSON.stringify(s.targetUrl)}, not a run of ${SCORER_PATH} in ${scorer.repo}` };
-    if (run.path !== SCORER_PATH || run.event !== "pull_request_target" || run.headSha !== scorer.head) {
-      return { kind: "refused", why: `a ${STATUS_CONTEXT} status links run ${id}, which is ${run.path} on ${run.event} for ${run.headSha.slice(0, 7)}, not the scorer on this head` };
-    }
-    if (run.status !== "completed") return { kind: "waiting", why: `scorer run ${id} is ${run.status}` };
-    if (run.conclusion !== "success") return { kind: "refused", why: `scorer run ${id} concluded ${run.conclusion}, yet a success status links it` };
     const word = s.description?.match(RATING)?.[1];
     if (!isRadius(word)) return { kind: "refused", why: `the ${STATUS_CONTEXT} status says ${JSON.stringify(s.description)}, which names no blast radius` };
-    if (run.proof.kind === "unavailable") return { kind: "refused", why: `scorer run ${id} has no verified output: ${run.proof.why}` };
+    if (run !== undefined && (run.path !== SCORER_PATH || run.event !== "pull_request_target" || run.headSha !== scorer.head)) {
+      return { kind: "refused", why: `a ${STATUS_CONTEXT} status links run ${id}, which is ${run.path} on ${run.event} for ${run.headSha.slice(0, 7)}, not the scorer on this head` };
+    }
+    if (run !== undefined && run.status !== "completed") return { kind: "waiting", why: `scorer run ${id} is ${run.status}` };
+    if (run === undefined || run.conclusion !== "success" || run.proof.kind === "unavailable") {
+      unproven ??=
+        run === undefined ? `a ${STATUS_CONTEXT} status links ${JSON.stringify(s.targetUrl)}, which GitHub does not return as a run of ${SCORER_PATH} in ${scorer.repo}`
+        : run.proof.kind === "unavailable" && run.conclusion === "success" ? `scorer run ${id} has no verified output: ${run.proof.why}`
+        : `scorer run ${id} concluded ${run.conclusion}, yet a success status links it`;
+      claimed = higher(claimed, word);
+      continue;
+    }
     if (run.proof.inputs !== scorer.inputs || run.proof.radius !== word) return { kind: "refused", why: `the ${STATUS_CONTEXT} status does not match the inputs and rating recorded by scorer run ${id}` };
-    if (radius === undefined || rank(word) > rank(radius)) radius = word;
+    verified = higher(verified, word);
   }
-  return radius === undefined ? { kind: "waiting", why: "the scorer has not rated this head yet" } : { kind: "rated", radius };
+  if (verified === undefined) return unproven === undefined ? { kind: "waiting", why: "the scorer has not rated this head yet" } : { kind: "refused", why: `${unproven}. Request a fresh score with a close and reopen` };
+  return { kind: "rated", radius: claimed === undefined ? verified : higher(verified, claimed) };
 }
 
 /** The higher of the body's blast radius word and the scorer's reading, and who may merge. */
@@ -208,13 +221,19 @@ if (import.meta.main) {
   const statuses = (Array.isArray(pages) ? pages.flat() : []).map(parseStatus);
   const workflow = gh([`repos/${repo}/contents/${SCORER_PATH}?ref=${encodeURIComponent(base)}`, "--jq", ".path"]);
   if (!workflow.ok && !workflow.why.includes("HTTP 404")) throw new Error(`could not tell whether ${repo} runs the scorer: ${workflow.why}`);
-  const ids = new Set(statuses.filter((s) => s.context === STATUS_CONTEXT && s.state === "success").map((s) => runAttemptOf(repo, s.targetUrl)).filter((id) => id !== undefined));
-  const runs = new Map([...ids].map((id) => {
-    const run = parseRun(ghJson([`repos/${repo}/actions/runs/${id}`]));
+  const inputs = inputFingerprint(parseEvent({ pull_request: pr }));
+  // Only scores of the current inputs count, so only their runs are read. A run GitHub does not
+  // return, such as a deleted one, stays out of the map, and readStatus treats its score as unproven.
+  const current = statuses.filter((s) => s.context === STATUS_CONTEXT && s.state === "success" && s.targetUrl?.endsWith(`#inputs=${inputs}`));
+  const ids = new Set(current.map((s) => runAttemptOf(repo, s.targetUrl)).filter((id) => id !== undefined));
+  const runs = new Map([...ids].flatMap((id) => {
+    const found = gh([`repos/${repo}/actions/runs/${id}`]);
+    if (!found.ok) return [];
+    const run = parseRun(JSON.parse(found.out));
     const proof: RunProof = run.status === "completed" && run.conclusion === "success" ? readRunProof(repo, id) : { kind: "unavailable", why: "the run has not completed successfully" };
-    return [id, { ...run, proof }] as const;
+    return [[id, { ...run, proof }] as const];
   }));
-  const scorer: Scorer = { installed: scorerWillRun(workflow.ok, { headRepo, baseRepo, author }), repo, head, inputs: inputFingerprint(parseEvent({ pull_request: pr })), runs };
+  const scorer: Scorer = { installed: scorerWillRun(workflow.ok, { headRepo, baseRepo, author }), repo, head, inputs, runs };
   const danger = dangerOf({ title: str(pr.title) ?? "", body: str(pr.body) ?? "" }, readStatus(statuses, scorer));
   console.log(`merge danger on ${head.slice(0, 7)}: ${danger.verdict}. ${danger.why}`);
   process.exit(danger.verdict === "agent" ? 0 : danger.verdict === "wait" ? 3 : 1);
