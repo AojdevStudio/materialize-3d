@@ -351,8 +351,10 @@ export default function StudioApp() {
     const unlisten = onQuitFlush(async () => {
       clearPause()
       await Promise.allSettled([...pastes.current])
-      await Promise.allSettled(Object.values(screens.current).map((screen) => screen.sending))
       for (let tries = 1; ; tries++) {
+        // Each try waits for every send on its way first, those started while it waited to try again included, as a
+        // screen does not save while its send is on its way.
+        await Promise.allSettled(Object.values(screens.current).map((screen) => screen.sending))
         const saves = await Promise.allSettled(Object.keys(screens.current).map((key) => flush(key)))
         if (saves.every((save) => save.status === 'fulfilled')) return
         if (tries === QUIT_SAVE_TRIES) {
