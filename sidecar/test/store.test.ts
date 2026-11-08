@@ -3,9 +3,11 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
+import { createModels, InMemoryCredentialStore } from '@earendil-works/pi-ai'
+import { createRegistry } from '@earendil-works/pi-durable'
 import { registerStorageConformance } from '@earendil-works/pi-durable/testing'
 import { EXIT } from '../src/protocol'
-import { openStorage } from '../src/store'
+import { DraftsDoc, openStorage, Store } from '../src/store'
 import { spawnSidecar } from './sidecar'
 
 function scratch() {
@@ -48,17 +50,16 @@ describe('app state', () => {
     const { data, projects } = scratch()
     const app = spawnSidecar(data, projects)
     await app.next()
-    await app.call('drafts.set', { key: 'new', text: 'A wall mount for my dock', attachments: [] })
     await app.call('setup.set', { step: 'printer', done: false })
     await app.call('settings.set', { model: { provider: 'openai-codex', modelId: 'gpt-6-astra' } })
-    const project = (await app.call('projects.create', { title: 'A wall mount for my dock\nfrom a photo' })) as { id: string }
-    await app.call('drafts.set', { key: project.id, text: 'Make it 2 mm thicker', attachments: ['refs/dock.jpg'] })
+    const project = { id: (await app.sendDraft('new', 'A wall mount for my dock\nfrom a photo')).project }
+    await app.call('drafts.set', { key: project.id, text: 'Make it 2 mm thicker', attachments: ['/Users/me/dock.jpg'] })
     const before = await app.call('state.get')
     expect(before).toMatchObject({
       setup: { step: 'printer', done: false },
       settings: { model: { provider: 'openai-codex', modelId: 'gpt-6-astra' }, thinking: 'high' },
       projects: [{ id: project.id, title: 'A wall mount for my dock' }],
-      drafts: { [project.id]: { text: 'Make it 2 mm thicker', attachments: ['refs/dock.jpg'] } },
+      drafts: { [project.id]: { text: 'Make it 2 mm thicker', attachments: ['/Users/me/dock.jpg'] } },
     })
     expect(existsSync(join(projects, project.id))).toBe(true)
     expect(await app.quit()).toBe(EXIT.done)
@@ -81,22 +82,24 @@ describe('app state', () => {
     const app = spawnSidecar(data, projects)
     await app.next()
     for (let round = 0; round < 20; round++) {
-      await app.call('drafts.set', { key: 'new', text: `Knob ${round}`, attachments: [] })
-      // The read goes out right behind the commit that moves the draft, without waiting for it.
-      app.send({ kind: 'call', id: 1000 + round, method: 'projects.create', params: { title: `Knob ${round}` } })
+      const { rev } = (await app.call('drafts.set', { key: 'new', text: `Knob ${round}`, attachments: [] })) as { rev: number }
+      // The read goes out right behind the send, whose first commit makes the project and moves the draft, without
+      // waiting for it.
+      app.send({ kind: 'call', id: 1000 + round, method: 'chat.send', params: { key: 'new', rev } })
       app.send({ kind: 'call', id: 2000 + round, method: 'state.get', params: {} })
       const replies = new Map<number, unknown>()
       while (replies.size < 2) {
         const message = await app.next()
         if (message?.kind === 'reply') replies.set(message.id as number, message.value)
       }
-      const { id } = replies.get(1000 + round) as { id: string }
+      const { id } = (replies.get(1000 + round) as { project: { id: string } }).project
       const state = replies.get(2000 + round) as { projects: { id: string }[]; drafts: Record<string, { text: string }> }
       const made = state.projects.some((p) => p.id === id)
-      // Before the commit: no project, the draft on the start screen. After it: the project holds the draft.
-      expect({ made, onProject: state.drafts[id]?.text, onStart: state.drafts.new?.text }).toEqual(
-        made ? { made, onProject: `Knob ${round}`, onStart: undefined } : { made, onProject: undefined, onStart: `Knob ${round}` },
-      )
+      // Before that commit: no project, the draft on the start screen. After it: the project holds the draft until the
+      // message goes out, and the start screen holds none.
+      expect(made ? state.drafts.new : state.drafts.new?.text).toEqual(made ? undefined : `Knob ${round}`)
+      if (made) expect([undefined, `Knob ${round}`]).toContain(state.drafts[id]?.text)
+      else expect(state.drafts[id]).toBeUndefined()
     }
     await app.quit()
   })
@@ -107,8 +110,7 @@ describe('app state', () => {
     writeFileSync(projects, '')
     const app = spawnSidecar(data, projects)
     await app.next()
-    await app.call('drafts.set', { key: 'new', text: 'A knob', attachments: [] })
-    await expect(app.call('projects.create', { title: 'A knob' })).rejects.toThrow()
+    await expect(app.sendDraft('new', 'A knob')).rejects.toThrow()
     expect(await app.call('state.get')).toMatchObject({ projects: [], drafts: { new: { text: 'A knob', attachments: [] } } })
     await app.quit()
   })
@@ -117,21 +119,37 @@ describe('app state', () => {
     const { data, projects } = scratch()
     const app = spawnSidecar(data, projects)
     await app.next()
-    const first = (await app.call('projects.create', { title: 'A knob' })) as { id: string }
+    const first = await app.sendDraft('new', 'A knob')
     // A folder the store does not list, such as one an older app made, under the id the next project would take.
-    mkdirSync(join(projects, `${first.id}-2`), { recursive: true })
-    const second = (await app.call('projects.create', { title: 'A knob' })) as { id: string }
-    expect(second.id).toBe(`${first.id}-3`)
+    mkdirSync(join(projects, `${first.project}-2`), { recursive: true })
+    const second = await app.sendDraft('new', 'A knob')
+    expect(second.project).toBe(`${first.project}-3`)
     await app.quit()
   })
 
-  test('a project made from the start screen takes the start screen draft with it', async () => {
+  test('a draft saved before drafts had revisions gets one at start, so its send takes it away', async () => {
     const { data, projects } = scratch()
+    const old = await Store.open({
+      dataDir: data,
+      projectsDir: projects,
+      models: createModels({ credentials: new InMemoryCredentialStore() }),
+      registry: createRegistry(),
+      env: () => {
+        throw new Error('no conversation runs here')
+      },
+    })
+    await old.harness.commit(async (tx) => {
+      // A draft as a store from before revisions holds it.
+      ;((await tx.doc(DraftsDoc, old.root.id)).drafts as Record<string, { text: string; attachments: string[] }>).new = { text: 'A knob', attachments: [] }
+    }, BACKGROUND_CONTEXT)
+    await old.close()
+
     const app = spawnSidecar(data, projects)
     await app.next()
-    await app.call('drafts.set', { key: 'new', text: 'A knob', attachments: ['refs/shaft.png'] })
-    const project = (await app.call('projects.create', { title: 'A knob' })) as { id: string }
-    expect(((await app.call('state.get')) as { drafts: object }).drafts).toEqual({ [project.id]: { text: 'A knob', attachments: ['refs/shaft.png'] } })
+    const { drafts } = (await app.call('state.get')) as { drafts: Record<string, { text: string; attachments: string[]; rev?: number }> }
+    expect(drafts.new).toEqual({ text: 'A knob', attachments: [], rev: expect.any(Number) })
+    await app.call('chat.send', { key: 'new', rev: drafts.new?.rev })
+    expect(((await app.call('state.get')) as { drafts: object }).drafts).toEqual({})
     await app.quit()
   })
 })

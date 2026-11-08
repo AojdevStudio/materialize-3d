@@ -21,11 +21,10 @@ function start(where: ReturnType<typeof scratch>, script: string): App {
   return spawnSidecar(where.data, where.projects, new Map(), { script, env: where.env })
 }
 
-async function newProject(app: App, modelId = 'faux-a'): Promise<string> {
-  await app.call('settings.set', { model: { provider: 'faux', modelId } })
-  const { id } = (await app.call('projects.create', { title: 'A 20 mm cube' })) as { id: string }
-  await app.call('chat.open', { project: id })
-  return id
+/** Sends a first message from the start screen, which makes its project, and answers that project. */
+async function firstSend(app: App, text: string): Promise<string> {
+  await app.call('settings.set', { model: { provider: 'faux', modelId: 'faux-a' } })
+  return (await app.sendDraft('new', text)).project
 }
 
 const hasAnswer = (entries: ChatEntry[], text: string) => entries.some((entry) => entry.kind === 'assistant' && entry.text === text)
@@ -45,22 +44,21 @@ async function waitForFile(path: string, ms = 15_000) {
   }
 }
 
-const send = (app: App, project: string, requestId: string, text: string) => app.call('chat.send', { project, requestId, text, attachments: [] })
+const saveDraft = async (app: App, key: string, text: string) =>
+  ((await app.call('drafts.set', { key, text, attachments: [] })) as { rev: number }).rev
 
 describe('a send', () => {
   test('commits the message, the settings its turn runs with, and the draft removal together, and only once', async () => {
     const where = scratch()
     const app = start(where, 'models')
     await app.next()
-    const project = await newProject(app)
-    await app.call('drafts.set', { key: project, text: 'A 20 mm cube', attachments: [] })
-
-    await send(app, project, 'r1', 'A 20 mm cube')
+    await app.call('settings.set', { model: { provider: 'faux', modelId: 'faux-a' } })
+    const { project, rev } = await app.sendDraft('new', 'A 20 mm cube')
     expect(((await app.call('state.get')) as { drafts: object }).drafts).toEqual({})
     const view = (await app.call('chat.open', { project })) as ChatView
     expect(view.entries[0]).toMatchObject({ kind: 'user', text: 'A 20 mm cube' })
     expect(view.turn).toMatchObject({
-      requestId: 'r1',
+      requestId: `draft-${rev}`,
       model: { provider: 'faux', modelId: 'faux-a' },
       thinking: 'high',
       tools: ['read', 'write', 'edit', 'run', 'slice', 'astra'],
@@ -68,16 +66,16 @@ describe('a send', () => {
     })
     await answered(app, project, 'answered by faux-a')
 
-    await send(app, project, 'r1', 'A 20 mm cube')
+    await app.call('chat.send', { key: project, rev })
     const again = (await app.call('chat.open', { project })) as ChatView
     expect(again.entries.filter((entry) => entry.kind === 'user')).toHaveLength(1)
 
     // A send while a turn runs is refused whole: no message, and the draft stays.
-    await send(app, project, 'r2', 'please wait')
+    await app.sendDraft(project, 'please wait')
     await waitForFile(join(where.projects, project, 'started'))
-    await app.call('drafts.set', { key: project, text: 'make it red', attachments: [] })
-    await expect(send(app, project, 'r3', 'make it red')).rejects.toThrow('The agent is still working on the last message.')
-    expect(((await app.call('state.get')) as { drafts: Record<string, unknown> }).drafts[project]).toEqual({ text: 'make it red', attachments: [] })
+    const red = await saveDraft(app, project, 'make it red')
+    await expect(app.call('chat.send', { key: project, rev: red })).rejects.toThrow('The agent is still working on the last message.')
+    expect(((await app.call('state.get')) as { drafts: Record<string, unknown> }).drafts[project]).toEqual({ text: 'make it red', attachments: [], rev: red })
     const refused = (await app.call('chat.open', { project })) as ChatView
     expect(refused.entries.filter((entry) => entry.kind === 'user').map((entry) => entry.kind === 'user' && entry.text)).toEqual(['A 20 mm cube', 'please wait'])
     writeFileSync(join(where.projects, project, 'go'), '')
@@ -86,16 +84,33 @@ describe('a send', () => {
   })
 })
 
+describe('a restart', () => {
+  test("sends each chat's state once it has reconciled, even a chat that is idle", async () => {
+    const where = scratch()
+    const first = start(where, 'models')
+    await first.next()
+    const project = await firstSend(first, 'hello')
+    await first.until((event) => event.type === 'chat' && event.project === project && event.running === false && (event.entries as ChatEntry[]).some((e) => e.kind === 'assistant'), 20_000)
+    first.child.kill('SIGKILL')
+    await first.child.exited
+    const reopened = start(where, 'models')
+    await reopened.next()
+    const state = await reopened.until((event) => event.type === 'chat' && event.project === project, 5_000)
+    expect(state.running).toBe(false)
+    await reopened.quit()
+  }, 30_000)
+})
+
 describe('a crash mid-turn', () => {
   test('the reopened sidecar finishes the turn and never repeats a finished tool call', async () => {
     const where = scratch()
     const first = start(where, 'ops')
     await first.next()
-    const project = await newProject(first)
-    await send(first, project, 'r1', 'Build it')
+    const project = await firstSend(first, 'Build it')
     const log = join(where.projects, project, 'ops.log')
     await waitForFile(log)
     while (!readFileSync(log, 'utf8').includes('op2')) await Bun.sleep(25)
+    const before = ((await first.call('chat.open', { project })) as ChatView).seq
     first.child.kill('SIGKILL')
     await first.child.exited
     // The watch on op2 ends it within a second of the crash, before `go` would let it finish.
@@ -103,7 +118,11 @@ describe('a crash mid-turn', () => {
 
     const reopened = start(where, 'ops')
     await reopened.next()
-    await reopened.call('chat.open', { project })
+    // The window still holds the views the crashed sidecar sent, so the new one's must come after them, and the
+    // reopened sidecar sends each chat's state once it has reconciled, as the window may have read it before that.
+    const reconciled = await reopened.until((event) => event.type === 'chat' && event.project === project)
+    expect(reconciled.seq).toBeGreaterThan(before)
+    expect(((await reopened.call('chat.open', { project })) as ChatView).seq).toBeGreaterThan(before)
     writeFileSync(join(where.projects, project, 'go'), '')
     await answered(reopened, project, 'done')
 
@@ -121,15 +140,14 @@ describe('settings', () => {
     const where = scratch()
     const app = start(where, 'models')
     await app.next()
-    const project = await newProject(app, 'faux-a')
-    await send(app, project, 'r1', 'please wait')
+    const project = await firstSend(app, 'please wait')
     await waitForFile(join(where.projects, project, 'started'))
     await app.call('settings.set', { model: { provider: 'faux', modelId: 'faux-b' } })
     writeFileSync(join(where.projects, project, 'go'), '')
     await answered(app, project, 'answered by faux-a')
     expect(((await app.call('chat.open', { project })) as ChatView).turn?.model.modelId).toBe('faux-a')
 
-    await send(app, project, 'r2', 'and now?')
+    await app.sendDraft(project, 'and now?')
     await answered(app, project, 'answered by faux-b')
     expect(((await app.call('chat.open', { project })) as ChatView).turn?.model.modelId).toBe('faux-b')
     await app.quit()
@@ -141,9 +159,8 @@ describe('the agent', () => {
     const where = scratch()
     const app = start(where, 'escape')
     await app.next()
-    const project = await newProject(app)
+    const project = await firstSend(app, 'read the hostname')
     expect(await app.call('agent.tools', { project })).toEqual(['read', 'write', 'edit', 'run', 'slice', 'astra'])
-    await send(app, project, 'r1', 'read the hostname')
     await answered(app, project, 'tried')
     const view = (await app.call('chat.open', { project })) as ChatView
     const read = view.entries.find((entry) => entry.kind === 'tool')

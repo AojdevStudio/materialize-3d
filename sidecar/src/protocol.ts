@@ -22,8 +22,20 @@ export type Settings = {
 /** `conversation` is the project's Pi conversation id. */
 export type Project = { id: string; conversation: number; title: string; createdMs: number }
 
-/** An unsent message, by project id, or `new` for the start screen. Attachments are paths inside the project. */
+/** The draft key of the start screen, whose message has no project yet. Every other draft is keyed by its project id. */
+export const START = 'new'
+
+/**
+ * An unsent message, by project id, or `START` for the start screen. Attachments are the paths of its pictures where
+ * they are now: a dropped file, or a pasted picture the sidecar keeps. A send copies them into its project.
+ */
 export type Draft = { text: string; attachments: string[] }
+
+/**
+ * A draft as the store keeps it. `rev` grows with every save of any draft, and is never used again, so a send can name
+ * the draft it went out with, and a newer one saved meanwhile is never taken for it.
+ */
+export type SavedDraft = Draft & { rev: number }
 
 /** How a provider's login was made: an API key or proxy token, or a subscription sign-in. */
 export type LoginKind = 'api_key' | 'oauth'
@@ -48,8 +60,15 @@ export type LoginEvent =
   | { type: 'login'; provider: ProviderId; step: 'done' }
   | { type: 'login'; provider: ProviderId; step: 'failed'; detail: string }
 
+/** A line of a chat from before the store, imported for show: the agent does not read it. */
+export type ImportedEntry =
+  | { role: 'user'; text: string; images: string[] }
+  | { role: 'assistant'; text: string }
+  | { role: 'tool'; name: string; text: string; result: string; failed: boolean }
+
 /** One committed line of a chat. Tool calls fold under their assistant line; each result is its own line. */
 export type ChatEntry =
+  | ({ id: number; kind: 'imported' } & ImportedEntry)
   | { id: number; kind: 'user'; text: string; images: string[] }
   | { id: number; kind: 'assistant'; text: string; calls: { id: string; name: string; args: unknown }[] }
   | { id: number; kind: 'tool'; callId: string; name: string; text: string; failed: boolean }
@@ -71,9 +90,28 @@ export type Turn = {
 }
 
 /** A chat as the window shows it: committed entries, and whether a turn runs, waits, or neither. */
-export type ChatView = { project: string; entries: ChatEntry[]; running: boolean; waiting: Waiting | null; turn: Turn | null }
+/**
+ * A chat as read at one point. `seq` grows with each read of a chat's state, across sidecar runs too, so a view read
+ * earlier, such as a change that arrives after `chat.open` answered, never takes the place of a newer one's `running`,
+ * `waiting`, and `turn`.
+ */
+export type ChatView = { project: string; entries: ChatEntry[]; running: boolean; waiting: Waiting | null; turn: Turn | null; seq: number }
 
-export type AppState = { setup: Setup; settings: Settings; projects: Project[]; drafts: Record<string, Draft> }
+/** What the store keeps of the app. */
+export type StoredState = { setup: Setup; settings: Settings; projects: Project[]; drafts: Record<string, SavedDraft> }
+
+/**
+ * The app as the window sees it. `importBlocked` names the projects folder when the chats from before the store could
+ * not be read from it, as when macOS keeps Documents from the app, so the window can say how to let them in.
+ */
+export type AppState = StoredState & { importBlocked: string | null }
+
+/** Something the agent needs before a message can go out, and the one thing that gives it. */
+export type Need =
+  | { kind: 'login'; provider: ProviderId; name: string; fix: string }
+  | { kind: 'model'; fix: string }
+  | { kind: 'uv'; fix: string }
+  | { kind: 'python'; fix: string }
 
 /** What the window can ask the sidecar, by method name. */
 export interface Methods {
@@ -81,8 +119,14 @@ export interface Methods {
   'state.get': { params: Record<string, never>; result: AppState }
   'setup.set': { params: Setup; result: AppState }
   'settings.set': { params: Partial<Settings>; result: AppState }
-  'drafts.set': { params: { key: string } & Draft; result: null }
-  'projects.create': { params: { title: string }; result: Project }
+  /** Saves a draft, and answers the revision it was saved as. */
+  'drafts.set': { params: { key: string } & Draft; result: { rev: number } }
+  /** Keeps a pasted picture in a file of its own, outside any project, and answers its path, for a draft to keep. */
+  'drafts.picture': { params: { name: string; data: string }; result: string }
+  /** What the agent needs before a send: the chosen model's sign-in, uv, and a Python uv can run. Empty when ready. */
+  'setup.check': { params: Record<string, never>; result: Need[] }
+  /** Imports the chats from before the store again, as after the person let the app read the projects folder. */
+  'legacy.import': { params: Record<string, never>; result: { imported: number; blocked: string | null } }
   'auth.status': { params: Record<string, never>; result: Login[] }
   /** A key, or for Anthropic a proxy's base URL and token. */
   'auth.setKey': { params: { provider: ProviderId; key: string; baseUrl?: string }; result: Login[] }
@@ -90,8 +134,12 @@ export interface Methods {
   'auth.answer': { params: { provider: ProviderId; text: string }; result: null }
   'auth.logout': { params: { provider: ProviderId }; result: Login[] }
   'chat.open': { params: { project: string }; result: ChatView }
-  /** `requestId` is the window's own id for this message: sending it again never sends twice. */
-  'chat.send': { params: { project: string; requestId: string; text: string; attachments: string[] }; result: null }
+  /**
+   * Sends the draft saved as revision `rev` under `key`, and answers the project it went to. From the start screen it
+   * makes that project first. Sent again with the same revision, as after a lost answer, it sends nothing more and
+   * answers the same project.
+   */
+  'chat.send': { params: { key: string; rev: number }; result: { project: Project } }
   'chat.stop': { params: { project: string }; result: null }
   'chat.retry': { params: { project: string }; result: null }
   /** The tools a project's agent is offered, as Pi resolves them. */
@@ -106,6 +154,8 @@ export interface HostRequests {
   'keychain.set': { params: { account: string; secret: string }; result: null }
   'keychain.delete': { params: { account: string }; result: null }
   slice: { params: SliceParams; result: SliceResult }
+  /** Holds or gives back the update gate's pass. Refused while an update installs. */
+  busy: { params: { busy: boolean }; result: null }
 }
 
 export type HostRequest = keyof HostRequests

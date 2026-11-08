@@ -24,6 +24,7 @@ import { NodeExecutionEnv } from '@earendil-works/pi-durable/env/node'
 import { createEditTool, createReadTool, createWriteTool } from '@earendil-works/pi-durable/tools'
 import { arr, int, obj, opt, str } from '@earendil-works/pi-schema'
 import type { Host } from './host'
+import type { Need } from './protocol'
 import { isLoginFailure } from './inference'
 import { textOf } from './transcript'
 import workflow from './workflow.md' with { type: 'text' }
@@ -40,6 +41,56 @@ const OUTPUT_TAIL = 20_000
 
 /** The only variables a command the agent runs gets. */
 const COMMAND_ENV = ['PATH', 'HOME', 'USER', 'LANG', 'TMPDIR'] as const
+
+/**
+ * The environment a command the agent runs gets: the sidecar's own values of `COMMAND_ENV`, and nothing else, but for
+ * ~/.local/bin at the end of PATH. uv's installer puts uv there and adds it to the shell's startup files, which the
+ * PATH the app read at its start comes from, so a uv installed while the app runs is found without a restart.
+ */
+function commandEnv(): Record<string, string> {
+  const vars: Record<string, string> = {}
+  for (const name of COMMAND_ENV) {
+    const value = process.env[name]
+    if (value !== undefined) vars[name] = value
+  }
+  if (vars.HOME !== undefined) {
+    const local = join(vars.HOME, '.local', 'bin')
+    const path = vars.PATH === undefined ? [] : vars.PATH.split(':')
+    if (!path.includes(local)) vars.PATH = [...path, local].join(':')
+  }
+  return vars
+}
+
+/** How long one toolchain check may run. A check still running then, as one stuck on a lock, counts as failed. */
+const CHECK_MS = 5_000
+
+/**
+ * Whether `command` runs to a zero exit, within `CHECK_MS`, in the environment the agent's commands get. A missing
+ * program does not. It runs beside the sidecar's other work, so a stuck check holds up no chat.
+ */
+async function succeeds(command: string[]): Promise<boolean> {
+  try {
+    const child = Bun.spawn(command, { env: commandEnv(), stdout: 'ignore', stderr: 'ignore', timeout: CHECK_MS })
+    return (await child.exited) === 0
+  } catch {
+    return false
+  }
+}
+
+/**
+ * What the `run` tool lacks in this sidecar's environment: uv, which runs every build and check script, and a Python
+ * that uv can run them with. A Python uv would have to download first counts as missing, as a turn could not count on
+ * the network for it.
+ */
+export async function toolchainNeeds(): Promise<Need[]> {
+  if (!(await succeeds(['uv', '--version']))) {
+    return [{ kind: 'uv', fix: 'Install uv, the tool the agent runs its build scripts with (docs.astral.sh/uv), then check again.' }]
+  }
+  if (!(await succeeds(['uv', 'python', 'find']))) {
+    return [{ kind: 'python', fix: 'Install a Python for uv: run "uv python install" in Terminal, then check again.' }]
+  }
+  return []
+}
 
 /**
  * Runs a command under a watch on the sidecar. Pi starts each command in a process group of its own, so it can end the
@@ -188,9 +239,9 @@ export interface AgentHost {
   /**
    * Resolves once the person is signed in to `provider`: at once when they are, after holding the turn with the fix
    * named on its chat when they are not. With `after`, only a login saved after that many saves will do, as the one
-   * then saved was refused. A stop ends the wait.
+   * then saved was refused. The tool's `task` gives the update pass back while it waits. A stop ends the wait.
    */
-  signedIn(conversation: number, provider: string, context: Context, after: number | undefined): Promise<void>
+  signedIn(conversation: number, task: string, provider: string, context: Context, after: number | undefined): Promise<void>
   /** How many times the provider's login was saved. */
   loginSaves(provider: string): Promise<number>
 }
@@ -228,11 +279,7 @@ export function agentTools({ host, projectOf, signedIn, loginSaves }: AgentHost)
     execute: async ({ args, timeoutSeconds }, api, context) => {
       const op = operation<{ exitCode: number; output: string }>(api, context)
       const { env } = op
-      const vars: Record<string, string> = { M3D_OPERATION_ID: op.id }
-      for (const name of COMMAND_ENV) {
-        const value = process.env[name]
-        if (value !== undefined) vars[name] = value
-      }
+      const vars: Record<string, string> = { ...commandEnv(), M3D_OPERATION_ID: op.id }
       const log = `${op.receipt}.log`
       const exited = `${op.receipt}.exit`
       // A command a crash cut off may still be ending: wait until its watch has ended it or it left its exit code.
@@ -307,7 +354,7 @@ export function agentTools({ host, projectOf, signedIn, loginSaves }: AgentHost)
       // The login save each request goes out with, kept with the request, so a rerun after a crash finds the same one.
       const savedWith = async (requestId: string) => api.memo<number>(`login:${requestId}`, await loginSaves(provider), context)
       // Astra runs on the person's ChatGPT sign-in. Without it the turn waits here, with the fix named, and goes on.
-      await signedIn(api.conversationId, provider, context, undefined)
+      await signedIn(api.conversationId, String(api.taskId), provider, context, undefined)
       const first = `astra:${api.taskId}`
       let saves = await savedWith(first)
       let submission = await conversation.submit({ type: 'input', content: task, requestId: first }, context)
@@ -328,7 +375,7 @@ export function agentTools({ host, projectOf, signedIn, loginSaves }: AgentHost)
         // a continue it already sent as it was, without waiting again.
         const requestId = `astra:${api.taskId}:continue:${resumed}`
         const sent = await api.commit((tx) => tx.submissionByRequest(child, requestId), context)
-        if (sent === undefined) await signedIn(api.conversationId, provider, context, saves)
+        if (sent === undefined) await signedIn(api.conversationId, String(api.taskId), provider, context, saves)
         saves = await savedWith(requestId)
         submission = await conversation.submit({ type: 'continue', requestId }, context)
       }

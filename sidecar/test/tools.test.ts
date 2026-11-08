@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { logFollower, once, operationId, tailOf } from '../src/agent'
@@ -20,14 +20,18 @@ function scratch(env: Record<string, string> = {}) {
 const start = (where: ReturnType<typeof scratch>, script: string, version?: string) =>
   spawnSidecar(where.data, where.projects, new Map(), { script, env: where.env, ...(version === undefined ? {} : { version }) })
 
-async function newProject(app: App) {
+/** Sends a first message from the start screen, which makes its project, and answers that project. */
+async function firstSend(app: App, text = 'go') {
   await app.call('settings.set', { model: { provider: 'faux', modelId: 'faux-a' } })
-  const { id } = (await app.call('projects.create', { title: 'A cube' })) as { id: string }
-  await app.call('chat.open', { project: id })
-  return id
+  return (await app.sendDraft('new', text)).project
 }
 
-const send = (app: App, project: string, requestId: string, text = 'go') => app.call('chat.send', { project, requestId, text, attachments: [] })
+/** A project whose first message every script answers with `made`, for a test that sets up its folder first. */
+async function newProject(app: App) {
+  const project = await firstSend(app, 'make the project')
+  await answered(app, project, 'made')
+  return project
+}
 
 /** Waits until the chat holds this answer, already committed or in a later change. */
 async function answered(app: App, project: string, text: string) {
@@ -71,8 +75,7 @@ describe('the run tool', () => {
     const where = scratch({ M3D_SECRET: 'leak' })
     const app = start(where, 'env')
     await app.next()
-    const project = await newProject(app)
-    await send(app, project, 'r1')
+    const project = await firstSend(app)
     await answered(app, project, 'exit code 0\nsecret=none op=set\n')
     // One operation: its receipt, its log, and its exit code.
     const files = readdirSync(join(where.projects, project, '.m3d', 'ops'))
@@ -84,8 +87,7 @@ describe('the run tool', () => {
     const where = scratch()
     const app = start(where, 'slow')
     await app.next()
-    const project = await newProject(app)
-    await send(app, project, 'r1')
+    const project = await firstSend(app)
     await answered(app, project, 'timed')
     expect((await toolResults(app, project))[0]).toMatchObject({ name: 'run', failed: true })
     await Bun.sleep(2500)
@@ -97,8 +99,7 @@ describe('the run tool', () => {
     const where = scratch()
     const app = start(where, 'orphan')
     await app.next()
-    const project = await newProject(app)
-    await send(app, project, 'r1')
+    const project = await firstSend(app)
     while (!existsSync(join(where.projects, project, 'started'))) await Bun.sleep(25)
     app.child.kill('SIGKILL')
     await app.child.exited
@@ -110,8 +111,7 @@ describe('the run tool', () => {
     const where = scratch()
     const first = start(where, 'quick')
     await first.next()
-    const project = await newProject(first)
-    await send(first, project, 'r1')
+    const project = await firstSend(first)
     while (!existsSync(join(where.projects, project, 'started'))) await Bun.sleep(10)
     first.child.kill('SIGKILL')
     await first.child.exited
@@ -123,6 +123,74 @@ describe('the run tool', () => {
     expect((await toolResults(second, project))[0]).toMatchObject({ name: 'run', failed: false, text: 'exit code 0\nmeasured-value=42\n' })
     await second.quit()
   }, 30_000)
+})
+
+describe('the check before a send', () => {
+  /** A uv on PATH that knows its version, and finds a Python only when `python` is true. */
+  function toolchain(python: boolean) {
+    const dir = mkdtempSync(join(tmpdir(), 'm3d-uv-'))
+    writeFileSync(join(dir, 'uv'), `#!/bin/sh\n[ "$1" = --version ] && { echo "uv 0.9.0"; exit 0; }\n[ "$1 $2" = "python find" ] && { ${python ? 'echo /usr/bin/python3; exit 0' : 'exit 2'}; }\nexit 1\n`)
+    chmodSync(join(dir, 'uv'), 0o755)
+    return `${dir}:/usr/bin:/bin`
+  }
+  // A home of its own, so a uv the machine has in ~/.local/bin is not found.
+  const check = async (path: string, key: boolean, home = mkdtempSync(join(tmpdir(), 'm3d-home-'))) => {
+    const dir = mkdtempSync(join(tmpdir(), 'm3d-check-'))
+    const app = spawnSidecar(join(dir, 'state'), join(dir, 'projects'), new Map(), { env: { PATH: path, HOME: home } })
+    await app.next()
+    if (key) await app.call('auth.setKey', { provider: 'anthropic', key: 'token' })
+    const needs = (await app.call('setup.check', {})) as { kind: string; fix: string }[]
+    await app.quit()
+    return needs
+  }
+
+  test('names a missing sign-in and a missing uv, each with its fix', async () => {
+    // An empty folder as PATH, so no uv the machine has is found.
+    const needs = await check(mkdtempSync(join(tmpdir(), 'm3d-path-')), false)
+    expect(needs.map((need) => need.kind)).toEqual(['login', 'uv'])
+    expect(needs.every((need) => need.fix.length > 0)).toBe(true)
+  })
+
+  test("finds a uv its installer put in ~/.local/bin, which the app's PATH from before the install lacks", async () => {
+    const home = mkdtempSync(join(tmpdir(), 'm3d-home-'))
+    mkdirSync(join(home, '.local'))
+    renameSync(toolchain(true).split(':')[0] ?? '', join(home, '.local', 'bin'))
+    expect(await check('/usr/bin:/bin', true, home)).toEqual([])
+  })
+
+  test('a check that hangs ends at its limit, and names what it could not find', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'm3d-uv-'))
+    writeFileSync(join(dir, 'uv'), '#!/bin/sh\n[ "$1" = --version ] && { echo "uv 0.9.0"; exit 0; }\nexec sleep 60\n')
+    chmodSync(join(dir, 'uv'), 0o755)
+    const state = mkdtempSync(join(tmpdir(), 'm3d-check-'))
+    const app = spawnSidecar(join(state, 'state'), join(state, 'projects'), new Map(), {
+      env: { PATH: `${dir}:/usr/bin:/bin`, HOME: mkdtempSync(join(tmpdir(), 'm3d-home-')) },
+    })
+    await app.next()
+    await app.call('auth.setKey', { provider: 'anthropic', key: 'token' })
+    const started = Date.now()
+    const needs = (await app.call('setup.check', {})) as { kind: string }[]
+    expect(Date.now() - started).toBeLessThan(10_000)
+    expect(needs.map((need) => need.kind)).toEqual(['python'])
+    await app.quit()
+  }, 30_000)
+
+  test('names a missing Python once uv is there', async () => {
+    expect((await check(toolchain(false), true)).map((need) => need.kind)).toEqual(['python'])
+  })
+
+  test('names a model whose provider the app does not offer', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'm3d-check-'))
+    const app = spawnSidecar(join(dir, 'state'), join(dir, 'projects'), new Map(), { env: { PATH: toolchain(true) } })
+    await app.next()
+    await app.call('settings.set', { model: { provider: 'openai', modelId: 'gpt-6' } })
+    expect(((await app.call('setup.check', {})) as { kind: string }[]).map((need) => need.kind)).toEqual(['model'])
+    await app.quit()
+  })
+
+  test('has nothing to name when the sign-in, uv, and Python are all there', async () => {
+    expect(await check(toolchain(true), true)).toEqual([])
+  })
 })
 
 describe("a command's log", () => {
@@ -160,7 +228,7 @@ describe('the file tools', () => {
     symlinkSync(join(outside, 'made-outside.txt'), join(where.projects, project, 'dangling'))
     // A link to a file not made yet, through `linked` and then up: the system climbs from where `linked` leads.
     symlinkSync('linked/../climbed.txt', join(where.projects, project, 'climb'))
-    await send(app, project, 'r1')
+    await app.sendDraft(project, 'go')
     await answered(app, project, 'tried')
     const results = await toolResults(app, project)
     expect(results.map((r) => [r.name, r.failed])).toEqual([['read', true], ['write', true], ['edit', true], ['write', true], ['write', true]])
@@ -174,17 +242,25 @@ describe('the file tools', () => {
 })
 
 describe('a picture sent with a message', () => {
-  test('never reads a file outside the project through a link', async () => {
+  test('is never copied through a link out of the project, and a link left in its place is never read', async () => {
     const where = scratch()
     const app = start(where, 'models')
     await app.next()
     const project = await newProject(app)
+    const photo = join(where.dir, 'photo.jpg')
+    writeFileSync(photo, 'jpg')
+    const outside = join(where.dir, 'outside')
+    mkdirSync(outside)
+    symlinkSync(outside, join(where.projects, project, 'refs'))
+    const rev = ((await app.call('drafts.set', { key: project, text: 'like this', attachments: [photo] })) as { rev: number }).rev
+    await expect(app.call('chat.send', { key: project, rev })).rejects.toThrow('refs/ leads outside the project folder')
+    expect(readdirSync(outside)).toEqual([])
+
+    rmSync(join(where.projects, project, 'refs'))
     writeFileSync(join(where.dir, 'secret.jpg'), 'secret')
-    mkdirSync(join(where.projects, project, 'refs'), { recursive: true })
-    symlinkSync(join(where.dir, 'secret.jpg'), join(where.projects, project, 'refs', 'photo.jpg'))
-    await expect(app.call('chat.send', { project, requestId: 'r1', text: 'like this', attachments: ['refs/photo.jpg'] })).rejects.toThrow(
-      'is not a file in the project folder',
-    )
+    mkdirSync(join(where.projects, project, 'refs', `draft-${rev}`), { recursive: true })
+    symlinkSync(join(where.dir, 'secret.jpg'), join(where.projects, project, 'refs', `draft-${rev}`, 'photo.jpg'))
+    await expect(app.call('chat.send', { key: project, rev })).rejects.toThrow('is not a file in the project folder')
     await app.quit()
   })
 
@@ -193,12 +269,13 @@ describe('a picture sent with a message', () => {
     const app = start(where, 'models')
     await app.next()
     const project = await newProject(app)
-    const photo = join(where.projects, project, '..photo.png')
+    const photo = join(where.dir, '..photo.png')
     writeFileSync(photo, 'png')
-    await app.call('chat.send', { project, requestId: 'r1', text: 'like this', attachments: ['..photo.png'] })
+    const { rev } = await app.sendDraft(project, 'like this', [photo])
     await answered(app, project, 'answered by faux-a')
+    expect(readdirSync(join(where.projects, project, 'refs', `draft-${rev}`))).toEqual(['..photo.png'])
     rmSync(photo)
-    await app.call('chat.send', { project, requestId: 'r1', text: 'like this', attachments: ['..photo.png'] })
+    await app.call('chat.send', { key: project, rev })
     await app.quit()
   })
 
@@ -207,10 +284,9 @@ describe('a picture sent with a message', () => {
     const app = start(where, 'models')
     await app.next()
     const project = await newProject(app)
-    expect(Bun.spawnSync(['mkfifo', join(where.projects, project, 'pipe.png')]).exitCode).toBe(0)
-    await expect(app.call('chat.send', { project, requestId: 'r1', text: 'like this', attachments: ['pipe.png'] })).rejects.toThrow(
-      'is not a file in the project folder',
-    )
+    const pipe = join(where.dir, 'pipe.png')
+    expect(Bun.spawnSync(['mkfifo', pipe]).exitCode).toBe(0)
+    await expect(app.sendDraft(project, 'like this', [pipe])).rejects.toThrow("A picture in this message can't be read: pipe.png. Take it out and send again.")
     await app.quit()
   })
 })
@@ -220,8 +296,7 @@ describe('Astra', () => {
     const where = scratch()
     const app = start(where, 'astra')
     await app.next()
-    const project = await newProject(app)
-    await send(app, project, 'r1')
+    const project = await firstSend(app)
     const waiting = await app.until((event) => event.type === 'chat' && event.waiting !== null)
     expect(waiting.waiting).toEqual({
       kind: 'login',
@@ -241,9 +316,8 @@ describe('Astra', () => {
     const where = scratch()
     const app = start(where, 'astra')
     await app.next()
-    const project = await newProject(app)
     await app.call('auth.setKey', { provider: 'openai-codex', key: 'refused' })
-    await send(app, project, 'r1')
+    const project = await firstSend(app)
     const waiting = await app.until((event) => event.type === 'chat' && event.waiting !== null, 30_000)
     expect(waiting.waiting).toMatchObject({ kind: 'login', provider: 'openai-codex' })
     expect(waiting.running).toBe(true)
@@ -258,9 +332,8 @@ describe('Astra', () => {
     const where = scratch({ M3D_ASTRA_GATE: gate })
     const app = start(where, 'astra')
     await app.next()
-    const project = await newProject(app)
     await app.call('auth.setKey', { provider: 'openai-codex', key: 'refused' })
-    await send(app, project, 'r1')
+    const project = await firstSend(app)
     while (!existsSync(join(gate, 'asked'))) await Bun.sleep(25)
     await app.call('auth.setKey', { provider: 'openai-codex', key: 'astra-key' })
     writeFileSync(join(gate, 'release'), '')
@@ -273,8 +346,7 @@ describe('Astra', () => {
     const keychain = new Map<string, string>()
     const first = spawnSidecar(where.data, where.projects, keychain, { script: 'astra', env: where.env })
     await first.next()
-    const project = await newProject(first)
-    await send(first, project, 'r1')
+    const project = await firstSend(first)
     await first.until((event) => event.type === 'chat' && event.waiting !== null)
     first.child.kill('SIGKILL')
     await first.child.exited
@@ -294,8 +366,7 @@ describe('a restart', () => {
     const where = scratch()
     const first = start(where, 'fails-after')
     await first.next()
-    const project = await newProject(first)
-    await send(first, project, 'r1')
+    const project = await firstSend(first)
     while (!existsSync(join(where.projects, project, 'started'))) await Bun.sleep(25)
     first.child.kill('SIGKILL')
     await first.child.exited
@@ -313,9 +384,7 @@ describe('a restart', () => {
     const first = start(where, 'models', '1.0.0')
     await first.next()
     await first.call('settings.set', { model: { provider: 'anthropic', modelId: 'claude-opus-5-5' } })
-    const { id: project } = (await first.call('projects.create', { title: 'A cube' })) as { id: string }
-    await first.call('chat.open', { project })
-    await send(first, project, 'r1')
+    const { project } = await first.sendDraft('new', 'go')
     await first.until((event) => event.type === 'chat' && event.waiting !== null)
     await first.quit()
 
@@ -330,8 +399,7 @@ describe('a restart', () => {
     const where = scratch()
     const first = start(where, 'models', '1.0.0')
     await first.next()
-    const project = await newProject(first)
-    await send(first, project, 'r1', 'please wait')
+    const project = await firstSend(first, 'please wait')
     while (!existsSync(join(where.projects, project, 'started'))) await Bun.sleep(25)
     first.child.kill('SIGKILL')
     await first.child.exited

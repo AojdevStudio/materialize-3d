@@ -2,18 +2,20 @@ type Message = Record<string, unknown>
 
 /**
  * The sidecar as Rust runs it: a child process spoken to over stdin and stdout, one JSON object per line. The test
- * plays Rust. Like Rust, it reads stdout all the time, since the sidecar stops when no one drains it, and it answers
- * the sidecar's Keychain requests from `keychain`, which stands in for the macOS Keychain. `gate` may hold a request's
- * answer, read when the request came, until it calls `answer`, as a slow Keychain does.
+ * plays Rust. Like Rust, it reads stdout all the time, since the sidecar stops when no one drains it. It answers the
+ * sidecar's Keychain requests from `keychain`, which stands in for the macOS Keychain, and its update-gate requests,
+ * recording each in `gate` and refusing the pass while `gate.installing` is set, as an installing update does. `hold`
+ * may hold a request's answer, read when the request came, until it calls `answer`, as a slow Keychain does.
  */
 export function spawnSidecar(
   dataDir: string,
   projectsDir: string,
   keychain = new Map<string, string>(),
-  options: { script?: string; env?: Record<string, string>; version?: string; gate?: (request: Message, answer: () => void) => void } = {},
+  options: { script?: string; env?: Record<string, string>; version?: string; hold?: (request: Message, answer: () => void) => void } = {},
 ) {
   const entry = options.script === undefined ? 'src/main.ts' : 'test/fixtures/scripted-sidecar.ts'
-  const child = Bun.spawn(['bun', entry, '--app-version', options.version ?? '9.9.9', '--data', dataDir, '--projects', projectsDir], {
+  // The bun running the tests, as a test may give the sidecar a PATH without one.
+  const child = Bun.spawn([process.execPath, entry, '--app-version', options.version ?? '9.9.9', '--data', dataDir, '--projects', projectsDir], {
     cwd: `${import.meta.dir}/..`,
     env: { ...process.env, ...options.env, ...(options.script === undefined ? {} : { M3D_SCRIPT: options.script }) },
     stdin: 'pipe',
@@ -21,9 +23,20 @@ export function spawnSidecar(
     stderr: 'pipe',
   })
   const send = (message: unknown) => child.stdin.write(`${JSON.stringify(message)}\n`)
+  const gate = { installing: false, requests: [] as boolean[] }
 
-  /** Reads the Keychain now, and returns how to send that answer, now or later. */
+  /** Reads the Keychain or the gate now, and returns how to send that answer, now or later. */
   function answer(request: Message): () => void {
+    if (request.method === 'busy') {
+      const { busy } = request.params as { busy: boolean }
+      gate.requests.push(busy)
+      return () =>
+        send(
+          busy && gate.installing
+            ? { kind: 'answer', id: request.id, ok: false, error: 'An update is installing.' }
+            : { kind: 'answer', id: request.id, ok: true, value: null },
+        )
+    }
     const params = request.params as { account: string; secret?: string }
     const value =
       request.method === 'keychain.get'
@@ -53,8 +66,8 @@ export function spawnSidecar(
         buffered = buffered.slice(end + 1)
         if (message.kind === 'request') {
           const reply = answer(message)
-          if (options.gate === undefined) reply()
-          else options.gate(message, reply)
+          if (options.hold === undefined) reply()
+          else options.hold(message, reply)
         }
         else inbox.push(message)
       }
@@ -95,6 +108,15 @@ export function spawnSidecar(
       return message.value
     }
   }
+  /**
+   * Saves a screen's draft and sends it, as the window does: `key` is a project id, or `new` for the start screen.
+   * Answers the project it went to and the draft revision it went out as.
+   */
+  const sendDraft = async (key: string, text: string, attachments: string[] = []) => {
+    const { rev } = (await call('drafts.set', { key, text, attachments })) as { rev: number }
+    const { project } = (await call('chat.send', { key, rev })) as { project: { id: string } }
+    return { project: project.id, rev }
+  }
   /** Reads events until one matches, or fails after `ms`. */
   const until = async (match: (event: Message) => boolean, ms = 15_000) => {
     const deadline = Date.now() + ms
@@ -115,5 +137,5 @@ export function spawnSidecar(
     await stderrDone
     return errors
   }
-  return { child, next, send, call, until, quit, stderr }
+  return { child, next, send, call, sendDraft, until, quit, stderr, gate }
 }

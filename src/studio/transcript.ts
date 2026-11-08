@@ -1,137 +1,110 @@
-import { autoOpens, is3mf, type StudioEvent } from './api'
+import type { ChatEntry } from '../../sidecar/src/protocol'
+import { autoOpens, is3mf } from './api'
 
 export type ChatItem =
   | { kind: 'user'; text: string; images: string[] }
   | { kind: 'text'; text: string }
   | { kind: 'tool'; id: string; label: string; summary: string; detail: string; result?: string; failed?: boolean }
   | { kind: 'files'; files: string[] }
-  | { kind: 'error'; text: string }
 
-export interface Chat {
-  items: ChatItem[]
-  running: boolean
-}
-
-interface ContentBlock {
-  type: string
-  text?: string
-  id?: string
-  name?: string
-  input?: Record<string, unknown>
-  tool_use_id?: string
-  content?: string | { type: string; text?: string }[]
-  is_error?: boolean
-}
+type ToolItem = Extract<ChatItem, { kind: 'tool' }>
 
 const str = (value: unknown) => (typeof value === 'string' ? value : '')
 
-/** The folder-relative form of a path the agent used, so a step reads `build/model.py`, not the full path. */
-function short(path: string, projectPath: string): string {
-  return path.startsWith(projectPath + '/') ? path.slice(projectPath.length + 1) : path
-}
-
-function describeTool(name: string, input: Record<string, unknown>, projectPath: string): { label: string; summary: string } {
-  const path = short(str(input.file_path ?? input.path ?? input.notebook_path), projectPath)
-  const command = str(input.command)
+/** One line for a tool step: what it did, and the file or command it did it with. */
+function describe(name: string, args: Record<string, unknown>): { label: string; summary: string; detail: string } {
+  const path = str(args.path)
   switch (name) {
-    case 'Bash':
-      return command.includes('codex exec')
-        ? { label: 'Astra (GPT)', summary: str(input.description) || 'Handed a task to Astra' }
-        : { label: 'Ran', summary: str(input.description) || command.split('\n')[0] }
-    case 'Write':
-      return { label: 'Wrote', summary: path }
-    case 'Edit':
-    case 'MultiEdit':
-      return { label: 'Edited', summary: path }
-    case 'Read':
-      return { label: 'Read', summary: path }
-    case 'Glob':
-    case 'Grep':
-      return { label: 'Searched', summary: str(input.pattern) }
-    case 'WebFetch':
-      return { label: 'Opened', summary: str(input.url) }
-    case 'WebSearch':
-      return { label: 'Searched the web', summary: str(input.query) }
-    case 'Skill':
-      return { label: 'Used skill', summary: str(input.skill) }
-    case 'Agent':
-    case 'Task':
-      return { label: 'Helper', summary: str(input.description) }
-    case 'TodoWrite':
-      return { label: 'Planned', summary: 'Updated the step list' }
+    case 'read':
+      return { label: 'Read', summary: path, detail: path }
+    case 'write':
+      return { label: 'Wrote', summary: path, detail: path }
+    case 'edit':
+      return { label: 'Edited', summary: path, detail: path }
+    case 'run': {
+      const command = ['uv', ...(Array.isArray(args.args) ? args.args.map(str) : [])].join(' ')
+      return { label: 'Ran', summary: command, detail: command }
+    }
+    case 'slice':
+      return { label: 'Sliced', summary: str(args.output), detail: JSON.stringify(args, null, 2) }
+    case 'astra':
+      return { label: 'Astra (GPT)', summary: str(args.task).split('\n')[0] ?? '', detail: str(args.task) }
     default:
-      return { label: name.replace(/^mcp__/, '').replace(/__/g, ' '), summary: '' }
+      return { label: name, summary: '', detail: JSON.stringify(args, null, 2) }
   }
 }
 
-function resultText(content: ContentBlock['content']): string {
-  if (typeof content === 'string') return content
-  return (content ?? []).map((block) => block.text ?? `[${block.type}]`).join('\n')
+/** The labels steps had in chats from before the store, which ran Claude Code's own tools. */
+const OLD_LABELS: Record<string, string> = { Bash: 'Ran', Write: 'Wrote', Edit: 'Edited', MultiEdit: 'Edited', Read: 'Read', Skill: 'Used skill', Agent: 'Helper', Task: 'Helper' }
+
+/** The file a step wrote that the person may want to look at, once its result came back without an error. */
+function written(name: string, args: Record<string, unknown>): string | undefined {
+  if (name === 'write' || name === 'edit') return str(args.path) || undefined
+  if (name === 'slice') return str(args.output) || undefined
+  return undefined
 }
 
-/** Folds a project transcript into chat items: one line per tool step, with its result attached. */
-export function buildChat(events: StudioEvent[], projectPath: string): Chat {
+/**
+ * Committed chat entries as chat items: one line per tool step with its result attached, and after each turn a card
+ * of the files it wrote that open in the preview, print files first. A step left without a result, as a stop or a
+ * crash leaves it, shows as stopped once a later message starts a new turn, or once its own turn no longer `running`.
+ */
+export function buildChat(entries: ChatEntry[], running = true): ChatItem[] {
   const items: ChatItem[] = []
-  const tools = new Map<string, Extract<ChatItem, { kind: 'tool' }>>()
-  let running = false
-
-  for (const event of events) {
-    // A helper agent's inner steps stay inside its one line.
-    if (event.parent_tool_use_id) continue
-    switch (event.type) {
-      case 'm3d_user':
-        items.push({ kind: 'user', text: str(event.text), images: (event.images as string[] | undefined) ?? [] })
-        running = true
+  const tools = new Map<string, { item: ToolItem; writes: string | undefined }>()
+  let files: string[] = []
+  // A step with no result that a later message or the end of its turn leaves behind was stopped, as a stop or a crash
+  // leaves it. It cannot run again.
+  const stopUnfinished = () => {
+    for (const { item } of tools.values()) {
+      if (item.result !== undefined) continue
+      item.result = 'It stopped before it finished.'
+      item.failed = true
+    }
+  }
+  const endTurn = () => {
+    const shown = [...new Set(files)].filter(autoOpens).sort((a, b) => Number(is3mf(b)) - Number(is3mf(a)))
+    if (shown.length > 0) items.push({ kind: 'files', files: shown })
+    files = []
+  }
+  for (const entry of entries) {
+    switch (entry.kind) {
+      case 'user':
+        endTurn()
+        stopUnfinished()
+        items.push({ kind: 'user', text: entry.text, images: entry.images })
         break
-      case 'assistant': {
-        const blocks = ((event.message as { content?: ContentBlock[] } | undefined)?.content ?? [])
-        for (const block of blocks) {
-          if (block.type === 'text' && block.text?.trim()) {
-            items.push({ kind: 'text', text: block.text })
-          } else if (block.type === 'tool_use' && block.id && block.name) {
-            const input = block.input ?? {}
-            const tool = {
-              kind: 'tool' as const,
-              id: block.id,
-              ...describeTool(block.name, input, projectPath),
-              detail: str(input.command) || JSON.stringify(input, null, 2),
-            }
-            tools.set(block.id, tool)
-            items.push(tool)
-          }
+      case 'assistant':
+        if (entry.text.trim() !== '') items.push({ kind: 'text', text: entry.text })
+        for (const call of entry.calls) {
+          const args = (call.args ?? {}) as Record<string, unknown>
+          const item: ToolItem = { kind: 'tool', id: call.id, ...describe(call.name, args) }
+          tools.set(call.id, { item, writes: written(call.name, args) })
+          items.push(item)
         }
         break
-      }
-      case 'user': {
-        const blocks = ((event.message as { content?: ContentBlock[] | string } | undefined)?.content ?? [])
-        if (typeof blocks === 'string') break
-        for (const block of blocks) {
-          const tool = block.type === 'tool_result' && block.tool_use_id ? tools.get(block.tool_use_id) : undefined
-          if (tool) {
-            tool.result = resultText(block.content)
-            tool.failed = block.is_error === true
-          }
-        }
+      case 'tool': {
+        const call = tools.get(entry.callId)
+        if (call === undefined) break
+        call.item.result = entry.text
+        call.item.failed = entry.failed
+        if (!entry.failed && call.writes !== undefined) files.push(call.writes)
         break
       }
-      case 'm3d_files': {
-        // The card holds what Ossie looks at or prints, print files first. Scripts and logs stay in the Files tab.
-        const files = ((event.files as string[] | undefined) ?? []).filter(autoOpens).sort((a, b) => Number(is3mf(b)) - Number(is3mf(a)))
-        if (files.length > 0) items.push({ kind: 'files', files })
-        break
-      }
-      case 'm3d_turn_end':
-        running = false
-        // A step with no result when its turn ends was stopped with it.
-        for (const tool of tools.values()) {
-          if (tool.result === undefined) {
-            tool.result = 'Stopped before it finished.'
-            tool.failed = true
-          }
+      case 'imported':
+        if (entry.role === 'user') {
+          endTurn()
+          stopUnfinished()
+          items.push({ kind: 'user', text: entry.text, images: entry.images })
+        } else if (entry.role === 'assistant') {
+          items.push({ kind: 'text', text: entry.text })
+        } else {
+          items.push({ kind: 'tool', id: `imported-${entry.id}`, label: OLD_LABELS[entry.name] ?? entry.name, summary: entry.text, detail: entry.text, result: entry.result, failed: entry.failed })
         }
-        if (event.ok === false) items.push({ kind: 'error', text: str(event.error) })
         break
     }
   }
-  return { items, running }
+  endTurn()
+  if (!running) stopUnfinished()
+  return items
 }

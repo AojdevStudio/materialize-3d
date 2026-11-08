@@ -12,7 +12,8 @@ import type { Models } from '@earendil-works/pi-ai'
 import { type Conversation, defineDoc, type HarnessOptions, Harness, type Registry } from '@earendil-works/pi-durable'
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node'
 import type { LoginIndex } from './inference'
-import type { AppState, Draft, LoginKind, Project, Settings, Setup, Turn, Waiting } from './protocol'
+import type { LegacyProject } from './legacy'
+import { type Draft, type LoginKind, type Project, type SavedDraft, type Settings, type Setup, START, type StoredState, type Turn, type Waiting } from './protocol'
 
 const context = BACKGROUND_CONTEXT
 
@@ -46,7 +47,12 @@ export const SettingsDoc = defineDoc<Settings>({
   checkpointWhen: always,
 })
 
-const ProjectsDoc = defineDoc<{ projects: Project[] }>({
+/**
+ * The projects, and for each start screen draft revision that made one, that project and the draft it moved there, so
+ * a send of that revision again makes no other project and still sends what went out, even after the project's draft
+ * changed.
+ */
+const ProjectsDoc = defineDoc<{ projects: Project[]; madeFor?: Record<string, { project: string; draft: SavedDraft }> }>({
   kind: 'm3d.projects',
   version: 1,
   scope: 'conversation',
@@ -56,7 +62,7 @@ const ProjectsDoc = defineDoc<{ projects: Project[] }>({
   checkpointWhen: always,
 })
 
-export const DraftsDoc = defineDoc<{ drafts: Record<string, Draft> }>({
+export const DraftsDoc = defineDoc<{ drafts: Record<string, SavedDraft>; seq?: number }>({
   kind: 'm3d.drafts',
   version: 1,
   scope: 'conversation',
@@ -117,6 +123,9 @@ const LoginsDoc = defineDoc<{ logins: Record<string, LoginKind> }>({
 
 /** The store's SQLite storage, through Pi's own async adapter, which queues every operation and transaction. */
 export const openStorage = (path: string) => openNodeSqliteStorage(path)
+
+/** Why a send names a draft revision the store no longer holds: the person changed the draft since that save. */
+export const DRAFT_CHANGED = 'The draft changed before it went out. Send it again.'
 
 /** Another process owns the store. */
 export class StoreInUse extends Error {}
@@ -179,9 +188,9 @@ export class Store implements LoginIndex {
   }
 
   /** The app's state at one point in the store's history: the four documents are read in one commit. */
-  async state(): Promise<AppState> {
+  async state(): Promise<StoredState> {
     const id = this.root.id
-    const state: AppState = await this.harness.commit(
+    const state: StoredState = await this.harness.commit(
       async (tx) =>
         // A plain copy, since the documents a commit hands out are only valid inside it.
         JSON.parse(
@@ -210,44 +219,79 @@ export class Store implements LoginIndex {
     }, context)
   }
 
-  async setDraft(key: string, draft: Draft): Promise<void> {
+  /** Saves a draft, or removes an empty one, and answers its revision. A store from before revisions starts at 1. */
+  async setDraft(key: string, draft: Draft): Promise<number> {
+    return this.harness.commit(async (tx) => {
+      const doc = await tx.doc(DraftsDoc, this.root.id)
+      const rev = (doc.seq ?? 0) + 1
+      doc.seq = rev
+      if (draft.text === '' && draft.attachments.length === 0) delete doc.drafts[key]
+      else doc.drafts[key] = { ...draft, rev }
+      return rev
+    }, context)
+  }
+
+  /** Gives each draft saved before drafts had revisions one, so a send can take it away as it takes any other. */
+  async reviseOldDrafts(): Promise<void> {
     await this.harness.commit(async (tx) => {
-      const { drafts } = await tx.doc(DraftsDoc, this.root.id)
-      if (draft.text === '' && draft.attachments.length === 0) delete drafts[key]
-      else drafts[key] = draft
+      const doc = await tx.doc(DraftsDoc, this.root.id)
+      // A store from before revisions holds drafts without one, which this read is the only place to see.
+      for (const draft of Object.values(doc.drafts) as (Draft & { rev?: number })[]) {
+        if (draft.rev !== undefined) continue
+        doc.seq = (doc.seq ?? 0) + 1
+        draft.rev = doc.seq
+      }
     }, context)
   }
 
   /**
-   * Makes a project: its conversation, its place in the index, and the start screen's draft moved to it, in one commit.
-   * Its folder is made inside that commit, before anything is kept, so a folder that cannot be made keeps nothing and
-   * the draft stays on the start screen. A crash after the folder leaves an empty folder, which the next id skips.
+   * The project the start screen's draft saved as `rev` goes to. The first time, it makes the project, titled by the
+   * draft's first line, and moves that draft to it, in one commit. Only the draft saved as `rev` moves, so a newer
+   * start screen draft is never sent in its place. The folder is made inside that commit, before anything is kept, so a
+   * folder that cannot be made keeps nothing. A crash after the folder leaves an empty folder, which the next id skips.
+   * Asked again for the same revision, as after a lost answer or a crash before the message, it answers the project
+   * that revision made and the draft it moved, and changes nothing.
    */
-  async createProject(title: string): Promise<Project> {
-    const firstLine = (title.split('\n')[0] ?? '').trim().slice(0, 80) || 'New part'
+  async startProject(rev: number): Promise<{ project: Project; draft: SavedDraft }> {
     const now = new Date()
     // The person's own date, as the folder name shows it.
     const today = new Date(now.getTime() - now.getTimezoneOffset() * 60_000).toISOString().slice(0, 10)
-    const base = `${today}-${slug(firstLine)}`
-    const project = await this.harness.commit(async (tx) => {
+    return this.harness.commit(async (tx) => {
       const index = await tx.doc(ProjectsDoc, this.root.id)
+      const before = index.madeFor?.[rev]
+      const made = index.projects.find((p) => p.id === before?.project)
+      // A plain copy, since the documents a commit hands out are only valid inside it.
+      if (before !== undefined && made !== undefined) return JSON.parse(JSON.stringify({ project: made, draft: before.draft }))
+      const { drafts } = await tx.doc(DraftsDoc, this.root.id)
+      const draft = drafts[START]
+      if (draft?.rev !== rev) throw new Error(DRAFT_CHANGED)
+      const title = (draft.text.split('\n')[0] ?? '').trim().slice(0, 80) || 'New part'
+      const base = `${today}-${slug(title)}`
       const taken = new Set(index.projects.map((p) => p.id))
       let id = base
       // A folder already on disk, which the store may not list, is never taken over.
       for (let n = 2; taken.has(id) || existsSync(join(this.projectsDir, id)); n++) id = `${base}-${n}`
       this.projectFolder(id)
       const conversation = await tx.createConversation({ ownership: { kind: 'ownerless' } })
-      const created: Project = { id, conversation: conversation.id, title: firstLine, createdMs: now.getTime() }
+      const created: Project = { id, conversation: conversation.id, title, createdMs: now.getTime() }
       index.projects.push(created)
-      const { drafts } = await tx.doc(DraftsDoc, this.root.id)
-      const draft = drafts.new
-      if (draft !== undefined) {
-        drafts[id] = draft
-        delete drafts.new
-      }
-      return created
+      const moved: SavedDraft = { text: draft.text, attachments: [...draft.attachments], rev }
+      index.madeFor = { ...index.madeFor, [rev]: { project: id, draft: moved } }
+      drafts[id] = draft
+      delete drafts[START]
+      return JSON.parse(JSON.stringify({ project: created, draft: moved }))
     }, context)
-    return project
+  }
+
+  /** The drafts start screen sends moved to their projects, which a send of the same revision again still sends. */
+  async startedDrafts(): Promise<SavedDraft[]> {
+    const index = await this.harness.snapshot(ProjectsDoc, this.root.id, context)
+    return Object.values(index?.madeFor ?? {}).map(({ draft }) => draft)
+  }
+
+  /** The draft saved under `key`, a project id or `START`. */
+  async draft(key: string): Promise<SavedDraft | undefined> {
+    return (await this.harness.snapshot(DraftsDoc, this.root.id, context))?.drafts[key]
   }
 
   async projects(): Promise<Project[]> {
@@ -285,6 +329,26 @@ export class Store implements LoginIndex {
   /** How many times the provider's login was saved. */
   async loginSaves(provider: string): Promise<number> {
     return (await this.harness.snapshot(LoginSavesDoc, this.root.id, context))?.saves[provider] ?? 0
+  }
+
+  /**
+   * Imports chats from before the store, each with its conversation and its place in the index in one commit. A
+   * project already in the index was imported before, so each is imported once.
+   */
+  async importLegacy(legacy: LegacyProject[]): Promise<string[]> {
+    const imported: string[] = []
+    for (const old of legacy) {
+      const done = await this.harness.commit(async (tx) => {
+        const index = await tx.doc(ProjectsDoc, this.root.id)
+        if (index.projects.some((p) => p.id === old.id)) return false
+        const conversation = await tx.createConversation({ ownership: { kind: 'ownerless' } })
+        for (const data of old.entries) await tx.appendEntry(conversation.id, { kind: 'm3d.imported', data })
+        index.projects.push({ id: old.id, conversation: conversation.id, title: old.title, createdMs: old.createdMs })
+        return true
+      }, context)
+      if (done) imported.push(old.id)
+    }
+    return imported
   }
 
   /** The project's folder, made if it is missing. */

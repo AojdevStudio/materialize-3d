@@ -44,9 +44,7 @@ describe('a turn whose provider is not signed in', () => {
     const keychain = new Map<string, string>()
     const first = spawnSidecar(join(dir, 'state'), join(dir, 'projects'), keychain)
     await first.next()
-    const { id: project } = (await first.call('projects.create', { title: 'A cube' })) as { id: string }
-    await first.call('chat.open', { project })
-    await first.call('chat.send', { project, requestId: 'r1', text: 'A 20 mm cube', attachments: [] })
+    const { project } = await first.sendDraft('new', 'A 20 mm cube')
     const waiting = await first.until((event) => event.type === 'chat' && event.waiting !== null)
     expect(waiting.waiting).toEqual({
       kind: 'login',
@@ -82,10 +80,8 @@ describe('a turn whose provider is not signed in', () => {
     const dir = mkdtempSync(join(tmpdir(), 'm3d-wait-'))
     const app = spawnSidecar(join(dir, 'state'), join(dir, 'projects'), new Map())
     await app.next()
-    const { id: project } = (await app.call('projects.create', { title: 'A cube' })) as { id: string }
-    await app.call('chat.open', { project })
     await app.call('auth.setKey', { provider: 'anthropic', key: 'old-token', baseUrl: proxy.url })
-    await app.call('chat.send', { project, requestId: 'r1', text: 'A 20 mm cube', attachments: [] })
+    const { project } = await app.sendDraft('new', 'A 20 mm cube')
     while (proxy.seen.length === 0) await Bun.sleep(10)
     await app.call('auth.setKey', { provider: 'anthropic', key: 'new-token', baseUrl: proxy.url })
     await Bun.sleep(200)
@@ -100,6 +96,70 @@ describe('a turn whose provider is not signed in', () => {
     proxy.stop()
   }, 20_000)
 
+  test('a turn refused after a newer login was saved goes on with it only with the update pass, and once a failed install opens the gate', async () => {
+    const release = Promise.withResolvers<void>()
+    const proxy = anthropicProxy('Hello after the update', { token: 'old-token', release: release.promise })
+    const dir = mkdtempSync(join(tmpdir(), 'm3d-wait-'))
+    const app = spawnSidecar(join(dir, 'state'), join(dir, 'projects'), new Map())
+    await app.next()
+    await app.call('auth.setKey', { provider: 'anthropic', key: 'old-token', baseUrl: proxy.url })
+    const { project } = await app.sendDraft('new', 'A 20 mm cube')
+    while (proxy.seen.length === 0) await Bun.sleep(10)
+    await app.call('auth.setKey', { provider: 'anthropic', key: 'new-token', baseUrl: proxy.url })
+    // An update starts installing while the old request is still out.
+    app.gate.installing = true
+    release.resolve()
+    const waiting = await app.until((event) => event.type === 'chat' && event.waiting !== null)
+    expect(waiting.waiting).toMatchObject({ kind: 'login', provider: 'anthropic' })
+    await Bun.sleep(500)
+    expect(proxy.seen).toHaveLength(1)
+    // The install fails and the gate opens: the turn goes on by itself, with no new sign-in.
+    app.gate.installing = false
+    const answered = await app.until(
+      (event) => event.type === 'chat' && (event.entries as ChatEntry[]).some((entry) => entry.kind === 'assistant'),
+      10_000,
+    )
+    expect((answered.entries as ChatEntry[]).find((entry) => entry.kind === 'assistant')).toMatchObject({ text: 'Hello after the update' })
+    expect(proxy.seen.map((call) => call.authorization)).toEqual(['Bearer old-token', 'Bearer new-token'])
+    await app.quit()
+    proxy.stop()
+  }, 30_000)
+
+  test('a sign-in that waits out an installing update holds up neither the start nor a quit, and goes on later', async () => {
+    const proxy = anthropicProxy('Hello after the install', { token: 'old-token', release: Promise.resolve() })
+    const dir = mkdtempSync(join(tmpdir(), 'm3d-wait-'))
+    const keychain = new Map<string, string>()
+    const start = () => spawnSidecar(join(dir, 'state'), join(dir, 'projects'), keychain)
+    const first = start()
+    await first.next()
+    await first.call('auth.setKey', { provider: 'anthropic', key: 'old-token', baseUrl: proxy.url })
+    const { project } = await first.sendDraft('new', 'A 20 mm cube')
+    await first.until((event) => event.type === 'chat' && event.waiting !== null)
+    // A new login is saved while an update installs, so the turn waits for the pass.
+    first.gate.installing = true
+    await first.call('auth.setKey', { provider: 'anthropic', key: 'new-token', baseUrl: proxy.url })
+    await first.quit()
+    // The app starts again with the update still installing, and quits at once.
+    const second = start()
+    second.gate.installing = true
+    await second.next()
+    await second.call('chat.open', { project })
+    const quit = Date.now()
+    await second.quit()
+    expect(Date.now() - quit).toBeLessThan(3000)
+    expect(proxy.seen).toHaveLength(1)
+    // With the gate open, the turn goes on with the new login, with no new sign-in.
+    const third = start()
+    await third.next()
+    await third.until(
+      (event) => event.type === 'chat' && (event.entries as ChatEntry[]).some((entry) => entry.kind === 'assistant'),
+      10_000,
+    )
+    expect(proxy.seen.map((call) => call.authorization)).toEqual(['Bearer old-token', 'Bearer new-token'])
+    await third.quit()
+    proxy.stop()
+  }, 40_000)
+
   test('a turn that failed with no login goes on when one is saved while the failure is read', async () => {
     const proxy = anthropicProxy('Hello after the slow read')
     const dir = mkdtempSync(join(tmpdir(), 'm3d-wait-'))
@@ -107,16 +167,14 @@ describe('a turn whose provider is not signed in', () => {
     let holding = true
     const held: (() => void)[] = []
     const app = spawnSidecar(join(dir, 'state'), join(dir, 'projects'), new Map(), {
-      gate: (request, answer) => (holding && request.method === 'keychain.get' ? held.push(answer) : answer()),
+      hold: (request, answer) => (holding && request.method === 'keychain.get' ? held.push(answer) : answer()),
     })
     await app.next()
-    const { id: project } = (await app.call('projects.create', { title: 'A cube' })) as { id: string }
-    await app.call('chat.open', { project })
     const nextRead = async (count: number) => {
       while (held.length < count) await Bun.sleep(10)
     }
     // The turn's request finds no login and fails. Its failure is read, and that read asks the Keychain again.
-    await app.call('chat.send', { project, requestId: 'r1', text: 'A 20 mm cube', attachments: [] })
+    const { project } = await app.sendDraft('new', 'A 20 mm cube')
     await nextRead(1)
     held[0]?.()
     await nextRead(2)
@@ -139,9 +197,7 @@ describe('a turn whose provider is not signed in', () => {
     const dir = mkdtempSync(join(tmpdir(), 'm3d-wait-'))
     const app = spawnSidecar(join(dir, 'state'), join(dir, 'projects'), new Map())
     await app.next()
-    const { id: project } = (await app.call('projects.create', { title: 'A cube' })) as { id: string }
-    await app.call('chat.open', { project })
-    await app.call('chat.send', { project, requestId: 'r1', text: 'A 20 mm cube', attachments: [] })
+    const { project } = await app.sendDraft('new', 'A 20 mm cube')
     await app.until((event) => event.type === 'chat' && event.waiting !== null)
     await app.call('chat.stop', { project })
     await app.call('auth.setKey', { provider: 'anthropic', key: 'new-token', baseUrl: proxy.url })
@@ -158,10 +214,8 @@ describe('a turn whose provider is not signed in', () => {
     const keychain = new Map<string, string>()
     const first = spawnSidecar(join(dir, 'state'), join(dir, 'projects'), keychain)
     await first.next()
-    const { id: project } = (await first.call('projects.create', { title: 'A cube' })) as { id: string }
-    await first.call('chat.open', { project })
     await first.call('auth.setKey', { provider: 'anthropic', key: 'old-token', baseUrl: proxy.url })
-    await first.call('chat.send', { project, requestId: 'r1', text: 'A 20 mm cube', attachments: [] })
+    const { project } = await first.sendDraft('new', 'A 20 mm cube')
     await first.until((event) => event.type === 'chat' && event.waiting !== null)
     await first.quit()
     const second = spawnSidecar(join(dir, 'state'), join(dir, 'projects'), keychain)
@@ -184,10 +238,8 @@ describe('a turn whose provider is not signed in', () => {
     const dir = mkdtempSync(join(tmpdir(), 'm3d-wait-'))
     const app = spawnSidecar(join(dir, 'state'), join(dir, 'projects'), new Map())
     await app.next()
-    const { id: project } = (await app.call('projects.create', { title: 'A cube' })) as { id: string }
-    await app.call('chat.open', { project })
     await app.call('auth.setKey', { provider: 'anthropic', key: 'old-token', baseUrl: proxy.url })
-    await app.call('chat.send', { project, requestId: 'r1', text: 'A 20 mm cube', attachments: [] })
+    const { project } = await app.sendDraft('new', 'A 20 mm cube')
     const waiting = await app.until((event) => event.type === 'chat' && event.waiting !== null)
     expect(waiting.waiting).toMatchObject({ kind: 'login', provider: 'anthropic' })
     await Bun.sleep(500)
