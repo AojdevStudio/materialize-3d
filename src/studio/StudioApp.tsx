@@ -36,6 +36,11 @@ type Screen = {
   saving?: Promise<void>
   /** The send on its way. Nothing else saves the screen meanwhile, as that would replace the draft it sends. */
   sending?: Promise<void>
+  /**
+   * The pictures that send carries, but for any the person took out since. A sent picture leaves the next draft when
+   * the send goes through, unless the person took it out and chose it again.
+   */
+  sendingPictures?: Set<string>
 }
 
 /** Whether the screen changed since its last completed save. Each change makes a new draft object. */
@@ -98,6 +103,8 @@ export default function StudioApp() {
   const screens = useRef<Record<string, Screen>>({})
   /** The open screen's save that waits for typing to pause. */
   const pending = useRef<{ key: string; timer: number } | null>(null)
+  /** Pastes whose pictures are still being kept, so a quit waits for them. */
+  const pastes = useRef(new Set<Promise<void>>())
   /** The previews of pasted pictures, by path, freed when the window closes. */
   const previews = useRef(new Map<string, string>())
   /** Whether the person changed the start screen's pictures, so its saved ones no longer fill it. */
@@ -134,15 +141,17 @@ export default function StudioApp() {
 
   /**
    * Saves a screen until the store holds what it shows, one save at a time: a save wanted while one runs waits for it,
-   * then saves the newest draft. While the screen's send is on its way, only that send saves it. Answers the last
+   * then saves the newest draft. While the screen's send is on its way, only that send saves it, and it saves `going`,
+   * the draft taken at the click, so text typed while an earlier save finished stays the next message. Answers the last
    * completed save.
    */
-  const flush = async (key: string, forSend = false) => {
+  const flush = async (key: string, going?: Draft) => {
     const screen = screens.current[key]
     if (screen === undefined) return undefined
     while (screen.saving !== undefined) await screen.saving
-    if ((screen.sending === undefined || forSend) && changed(screen)) {
-      const draft = screen.draft
+    const wanted = going === undefined ? (screen.sending === undefined && changed(screen) ? screen.draft : undefined) : going
+    if (wanted !== undefined && wanted !== screen.saved?.draft) {
+      const draft = wanted
       const save = sidecar('drafts.set', { key, ...draft }).then(({ rev }) => {
         screen.saved = { draft, rev }
       })
@@ -216,9 +225,17 @@ export default function StudioApp() {
   }
 
   useEffect(() => {
-    sidecar('state.get', {})
-      .then(takeState)
-      .catch((err: unknown) => setError(String(err)))
+    // The first read of the saved state. If the engine stopped before it answered, it is read again once the engine is
+    // back, so the projects and drafts still come.
+    let stateRead = false
+    const readState = () =>
+      sidecar('state.get', {})
+        .then((state) => {
+          stateRead = true
+          takeState(state)
+        })
+        .catch((err: unknown) => setError(String(err)))
+    void readState()
     checkReady()
     // The listener is in place before the ping, so no engine change is missed, and a ping that answers late never
     // hides one.
@@ -230,6 +247,7 @@ export default function StudioApp() {
           setEngine(`Engine ${event.version}`)
           // A check that failed while the engine started again is asked again, so Send does not stay off.
           checkReady()
+          if (!stateRead) void readState()
           // An engine that started again holds what a crash cut off from the window, such as a turn's last entry, so
           // the open chat is read again. The changes that arrive meanwhile are kept, as when it first opened.
           const project = currentId.current
@@ -286,6 +304,8 @@ export default function StudioApp() {
   /** Changes the open screen's pictures, and saves them with its draft. */
   const setPictures = (paths: string[]) => {
     if (openKey() === START) startPicturesTouched.current = true
+    const sending = screens.current[openKey()]?.sendingPictures
+    for (const path of draftOf(openKey()).attachments) if (!paths.includes(path)) sending?.delete(path)
     edit({ ...draftOf(openKey()), attachments: paths })
   }
 
@@ -295,7 +315,7 @@ export default function StudioApp() {
    */
   const pastePictures = (pasted: PastedPicture[]) => {
     const key = openKey()
-    void Promise.all(
+    const landing = Promise.all(
       pasted.map(async ({ name, file }) => ({
         path: await sidecar('drafts.picture', { name, data: toBase64(new Uint8Array(await file.arrayBuffer())) }),
         file,
@@ -313,19 +333,19 @@ export default function StudioApp() {
         autosave(key)
       })
       .catch((err: unknown) => setError(String(err)))
+    pastes.current.add(landing)
+    void landing.finally(() => pastes.current.delete(landing))
   }
 
-  // A quit or the window's close waits for each send and save on its way, saves every changed screen, then lets the
-  // quit go on. Text typed during a send that outlasts Rust's hold on the quit is lost (#206).
+  // A quit or the window's close waits for pasted pictures still being kept and each send on its way, then saves every
+  // screen, those a send just made included, and only then lets the quit go on. Rust holds the quit meanwhile. One save
+  // that fails does not end the wait for the others.
   useEffect(() => {
     const unlisten = onQuitFlush(async () => {
       clearPause()
-      await Promise.all(
-        Object.entries(screens.current).map(async ([key, screen]) => {
-          await screen.sending
-          await flush(key)
-        }),
-      )
+      await Promise.allSettled([...pastes.current])
+      await Promise.allSettled(Object.values(screens.current).map((screen) => screen.sending))
+      await Promise.allSettled(Object.keys(screens.current).map((key) => flush(key)))
     })
     return () => {
       void unlisten.then((stop) => stop())
@@ -423,13 +443,15 @@ export default function StudioApp() {
     let done = () => {}
     screen.sending = new Promise((resolve) => (done = resolve))
     try {
-      const sent = await flush(key, true)
+      screen.sendingPictures = new Set(screen.draft.attachments)
+      const sent = await flush(key, screen.draft)
       if (sent === undefined) return
       const { project } = await sidecar('chat.send', { key, rev: sent.rev })
       setSendErrors(({ [project.id]: _, ...rest }) => rest)
       setProjects((prev) => (prev.some((p) => p.id === project.id) ? prev : [project, ...prev]))
-      // What changed since the save that went out is the next message. Only the pictures that went out leave it.
-      const outgoing = new Set(sent.draft.attachments)
+      // What changed since the save that went out is the next message. The pictures that went out leave it, but for one
+      // the person took out and chose again during the send.
+      const outgoing = screen.sendingPictures ?? new Set<string>()
       const next: Draft = { ...screen.draft, attachments: screen.draft.attachments.filter((path) => !outgoing.has(path)) }
       const unchanged = screen.draft === sent.draft
       if (key === START && openKey() === START) {
@@ -450,6 +472,7 @@ export default function StudioApp() {
       else if (openKey() === START) setError(message)
     } finally {
       delete screen.sending
+      delete screen.sendingPictures
       done()
       sendingNow.current = false
       setSending(false)

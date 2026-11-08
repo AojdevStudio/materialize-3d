@@ -9,9 +9,15 @@ export const sidecar = <M extends Method>(method: M, params: Methods[M]['params'
 export const onSidecarEvent = (handler: (event: SidecarEvent) => void) =>
   listen<SidecarEvent>('sidecar://event', ({ payload }) => handler(payload))
 
-/** Rust asks for this as the app quits or the window closes: save the draft now, then say it is done. */
+/**
+ * Rust asks for this as the app quits or the window closes. The window says at once that it is saving, so Rust holds
+ * the quit for as long as that takes, then says it is done.
+ */
 export const onQuitFlush = (save: () => Promise<void>) =>
-  listen('studio://flush', () => void save().finally(() => invoke('studio_flushed')))
+  listen('studio://flush', () => {
+    void invoke('studio_flush_started')
+    void save().finally(() => invoke('studio_flushed'))
+  })
 
 /** Opens the macOS setting that lets the app read Documents. */
 export const openFilesPrivacy = () => invoke<void>('studio_open_files_privacy')

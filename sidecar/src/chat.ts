@@ -104,9 +104,10 @@ function copyPictures(folder: string, rev: number, sources: string[]): string[] 
     const file = clean.replace(/\./g, '') === '' ? 'picture.png' : clean
     const dot = file.lastIndexOf('.')
     const [stem, ext] = dot > 0 ? [file.slice(0, dot), file.slice(dot)] : [file, '']
+    // A Mac volume ignores case in names, so two pictures whose names differ only in case get two names.
     let name = file
-    for (let n = 2; names.has(name); n++) name = `${stem}-${n}${ext}`
-    names.add(name)
+    for (let n = 2; names.has(name.toLowerCase()); n++) name = `${stem}-${n}${ext}`
+    names.add(name.toLowerCase())
     const target = join(dir, name)
     if (lstatSync(target, { throwIfNoEntry: false }) === undefined) {
       // A picture that is gone can't be sent. Nor can a file that is not regular, such as a pipe, which would hold the copy.

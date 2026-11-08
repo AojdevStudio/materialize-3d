@@ -145,7 +145,8 @@ describe('the check before a send', () => {
   }
 
   test('names a missing sign-in and a missing uv, each with its fix', async () => {
-    const needs = await check('/usr/bin:/bin', false)
+    // An empty folder as PATH, so no uv the machine has is found.
+    const needs = await check(mkdtempSync(join(tmpdir(), 'm3d-path-')), false)
     expect(needs.map((need) => need.kind)).toEqual(['login', 'uv'])
     expect(needs.every((need) => need.fix.length > 0)).toBe(true)
   })

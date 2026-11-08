@@ -171,6 +171,22 @@ describe('a send from a project', () => {
     await app.quit()
   })
 
+  test('gives two pictures whose names differ only in case two copies, as a Mac volume holds them in one name', async () => {
+    const where = scratch()
+    const app = await start(where)
+    const { project } = await app.sendDraft('new', 'A knob')
+    await answered(app, project, 'answered by faux-a')
+    for (const folder of ['a', 'b']) mkdirSync(join(where.dir, folder))
+    writeFileSync(join(where.dir, 'a', 'Photo.jpg'), 'first')
+    writeFileSync(join(where.dir, 'b', 'photo.jpg'), 'second')
+    const rev = await save(app, project, 'Like these', [join(where.dir, 'a', 'Photo.jpg'), join(where.dir, 'b', 'photo.jpg')])
+    await send(app, project, rev)
+    const images = (await asked(app, project))[1]?.images ?? []
+    expect(images).toHaveLength(2)
+    expect(new Set(images.map((image) => image.toLowerCase())).size).toBe(2)
+    await app.quit()
+  }, 30_000)
+
   test('copies its pictures once per revision, even when the first try was refused after the copy', async () => {
     const where = scratch()
     const app = await start(where)

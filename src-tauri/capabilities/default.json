@@ -92,6 +92,7 @@
     "allow-studio-save-bytes",
     "allow-studio-reveal",
     "allow-studio-open-in-bambu",
+    "allow-studio-flush-started",
     "allow-studio-flushed",
     "allow-studio-open-files-privacy",
     "allow-sidecar"

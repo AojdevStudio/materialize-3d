@@ -705,6 +705,31 @@ describe('StudioApp', () => {
     expect(store.sent).toHaveLength(1)
   })
 
+  it('sends the message the person clicked Send on, even when they type more while an earlier autosave is still on its way', async () => {
+    let releaseFirst: () => void = () => {}
+    let calls = 0
+    const store = mockSidecar(
+      {
+        'drafts.set': (_, real) => (++calls === 1 ? new Promise((resolve) => (releaseFirst = () => resolve(real()))) : real()),
+      },
+      [projectA, projectB],
+    )
+    render(<StudioApp />)
+    fireEvent.click(await screen.findByText('Project B'))
+    await screen.findByRole('banner')
+    type('Make it red')
+    await waitFor(() => expect(saves()).toHaveLength(1))
+    fireEvent.click(screen.getByTestId('send'))
+    type('Make it blue')
+    await act(async () => releaseFirst())
+    await waitFor(() => expect(store.sent).toHaveLength(1))
+    expect(store.sent[0]).toMatchObject({ text: 'Make it red' })
+    // The text typed after the click is the next message: it stays in the composer, and in the store.
+    await pause(600)
+    expect(prompt().value).toBe('Make it blue')
+    expect(store.drafts[projectB.id]).toMatchObject({ text: 'Make it blue' })
+  })
+
   it('sends pictures restored from a late saved state under a new revision, never as a repeat of a sent one', async () => {
     let finishState: (state: unknown) => void = () => {}
     const store = mockSidecar({ 'state.get': () => new Promise((resolve) => (finishState = resolve)), 'chat.send': lostOnce() })
@@ -800,6 +825,108 @@ describe('StudioApp', () => {
     expect(store.drafts.new).toBeUndefined()
     fireEvent.click(screen.getByTestId('new-project'))
     expect(screen.queryByTestId('attachments')).toBeNull()
+  })
+
+  it('waits for every screen\'s save before it says a quit may go on, even when another screen\'s save fails', async () => {
+    let releaseB: () => void = () => {}
+    mockSidecar(
+      {
+        'drafts.set': (params, real) => {
+          if (params.key === projectA.id) return Promise.reject('The engine is starting.')
+          return new Promise((resolve) => (releaseB = () => resolve(real())))
+        },
+      },
+      [projectA, projectB],
+    )
+    render(<StudioApp />)
+    fireEvent.click(await screen.findByText('Project A'))
+    await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project A'))
+    type('a hook')
+    fireEvent.click(screen.getByText('Project B'))
+    await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project B'))
+    type('a shelf')
+    await act(async () => listeners.flush.forEach((listener) => listener({ payload: null })))
+    await pause(50)
+    const flushed = () => invokeMock.mock.calls.some(([command]) => command === 'studio_flushed')
+    expect(flushed()).toBe(false)
+    await act(async () => releaseB())
+    await waitFor(() => expect(flushed()).toBe(true))
+  })
+
+  it('waits for a pasted picture still being kept before it says a quit may go on, and saves it with the draft', async () => {
+    let keep: () => void = () => {}
+    const store = mockSidecar({ 'drafts.picture': () => new Promise((resolve) => (keep = () => resolve('/state/pictures/1/shot.png'))) }, [projectA, projectB])
+    render(<StudioApp />)
+    fireEvent.click(await screen.findByText('Project A'))
+    await screen.findByRole('banner')
+    fireEvent.paste(prompt(), { clipboardData: { files: [new File(['png'], 'shot.png', { type: 'image/png' })] } })
+    await waitFor(() => expect(sidecarCalls('drafts.picture')).toHaveLength(1))
+    await act(async () => listeners.flush.forEach((listener) => listener({ payload: null })))
+    await pause(50)
+    const flushed = () => invokeMock.mock.calls.some(([command]) => command === 'studio_flushed')
+    expect(flushed()).toBe(false)
+    await act(async () => keep())
+    await waitFor(() => expect(flushed()).toBe(true))
+    expect(store.drafts[projectA.id]).toMatchObject({ attachments: ['/state/pictures/1/shot.png'] })
+  })
+
+  it('saves the draft a first send made for its project during a quit before it says the quit may go on', async () => {
+    const sending = held()
+    const store = mockSidecar({ 'chat.send': sending.call })
+    render(<StudioApp />)
+    await screen.findByText('Project B')
+    type('A knob')
+    fireEvent.click(screen.getByTestId('send'))
+    await waitFor(() => expect(sends()).toHaveLength(1))
+    type('A knob, and a dial')
+    await act(async () => listeners.flush.forEach((listener) => listener({ payload: null })))
+    await sending.release()
+    const flushed = () => invokeMock.mock.calls.some(([command]) => command === 'studio_flushed')
+    await waitFor(() => expect(flushed()).toBe(true))
+    const project = store.projects.find((p) => p.title === 'A knob')
+    expect(project).toBeDefined()
+    expect(store.drafts[project?.id ?? '']).toMatchObject({ text: 'A knob, and a dial' })
+  })
+
+  it('tells Rust at once that it is saving when a quit asks, so Rust holds the quit until the window is done', async () => {
+    const save = held()
+    mockSidecar({ 'drafts.set': save.call })
+    render(<StudioApp />)
+    fireEvent.click(await screen.findByText('Project B'))
+    await screen.findByRole('banner')
+    type('half a thought')
+    await act(async () => listeners.flush.forEach((listener) => listener({ payload: null })))
+    const said = (command: string) => invokeMock.mock.calls.some(([name]) => name === command)
+    expect(said('studio_flush_started')).toBe(true)
+    expect(said('studio_flushed')).toBe(false)
+    await save.release()
+    await waitFor(() => expect(said('studio_flushed')).toBe(true))
+  })
+
+  it('reads the saved state again when the engine comes back, if the first read failed', async () => {
+    let reads = 0
+    mockSidecar({ 'state.get': (_, real) => (++reads === 1 ? Promise.reject('The engine stopped.') : real()) }, [projectA, projectB])
+    render(<StudioApp />)
+    await waitFor(() => expect(reads).toBe(1))
+    expect(screen.queryByText('Project A')).toBeNull()
+    await emit({ type: 'ready', version: '1.2.3' })
+    expect(await screen.findByText('Project A')).toBeTruthy()
+  })
+
+  it('keeps a picture the person took out and put back while its send was on its way', async () => {
+    const sending = held()
+    mockSidecar({ 'chat.send': sending.call }, [projectA, projectB], { [projectA.id]: { text: 'A clip like this', attachments: ['/Users/me/pic.jpg'] } })
+    render(<StudioApp />)
+    fireEvent.click(await screen.findByText('Project A'))
+    await waitFor(() => expect(prompt().value).toBe('A clip like this'))
+    fireEvent.click(screen.getByTestId('send'))
+    await waitFor(() => expect(sends()).toHaveLength(1))
+    fireEvent.click(screen.getByLabelText('Remove pic.jpg'))
+    await act(async () => listeners.drop.forEach((listener) => listener({ payload: { type: 'drop', paths: ['/Users/me/pic.jpg'] } })))
+    await sending.release()
+    await pause(100)
+    // The person chose it again, so it is part of the next message.
+    expect(screen.getByTestId('attachments').textContent).toContain('pic.jpg')
   })
 
   it('waits for a draft save already on its way before it says a quit may go on', async () => {

@@ -158,6 +158,7 @@ pub fn run() {
             studio::files::studio_save_bytes,
             studio::files::studio_reveal,
             studio::files::studio_open_in_bambu,
+            studio::quit::studio_flush_started,
             studio::quit::studio_flushed,
             studio::quit::studio_open_files_privacy,
             sidecar::sidecar,
