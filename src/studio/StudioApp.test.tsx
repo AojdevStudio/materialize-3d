@@ -889,6 +889,35 @@ describe('StudioApp', () => {
     expect(store.drafts[projectA.id]).toMatchObject({ text: 'a hook, in black' })
   })
 
+  it('saves text typed during a send clicked while the quit waited for a save already on its way', async () => {
+    let releaseSave: () => void = () => {}
+    let saves = 0
+    const sending = held()
+    const store = mockSidecar(
+      {
+        'drafts.set': (_, real) => (++saves === 1 ? new Promise((resolve) => (releaseSave = () => resolve(real()))) : real()),
+        'chat.send': sending.call,
+      },
+      [projectA, projectB],
+    )
+    render(<StudioApp />)
+    fireEvent.click(await screen.findByText('Project A'))
+    await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project A'))
+    type('a hook')
+    // The pause after typing starts the save, and the quit comes while it is on its way.
+    await waitFor(() => expect(sidecarCalls('drafts.set')).toHaveLength(1))
+    await act(async () => listeners.flush.forEach((listener) => listener({ payload: null })))
+    fireEvent.click(screen.getByTestId('send'))
+    type('a hook, in black')
+    await act(async () => releaseSave())
+    await pause(50)
+    const said = (command: string) => invokeMock.mock.calls.some(([name]) => name === command)
+    expect(said('studio_flushed')).toBe(false)
+    await sending.release()
+    await waitFor(() => expect(said('studio_flushed')).toBe(true))
+    expect(store.drafts[projectA.id]).toMatchObject({ text: 'a hook, in black' })
+  })
+
   it('keeps the app open and says why when a draft still cannot be saved at a quit', async () => {
     mockSidecar(
       { 'drafts.set': (params, real) => (params.key === projectA.id ? Promise.reject('The engine stopped.') : real()) },

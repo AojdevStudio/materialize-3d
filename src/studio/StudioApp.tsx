@@ -351,13 +351,17 @@ export default function StudioApp() {
     const unlisten = onQuitFlush(async () => {
       clearPause()
       await Promise.allSettled([...pastes.current])
-      for (let tries = 1; ; tries++) {
-        // Each try waits for every send on its way first, those started while it waited to try again included, as a
-        // screen does not save while its send is on its way.
+      // It is done only when no screen sends and each holds what the store holds. A send or an edit that came while it
+      // saved, so a screen skipped or changed meanwhile, means another round. A save that failed is tried again once
+      // the engine is back, a few times, before the quit is called off.
+      for (let failures = 0; ; ) {
         await Promise.allSettled(Object.values(screens.current).map((screen) => screen.sending))
         const saves = await Promise.allSettled(Object.keys(screens.current).map((key) => flush(key)))
-        if (saves.every((save) => save.status === 'fulfilled')) return
-        if (tries === QUIT_SAVE_TRIES) {
+        const failed = saves.some((save) => save.status === 'rejected')
+        const settled = Object.values(screens.current).every((screen) => screen.sending === undefined && !changed(screen))
+        if (!failed && settled) return
+        if (!failed) continue
+        if (++failures === QUIT_SAVE_TRIES) {
           setError('A draft could not be saved, so Materialize 3D stayed open. Quit again once the engine is back.')
           throw new Error('a draft could not be saved')
         }
