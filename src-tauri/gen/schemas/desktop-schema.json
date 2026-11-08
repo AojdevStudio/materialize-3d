@@ -771,6 +771,12 @@
           "markdownDescription": "Enables the studio_files command without any pre-configured scope."
         },
         {
+          "description": "Enables the studio_flush_failed command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-studio-flush-failed",
+          "markdownDescription": "Enables the studio_flush_failed command without any pre-configured scope."
+        },
+        {
           "description": "Enables the studio_flush_started command without any pre-configured scope.",
           "type": "string",
           "const": "allow-studio-flush-started",
@@ -1279,6 +1285,12 @@
           "type": "string",
           "const": "deny-studio-files",
           "markdownDescription": "Denies the studio_files command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the studio_flush_failed command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-studio-flush-failed",
+          "markdownDescription": "Denies the studio_flush_failed command without any pre-configured scope."
         },
         {
           "description": "Denies the studio_flush_started command without any pre-configured scope.",

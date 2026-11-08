@@ -827,13 +827,15 @@ describe('StudioApp', () => {
     expect(screen.queryByTestId('attachments')).toBeNull()
   })
 
-  it('waits for every screen\'s save before it says a quit may go on, even when another screen\'s save fails', async () => {
+  it('saves every screen before a quit goes on, retrying a save the engine restart refused once the engine is back', async () => {
+    let engineBack = false
     let releaseB: () => void = () => {}
-    mockSidecar(
+    const store = mockSidecar(
       {
         'drafts.set': (params, real) => {
-          if (params.key === projectA.id) return Promise.reject('The engine is starting.')
-          return new Promise((resolve) => (releaseB = () => resolve(real())))
+          if (params.key === projectA.id && !engineBack) return Promise.reject('The engine restarted before it answered. Try again.')
+          if (params.key === projectB.id) return new Promise((resolve) => (releaseB = () => resolve(real())))
+          return real()
         },
       },
       [projectA, projectB],
@@ -846,12 +848,32 @@ describe('StudioApp', () => {
     await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project B'))
     type('a shelf')
     await act(async () => listeners.flush.forEach((listener) => listener({ payload: null })))
-    await pause(50)
-    const flushed = () => invokeMock.mock.calls.some(([command]) => command === 'studio_flushed')
-    expect(flushed()).toBe(false)
     await act(async () => releaseB())
-    await waitFor(() => expect(flushed()).toBe(true))
+    await pause(50)
+    const said = (command: string) => invokeMock.mock.calls.some(([name]) => name === command)
+    expect(said('studio_flushed')).toBe(false)
+    engineBack = true
+    await emit({ type: 'ready', version: '1.2.3' })
+    await waitFor(() => expect(said('studio_flushed')).toBe(true))
+    expect(store.drafts[projectA.id]).toMatchObject({ text: 'a hook' })
+    expect(store.drafts[projectB.id]).toMatchObject({ text: 'a shelf' })
   })
+
+  it('keeps the app open and says why when a draft still cannot be saved at a quit', async () => {
+    mockSidecar(
+      { 'drafts.set': (params, real) => (params.key === projectA.id ? Promise.reject('The engine stopped.') : real()) },
+      [projectA, projectB],
+    )
+    render(<StudioApp />)
+    fireEvent.click(await screen.findByText('Project A'))
+    await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project A'))
+    type('a hook')
+    await act(async () => listeners.flush.forEach((listener) => listener({ payload: null })))
+    const said = (command: string) => invokeMock.mock.calls.some(([name]) => name === command)
+    await waitFor(() => expect(said('studio_flush_failed')).toBe(true), { timeout: 15_000 })
+    expect(said('studio_flushed')).toBe(false)
+    expect(screen.getByRole('alert').textContent).toContain('could not be saved')
+  }, 20_000)
 
   it('waits for a pasted picture still being kept before it says a quit may go on, and saves it with the draft', async () => {
     let keep: () => void = () => {}

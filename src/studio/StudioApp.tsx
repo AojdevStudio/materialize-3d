@@ -24,6 +24,10 @@ const DRAFT_PAUSE_MS = 400
 
 const EMPTY: Draft = { text: '', attachments: [] }
 
+/** How often a quit tries to save a draft, and how long it waits between tries for the engine to come back. */
+const QUIT_SAVE_TRIES = 4
+const QUIT_RETRY_MS = 3000
+
 /**
  * A screen's unsent message as the window holds it. The sidecar owns the draft and the send: the window only knows
  * whether the screen changed since its last completed save, and that save's revision, which a send names.
@@ -103,6 +107,8 @@ export default function StudioApp() {
   const screens = useRef<Record<string, Screen>>({})
   /** The open screen's save that waits for typing to pause. */
   const pending = useRef<{ key: string; timer: number } | null>(null)
+  /** What waits for the engine's next start, as a quit's save the engine refused while it restarted. */
+  const readyWaiters = useRef<(() => void)[]>([])
   /** Pastes whose pictures are still being kept, so a quit waits for them. */
   const pastes = useRef(new Set<Promise<void>>())
   /** The previews of pasted pictures, by path, freed when the window closes. */
@@ -247,6 +253,7 @@ export default function StudioApp() {
           setEngine(`Engine ${event.version}`)
           // A check that failed while the engine started again is asked again, so Send does not stay off.
           checkReady()
+          for (const wake of readyWaiters.current.splice(0)) wake()
           if (!stateRead) void readState()
           // An engine that started again holds what a crash cut off from the window, such as a turn's last entry, so
           // the open chat is read again. The changes that arrive meanwhile are kept, as when it first opened.
@@ -338,14 +345,25 @@ export default function StudioApp() {
   }
 
   // A quit or the window's close waits for pasted pictures still being kept and each send on its way, then saves every
-  // screen, those a send just made included, and only then lets the quit go on. Rust holds the quit meanwhile. One save
-  // that fails does not end the wait for the others.
+  // screen, those a send just made included. Rust holds the quit meanwhile. A save the engine refused, as while it
+  // restarts, is tried again once the engine is back. A draft that still cannot be saved calls the quit off.
   useEffect(() => {
     const unlisten = onQuitFlush(async () => {
       clearPause()
       await Promise.allSettled([...pastes.current])
       await Promise.allSettled(Object.values(screens.current).map((screen) => screen.sending))
-      await Promise.allSettled(Object.keys(screens.current).map((key) => flush(key)))
+      for (let tries = 1; ; tries++) {
+        const saves = await Promise.allSettled(Object.keys(screens.current).map((key) => flush(key)))
+        if (saves.every((save) => save.status === 'fulfilled')) return
+        if (tries === QUIT_SAVE_TRIES) {
+          setError('A draft could not be saved, so Materialize 3D stayed open. Quit again once the engine is back.')
+          throw new Error('a draft could not be saved')
+        }
+        await new Promise<void>((wake) => {
+          readyWaiters.current.push(wake)
+          window.setTimeout(wake, QUIT_RETRY_MS)
+        })
+      }
     })
     return () => {
       void unlisten.then((stop) => stop())

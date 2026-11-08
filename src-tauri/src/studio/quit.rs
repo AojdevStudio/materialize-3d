@@ -1,8 +1,9 @@
 //! A normal quit, or closing the window, waits for the window to save what the person typed but has not saved yet.
 //! The window saves its draft a moment after typing pauses, so text typed just before a quit would be lost without
 //! this. The window says at once that it is saving, and then the quit waits for it to finish, as a send on its way
-//! must end first. A window that does not answer, as one that is gone, holds the quit only briefly. A restart for an
-//! update cannot be held: Tauri ignores a hold on it, and the update waits for idle.
+//! must end first. A window that could not save a draft calls the quit off, so the app stays open with the draft. A
+//! window that does not answer, as one that is gone, holds the quit only briefly. A restart for an update cannot be
+//! held: Tauri ignores a hold on it, and the update waits for idle.
 
 use std::sync::Mutex;
 use std::time::Duration;
@@ -41,6 +42,15 @@ pub struct QuitFlush {
     /// The window started saving.
     started: Notify,
     saved: Notify,
+    /// The window could not save a draft.
+    failed: Notify,
+}
+
+/// What the window answered.
+enum Answer {
+    Started,
+    Saved,
+    Failed,
 }
 
 impl QuitFlush {
@@ -63,26 +73,36 @@ impl QuitFlush {
         drop(stage);
         let app = app.clone();
         tauri::async_runtime::spawn(async move {
-            if app.emit(FLUSH, ()).is_ok() {
-                let flush = app.state::<QuitFlush>();
-                let answer = tokio::time::timeout(FLUSH_WAIT, async {
+            let saved = if app.emit(FLUSH, ()).is_ok() {
+                let state = app.state::<QuitFlush>();
+                let flush: &QuitFlush = &state;
+                let answer = |started: bool| async move {
                     tokio::select! {
-                        _ = flush.saved.notified() => true,
-                        _ = flush.started.notified() => false,
+                        _ = flush.saved.notified() => Answer::Saved,
+                        _ = flush.failed.notified() => Answer::Failed,
+                        _ = flush.started.notified(), if !started => Answer::Started,
                     }
-                })
-                .await;
-                // The window is saving: wait until it is done.
-                if answer == Ok(false) {
-                    let _ = tokio::time::timeout(FLUSH_HOLD, flush.saved.notified()).await;
+                };
+                match tokio::time::timeout(FLUSH_WAIT, answer(false)).await {
+                    // The window is saving: wait until it is done, or says it could not save.
+                    Ok(Answer::Started) => !matches!(tokio::time::timeout(FLUSH_HOLD, answer(true)).await, Ok(Answer::Failed)),
+                    Ok(Answer::Failed) => false,
+                    Ok(Answer::Saved) | Err(_) => true,
                 }
-            }
-            let held = match std::mem::replace(&mut *app.state::<QuitFlush>().stage.lock().unwrap_or_else(|e| e.into_inner()), Stage::Saved) {
+            } else {
+                true
+            };
+            // A draft the window could not save calls the quit or close off, so nothing is lost, and the next one asks
+            // the window again.
+            let next = if saved { Stage::Saved } else { Stage::Idle };
+            let held = match std::mem::replace(&mut *app.state::<QuitFlush>().stage.lock().unwrap_or_else(|e| e.into_inner()), next) {
                 Stage::Saving(held) => held,
                 Stage::Idle | Stage::Saved => Vec::new(),
             };
-            for then in held {
-                then();
+            if saved {
+                for then in held {
+                    then();
+                }
             }
         });
         true
@@ -93,6 +113,12 @@ impl QuitFlush {
 #[tauri::command]
 pub fn studio_flush_started(flush: State<'_, QuitFlush>) {
     flush.started.notify_one();
+}
+
+/// The window's last answer when a draft could not be saved: the quit or close is called off.
+#[tauri::command]
+pub fn studio_flush_failed(flush: State<'_, QuitFlush>) {
+    flush.failed.notify_one();
 }
 
 /// The window's last answer: everything is saved.
@@ -155,6 +181,24 @@ mod tests {
         studio_flushed(app.state::<QuitFlush>());
         finished.recv_timeout(Duration::from_secs(1)).expect("the quit goes on once the window is done");
         assert!(started.elapsed() > FLUSH_WAIT, "held past the first wait, after {:?}", started.elapsed());
+    }
+
+    #[test]
+    fn a_save_that_failed_cancels_the_quit_and_a_later_quit_asks_again() {
+        let app = tauri::test::mock_app();
+        app.manage(QuitFlush::default());
+        let (done, finished) = std::sync::mpsc::channel();
+        let again = done.clone();
+        assert!(QuitFlush::hold(app.handle(), move |_| done.send(()).unwrap()));
+        std::thread::sleep(Duration::from_millis(50));
+        studio_flush_started(app.state::<QuitFlush>());
+        studio_flush_failed(app.state::<QuitFlush>());
+        assert!(finished.recv_timeout(Duration::from_secs(1)).is_err(), "the app stays open");
+        // A later quit holds and asks the window again, as nothing was saved.
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(QuitFlush::hold(app.handle(), move |_| again.send(()).unwrap()), "the next quit waits for the window");
+        studio_flushed(app.state::<QuitFlush>());
+        finished.recv_timeout(FLUSH_WAIT).expect("the next quit goes on once the window saved");
     }
 
     #[test]

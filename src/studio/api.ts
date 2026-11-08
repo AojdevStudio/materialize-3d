@@ -11,12 +11,16 @@ export const onSidecarEvent = (handler: (event: SidecarEvent) => void) =>
 
 /**
  * Rust asks for this as the app quits or the window closes. The window says at once that it is saving, so Rust holds
- * the quit for as long as that takes, then says it is done.
+ * the quit for as long as that takes. Then it says it is done, or that a draft could not be saved, which calls the
+ * quit off.
  */
 export const onQuitFlush = (save: () => Promise<void>) =>
   listen('studio://flush', () => {
     void invoke('studio_flush_started')
-    void save().finally(() => invoke('studio_flushed'))
+    void save().then(
+      () => invoke('studio_flushed'),
+      () => invoke('studio_flush_failed'),
+    )
   })
 
 /** Opens the macOS setting that lets the app read Documents. */

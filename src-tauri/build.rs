@@ -100,6 +100,7 @@ const APP_COMMANDS: &[&str] = &[
     "studio_reveal",
     "studio_open_in_bambu",
     "studio_flush_started",
+    "studio_flush_failed",
     "studio_flushed",
     "studio_open_files_privacy",
     "sidecar",
