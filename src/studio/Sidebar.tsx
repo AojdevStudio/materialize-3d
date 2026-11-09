@@ -121,10 +121,12 @@ export default function Sidebar({ projects, current, engine, onOpen, onNew, onEr
         return refresh()
       }
       if (event.type !== 'chat') return
-      // `seq` orders a chat's states, as in the chat view. An older state that arrives late changes nothing.
+      // `seq` orders a chat's states, as in the chat view. A state no newer than the last one kept changes nothing. A
+      // newer one is kept, and it moves the row and reads the status only when its running state differs.
       const before = liveNow.current[event.project]
-      if (before !== undefined && (event.seq < before.seq || event.running === before.running)) return
+      if (before !== undefined && event.seq <= before.seq) return
       liveNow.current = { ...liveNow.current, [event.project]: { running: event.running, seq: event.seq } }
+      if (before?.running === event.running) return
       setLive(liveNow.current)
       refresh()
     })
