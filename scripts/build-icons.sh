@@ -3,16 +3,17 @@
 #
 #   scripts/build-icons.sh <path to materialize-3d-meta/brand/icon/2026-11-09-wireframe-cube>
 #
-# Run it on a Mac with Xcode 26 or newer and ImageMagick. The brand folder holds
+# Run it on a Mac with Xcode 26 or newer. The brand folder holds
 # the full render (mark-1024.png) and two simple drawings for small sizes
 # (mark-small-32.svg and mark-small-16.svg), because the render's grid blurs
-# at 32 px and below. It writes five things:
+# at 32 px and below. It copies the two drawings to src/assets/brand, where the
+# favicon and the sidebar logo load them. It writes five things in src-tauri/icons:
 # - Every PNG from the render through `tauri icon`, except 32x32.png and
 #   Square30x30Logo.png, which come from the 32 px drawing.
 # - icon.icns, through iconutil. Its 16 px entry is the 16 px drawing, its
 #   32 px entries are the 32 px drawing, and its 64 px and larger entries are
 #   the render. The .icns is CFBundleIconFile, the fallback for macOS 13 to 15.
-# - icon.ico, through ImageMagick. Its 16 px entry is the 16 px drawing, its 24
+# - icon.ico, with PNG entries. Its 16 px entry is the 16 px drawing, its 24
 #   and 32 px entries are the 32 px drawing, and its 48 px and larger entries
 #   are the render.
 # - AppIcon.icon, the Icon Composer document for macOS 26: one flat layer, the
@@ -31,7 +32,6 @@ brand="$(cd "$1" && pwd)"
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 icons="$root/src-tauri/icons"
 [[ "$(uname -s)" == Darwin ]] || die "run on a Mac: iconutil and actool are macOS tools"
-command -v magick >/dev/null || die "ImageMagick is required for icon.ico (brew install imagemagick)"
 actool_major="$(xcrun actool --version --output-format human-readable-text \
   | sed -n 's/.*short-bundle-version: \([0-9]*\).*/\1/p')"
 [[ "${actool_major:-0}" -ge 26 ]] || die "actool 26 or newer is required (found '${actool_major:-none}')"
@@ -65,6 +65,7 @@ for f in 128x128.png 128x128@2x.png icon.png StoreLogo.png \
 done
 cp "$work/small32/32x32.png" "$icons/32x32.png"
 cp "$work/small32/30x30.png" "$icons/Square30x30Logo.png"
+cp "$brand/mark-small-32.svg" "$brand/mark-small-16.svg" "$root/src/assets/brand/"
 
 # The .icns, from an iconset. 128x128@2x.png is 256 px and icon.png is 512 px.
 set="$work/icon.iconset"
@@ -81,17 +82,40 @@ cp "$work/render/icon.png" "$set/icon_512x512.png"
 cp "$brand/mark-1024.png" "$set/icon_512x512@2x.png"
 iconutil -c icns "$set" -o "$icons/icon.icns"
 
-# The .ico, with the same sizes `tauri icon` puts in one.
-magick "$work/small16/16x16.png" "$work/small32/24x24.png" "$work/small32/32x32.png" \
-  "$work/render48/48x48.png" "$work/render/64x64.png" "$work/render/128x128@2x.png" \
-  "$icons/icon.ico"
+# The .ico, with the same sizes `tauri icon` puts in one. Each entry is the PNG
+# itself: a 6-byte header, one 16-byte directory entry per image, then the
+# images. A width of 256 is written as 0.
+bun -e '
+  const [out, ...files] = process.argv.slice(1)
+  const pngs = await Promise.all(files.map((file) => Bun.file(file).bytes()))
+  const head = Buffer.alloc(6 + 16 * pngs.length)
+  head.writeUInt16LE(1, 2)
+  head.writeUInt16LE(pngs.length, 4)
+  let offset = head.length
+  pngs.forEach((png, i) => {
+    const width = Buffer.from(png).readUInt32BE(16)
+    const entry = 6 + 16 * i
+    head[entry] = head[entry + 1] = width % 256
+    head.writeUInt16LE(1, entry + 4)
+    head.writeUInt16LE(32, entry + 6)
+    head.writeUInt32LE(png.length, entry + 8)
+    head.writeUInt32LE(offset, entry + 12)
+    offset += png.length
+  })
+  await Bun.write(out, new Blob([head, ...pngs]))
+' "$icons/icon.ico" "$work/small16/16x16.png" "$work/small32/24x24.png" "$work/small32/32x32.png" \
+  "$work/render48/48x48.png" "$work/render/64x64.png" "$work/render/128x128@2x.png"
 
 # The Icon Composer document: one group with one layer, the render, over the
-# tile color in light and dark. macOS masks the full canvas to its own shape,
-# so the render's transparent corners take the tile color. Translucency is off
-# so the render keeps its colors. The color is read as sRGB because the key
-# that would make it Display P3 is absent.
-tile="srgb:0.81176,0.81569,0.81176,1.00000" # #CFD0CF
+# tile color. macOS masks the full canvas to its own shape, so the render's
+# transparent corners take the tile color. The dark entry repeats the light
+# color so dark mode keeps the concrete tile instead of a system dark fill.
+# Translucency is off so the render keeps its colors. The color is read as
+# sRGB because the key that would make it Display P3 is absent.
+hex="$(sed -n 's/.*<rect[^>]*fill="#\([0-9A-Fa-f]\{6\}\)".*/\1/p' "$brand/mark-small-32.svg")"
+[[ -n "$hex" ]] || die "no tile color in $brand/mark-small-32.svg"
+tile="$(awk -v r=$((16#${hex:0:2})) -v g=$((16#${hex:2:2})) -v b=$((16#${hex:4:2})) \
+  'BEGIN { printf "srgb:%.5f,%.5f,%.5f,1.00000", r / 255, g / 255, b / 255 }')"
 doc="$icons/AppIcon.icon"
 rm -rf "$doc"
 mkdir -p "$doc/Assets"
