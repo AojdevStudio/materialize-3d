@@ -26,6 +26,7 @@ vi.mock('@tauri-apps/api/webview', () => ({
 }))
 
 import type { Project } from '../../sidecar/src/protocol'
+import type { ProjectFile } from './api'
 import StudioApp from './StudioApp'
 
 // jsdom has no layout, so the chat's scroll to its newest line is a no-op here, and no object URLs for previews.
@@ -86,7 +87,7 @@ function lostOnce() {
  * one it made, and moves the start draft there only when it is that revision. A send already made changes nothing. A
  * send removes the draft it sent. It answers with what it keeps, for a test to read.
  */
-function mockSidecar(overrides: Calls = {}, projects: Project[] = [projectB], drafts: Record<string, { text: string; attachments?: string[]; rev?: number }> = {}) {
+function mockSidecar(overrides: Calls = {}, projects: Project[] = [projectB], drafts: Record<string, { text: string; attachments?: string[]; rev?: number }> = {}, files: Record<string, ProjectFile[]> = {}) {
   const store = {
     projects: [...projects],
     drafts: Object.fromEntries(
@@ -139,9 +140,9 @@ function mockSidecar(overrides: Calls = {}, projects: Project[] = [projectB], dr
         return Promise.resolve(null)
     }
   }
-  invokeMock.mockImplementation((command: string, args: { method: string; params: Params }) => {
+  invokeMock.mockImplementation((command: string, args: { method: string; params: Params; project?: string }) => {
     if (command === 'update_check') return Promise.resolve({ status: 'upToDate' })
-    if (command === 'studio_files') return Promise.resolve([])
+    if (command === 'studio_files') return Promise.resolve(files[String(args.project)] ?? [])
     if (command !== 'sidecar') return Promise.resolve(undefined)
     const real = () => defaults(args.method, args.params)
     const override = overrides[args.method]
@@ -157,6 +158,136 @@ const saves = (key?: string) => sidecarCalls('drafts.set').filter((save) => key 
 const last = <T,>(items: T[]) => items[items.length - 1]
 
 describe('StudioApp', () => {
+  it.each(['send', 'sidebar'])('keeps files, preview, tab, draft, and chat when reopening the project from %s', async (source) => {
+    const title = source === 'send' ? 'A clip' : projectA.title
+    const id = source === 'send' ? '2026-11-06-a-clip' : projectA.id
+    mockSidecar({
+      'chat.open': (params) => Promise.resolve(view(String(params.project), {
+        entries: [{ id: 1, kind: 'assistant', text: 'The clip is ready.', calls: [] }],
+      })),
+    }, [projectA, projectB], {}, { [id]: [
+      { rel: 'hello.html', size: 334, modifiedMs: 1 },
+      { rel: 'newer.html', size: 100, modifiedMs: 2 },
+    ] })
+    render(<StudioApp />)
+    const sidebar = within(screen.getByRole('navigation', { name: 'Projects' }))
+    await sidebar.findByText('Project B')
+    if (source === 'send') {
+      type(title)
+      await waitFor(() => expect(screen.getByTestId('send').hasAttribute('disabled')).toBe(false))
+      fireEvent.click(screen.getByTestId('send'))
+    } else {
+      fireEvent.click(sidebar.getByText(title))
+    }
+    await screen.findByTestId('html-preview')
+    fireEvent.click(screen.getByTestId('files-tab'))
+    fireEvent.click(within(screen.getByTestId('files-list')).getByText('hello.html'))
+    type('Make it blue')
+
+    fireEvent.click(sidebar.getByText(title))
+    expect(screen.getByTestId('html-preview').getAttribute('src')).toContain('/hello.html?')
+    expect(prompt().value).toBe('Make it blue')
+    expect(screen.getByText('The clip is ready.')).toBeTruthy()
+    fireEvent.click(screen.getByTestId('files-tab'))
+    fireEvent.click(sidebar.getByText(title))
+    expect(screen.getByTestId('files-tab').getAttribute('aria-selected')).toBe('true')
+    expect(screen.getByTestId('files-list').textContent).toContain('hello.html')
+
+    fireEvent.click(sidebar.getByText('Project B'))
+    await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project B'))
+    fireEvent.click(sidebar.getByText(title))
+    expect((await screen.findByTestId('html-preview')).getAttribute('src')).toContain('/newer.html?')
+    expect(prompt().value).toBe('Make it blue')
+    fireEvent.click(screen.getByTestId('files-tab'))
+    expect(screen.getByTestId('files-list').textContent).toContain('hello.html')
+  })
+
+  it('retries a failed chat load when reopening the same project without losing files or preview', async () => {
+    let opens = 0
+    mockSidecar({
+      'chat.open': (params) => ++opens === 1
+        ? Promise.reject('The chat could not be loaded.')
+        : Promise.resolve(view(String(params.project), {
+          entries: [{ id: 1, kind: 'assistant', text: 'The clip is ready.', calls: [] }],
+        })),
+    }, [projectB], {}, { [projectB.id]: [{ rel: 'hello.html', size: 334, modifiedMs: 1 }] })
+    render(<StudioApp />)
+    const sidebar = within(screen.getByRole('navigation', { name: 'Projects' }))
+    fireEvent.click(await sidebar.findByText('Project B'))
+    expect((await screen.findByRole('alert')).textContent).toContain('The chat could not be loaded.')
+    expect((await screen.findByTestId('html-preview')).getAttribute('src')).toContain('/hello.html?')
+    fireEvent.click(screen.getByTestId('files-tab'))
+    expect(screen.getByTestId('files-list').textContent).toContain('hello.html')
+
+    fireEvent.click(sidebar.getByText('Project B'))
+    expect(await screen.findByText('The clip is ready.')).toBeTruthy()
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.getByTestId('files-tab').getAttribute('aria-selected')).toBe('true')
+    expect(screen.getByTestId('files-list').textContent).toContain('hello.html')
+    fireEvent.click(screen.getByRole('tab', { name: 'Preview' }))
+    expect(screen.getByTestId('html-preview').getAttribute('src')).toContain('/hello.html?')
+  })
+
+  it('keeps a pending chat load and its buffered changes when reopening the same project', async () => {
+    const opening = held()
+    mockSidecar({ 'chat.open': opening.call })
+    render(<StudioApp />)
+    const sidebar = within(screen.getByRole('navigation', { name: 'Projects' }))
+    fireEvent.click(await sidebar.findByText('Project B'))
+    await screen.findByRole('banner')
+    await emit({ type: 'chat', ...view(projectB.id, {
+      entries: [{ id: 1, kind: 'assistant', text: 'The clip is ready.', calls: [] }], seq: 2,
+    }) })
+    fireEvent.click(sidebar.getByText('Project B'))
+    expect(sidecarCalls('chat.open')).toHaveLength(1)
+    await opening.release()
+    expect(await screen.findByText('The clip is ready.')).toBeTruthy()
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('retries a chat load only after the pending load fails', async () => {
+    let failOpen: (reason: string) => void = () => {}
+    let opens = 0
+    mockSidecar({
+      'chat.open': (params) => ++opens === 1
+        ? new Promise((_, reject) => (failOpen = reject))
+        : Promise.resolve(view(String(params.project), {
+          entries: [{ id: 1, kind: 'assistant', text: 'The clip is ready.', calls: [] }],
+        })),
+    })
+    render(<StudioApp />)
+    const sidebar = within(screen.getByRole('navigation', { name: 'Projects' }))
+    fireEvent.click(await sidebar.findByText('Project B'))
+    await screen.findByRole('banner')
+    fireEvent.click(sidebar.getByText('Project B'))
+    expect(sidecarCalls('chat.open')).toHaveLength(1)
+
+    await act(async () => failOpen('The chat could not be loaded.'))
+    expect((await screen.findByRole('alert')).textContent).toContain('The chat could not be loaded.')
+    fireEvent.click(sidebar.getByText('Project B'))
+    expect(sidecarCalls('chat.open')).toHaveLength(2)
+    expect(await screen.findByText('The clip is ready.')).toBeTruthy()
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('keeps the running chat visible when reopening the same project', async () => {
+    mockSidecar({ 'chat.open': (params) => Promise.resolve(view(String(params.project), {
+      entries: [{ id: 1, kind: 'assistant', text: 'Making the clip.', calls: [] }], running: true,
+    })) })
+    render(<StudioApp />)
+    const sidebar = within(screen.getByRole('navigation', { name: 'Projects' }))
+    fireEvent.click(await sidebar.findByText('Project B'))
+    await screen.findByTestId('working')
+    fireEvent.click(sidebar.getByText('Project B'))
+    expect(screen.getByTestId('working')).toBeTruthy()
+    expect(screen.getByText('Making the clip.')).toBeTruthy()
+    await emit({ type: 'chat', ...view(projectB.id, {
+      entries: [{ id: 2, kind: 'assistant', text: 'The clip is ready.', calls: [] }], seq: 2,
+    }) })
+    expect(screen.queryByTestId('working')).toBeNull()
+    expect(screen.getByText('The clip is ready.')).toBeTruthy()
+  })
+
   it('shows the engine version the sidecar answers with', async () => {
     mockSidecar()
     render(<StudioApp />)
@@ -1112,6 +1243,102 @@ describe('StudioApp', () => {
     await act(async () => finishFirst(view(projectB.id, { entries: [asked], running: true, seq: 1 })))
     expect(screen.getByText('The clip is ready.')).toBeTruthy()
     expect(screen.queryByTestId('working')).toBeNull()
+  })
+
+  it('ignores a superseded chat load rejection after an engine reload', async () => {
+    let failFirst: (reason: string) => void = () => {}
+    let opens = 0
+    mockSidecar({
+      'chat.open': (params) => ++opens === 1
+        ? new Promise((_, reject) => (failFirst = reject))
+        : Promise.resolve(view(String(params.project), {
+          entries: [{ id: 1, kind: 'assistant', text: 'The clip is ready.', calls: [] }],
+        })),
+    })
+    render(<StudioApp />)
+    const sidebar = within(screen.getByRole('navigation', { name: 'Projects' }))
+    fireEvent.click(await sidebar.findByText('Project B'))
+    await screen.findByRole('banner')
+    await emit({ type: 'ready', version: '1.2.3' })
+    await screen.findByText('The clip is ready.')
+
+    await act(async () => failFirst('The chat could not be loaded.'))
+    expect(screen.queryByRole('alert')).toBeNull()
+    fireEvent.click(sidebar.getByText('Project B'))
+    expect(sidecarCalls('chat.open')).toHaveLength(2)
+    expect(screen.getByText('The clip is ready.')).toBeTruthy()
+  })
+
+  it('keeps an engine recovery pending after an earlier reload failed', async () => {
+    const recovery = held()
+    let opens = 0
+    mockSidecar({
+      'chat.open': (params) => {
+        const project = String(params.project)
+        switch (++opens) {
+          case 1:
+            return Promise.resolve(view(project, { entries: [{ id: 1, kind: 'assistant', text: 'The chat is open.', calls: [] }] }))
+          case 2:
+            return Promise.reject('The chat could not be loaded.')
+          case 3:
+            return recovery.call(params, () => Promise.resolve(view(project, {
+              entries: [{ id: 2, kind: 'assistant', text: 'The recovered clip is ready.', calls: [] }], seq: 3,
+            })))
+          default:
+            return Promise.reject('An extra chat load started.')
+        }
+      },
+    })
+    render(<StudioApp />)
+    const sidebar = within(screen.getByRole('navigation', { name: 'Projects' }))
+    fireEvent.click(await sidebar.findByText('Project B'))
+    await screen.findByText('The chat is open.')
+    await emit({ type: 'ready', version: '1.2.3' })
+    expect((await screen.findByRole('alert')).textContent).toContain('The chat could not be loaded.')
+
+    await emit({ type: 'ready', version: '1.2.3' })
+    expect(sidecarCalls('chat.open')).toHaveLength(3)
+    fireEvent.click(sidebar.getByText('Project B'))
+    expect(sidecarCalls('chat.open')).toHaveLength(3)
+    await recovery.release()
+    expect(await screen.findByText('The recovered clip is ready.')).toBeTruthy()
+  })
+
+  it.each(['load error', 'unrelated error'])('recovers from an engine reload failure with a current %s', async (shownError) => {
+    const recovery = held()
+    let opens = 0
+    mockSidecar({
+      'chat.open': (params) => {
+        const project = String(params.project)
+        switch (++opens) {
+          case 1:
+            return Promise.resolve(view(project, { entries: [{ id: 1, kind: 'assistant', text: 'The chat is open.', calls: [] }] }))
+          case 2:
+            return Promise.reject('The chat could not be loaded.')
+          case 3:
+            return recovery.call(params, () => Promise.resolve(view(project, {
+              entries: [{ id: 2, kind: 'assistant', text: 'The recovered clip is ready.', calls: [] }], seq: 3,
+            })))
+          default:
+            return Promise.reject('An extra chat load started.')
+        }
+      },
+    })
+    render(<StudioApp />)
+    const sidebar = within(screen.getByRole('navigation', { name: 'Projects' }))
+    fireEvent.click(await sidebar.findByText('Project B'))
+    await screen.findByText('The chat is open.')
+    await emit({ type: 'ready', version: '1.2.3' })
+    expect((await screen.findByRole('alert')).textContent).toContain('The chat could not be loaded.')
+    await emit({ type: 'ready', version: '1.2.3' })
+    if (shownError === 'unrelated error') await drop(['/Users/me/notes.txt'])
+
+    await recovery.release()
+    expect(await screen.findByText('The recovered clip is ready.')).toBeTruthy()
+    if (shownError === 'load error') expect(screen.queryByRole('alert')).toBeNull()
+    else expect(screen.getByRole('alert').textContent).toContain('Drop a picture:')
+    fireEvent.click(sidebar.getByText('Project B'))
+    expect(sidecarCalls('chat.open')).toHaveLength(3)
   })
 
   it("clears a sent project's saved draft even when the person typed in another project meanwhile", async () => {
