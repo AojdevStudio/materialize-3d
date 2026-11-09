@@ -8,6 +8,7 @@ The landing site in `site/` is one static page that explains Materialize 3D and 
 - `site-links` covers the download as the first prominent action, every in-page anchor and internal link, and the exact set of external links.
 - `site-a11y` covers keyboard focus on every link and the theme toggle, and axe in both themes.
 - `site-release` covers the release claims that follow the flags in `site/src/release.ts`.
+- `site-story` covers the four How it works steps in order: Talk to it, Preview, Assembly guide, 3MF to Bambu Studio.
 
 ## How to get to it (user POV)
 
@@ -36,4 +37,4 @@ Preconditions:
 
 - The tests run `bun run build` themselves through Playwright's `webServer`, so a stale `dist/` does not matter.
 - `test-results/` and `node_modules/` are ignored, so a run leaves the tree clean.
-- `site/README.md` still says the page explains 0.1.0. The page reads its facts from `site/src/release.ts`.
+- The page describes the chat studio, but `site/src/release.ts` still points the download at 0.1.0. Until a release carries the studio, the hero says so.

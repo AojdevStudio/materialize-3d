@@ -1,6 +1,6 @@
 # Materialize 3D landing site
 
-A single static page that explains Materialize 3D 0.1.0 and offers the Mac download. Vite, React, TypeScript, and plain CSS. It builds to plain files in `dist/` for any static host.
+A single static page that explains the Materialize 3D chat studio and offers the Mac download. The download is the release named in `src/release.ts`. Vite, React, TypeScript, and plain CSS. It builds to plain files in `dist/` for any static host.
 
 ## Commands
 
@@ -48,6 +48,7 @@ The fonts in `src/assets/fonts/` are copied from the app. They are licensed unde
 - off-site links are exactly the configured set
 - keyboard focus reaches every link and the theme toggle, with a visible focus ring
 - axe finds no violations in either theme
+- How it works lists the four studio steps in order, and the page says no release has the studio yet
 - no signing or notarization claim appears while the flags are false
 
 The layout tests also save full-page screenshots to `test-results/screens/`, which is gitignored. The tests never fetch GitHub. CI runs them in the `Landing site` job.

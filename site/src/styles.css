@@ -294,6 +294,10 @@ figcaption {
 .step-copy {
   max-width: 40ch;
 }
+.step-copy:only-child {
+  grid-column: 1 / -1;
+  max-width: 64ch;
+}
 .step-num {
   font: 13px var(--mono);
   color: var(--accent);
@@ -301,21 +305,6 @@ figcaption {
 .step h3 {
   font-size: 22px;
   margin: 4px 0 8px;
-}
-
-/* Reference sign */
-.sign-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
-  gap: 48px;
-  align-items: start;
-}
-.sign-grid img {
-  border: 1px solid var(--line);
-}
-.sign-grid p {
-  max-width: 60ch;
-  margin-bottom: 20px;
 }
 
 /* Definition tables */
@@ -337,24 +326,6 @@ figcaption {
 .facts-wide {
   grid-template-columns: 180px minmax(0, 72ch);
 }
-.swatches {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: grid;
-  gap: 4px;
-}
-.swatches li {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.swatch {
-  width: 14px;
-  height: 14px;
-  border: 1px solid var(--line-strong);
-}
-
 /* Install */
 .install {
   margin: 0;
@@ -424,7 +395,6 @@ figcaption {
   }
   .hero,
   .step,
-  .sign-grid,
   .scope {
     grid-template-columns: minmax(0, 1fr);
   }

@@ -138,6 +138,19 @@ for (const theme of ["light", "dark"] as const) {
   });
 }
 
+test("how it works tells the chat studio story in order, and the page says no release has it yet", async ({ page }) => {
+  await open(page);
+  await expect(page.locator("#how .step h3")).toHaveText([
+    "Talk to it",
+    "Preview",
+    "Assembly guide",
+    "3MF to Bambu Studio",
+  ]);
+  const text = await page.locator("body").innerText();
+  expect(text).toContain("The chat studio is not in a release yet.");
+  expect(text).not.toMatch(/\bMCP\b/);
+});
+
 test("release claims match the release flags", async ({ page }) => {
   await open(page);
   const text = await page.locator("body").innerText();

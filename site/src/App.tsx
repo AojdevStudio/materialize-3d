@@ -1,89 +1,46 @@
 import { ThemeToggle } from "./components/ThemeToggle";
 import { ReleaseFacts } from "./components/ReleaseFacts";
-import sign from "./data/p2s-test-sign.json";
-import signPreview from "./assets/p2s-test-sign-preview.png";
-import shotDescribe from "./assets/screens/02-main-with-chat.png";
-import shotGenerate from "./assets/screens/03-build-progress.png";
-import shotInspect from "./assets/screens/04-verified-awaiting-approval.png";
-import shotApprove from "./assets/screens/05-approved.png";
-import shotExport from "./assets/screens/06-relaunch-still-approved.png";
+import shotStudio from "./assets/screens/studio-cube-sliced.png";
 import oflUrl from "./assets/fonts/OFL.txt?url";
 import { checksumPublished, dmgFileName, release } from "./release";
 
-type Step = {
-  title: string;
-  body: string;
-  shot: string;
-  alt: string;
-  /** States only what the screenshot shows. */
-  caption: string;
-};
+type Step = { title: string; body: string };
 
 const steps: readonly Step[] = [
   {
-    title: "Describe",
-    body: "Tell the in-app chat what sign you want.",
-    shot: shotDescribe,
-    alt: "Materialize 3D main window with an empty AI Assistant panel on the right.",
-    caption:
-      "The AI Assistant panel, empty, with the Describe what to make box where you type your request.",
+    title: "Talk to it",
+    body: "Describe the part you need in plain words. Drop or paste a photo, such as a product shot or a picture from your phone, or paste a link. The agent sees the picture.",
   },
   {
-    title: "Generate",
-    body: "The app builds a three-color, face-down sign package: a white base with two inlay colors.",
-    shot: shotGenerate,
-    alt: "Signs tab with the build stage track showing Spec validated.",
-    caption:
-      "A build in progress. The stage track has reached Spec validated, ahead of Geometry built, Package written, Sliced, and Verified.",
+    title: "Preview",
+    body: "Each chat has its own project folder, and the agent works there. When it writes a file, the app shows it. Models open in a 3D view you can turn, and drawings open as pages. The newest file opens by itself.",
   },
   {
-    title: "Inspect",
-    body: "It slices with Bambu Studio using Bambu Lab P2S 0.4 mm nozzle presets, then runs 27 automated geometry and slice checks, including first-layer coverage per color.",
-    shot: shotInspect,
-    alt: "Revision r1 of the P2S three-color test sign with a table of passed checks.",
-    caption:
-      "Revision r1 of the test sign: 27 of 27 checks passed, approval pending, print not tested.",
+    title: "Assembly guide",
+    body: "The agent writes an interactive HTML guide that shows how the parts go together. It opens in the preview like any other page.",
   },
   {
-    title: "Approve",
-    body: "You approve the exact package by its SHA-256 hash. The assistant cannot approve. Any change to the design makes a new revision that needs a new approval.",
-    shot: shotApprove,
-    alt: "The same revision marked Approved, with an Export 3MF button.",
-    caption:
-      "The same revision after a person approved it for hash 9fee629…0738. Print is still Not tested.",
-  },
-  {
-    title: "Export",
-    body: "Export a 3MF through the macOS Save dialog, open it in Bambu Studio, check the filament mapping, and print from Bambu Studio. Only a person records the print result.",
-    shot: shotExport,
-    alt: "The approved revision after a relaunch, with Export 3MF and print result buttons.",
-    caption:
-      "The approved revision after quitting and relaunching. The approval is kept, Export 3MF is ready, and Passed and Failed wait for a person to record the print.",
+    title: "3MF to Bambu Studio",
+    body: "Every job ends in a print-ready 3MF. The agent slices it with Bambu Studio for the Bambu Lab P2S. In the Files tab, click Open in Bambu Studio and print from there.",
   },
 ];
 
-const shipped = [
-  "Describe a sign in the in-app chat",
-  "Three-color, face-down sign package: white base, two inlay colors",
-  "Slicing with Bambu Studio on Bambu Lab P2S 0.4 mm nozzle presets",
-  "27 automated geometry and slice checks, including first-layer coverage per color",
-  "Approval by a person, bound to the package SHA-256; the assistant cannot approve",
-  "A new revision and a new approval for any design change",
-  "3MF export through the macOS Save dialog; you print from Bambu Studio",
-  "Print results recorded only by a person",
-  "Optional local MCP endpoint so external agents can use the same tools; off by default, loopback only",
+const inStudio = [
+  "Chat with one agent. Each chat has its own project folder.",
+  "Drop or paste a picture, or paste a link",
+  "A GPT helper the agent can hand a task to, such as a technical drawing",
+  "A preview that shows HTML pages, and STL, 3MF, and GLB models in a 3D view",
+  "A Files tab with Reveal in Finder, and Open in Bambu Studio for a 3MF",
+  "Slicing with Bambu Studio to a 3MF for the Bambu Lab P2S",
 ] as const;
 
-const unvalidatedTabs = [
-  "Model Library",
-  "3D Preview",
-  "MakerWorld",
-  "OpenSCAD",
-  "Print Monitor",
-  "Print History",
+const notInStudio = [
+  "A printer connection",
+  "CAD tools or editors in the app",
+  "Accounts",
+  "Settings screens",
+  "An approval step",
 ] as const;
-
-const signColors = [sign.base, ...sign.inks];
 
 export function App() {
   return (
@@ -109,33 +66,33 @@ export function App() {
         <section className="hero" id="top" aria-labelledby="hero-title">
           <div className="hero-copy">
             <h1 id="hero-title">
-              Describe a sign. <em>Approve</em> a verified slice.
+              Describe a part. <em>Print</em> the 3MF.
             </h1>
             <p className="lede">
-              Materialize 3D is a conversational Mac app for creating 3D-printable objects, starting
-              with signs for the Bambu Lab P2S. Describe a three-color sign in chat; the app builds
-              it, slices it with Bambu Studio, runs 27 automated checks, and waits for your approval
-              before you export a 3MF.
+              Materialize 3D is a Mac app where you talk to an AI agent about a part you need. The
+              agent makes the model and shows it to you while it works. The job ends in a print-ready
+              3MF that opens in Bambu Studio.
             </p>
             <a className="download" href={release.dmgUrl}>
               Download for Mac ({release.architecture})
             </a>
             <ReleaseFacts />
             <p className="hero-note">
-              Free app. You bring an Anthropic or OpenAI API key. <a href={release.releasesUrl}>All releases</a>
+              The chat studio is not in a release yet. This download is {release.version}, the earlier
+              sign app. <a href={release.releasesUrl}>All releases</a>
             </p>
           </div>
           <figure className="hero-shot">
             <img
-              src={shotInspect}
+              src={shotStudio}
               width={1440}
               height={900}
-              alt="Materialize 3D showing a test sign revision with 27 of 27 checks passed and approval pending."
+              alt="Materialize 3D with a chat on the left and a 20 mm calibration cube in the preview on the right, with Open in Bambu Studio above it."
               fetchPriority="high"
             />
             <figcaption>
-              Real app, release candidate build: 27 of 27 checks passed on the test sign, waiting for
-              a person to approve.
+              Real app, before release: the agent made a 20 mm calibration cube and sliced it to a P2S
+              3MF. The preview shows the 3MF, ready to open in Bambu Studio.
             </figcaption>
           </figure>
         </section>
@@ -150,52 +107,9 @@ export function App() {
                   <h3>{step.title}</h3>
                   <p>{step.body}</p>
                 </div>
-                <figure>
-                  <img src={step.shot} width={1440} height={900} alt={step.alt} loading="lazy" />
-                  <figcaption>{step.caption}</figcaption>
-                </figure>
               </li>
             ))}
           </ol>
-        </section>
-
-        <section id="sign" className="sign" aria-labelledby="sign-title">
-          <h2 id="sign-title">The reference design</h2>
-          <div className="sign-grid">
-            <img
-              src={signPreview}
-              width={800}
-              height={500}
-              alt="Rendered face of the test sign: HELLO in navy, a teal rule and dot, 3 COLOR TEST, and a navy P2S badge on white."
-              loading="lazy"
-            />
-            <div>
-              <p>
-                A synthetic acceptance sign, “{sign.title}”, is the design 0.1.0 was validated on. It
-                passes all 27 automated checks. Its physical print is the owner's acceptance step,
-                and no print result has been published.
-              </p>
-              <dl className="facts">
-                <dt>Size</dt>
-                <dd>
-                  {sign.width_mm} × {sign.height_mm} × {sign.thickness_mm} mm
-                </dd>
-                <dt>Inlay depth</dt>
-                <dd>{sign.inlay_depth_mm} mm</dd>
-                <dt>Filaments</dt>
-                <dd>
-                  <ul className="swatches">
-                    {signColors.map((c) => (
-                      <li key={c.name}>
-                        <span className="swatch" style={{ background: c.hex }} aria-hidden="true" />
-                        {c.name} <code>{c.hex}</code>
-                      </li>
-                    ))}
-                  </ul>
-                </dd>
-              </dl>
-            </div>
-          </div>
         </section>
 
         <section id="requirements" aria-labelledby="req-title">
@@ -210,13 +124,15 @@ export function App() {
               never installs or bundles it. If you use another version, keep it and put this one in
               its own folder.
             </dd>
-            <dt>API key</dt>
+            <dt>AI login</dt>
+            <dd>Your own sign-in with an AI provider, such as Claude or ChatGPT. The agent runs on it.</dd>
+            <dt>uv</dt>
             <dd>
-              An Anthropic or OpenAI key that you provide. The provider bills model usage at its own
-              rates; the app itself is free.
+              uv and a Python it can run. The agent builds models with them. The app tells you if
+              either is missing.
             </dd>
             <dt>Printer</dt>
-            <dd>Bambu Lab P2S with AMS and three filaments. This is the validated printer.</dd>
+            <dd>Bambu Lab P2S. The agent slices for its 0.4 mm nozzle.</dd>
             <dt>Not offered</dt>
             <dd>Intel Mac, Windows, and Linux downloads.</dd>
           </dl>
@@ -230,7 +146,7 @@ export function App() {
               {checksumPublished && (
                 <>
                   {" "}
-                  Check it with <code>shasum -a 256 {dmgFileName}</code>; it should print{" "}
+                  Check it with <code>shasum -a 256 {dmgFileName}</code>. It should print{" "}
                   <code className="hash">{release.sha256}</code>.
                 </>
               )}
@@ -248,42 +164,34 @@ export function App() {
                 </>
               )}
             </li>
-            <li>Add your Anthropic or OpenAI API key in Settings, under Agent.</li>
-            <li>
-              If Settings, under Bambu Studio, does not show version {release.bambuStudio.version},
-              click Choose Bambu Studio and select that copy.
-            </li>
+            <li>Follow the steps the app shows on first launch.</li>
           </ol>
         </section>
 
         <section id="scope" aria-labelledby="scope-title">
-          <h2 id="scope-title">Shipped and planned</h2>
+          <h2 id="scope-title">In the studio and planned</h2>
           <div className="scope">
             <div>
-              <h3>Shipped in {release.version}</h3>
+              <h3>In the studio</h3>
               <ul>
-                {shipped.map((s) => (
-                  <li key={s}>{s}</li>
+                {inStudio.map((item) => (
+                  <li key={item}>{item}</li>
                 ))}
               </ul>
             </div>
             <div>
-              <h3>In the app, not validated</h3>
-              <p>
-                These tabs exist in {release.version} but are not part of the validated workflow:
-              </p>
+              <h3>Not in the studio</h3>
               <ul>
-                {unvalidatedTabs.map((t) => (
-                  <li key={t}>{t}</li>
+                {notInStudio.map((item) => (
+                  <li key={item}>{item}</li>
                 ))}
               </ul>
             </div>
             <div id="roadmap">
               <h3>Planned</h3>
               <p>
-                Signs are the first proven workflow, not the permanent scope. The broader aim is
-                conversational creation of other printable objects. That work is planned and not
-                built; there are no dates.
+                A printer connection is planned as an optional add-on. It is not built, and there are
+                no dates.
               </p>
             </div>
           </div>
