@@ -117,7 +117,7 @@ export default function StudioApp() {
   const startPicturesTouched = useRef(false)
   /** The project whose chat view is loaded. Chat changes for the open project wait in `early` until it is. */
   const loaded = useRef<string | null>(null)
-  const failedLoad = useRef<string | null>(null)
+  const failedLoad = useRef<{ project: string; message: string } | null>(null)
   const early = useRef<View[]>([])
   /** Counts chat loads, so only the newest load of the open chat replaces its view, not an older one that answers late. */
   const loads = useRef(0)
@@ -438,23 +438,26 @@ export default function StudioApp() {
   /** Loads the open project's chat, with the changes that arrived while it loaded. */
   const load = async (project: string, request: number) => {
     const load = ++loads.current
+    const failed = failedLoad.current
     failedLoad.current = null
     try {
       const opened = await sidecar('chat.open', { project })
       if (request !== loadRequest.current || load !== loads.current) return
+      if (failed) setError((shown) => (shown === failed.message ? null : shown))
       setView(early.current.reduce(merge, opened))
       early.current = []
       loaded.current = project
     } catch (err) {
       if (request !== loadRequest.current || load !== loads.current) return
-      failedLoad.current = project
-      setError(String(err))
+      const message = String(err)
+      failedLoad.current = { project, message }
+      setError(message)
     }
   }
 
   const openProject = async (project: Project) => {
     if (project.id === currentId.current) {
-      if (failedLoad.current !== project.id) return
+      if (failedLoad.current?.project !== project.id) return
       failedLoad.current = null
       setError(null)
     } else {

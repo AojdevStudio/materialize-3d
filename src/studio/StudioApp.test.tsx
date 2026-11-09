@@ -1304,6 +1304,43 @@ describe('StudioApp', () => {
     expect(await screen.findByText('The recovered clip is ready.')).toBeTruthy()
   })
 
+  it.each(['load error', 'unrelated error'])('recovers from an engine reload failure with a current %s', async (shownError) => {
+    const recovery = held()
+    let opens = 0
+    mockSidecar({
+      'chat.open': (params) => {
+        const project = String(params.project)
+        switch (++opens) {
+          case 1:
+            return Promise.resolve(view(project, { entries: [{ id: 1, kind: 'assistant', text: 'The chat is open.', calls: [] }] }))
+          case 2:
+            return Promise.reject('The chat could not be loaded.')
+          case 3:
+            return recovery.call(params, () => Promise.resolve(view(project, {
+              entries: [{ id: 2, kind: 'assistant', text: 'The recovered clip is ready.', calls: [] }], seq: 3,
+            })))
+          default:
+            return Promise.reject('An extra chat load started.')
+        }
+      },
+    })
+    render(<StudioApp />)
+    const sidebar = within(screen.getByRole('navigation', { name: 'Projects' }))
+    fireEvent.click(await sidebar.findByText('Project B'))
+    await screen.findByText('The chat is open.')
+    await emit({ type: 'ready', version: '1.2.3' })
+    expect((await screen.findByRole('alert')).textContent).toContain('The chat could not be loaded.')
+    await emit({ type: 'ready', version: '1.2.3' })
+    if (shownError === 'unrelated error') await drop(['/Users/me/notes.txt'])
+
+    await recovery.release()
+    expect(await screen.findByText('The recovered clip is ready.')).toBeTruthy()
+    if (shownError === 'load error') expect(screen.queryByRole('alert')).toBeNull()
+    else expect(screen.getByRole('alert').textContent).toContain('Drop a picture:')
+    fireEvent.click(sidebar.getByText('Project B'))
+    expect(sidecarCalls('chat.open')).toHaveLength(3)
+  })
+
   it("clears a sent project's saved draft even when the person typed in another project meanwhile", async () => {
     const send = held()
     mockSidecar({ 'chat.send': send.call }, [projectA, projectB])
