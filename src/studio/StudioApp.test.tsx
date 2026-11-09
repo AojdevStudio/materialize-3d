@@ -403,6 +403,29 @@ describe('StudioApp', () => {
     expect(within(await screen.findByTestId('group-working')).getByText('Project B')).toBeTruthy()
   })
 
+  it('keeps a turn that starts while the read after an engine restart is still out in Working', async () => {
+    const state = { running: true }
+    const held: Array<() => void> = []
+    let hold = false
+    mockSidecar({
+      'projects.status': () => {
+        const snapshot = { [projectB.id]: { ...state, printed: false, printFiles: 0, lastMs: Date.now() } }
+        return hold ? new Promise((resolve) => held.push(() => resolve(snapshot))) : Promise.resolve(snapshot)
+      },
+    })
+    render(<StudioApp />)
+    await screen.findByTestId('group-working')
+    state.running = false
+    hold = true
+    await emit({ type: 'engine', state: 'restarting' })
+    await emit({ type: 'ready', version: '1.2.3' })
+    await emit({ type: 'chat', ...view(projectB.id, { running: true, seq: 1 }) })
+    hold = false
+    await act(async () => held.forEach((release) => release()))
+    expect(within(await screen.findByTestId('group-working')).getByText('Project B')).toBeTruthy()
+    expect(screen.queryByTestId('group-drafts')).toBeNull()
+  })
+
   it('hides the sidebar to a narrow rail from its panel toggle, and shows it again', async () => {
     mockSidecar()
     render(<StudioApp />)

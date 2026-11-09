@@ -76,16 +76,19 @@ type Props = {
 
 /** The projects sidebar: projects grouped by status, newest first in each group, with the time of their last activity. */
 export default function Sidebar({ projects, current, engine, onOpen, onNew, onError }: Props) {
-  const [status, setStatus] = useState<Record<string, ProjectStatus>>({})
+  /** The sidecar's last status read: print files, the printed mark, and last activity are only known from it. */
+  const [read, setRead] = useState<Record<string, ProjectStatus>>({})
+  /**
+   * Whether each project's turn runs, as this engine run's chat events said it. Events come in order, so they are newer
+   * than any read, and a read that comes back late cannot move a project out of Working or into it.
+   */
+  const [live, setLive] = useState<Record<string, boolean>>({})
+  const liveNow = useRef(live)
+  liveNow.current = live
   const [now, setNow] = useState(() => Date.now())
   const [menuFor, setMenuFor] = useState<string | null>(null)
   const [collapsed, setCollapsed] = useState(false)
   const menu = useRef<HTMLLIElement>(null)
-  /** The status on screen. */
-  const shown = useRef(status)
-  shown.current = status
-  /** Each project's running state as the last chat event said it, which can be newer than the status on screen. */
-  const seen = useRef<Record<string, boolean>>({})
   /** One status read at a time. A read asked for meanwhile runs once that one ends, so the newest state always lands. */
   const reading = useRef<{ busy: boolean; again: boolean }>({ busy: false, again: false })
 
@@ -98,7 +101,7 @@ export default function Sidebar({ projects, current, engine, onOpen, onNew, onEr
       while (read.again) {
         read.again = false
         try {
-          setStatus(await sidecar('projects.status', {}))
+          setRead(await sidecar('projects.status', {}))
         } catch (err) {
           onError(String(err))
         }
@@ -107,21 +110,18 @@ export default function Sidebar({ projects, current, engine, onOpen, onNew, onEr
     })()
   }, [onError])
 
-  // A turn that starts or ends changes a project's group, and a turn that ends has written its files. So a chat change
-  // reads the status again only when its running state differs from the last one seen for that project. That is the
-  // last chat event, not the status on screen, because a read for a start can still be out when the end arrives. An
-  // engine that started again may hold a newer state, and its events start fresh.
+  // A chat event says whether its turn runs, and that moves the row at once. A turn that starts or ends also reads the
+  // status again, for the files a turn writes and its last activity. A transcript line that changes nothing reads
+  // nothing. An engine that started again holds its own turns, so its read replaces what the old run's events said.
   useEffect(() => {
     const unlisten = onSidecarEvent((event) => {
       if (event.type === 'ready') {
-        // A new engine run starts its own turns, so what the old run's events said no longer holds.
-        seen.current = {}
+        setLive({})
         return refresh()
       }
-      if (event.type !== 'chat') return
-      const before = seen.current[event.project] ?? shown.current[event.project]?.running
-      seen.current[event.project] = event.running
-      if (before !== event.running) refresh()
+      if (event.type !== 'chat' || liveNow.current[event.project] === event.running) return
+      setLive((before) => ({ ...before, [event.project]: event.running }))
+      refresh()
     })
     return () => {
       void unlisten.then((stop) => stop())
@@ -156,6 +156,11 @@ export default function Sidebar({ projects, current, engine, onOpen, onNew, onEr
       .catch((err: unknown) => onError(String(err)))
   }
 
+  const status = useMemo(
+    () =>
+      Object.fromEntries(Object.entries(read).map(([id, s]) => [id, { ...s, running: live[id] ?? s.running }])),
+    [read, live],
+  )
   const groups = useMemo(() => groupProjects(projects, status), [projects, status])
 
   const panelToggle = (
