@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Project, ProjectStatus } from '../../sidecar/src/protocol'
-import { ago, detail, groupOf, groupProjects } from './sidebar'
+import { ago, detail, groupOf, groupProjects } from './sidebarGroups'
 
 const status = (more: Partial<ProjectStatus> = {}): ProjectStatus => ({ running: false, printed: false, printFiles: 0, lastMs: 0, ...more })
 const project = (id: string, createdMs = 0): Project => ({ id, conversation: 1, title: id, createdMs })

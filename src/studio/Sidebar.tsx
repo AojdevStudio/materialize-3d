@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Project, ProjectStatus } from '../../sidecar/src/protocol'
 import { onSidecarEvent, sidecar } from './api'
-import { ago, detail, type Group, groupProjects, lastActivity } from './sidebar'
+import { ago, detail, type Group, groupProjects, lastActivity } from './sidebarGroups'
 import { useTheme } from './theme'
 import mark from '../assets/brand/mark-small-32.svg'
 import blocks from '../assets/icons/module-three.svg?raw'
