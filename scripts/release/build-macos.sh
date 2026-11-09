@@ -12,9 +12,6 @@
 #   APPLE_API_PRIVATE_KEY       the .p8 key content
 #   TAURI_SIGNING_PRIVATE_KEY           the updater's minisign private key
 #   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  its password
-# CAD_RUNTIME_DIR names the arm64 CAD runtime to bundle: the Image, rootfs.img,
-# and job.img that cad-runtime/build.sh arm64 writes. They must match the pins the helper
-# compiles in from cad-runtime/pins-arm64.json, or the build stops.
 # ALLOW_UNTAGGED=1 permits a rehearsal build from a commit without the tag. Only
 # a rehearsal may set TAURI_CONFIG, which changes the config built into the app
 # (for example, a local update feed for an update test).
@@ -33,7 +30,7 @@ cd "$root"
 
 [[ "$(uname -s)/$(uname -m)" == Darwin/arm64 ]] || die "run on an Apple Silicon Mac"
 for var in RELEASE_KEYCHAIN RELEASE_KEYCHAIN_PASSWORD APPLE_API_KEY_ID APPLE_API_ISSUER_ID APPLE_API_PRIVATE_KEY \
-  TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD CAD_RUNTIME_DIR; do
+  TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD; do
   [[ -n "${!var:-}" ]] || die "$var is not set"
 done
 # security -i has its own quoting and line parser. Reject ambiguous input and
@@ -51,7 +48,6 @@ unlock_line="$(builtin printf 'unlock-keychain -p "%s" "%s"' "$RELEASE_KEYCHAIN_
 )
 [[ "$RELEASE_KEYCHAIN" != -* ]] || die "RELEASE_KEYCHAIN must not start with a dash"
 [[ -f "$RELEASE_KEYCHAIN" ]] || die "no keychain at $RELEASE_KEYCHAIN"
-[[ -d "$CAD_RUNTIME_DIR" ]] || die "no CAD runtime at $CAD_RUNTIME_DIR"
 
 # One version everywhere, and the tree is exactly the tagged commit.
 version="$(bun -p "require('./package.json').version")"
@@ -135,16 +131,7 @@ notarize() {
   grep -q "status: Accepted" "$workdir/notary.txt" || die "notarization of $1 was not accepted"
 }
 
-# The CAD helper boots only the runtime whose digests it compiles in, so a
-# runtime that does not match its own commit's pins stops the build here.
-echo "release: building the CAD helper"
-RUSTFLAGS="--remap-path-prefix=$HOME=~" cargo build --release --locked --manifest-path cad-host/Cargo.toml
-helper_bin="${CARGO_TARGET_DIR:-$root/cad-host/target}/release/materialize-cad-host"
-"$helper_bin" verify --runtime "$CAD_RUNTIME_DIR" >/dev/null \
-  || die "the CAD runtime in $CAD_RUNTIME_DIR does not match the pins in cad-runtime/pins-arm64.json"
-
-# Tauri builds the app bundle; this script adds the CAD helper and runtime,
-# then signs, notarizes, and packages it.
+# Tauri builds the app bundle; this script signs, notarizes, and packages it.
 target="${CARGO_TARGET_DIR:-$root/src-tauri/target}"
 rm -rf "$target/release/bundle"
 bun install --frozen-lockfile
@@ -153,22 +140,13 @@ RUSTFLAGS="--remap-path-prefix=$HOME=~" env -u VITE_M3D_E2E -u APPLE_SIGNING_IDE
   -u TAURI_SIGNING_PRIVATE_KEY -u TAURI_SIGNING_PRIVATE_KEY_PASSWORD bun tauri build --bundles app
 app="$target/release/bundle/macos/Materialize 3D.app"
 bin="$app/Contents/MacOS/materialize-3d"
-helper="$app/Contents/MacOS/materialize-cad-host"
 sidecar="$app/Contents/MacOS/materialize-sidecar"
-install -m 0755 "$helper_bin" "$helper"
-mkdir -p "$app/Contents/Resources/cad-runtime"
-for file in Image rootfs.img job.img; do
-  install -m 0644 "$CAD_RUNTIME_DIR/$file" "$app/Contents/Resources/cad-runtime/$file"
-done
 
 echo "release: signing and notarizing the app"
-# Inside out: the helper gets its own signature with the virtualization
-# entitlement and the sidecar its own with the JIT entitlement, then the app's
-# signature seals both with the rest of the bundle.
-# One notarization covers all three, and the staple on the app covers the
-# helper and the sidecar, which as bare executables could not carry their own.
-sign --options runtime --identifier com.aojdevstudio.materialize3d.cad-host \
-  --entitlements cad-host/entitlements.plist "$helper"
+# Inside out: the sidecar gets its own signature with the JIT entitlement, then
+# the app's signature seals it with the rest of the bundle. One notarization
+# covers both, and the staple on the app covers the sidecar, which as a bare
+# executable could not carry its own.
 # Tauri bundles the sidecar (bundle.externalBin). It gets its own signature too, with the JIT entitlement Bun needs.
 sign --options runtime --identifier com.aojdevstudio.materialize3d.sidecar \
   --entitlements sidecar/entitlements.plist "$sidecar"
@@ -189,14 +167,14 @@ plist="$app/Contents/Info.plist"
 [[ "$(plutil -extract CFBundleShortVersionString raw "$plist")" == "$version" ]] || die "Info.plist version is not $version"
 # grep reads a saved copy: piping strings into grep -q would fail on SIGPIPE
 # under pipefail exactly when a match is found.
-for exe in "$bin" "$helper" "$sidecar"; do
+for exe in "$bin" "$sidecar"; do
   strings "$exe" > "$workdir/strings.txt"
   if grep -qE 'M3D_E2E_(TOKEN|PORT|DATA_DIR|UPDATE_FEED)' "$workdir/strings.txt"; then die "the e2e harness is in $exe"; fi
   if grep -qF "$HOME" "$workdir/strings.txt"; then die "$exe embeds the build machine's home path"; fi
 done
 if grep -rlq __M3D_E2E_DIALOGS__ dist; then die "the scripted file dialog is in the frontend"; fi
-# The exact file list, the minimum macOS, the helper's signature and
-# entitlement, and the bundled runtime against the helper's pins.
+# The exact file list, the minimum macOS, and the sidecar's signature and
+# entitlement.
 scripts/release/check-app-bundle.sh "$app" "$team"
 
 # The update archive holds the app exactly as notarized and stapled above. Its
