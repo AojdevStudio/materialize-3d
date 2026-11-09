@@ -13,7 +13,7 @@
 //   bun mac.ts shot <name>           save evidence/NN-<name>.png (WebKit snapshot, no Screen Recording needed)
 //   bun mac.ts eval <js>             run an async function body; inspection only
 //   bun mac.ts restart               quit and relaunch on the same data (proves persistence)
-//   bun mac.ts dialog <open-path> [save-path]  answer the next native file dialogs with these paths
+//   bun mac.ts dialog <open-path>    the next Open skips the native panel and takes this path
 //   bun mac.ts down                  quit the app we launched; keeps evidence
 //
 // Selectors are CSS, or `text=<label>` for the innermost element with exactly that text.
@@ -191,15 +191,15 @@ return true;`,
       return
     }
     case 'dialog': {
-      // Native Open/Save panels are outside the webview; the app's file-dialog
-      // helper (src/lib/fileDialog.ts) answers the next one from this global.
-      const [openPath, savePath] = args
-      await evalJs(
-        run,
-        `window.__M3D_E2E_DIALOGS__ = { nextOpenPath: ${JSON.stringify(openPath)}, nextSavePath: ${JSON.stringify(savePath)} };
-return true;`,
-      )
-      log(run, `dialog open=${openPath ?? ''} save=${savePath ?? ''}`)
+      // The native Open panel is outside the webview. In the e2e build that
+      // `build` makes, the app's file-dialog helper (src/lib/fileDialog.ts) reads
+      // the next path from this global instead of opening the panel, so a run
+      // that uses it does not cover the native panel itself.
+      const [openPath] = args
+      if (!openPath) throw new Error('usage: mac.ts dialog <open-path>')
+      await evalJs(run, `window.__M3D_E2E_DIALOGS__ = { nextOpenPath: ${JSON.stringify(openPath)} };
+return true;`)
+      log(run, `dialog open=${openPath}`)
       return
     }
     case 'down': {

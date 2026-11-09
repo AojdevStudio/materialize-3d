@@ -12,14 +12,9 @@
     "tauri": "tauri"
   },
   "dependencies": {
-    "@assistant-ui/react": "0.15.22",
-    "@monaco-editor/react": "^4.7.0",
-    "@react-three/drei": "^10.7.7",
-    "@react-three/fiber": "^9.5.0",
     "@tauri-apps/api": "~2.12.4",
     "@tauri-apps/plugin-dialog": "~2.6.0",
     "@tauri-apps/plugin-opener": "^2",
-    "monaco-editor": "^0.55.1",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "three": "^0.183.2",
