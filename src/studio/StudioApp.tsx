@@ -1,24 +1,19 @@
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { type AppState, type Draft, type LoginEvent, type Need, type Project, START, type ChatView as View } from '../../sidecar/src/protocol'
+import { type AppState, type Draft, type LoginEvent, type ModelChoice, type ModelOption, type Need, type Project, START, type ChatView as View } from '../../sidecar/src/protocol'
 import { autoOpens, onQuitFlush, onSidecarEvent, sidecar, studio, type ProjectFile } from './api'
-import { ChatView, Composer, releaseAttachment, savedAttachment, type PastedPicture } from './Chat'
+import { ChatView } from './Chat'
+import { Composer, releaseAttachment, savedAttachment, type PastedPicture } from './Composer'
+import ModelPicker from './ModelPicker'
 import RightPanel, { type Tab } from './RightPanel'
+import Start from './Start'
 import { buildChat } from './transcript'
 import Sidebar from './Sidebar'
 import { ImportBlockedBanner, ReadinessBanner, SignInAsk, WaitingBanner } from './Waiting'
 import { UpdateBanner } from '../components/UpdateBanner'
 import { checkForUpdatesAtLaunch, useUpdateEvents } from '../stores/updates'
 import './studio.css'
-
-const SUGGESTIONS = [
-  'A wall mount for my dock, from a photo',
-  'A replacement knob that fits this shaft',
-  'A cable clip for the edge of my desk',
-]
-
-const PICTURE = /\.(png|jpe?g|heic|heif|webp|gif)$/i
 
 /** How long typing pauses before the draft is saved. */
 const DRAFT_PAUSE_MS = 400
@@ -94,6 +89,10 @@ export default function StudioApp() {
   const [needs, setNeeds] = useState<Need[] | null>(null)
   /** The folder the chats from before the store could not be read from, when macOS keeps it from the app. */
   const [importBlocked, setImportBlocked] = useState<string | null>(null)
+  /** The models of the providers the person signed in to, for the model picker. */
+  const [models, setModels] = useState<ModelOption[]>([])
+  /** The model a project made on the start screen runs on. Null until the saved state is read. */
+  const [defaultModel, setDefaultModel] = useState<ModelChoice | null>(null)
   const sendingNow = useRef(false)
   const currentId = useRef<string | null>(null)
   /** Bumped on every switch, so a slow load for a project already left is dropped. */
@@ -206,6 +205,7 @@ export default function StudioApp() {
         autosave(START)
       }
     }
+    setDefaultModel(state.settings.model)
     takeProjects(state)
   }
 
@@ -216,10 +216,13 @@ export default function StudioApp() {
     setImportBlocked(state.importBlocked)
   }
 
-  /** Asks the sidecar what the agent still needs before a send. */
+  /** Asks the sidecar what the agent still needs before a send, and which models the person can pick. */
   const checkReady = () => {
     void sidecar('setup.check', {})
       .then(setNeeds)
+      .catch((err: unknown) => setError(String(err)))
+    void sidecar('models.list', {})
+      .then(setModels)
       .catch((err: unknown) => setError(String(err)))
   }
 
@@ -310,8 +313,8 @@ export default function StudioApp() {
 
   const type = (text: string) => edit({ ...draftOf(openKey()), text })
 
-  /** Changes the open screen's pictures, and saves them with its draft. */
-  const setPictures = (paths: string[]) => {
+  /** Changes the open screen's attached files, and saves them with its draft. */
+  const setAttachments = (paths: string[]) => {
     if (openKey() === START) startPicturesTouched.current = true
     const sending = screens.current[openKey()]?.sendingPictures
     for (const path of draftOf(openKey()).attachments) if (!paths.includes(path)) sending?.delete(path)
@@ -334,7 +337,7 @@ export default function StudioApp() {
         for (const { path, file } of kept) previews.current.set(path, URL.createObjectURL(file))
         const paths = [...draftOf(key).attachments, ...kept.map(({ path }) => path)]
         if (openKey() === key) {
-          setPictures(paths)
+          setAttachments(paths)
           return
         }
         if (key === START) startPicturesTouched.current = true
@@ -378,16 +381,11 @@ export default function StudioApp() {
     }
   }, [])
 
-  // Pictures dropped anywhere on the window join the next message.
+  // Files dropped anywhere on the window join the next message, as Attach adds them.
   useEffect(() => {
     const unlisten = getCurrentWebview().onDragDropEvent(({ payload }) => {
       if (payload.type !== 'drop') return
-      const pictures = payload.paths.filter((p) => PICTURE.test(p))
-      if (pictures.length === 0) {
-        setError('Drop a picture: PNG, JPG, HEIC, WebP, or GIF.')
-        return
-      }
-      setPictures([...draftOf(openKey()).attachments, ...pictures])
+      setAttachments([...draftOf(openKey()).attachments, ...payload.paths])
     })
     return () => {
       void unlisten.then((stop) => stop())
@@ -526,6 +524,30 @@ export default function StudioApp() {
 
   // Send waits for the check, and stays off while the agent lacks a sign-in, uv, or Python.
   const notReady = needs === null || needs.length > 0
+
+  /** The open project's own model, or the default for one from before the picker. On the start screen, the default. */
+  const chosenModel = (current ? projects.find((p) => p.id === current.id)?.model : undefined) ?? defaultModel
+
+  /**
+   * Saves a pick: the open project's model, or on the start screen the default the next project takes. The check runs
+   * again then, as the default's provider may differ.
+   */
+  const pickModel = (model: ModelChoice) => {
+    const project = current?.id
+    if (project === undefined) {
+      void sidecar('settings.set', { model })
+        .then((state) => {
+          setDefaultModel(state.settings.model)
+          checkReady()
+        })
+        .catch((err: unknown) => setError(String(err)))
+      return
+    }
+    void sidecar('projects.setModel', { project, model })
+      .then(() => setProjects((all) => all.map((p) => (p.id === project ? { ...p, model } : p))))
+      .catch((err: unknown) => setError(String(err)))
+  }
+
   const composer = (placeholder: string, autoFocus: boolean) => (
     <>
       {needs !== null && <ReadinessBanner needs={needs} onCheck={checkReady} onError={setError} />}
@@ -533,12 +555,12 @@ export default function StudioApp() {
         text={shown.text}
         onText={type}
         attachments={attachments}
-        onAttach={(more) => setPictures([...draftOf(openKey()).attachments, ...more.map((a) => a.path)])}
+        onAttach={(more) => setAttachments([...draftOf(openKey()).attachments, ...more.map((a) => a.path)])}
         onPaste={pastePictures}
         onRemove={(index) => {
           releaseAttachment(attachments[index])
           previews.current.delete(shown.attachments[index])
-          setPictures(draftOf(openKey()).attachments.filter((_, i) => i !== index))
+          setAttachments(draftOf(openKey()).attachments.filter((_, i) => i !== index))
         }}
         onSend={() => void send()}
         onStop={current ? () => void sidecar('chat.stop', { project: current.id }).catch((err: unknown) => setError(String(err))) : undefined}
@@ -546,6 +568,9 @@ export default function StudioApp() {
         running={running}
         placeholder={placeholder}
         autoFocus={autoFocus}
+        hint={current ? undefined : 'Photo, PDF, 3MF, STL'}
+        sendLabel={current ? 'Send' : 'Start'}
+        picker={<ModelPicker models={models} chosen={chosenModel} onPick={pickModel} />}
       />
     </>
   )
@@ -599,20 +624,16 @@ export default function StudioApp() {
               }}
               onError={setError}
             />
-            {composer('Reply, paste a link, or drop a picture', false)}
+            {composer('Reply, paste a link, or attach a file', false)}
           </>
         ) : (
-          <div className="start" data-testid="start-screen">
-            <h1>What are we making?</h1>
-            {composer('Describe the part. Paste a link or drop a photo if you have one.', true)}
-            <div className="chips">
-              {SUGGESTIONS.map((s) => (
-                <button type="button" key={s} onClick={() => type(s)}>
-                  {s}
-                </button>
-              ))}
-            </div>
-          </div>
+          <Start
+            projects={projects}
+            composer={composer('Describe the part, paste a link, or attach a file', true)}
+            onSuggest={type}
+            onOpen={(project) => void openProject(project)}
+            onError={setError}
+          />
         )}
       </main>
 

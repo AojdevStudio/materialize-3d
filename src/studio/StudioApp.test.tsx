@@ -40,6 +40,12 @@ const projectA = { id: '2026-11-06-a', conversation: 2, title: 'Project A', crea
 const projectB = { id: '2026-11-06-b', conversation: 3, title: 'Project B', createdMs: 1 }
 const view = (project: string, more: object = {}) => ({ project, entries: [], running: false, waiting: null, turn: null, seq: 1, ...more })
 const settings = { model: { provider: 'anthropic', modelId: 'claude-opus-5-5' }, thinking: 'high', printer: {} }
+/** The models the mocked sidecar lists, as the signed-in providers name them. */
+const models = [
+  { provider: 'anthropic', modelId: 'claude-opus-5-5', name: 'Claude Opus 5.5' },
+  { provider: 'anthropic', modelId: 'claude-sonnet-5-5', name: 'Claude Sonnet 5.5' },
+  { provider: 'openai-codex', modelId: 'gpt-6.1-sol', name: 'GPT-6.1 Sol' },
+]
 
 afterEach(() => {
   cleanup()
@@ -54,6 +60,8 @@ afterEach(() => {
 /** An event from the sidecar, as Rust forwards it to the window. */
 const emit = (event: object) => act(() => listeners.sidecar.forEach((listener) => listener({ payload: event })))
 
+/** The sidebar's project list. The start screen's recent chips name the same projects. */
+const projectList = () => within(screen.getByRole('navigation', { name: 'Projects' }))
 const prompt = () => screen.getByTestId('prompt') as HTMLTextAreaElement
 const type = (text: string) => fireEvent.change(prompt(), { target: { value: text } })
 const drop = (paths: string[]) => act(async () => listeners.drop.forEach((listener) => listener({ payload: { type: 'drop', paths } })))
@@ -98,6 +106,8 @@ function mockSidecar(overrides: Calls = {}, projects: Project[] = [projectB], dr
       Object.entries(drafts).map(([key, draft]) => [key, { text: draft.text, attachments: draft.attachments ?? [], rev: draft.rev ?? ++draftRevs }]),
     ) as Record<string, StoredDraft>,
     madeFor: new Map<number, Project>(),
+    /** The default model, which the start screen's picker sets. */
+    model: settings.model,
     /** Each message that went out. */
     sent: [] as { project: string; rev: number; text: string; attachments: string[] }[],
   }
@@ -126,11 +136,21 @@ function mockSidecar(overrides: Calls = {}, projects: Project[] = [projectB], dr
       case 'app.ping':
         return Promise.resolve({ version: '1.2.3' })
       case 'state.get':
-        return Promise.resolve(JSON.parse(JSON.stringify({ setup: { step: 'ready', done: true }, settings, projects: store.projects, drafts: store.drafts, importBlocked: null })))
+        return Promise.resolve(
+          JSON.parse(JSON.stringify({ setup: { step: 'ready', done: true }, settings: { ...settings, model: store.model }, projects: store.projects, drafts: store.drafts, importBlocked: null })),
+        )
+      case 'settings.set':
+        store.model = params.model as typeof settings.model
+        return defaults('state.get', {})
+      case 'projects.setModel':
+        store.projects = store.projects.map((p) => (p.id === params.project ? { ...p, model: params.model as typeof settings.model } : p))
+        return Promise.resolve(null)
       case 'chat.open':
         return Promise.resolve(view(String(params.project)))
       case 'setup.check':
         return Promise.resolve([])
+      case 'models.list':
+        return Promise.resolve(models)
       case 'projects.status':
         return Promise.resolve({})
       case 'drafts.set': {
@@ -461,11 +481,11 @@ describe('StudioApp', () => {
   it('hides the sidebar to a narrow rail from its panel toggle, and shows it again', async () => {
     mockSidecar()
     render(<StudioApp />)
-    await screen.findByText('Project B')
+    await projectList().findByText('Project B')
     fireEvent.click(screen.getByRole('button', { name: 'Hide sidebar' }))
-    expect(screen.queryByText('Project B')).toBeNull()
+    expect(projectList().queryByText('Project B')).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'Show sidebar' }))
-    expect(screen.getByText('Project B')).toBeTruthy()
+    expect(projectList().getByText('Project B')).toBeTruthy()
   })
 
   it('flips the theme from the toggle at the bottom of the sidebar, and saves the choice', async () => {
@@ -503,12 +523,12 @@ describe('StudioApp', () => {
     const send = held()
     mockSidecar({ 'chat.send': send.call })
     render(<StudioApp />)
-    await screen.findByText('Project B')
+    await projectList().findByText('Project B')
 
     type('A clip for my desk')
     fireEvent.click(screen.getByTestId('send'))
     await waitFor(() => expect(sends()).toEqual([{ key: 'new', rev: expect.any(Number) }]))
-    fireEvent.click(screen.getByText('Project B'))
+    fireEvent.click(projectList().getByText('Project B'))
     await screen.findByRole('banner')
     type('draft for B')
 
@@ -524,18 +544,18 @@ describe('StudioApp', () => {
     let tries = 0
     mockSidecar({ 'chat.send': (_, real) => (++tries === 1 ? new Promise((_, reject) => (failSend = reject)) : real()) }, [projectA, projectB])
     render(<StudioApp />)
-    fireEvent.click(await screen.findByText('Project A'))
+    fireEvent.click(await projectList().findByText('Project A'))
     await screen.findByRole('banner')
     type('A clip for my desk')
     fireEvent.click(screen.getByTestId('send'))
     await waitFor(() => expect(sends()).toHaveLength(1))
-    fireEvent.click(screen.getByText('Project B'))
+    fireEvent.click(projectList().getByText('Project B'))
     await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project B'))
 
     await act(async () => failSend(LOST))
     expect(screen.queryByRole('alert')).toBeNull()
 
-    fireEvent.click(screen.getByText('Project A'))
+    fireEvent.click(projectList().getByText('Project A'))
     expect((await screen.findByRole('alert')).textContent).toContain('The engine restarted before it answered.')
     fireEvent.click(screen.getByTestId('send'))
     await waitFor(() => expect(sends()).toHaveLength(2))
@@ -564,7 +584,7 @@ describe('StudioApp', () => {
     const waiting = { kind: 'login', provider: 'anthropic', name: 'Anthropic', fix: 'Sign in to Anthropic. The message picks up where it stopped.' }
     mockSidecar({ 'chat.open': (params) => Promise.resolve(view(String(params.project), { waiting })) })
     render(<StudioApp />)
-    fireEvent.click(await screen.findByText('Project B'))
+    fireEvent.click(await projectList().findByText('Project B'))
     expect((await screen.findByTestId('waiting')).textContent).toContain('Sign in to Anthropic. The message picks up where it stopped.')
     fireEvent.change(screen.getByLabelText('API key or token'), { target: { value: 'proxy-token' } })
     fireEvent.change(screen.getByLabelText('Proxy URL'), { target: { value: 'http://127.0.0.1:8317' } })
@@ -575,7 +595,7 @@ describe('StudioApp', () => {
   it('saves the draft once typing pauses, and fills the composer with it when the project opens', async () => {
     mockSidecar({}, [projectB], { [projectB.id]: { text: 'make it red' } })
     render(<StudioApp />)
-    fireEvent.click(await screen.findByText('Project B'))
+    fireEvent.click(await projectList().findByText('Project B'))
     await waitFor(() => expect(prompt().value).toBe('make it red'))
     type('make it blue')
     await waitFor(() => expect(saves()).toEqual([{ key: projectB.id, text: 'make it blue', attachments: [] }]))
@@ -584,7 +604,7 @@ describe('StudioApp', () => {
   it('sends again after a lost answer under the same revision, with no new save', async () => {
     const store = mockSidecar({ 'chat.send': lostOnce() })
     render(<StudioApp />)
-    fireEvent.click(await screen.findByText('Project B'))
+    fireEvent.click(await projectList().findByText('Project B'))
     await screen.findByRole('banner')
     await drop(['/Users/me/photo.jpg'])
     type('A clip like this')
@@ -601,7 +621,7 @@ describe('StudioApp', () => {
   it("keeps a draft's pictures, and brings them back when the project opens again", async () => {
     mockSidecar()
     const first = render(<StudioApp />)
-    fireEvent.click(await screen.findByText('Project B'))
+    fireEvent.click(await projectList().findByText('Project B'))
     await screen.findByRole('banner')
     await drop(['/Users/me/photo.jpg'])
     await waitFor(() => expect(last(saves())).toEqual({ key: projectB.id, text: '', attachments: ['/Users/me/photo.jpg'] }))
@@ -609,7 +629,7 @@ describe('StudioApp', () => {
 
     mockSidecar({}, [projectB], { [projectB.id]: { text: 'like this', attachments: ['/Users/me/photo.jpg'] } })
     render(<StudioApp />)
-    fireEvent.click(await screen.findByText('Project B'))
+    fireEvent.click(await projectList().findByText('Project B'))
     await screen.findByRole('banner')
     expect(prompt().value).toBe('like this')
     expect(screen.getByTestId('attachments').textContent).toContain('photo.jpg')
@@ -618,7 +638,7 @@ describe('StudioApp', () => {
   it('saves the text still waiting to be saved when the app quits, then says it is done', async () => {
     mockSidecar()
     render(<StudioApp />)
-    fireEvent.click(await screen.findByText('Project B'))
+    fireEvent.click(await projectList().findByText('Project B'))
     await screen.findByRole('banner')
     type('half a thought')
     await act(async () => listeners.flush.forEach((listener) => listener({ payload: null })))
@@ -630,7 +650,7 @@ describe('StudioApp', () => {
     let needs: unknown[] = [{ kind: 'uv', fix: 'Install uv, then check again.' }]
     mockSidecar({ 'setup.check': () => Promise.resolve(needs) })
     render(<StudioApp />)
-    fireEvent.click(await screen.findByText('Project B'))
+    fireEvent.click(await projectList().findByText('Project B'))
     expect((await screen.findByTestId('readiness')).textContent).toContain('Install uv, then check again.')
     type('A clip')
     expect((screen.getByTestId('send') as HTMLButtonElement).disabled).toBe(true)
@@ -644,7 +664,7 @@ describe('StudioApp', () => {
     let needs: unknown[] = [{ kind: 'login', provider: 'anthropic', name: 'Anthropic', fix: 'Sign in to Anthropic before you send.' }]
     mockSidecar({ 'setup.check': () => Promise.resolve(needs) })
     render(<StudioApp />)
-    fireEvent.click(await screen.findByText('Project B'))
+    fireEvent.click(await projectList().findByText('Project B'))
     const notice = await screen.findByTestId('readiness')
     expect(notice.textContent).toContain('Sign in to Anthropic before you send.')
     expect(screen.getByLabelText('API key or token')).toBeTruthy()
@@ -666,14 +686,14 @@ describe('StudioApp', () => {
     expect((await screen.findByTestId('import-blocked')).textContent).toContain('Documents')
     fireEvent.click(screen.getByText('Try again'))
     await waitFor(() => expect(screen.queryByTestId('import-blocked')).toBeNull())
-    expect(await screen.findByText('Project A')).toBeTruthy()
+    expect(await projectList().findByText('Project A')).toBeTruthy()
   })
 
   it('checks again when the engine is ready, so a check that failed during a restart does not keep Send off', async () => {
     let checks = 0
     mockSidecar({ 'setup.check': () => (++checks === 1 ? Promise.reject('The engine restarted before it answered.') : Promise.resolve([])) })
     render(<StudioApp />)
-    fireEvent.click(await screen.findByText('Project B'))
+    fireEvent.click(await projectList().findByText('Project B'))
     await screen.findByRole('banner')
     type('A clip')
     expect((screen.getByTestId('send') as HTMLButtonElement).disabled).toBe(true)
@@ -685,7 +705,7 @@ describe('StudioApp', () => {
     const send = held()
     mockSidecar({ 'chat.send': send.call }, [projectA, projectB])
     render(<StudioApp />)
-    fireEvent.click(await screen.findByText('Project B'))
+    fireEvent.click(await projectList().findByText('Project B'))
     await screen.findByRole('banner')
     await drop(['/Users/me/photo.jpg'])
     type('Like this')
@@ -695,8 +715,8 @@ describe('StudioApp', () => {
     await send.release()
     await pause(500)
     expect(last(saves())).toEqual({ key: projectB.id, text: 'And thinner', attachments: [] })
-    fireEvent.click(screen.getByText('Project A'))
-    fireEvent.click(screen.getByText('Project B'))
+    fireEvent.click(projectList().getByText('Project A'))
+    fireEvent.click(projectList().getByText('Project B'))
     await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project B'))
     expect(screen.queryByTestId('attachments')).toBeNull()
   })
@@ -705,18 +725,18 @@ describe('StudioApp', () => {
     let finishPicture: (path: unknown) => void = () => {}
     mockSidecar({ 'drafts.picture': () => new Promise((resolve) => (finishPicture = resolve)) }, [projectA, projectB])
     render(<StudioApp />)
-    fireEvent.click(await screen.findByText('Project A'))
+    fireEvent.click(await projectList().findByText('Project A'))
     await screen.findByRole('banner')
     const file = new File(['png'], 'shot.png', { type: 'image/png' })
     fireEvent.paste(prompt(), { clipboardData: { files: [file] } })
     await waitFor(() => expect(sidecarCalls('drafts.picture')).toHaveLength(1))
-    fireEvent.click(screen.getByText('Project B'))
+    fireEvent.click(projectList().getByText('Project B'))
     await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project B'))
     await act(async () => finishPicture('/state/pictures/1/shot.png'))
     expect(screen.queryByTestId('attachments')).toBeNull()
     // It lands in the draft of the screen it was pasted on, and is there when the person goes back.
     await waitFor(() => expect(saves()).toContainEqual({ key: projectA.id, text: '', attachments: ['/state/pictures/1/shot.png'] }))
-    fireEvent.click(screen.getByText('Project A'))
+    fireEvent.click(projectList().getByText('Project A'))
     await waitFor(() => expect(screen.getByLabelText('Remove shot.png')).toBeTruthy())
   })
 
@@ -724,16 +744,16 @@ describe('StudioApp', () => {
     let finishPicture: (path: unknown) => void = () => {}
     mockSidecar({ 'drafts.picture': () => new Promise((resolve) => (finishPicture = resolve)) }, [projectA, projectB])
     render(<StudioApp />)
-    fireEvent.click(await screen.findByText('Project A'))
+    fireEvent.click(await projectList().findByText('Project A'))
     await screen.findByRole('banner')
     type('like this')
     fireEvent.paste(prompt(), { clipboardData: { files: [new File(['png'], 'shot.png', { type: 'image/png' })] } })
     await waitFor(() => expect(sidecarCalls('drafts.picture')).toHaveLength(1))
-    fireEvent.click(screen.getByText('Project B'))
+    fireEvent.click(projectList().getByText('Project B'))
     await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project B'))
     await act(async () => finishPicture('/state/pictures/1/shot.png'))
     await waitFor(() => expect(last(saves(projectA.id))).toEqual({ key: projectA.id, text: 'like this', attachments: ['/state/pictures/1/shot.png'] }))
-    fireEvent.click(screen.getByText('Project A'))
+    fireEvent.click(projectList().getByText('Project A'))
     await waitFor(() => expect(screen.getByLabelText('Remove shot.png')).toBeTruthy())
     expect(prompt().value).toBe('like this')
   })
@@ -755,13 +775,13 @@ describe('StudioApp', () => {
     const send = held()
     mockSidecar({ 'chat.send': send.call }, [projectA, projectB])
     render(<StudioApp />)
-    fireEvent.click(await screen.findByText('Project A'))
+    fireEvent.click(await projectList().findByText('Project A'))
     await screen.findByRole('banner')
     await drop(['/Users/me/photo.jpg'])
     type('Like this')
     fireEvent.click(screen.getByTestId('send'))
     await waitFor(() => expect(sends()).toHaveLength(1))
-    fireEvent.click(screen.getByText('Project B'))
+    fireEvent.click(projectList().getByText('Project B'))
     await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project B'))
     await drop(['/Users/me/photo.jpg'])
     await send.release()
@@ -773,7 +793,7 @@ describe('StudioApp', () => {
     const send = held()
     mockSidecar({ 'chat.send': send.call }, [projectA, projectB])
     render(<StudioApp />)
-    fireEvent.click(await screen.findByText('Project B'))
+    fireEvent.click(await projectList().findByText('Project B'))
     await screen.findByRole('banner')
     type('Make it red')
     fireEvent.click(screen.getByTestId('send'))
@@ -783,8 +803,8 @@ describe('StudioApp', () => {
     await drop(['/Users/me/new.jpg'])
     await pause(500)
     await send.release()
-    fireEvent.click(screen.getByText('Project A'))
-    fireEvent.click(screen.getByText('Project B'))
+    fireEvent.click(projectList().getByText('Project A'))
+    fireEvent.click(projectList().getByText('Project B'))
     await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project B'))
     expect(prompt().value).toBe('Make it red')
     expect(screen.getByTestId('attachments').textContent).toContain('new.jpg')
@@ -793,13 +813,13 @@ describe('StudioApp', () => {
   it('keeps a paste on its screen even when the person leaves while its bytes are read', async () => {
     mockSidecar({ 'drafts.picture': () => Promise.resolve('/state/pictures/1/shot.png') }, [projectA, projectB])
     render(<StudioApp />)
-    fireEvent.click(await screen.findByText('Project A'))
+    fireEvent.click(await projectList().findByText('Project A'))
     await screen.findByRole('banner')
     let finishRead: (bytes: ArrayBuffer) => void = () => {}
     const file = new File(['png'], 'shot.png', { type: 'image/png' })
     file.arrayBuffer = () => new Promise((resolve) => (finishRead = resolve))
     fireEvent.paste(prompt(), { clipboardData: { files: [file] } })
-    fireEvent.click(screen.getByText('Project B'))
+    fireEvent.click(projectList().getByText('Project B'))
     await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project B'))
     await act(async () => finishRead(new ArrayBuffer(3)))
     await pause(50)
@@ -823,15 +843,15 @@ describe('StudioApp', () => {
     const send = held()
     mockSidecar({ 'chat.send': send.call }, [projectA, projectB])
     render(<StudioApp />)
-    fireEvent.click(await screen.findByText('Project A'))
+    fireEvent.click(await projectList().findByText('Project A'))
     await screen.findByRole('banner')
     await drop(['/Users/me/photo.jpg'])
     type('Like this')
     fireEvent.click(screen.getByTestId('send'))
     await waitFor(() => expect(sends()).toHaveLength(1))
-    fireEvent.click(screen.getByText('Project B'))
+    fireEvent.click(projectList().getByText('Project B'))
     await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project B'))
-    fireEvent.click(screen.getByText('Project A'))
+    fireEvent.click(projectList().getByText('Project A'))
     await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project A'))
     await send.release()
     expect(screen.queryByTestId('attachments')).toBeNull()
@@ -840,7 +860,7 @@ describe('StudioApp', () => {
   it('sends the revision the draft was saved as, and names nothing else', async () => {
     mockSidecar()
     render(<StudioApp />)
-    fireEvent.click(await screen.findByText('Project B'))
+    fireEvent.click(await projectList().findByText('Project B'))
     await screen.findByRole('banner')
     type('Make it red')
     fireEvent.click(screen.getByTestId('send'))
@@ -852,7 +872,7 @@ describe('StudioApp', () => {
     const send = held()
     mockSidecar({ 'chat.send': send.call }, [projectA, projectB])
     render(<StudioApp />)
-    fireEvent.click(await screen.findByText('Project B'))
+    fireEvent.click(await projectList().findByText('Project B'))
     await screen.findByRole('banner')
     type('Make it red')
     fireEvent.click(screen.getByTestId('send'))
@@ -861,8 +881,8 @@ describe('StudioApp', () => {
     await pause(500)
     await send.release()
     const shown = { text: prompt().value, pictures: screen.getByTestId('attachments').textContent }
-    fireEvent.click(screen.getByText('Project A'))
-    fireEvent.click(screen.getByText('Project B'))
+    fireEvent.click(projectList().getByText('Project A'))
+    fireEvent.click(projectList().getByText('Project B'))
     await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project B'))
     expect({ text: prompt().value, pictures: screen.getByTestId('attachments').textContent }).toEqual(shown)
   })
@@ -871,11 +891,11 @@ describe('StudioApp', () => {
     const send = held()
     mockSidecar({ 'chat.send': send.call })
     render(<StudioApp />)
-    await screen.findByText('Project B')
+    await projectList().findByText('Project B')
     await drop(['/Users/me/photo.jpg'])
     fireEvent.click(screen.getByTestId('send'))
     await waitFor(() => expect(sends()).toHaveLength(1))
-    fireEvent.click(screen.getByText('Project B'))
+    fireEvent.click(projectList().getByText('Project B'))
     fireEvent.click(screen.getByTestId('new-project'))
     await send.release()
     await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('New part'))
@@ -891,13 +911,13 @@ describe('StudioApp', () => {
       [projectA.id]: { text: 'A clip like this', attachments: ['/Users/me/pic.jpg'], rev: 7 },
     })
     render(<StudioApp />)
-    fireEvent.click(await screen.findByText('Project A'))
+    fireEvent.click(await projectList().findByText('Project A'))
     await waitFor(() => expect(prompt().value).toBe('A clip like this'))
     fireEvent.click(screen.getByTestId('send'))
     await screen.findByRole('alert')
-    fireEvent.click(screen.getByText('Project B'))
+    fireEvent.click(projectList().getByText('Project B'))
     await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project B'))
-    fireEvent.click(screen.getByText('Project A'))
+    fireEvent.click(projectList().getByText('Project A'))
     await waitFor(() => expect(prompt().value).toBe('A clip like this'))
     fireEvent.click(screen.getByTestId('send'))
     await waitFor(() => expect(sends()).toHaveLength(2))
@@ -913,11 +933,11 @@ describe('StudioApp', () => {
     const send = held()
     const store = mockSidecar({ 'chat.send': send.call })
     render(<StudioApp />)
-    await screen.findByText('Project B')
+    await projectList().findByText('Project B')
     type('A clip')
     fireEvent.click(screen.getByTestId('send'))
     await waitFor(() => expect(sends()).toHaveLength(1))
-    fireEvent.click(screen.getByText('Project B'))
+    fireEvent.click(projectList().getByText('Project B'))
     await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project B'))
     await send.release()
     await pause(500)
@@ -930,7 +950,7 @@ describe('StudioApp', () => {
   it('sends a picture taken out and put back as a new message, under a new revision', async () => {
     mockSidecar({ 'chat.send': lostOnce() }, [projectA, projectB], { [projectA.id]: { text: 'A clip like this', attachments: ['/Users/me/pic.jpg'], rev: 7 } })
     render(<StudioApp />)
-    fireEvent.click(await screen.findByText('Project A'))
+    fireEvent.click(await projectList().findByText('Project A'))
     await waitFor(() => expect(prompt().value).toBe('A clip like this'))
     fireEvent.click(screen.getByTestId('send'))
     await screen.findByRole('alert')
@@ -950,7 +970,7 @@ describe('StudioApp', () => {
       [projectA, projectB],
     )
     render(<StudioApp />)
-    fireEvent.click(await screen.findByText('Project A'))
+    fireEvent.click(await projectList().findByText('Project A'))
     await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project A'))
     type('A clip for my desk')
     fireEvent.click(screen.getByTestId('send'))
@@ -973,13 +993,13 @@ describe('StudioApp', () => {
     const send = held()
     const store = mockSidecar({ 'chat.send': send.call })
     render(<StudioApp />)
-    await screen.findByText('Project B')
+    await projectList().findByText('Project B')
     await drop(['/Users/me/photo.jpg'])
     type('A clip')
     fireEvent.click(screen.getByTestId('send'))
     await waitFor(() => expect(sends()).toHaveLength(1))
     type('A hook')
-    fireEvent.click(screen.getByText('Project B'))
+    fireEvent.click(projectList().getByText('Project B'))
     await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project B'))
     expect(saves('new')).toEqual([{ key: 'new', text: 'A clip', attachments: ['/Users/me/photo.jpg'] }])
     await send.release()
@@ -996,11 +1016,11 @@ describe('StudioApp', () => {
   it('sends a picture-only first message again after a lost answer to the same project, once', async () => {
     const store = mockSidecar({ 'chat.send': lostOnce() })
     render(<StudioApp />)
-    await screen.findByText('Project B')
+    await projectList().findByText('Project B')
     await drop(['/Users/me/pic.jpg'])
     fireEvent.click(screen.getByTestId('send'))
     await screen.findByRole('alert')
-    fireEvent.click(screen.getByText('Project B'))
+    fireEvent.click(projectList().getByText('Project B'))
     fireEvent.click(screen.getByTestId('new-project'))
     await waitFor(() => expect(screen.getByTestId('attachments').textContent).toContain('pic.jpg'))
     fireEvent.click(screen.getByTestId('send'))
@@ -1017,7 +1037,7 @@ describe('StudioApp', () => {
     const save = held()
     const store = mockSidecar({ 'drafts.set': save.call }, [projectA, projectB])
     render(<StudioApp />)
-    fireEvent.click(await screen.findByText('Project B'))
+    fireEvent.click(await projectList().findByText('Project B'))
     await screen.findByRole('banner')
     type('Make it red')
     await waitFor(() => expect(saves()).toHaveLength(1))
@@ -1041,7 +1061,7 @@ describe('StudioApp', () => {
       [projectA, projectB],
     )
     render(<StudioApp />)
-    fireEvent.click(await screen.findByText('Project B'))
+    fireEvent.click(await projectList().findByText('Project B'))
     await screen.findByRole('banner')
     type('Make it red')
     await waitFor(() => expect(saves()).toHaveLength(1))
@@ -1079,7 +1099,7 @@ describe('StudioApp', () => {
   it('takes a picture-only first message to its project and leaves the start screen empty, after a relaunch too', async () => {
     const store = mockSidecar()
     const first = render(<StudioApp />)
-    await screen.findByText('Project B')
+    await projectList().findByText('Project B')
     await drop(['/Users/me/photo.jpg'])
     fireEvent.click(screen.getByTestId('send'))
     await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('New part'))
@@ -1092,7 +1112,7 @@ describe('StudioApp', () => {
 
     mockSidecar({}, store.projects, store.drafts)
     render(<StudioApp />)
-    await screen.findByText('New part')
+    await projectList().findByText('New part')
     expect(screen.queryByTestId('attachments')).toBeNull()
     expect(prompt().value).toBe('')
   })
@@ -1167,10 +1187,10 @@ describe('StudioApp', () => {
       [projectA, projectB],
     )
     render(<StudioApp />)
-    fireEvent.click(await screen.findByText('Project A'))
+    fireEvent.click(await projectList().findByText('Project A'))
     await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project A'))
     type('a hook')
-    fireEvent.click(screen.getByText('Project B'))
+    fireEvent.click(projectList().getByText('Project B'))
     await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project B'))
     type('a shelf')
     await act(async () => listeners.flush.forEach((listener) => listener({ payload: null })))
@@ -1196,7 +1216,7 @@ describe('StudioApp', () => {
       [projectA, projectB],
     )
     render(<StudioApp />)
-    fireEvent.click(await screen.findByText('Project A'))
+    fireEvent.click(await projectList().findByText('Project A'))
     await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project A'))
     type('a hook')
     await act(async () => listeners.flush.forEach((listener) => listener({ payload: null })))
@@ -1227,7 +1247,7 @@ describe('StudioApp', () => {
       [projectA, projectB],
     )
     render(<StudioApp />)
-    fireEvent.click(await screen.findByText('Project A'))
+    fireEvent.click(await projectList().findByText('Project A'))
     await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project A'))
     type('a hook')
     // The pause after typing starts the save, and the quit comes while it is on its way.
@@ -1250,7 +1270,7 @@ describe('StudioApp', () => {
       [projectA, projectB],
     )
     render(<StudioApp />)
-    fireEvent.click(await screen.findByText('Project A'))
+    fireEvent.click(await projectList().findByText('Project A'))
     await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project A'))
     type('a hook')
     await act(async () => listeners.flush.forEach((listener) => listener({ payload: null })))
@@ -1264,7 +1284,7 @@ describe('StudioApp', () => {
     let keep: () => void = () => {}
     const store = mockSidecar({ 'drafts.picture': () => new Promise((resolve) => (keep = () => resolve('/state/pictures/1/shot.png'))) }, [projectA, projectB])
     render(<StudioApp />)
-    fireEvent.click(await screen.findByText('Project A'))
+    fireEvent.click(await projectList().findByText('Project A'))
     await screen.findByRole('banner')
     fireEvent.paste(prompt(), { clipboardData: { files: [new File(['png'], 'shot.png', { type: 'image/png' })] } })
     await waitFor(() => expect(sidecarCalls('drafts.picture')).toHaveLength(1))
@@ -1281,7 +1301,7 @@ describe('StudioApp', () => {
     const sending = held()
     const store = mockSidecar({ 'chat.send': sending.call })
     render(<StudioApp />)
-    await screen.findByText('Project B')
+    await projectList().findByText('Project B')
     type('A knob')
     fireEvent.click(screen.getByTestId('send'))
     await waitFor(() => expect(sends()).toHaveLength(1))
@@ -1299,7 +1319,7 @@ describe('StudioApp', () => {
     const save = held()
     mockSidecar({ 'drafts.set': save.call })
     render(<StudioApp />)
-    fireEvent.click(await screen.findByText('Project B'))
+    fireEvent.click(await projectList().findByText('Project B'))
     await screen.findByRole('banner')
     type('half a thought')
     await act(async () => listeners.flush.forEach((listener) => listener({ payload: null })))
@@ -1315,16 +1335,16 @@ describe('StudioApp', () => {
     mockSidecar({ 'state.get': (_, real) => (++reads === 1 ? Promise.reject('The engine stopped.') : real()) }, [projectA, projectB])
     render(<StudioApp />)
     await waitFor(() => expect(reads).toBe(1))
-    expect(screen.queryByText('Project A')).toBeNull()
+    expect(projectList().queryByText('Project A')).toBeNull()
     await emit({ type: 'ready', version: '1.2.3' })
-    expect(await screen.findByText('Project A')).toBeTruthy()
+    expect(await projectList().findByText('Project A')).toBeTruthy()
   })
 
   it('keeps a picture the person took out and put back while its send was on its way', async () => {
     const sending = held()
     mockSidecar({ 'chat.send': sending.call }, [projectA, projectB], { [projectA.id]: { text: 'A clip like this', attachments: ['/Users/me/pic.jpg'] } })
     render(<StudioApp />)
-    fireEvent.click(await screen.findByText('Project A'))
+    fireEvent.click(await projectList().findByText('Project A'))
     await waitFor(() => expect(prompt().value).toBe('A clip like this'))
     fireEvent.click(screen.getByTestId('send'))
     await waitFor(() => expect(sends()).toHaveLength(1))
@@ -1340,7 +1360,7 @@ describe('StudioApp', () => {
     const save = held()
     mockSidecar({ 'drafts.set': save.call })
     render(<StudioApp />)
-    fireEvent.click(await screen.findByText('Project B'))
+    fireEvent.click(await projectList().findByText('Project B'))
     await screen.findByRole('banner')
     type('half a thought')
     // The pause after typing starts the save, which the sidecar has not answered yet.
@@ -1358,7 +1378,7 @@ describe('StudioApp', () => {
     let tries = 0
     mockSidecar({ 'drafts.set': (_, real) => (++tries === 1 ? new Promise((resolve) => (finishSave = () => resolve(real()))) : real()) })
     render(<StudioApp />)
-    fireEvent.click(await screen.findByText('Project B'))
+    fireEvent.click(await projectList().findByText('Project B'))
     await screen.findByRole('banner')
     type('Make it red')
     fireEvent.click(screen.getByTestId('send'))
@@ -1376,7 +1396,7 @@ describe('StudioApp', () => {
     const send = held()
     mockSidecar({ 'chat.send': send.call })
     render(<StudioApp />)
-    await screen.findByText('Project B')
+    await projectList().findByText('Project B')
     type('A clip')
     fireEvent.click(screen.getByTestId('send'))
     await waitFor(() => expect(sends()).toHaveLength(1))
@@ -1391,11 +1411,11 @@ describe('StudioApp', () => {
     let finishOpen: (view: unknown) => void = () => {}
     mockSidecar({ 'chat.open': () => new Promise((resolve) => (finishOpen = resolve)) })
     render(<StudioApp />)
-    fireEvent.click(await screen.findByText('Project B'))
+    fireEvent.click(await projectList().findByText('Project B'))
     await screen.findByRole('banner')
     const reply = { id: 2, kind: 'assistant', text: 'The clip is ready.', calls: [] }
     await emit({ type: 'chat', ...view(projectB.id, { entries: [reply], seq: 3 }) })
-    const asked = { id: 1, kind: 'user', text: 'A clip', images: [] }
+    const asked = { id: 1, kind: 'user', text: 'A clip', images: [], files: [] }
     await act(async () => finishOpen(view(projectB.id, { entries: [asked], running: true, seq: 2 })))
     expect(screen.getByText('The clip is ready.')).toBeTruthy()
     expect(screen.getByText('A clip')).toBeTruthy()
@@ -1411,7 +1431,7 @@ describe('StudioApp', () => {
       },
     })
     render(<StudioApp />)
-    fireEvent.click(await screen.findByText('Project B'))
+    fireEvent.click(await projectList().findByText('Project B'))
     await screen.findByTestId('working')
     await emit({ type: 'engine', state: 'restarting' })
     await emit({ type: 'ready', version: '1.2.3' })
@@ -1420,7 +1440,7 @@ describe('StudioApp', () => {
   })
 
   it('keeps the newer chat when an older load answers after the reload an engine restart made', async () => {
-    const asked = { id: 1, kind: 'user', text: 'A clip', images: [] }
+    const asked = { id: 1, kind: 'user', text: 'A clip', images: [], files: [] }
     const reply = { id: 2, kind: 'assistant', text: 'The clip is ready.', calls: [] }
     let finishFirst: (view: unknown) => void = () => {}
     let opens = 0
@@ -1431,7 +1451,7 @@ describe('StudioApp', () => {
           : Promise.resolve(view(String(params.project), { entries: [asked, reply], running: false, seq: 5 })),
     })
     render(<StudioApp />)
-    fireEvent.click(await screen.findByText('Project B'))
+    fireEvent.click(await projectList().findByText('Project B'))
     await screen.findByRole('banner')
     await emit({ type: 'ready', version: '1.2.3' })
     await screen.findByText('The clip is ready.')
@@ -1502,7 +1522,10 @@ describe('StudioApp', () => {
   it.each(['load error', 'unrelated error'])('recovers from an engine reload failure with a current %s', async (shownError) => {
     const recovery = held()
     let opens = 0
+    let checks = 0
     mockSidecar({
+      // The check that the second engine start asks for fails, for an error that has nothing to do with the chat.
+      'setup.check': (_, real) => (shownError === 'unrelated error' && ++checks === 3 ? Promise.reject('The check failed.') : real()),
       'chat.open': (params) => {
         const project = String(params.project)
         switch (++opens) {
@@ -1526,12 +1549,11 @@ describe('StudioApp', () => {
     await emit({ type: 'ready', version: '1.2.3' })
     expect((await screen.findByRole('alert')).textContent).toContain('The chat could not be loaded.')
     await emit({ type: 'ready', version: '1.2.3' })
-    if (shownError === 'unrelated error') await drop(['/Users/me/notes.txt'])
 
     await recovery.release()
     expect(await screen.findByText('The recovered clip is ready.')).toBeTruthy()
     if (shownError === 'load error') expect(screen.queryByRole('alert')).toBeNull()
-    else expect(screen.getByRole('alert').textContent).toContain('Drop a picture:')
+    else expect(screen.getByRole('alert').textContent).toContain('The check failed.')
     fireEvent.click(sidebar.getByText('Project B'))
     expect(sidecarCalls('chat.open')).toHaveLength(3)
   })
@@ -1540,16 +1562,16 @@ describe('StudioApp', () => {
     const send = held()
     mockSidecar({ 'chat.send': send.call }, [projectA, projectB])
     render(<StudioApp />)
-    fireEvent.click(await screen.findByText('Project B'))
+    fireEvent.click(await projectList().findByText('Project B'))
     await screen.findByRole('banner')
     type('Make it red')
     fireEvent.click(screen.getByTestId('send'))
     await waitFor(() => expect(sends()).toHaveLength(1))
-    fireEvent.click(screen.getByText('Project A'))
+    fireEvent.click(projectList().getByText('Project A'))
     await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project A'))
     type('something for A')
     await send.release()
-    fireEvent.click(screen.getByText('Project B'))
+    fireEvent.click(projectList().getByText('Project B'))
     await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project B'))
     expect(prompt().value).toBe('')
   })
@@ -1558,7 +1580,7 @@ describe('StudioApp', () => {
     const send = held()
     mockSidecar({ 'chat.send': send.call })
     render(<StudioApp />)
-    fireEvent.click(await screen.findByText('Project B'))
+    fireEvent.click(await projectList().findByText('Project B'))
     await screen.findByRole('banner')
     type('Make it red')
     fireEvent.click(screen.getByTestId('send'))
@@ -1573,9 +1595,9 @@ describe('StudioApp', () => {
     let finishOpen: (view: unknown) => void = () => {}
     mockSidecar({ 'chat.open': () => new Promise((resolve) => (finishOpen = resolve)) })
     render(<StudioApp />)
-    fireEvent.click(await screen.findByText('Project B'))
+    fireEvent.click(await projectList().findByText('Project B'))
     await screen.findByRole('banner')
-    const asked = { id: 1, kind: 'user', text: 'A clip', images: [] }
+    const asked = { id: 1, kind: 'user', text: 'A clip', images: [], files: [] }
     await emit({ type: 'chat', ...view(projectB.id, { entries: [asked], running: true, seq: 2 }) })
     const reply = { id: 2, kind: 'assistant', text: 'The clip is ready.', calls: [] }
     await act(async () => finishOpen(view(projectB.id, { entries: [asked, reply], running: false, seq: 3 })))
@@ -1586,10 +1608,10 @@ describe('StudioApp', () => {
   it('saves a draft at once when the person moves to another project', async () => {
     mockSidecar({}, [projectA, projectB])
     render(<StudioApp />)
-    fireEvent.click(await screen.findByText('Project B'))
+    fireEvent.click(await projectList().findByText('Project B'))
     await screen.findByRole('banner')
     type('make it blue')
-    fireEvent.click(screen.getByText('Project A'))
+    fireEvent.click(projectList().getByText('Project A'))
     expect(saves()).toEqual([{ key: projectB.id, text: 'make it blue', attachments: [] }])
   })
 
@@ -1597,15 +1619,15 @@ describe('StudioApp', () => {
     const send = held()
     mockSidecar({ 'chat.send': send.call }, [projectA, projectB])
     render(<StudioApp />)
-    fireEvent.click(await screen.findByText('Project B'))
+    fireEvent.click(await projectList().findByText('Project B'))
     await screen.findByRole('banner')
     type('make it red')
     fireEvent.click(screen.getByTestId('send'))
     await waitFor(() => expect(sends()).toHaveLength(1))
     type('make it blue')
     await send.release()
-    fireEvent.click(screen.getByText('Project A'))
-    fireEvent.click(screen.getByText('Project B'))
+    fireEvent.click(projectList().getByText('Project A'))
+    fireEvent.click(projectList().getByText('Project B'))
     await waitFor(() => expect(prompt().value).toBe('make it blue'))
   })
 
@@ -1621,7 +1643,7 @@ describe('StudioApp', () => {
   it('leaves the start screen empty after its message was sent', async () => {
     mockSidecar()
     render(<StudioApp />)
-    await screen.findByText('Project B')
+    await projectList().findByText('Project B')
     type('A clip for my desk')
     await waitFor(() => expect(saves()).toEqual([{ key: 'new', text: 'A clip for my desk', attachments: [] }]))
     fireEvent.click(screen.getByTestId('send'))
@@ -1634,7 +1656,7 @@ describe('StudioApp', () => {
     const send = held()
     mockSidecar({ 'chat.send': send.call })
     render(<StudioApp />)
-    await screen.findByText('Project B')
+    await projectList().findByText('Project B')
     type('A clip for my desk')
     fireEvent.click(screen.getByTestId('send'))
     await waitFor(() => expect(sends()).toHaveLength(1))
@@ -1644,7 +1666,7 @@ describe('StudioApp', () => {
     const made = '2026-11-06-a-clip-for-my-desk'
     await waitFor(() => expect(saves(made)).toEqual([{ key: made, text: 'second message', attachments: [] }]))
     expect(saves('new')).toEqual([{ key: 'new', text: 'A clip for my desk', attachments: [] }])
-    fireEvent.click(screen.getByText('Project B'))
+    fireEvent.click(projectList().getByText('Project B'))
     await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project B'))
     fireEvent.click(screen.getByText('A clip for my desk'))
     await waitFor(() => expect(prompt().value).toBe('second message'))
@@ -1654,7 +1676,7 @@ describe('StudioApp', () => {
     const send = held()
     mockSidecar({ 'chat.send': send.call })
     render(<StudioApp />)
-    await screen.findByText('Project B')
+    await projectList().findByText('Project B')
     type('A clip for my desk')
     fireEvent.click(screen.getByTestId('send'))
     await waitFor(() => expect(sends()).toHaveLength(1))
@@ -1681,17 +1703,17 @@ describe('StudioApp', () => {
     let tries = 0
     mockSidecar({ 'chat.send': (_, real) => (++tries === 1 ? Promise.reject(LOST) : real()) }, [projectA, projectB])
     render(<StudioApp />)
-    fireEvent.click(await screen.findByText('Project A'))
+    fireEvent.click(await projectList().findByText('Project A'))
     await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project A'))
     type('A clip for my desk')
     fireEvent.click(screen.getByTestId('send'))
     await screen.findByRole('alert')
-    fireEvent.click(screen.getByText('Project B'))
+    fireEvent.click(projectList().getByText('Project B'))
     await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project B'))
     type('make it blue')
     fireEvent.click(screen.getByTestId('send'))
     await waitFor(() => expect(sends()).toHaveLength(2))
-    fireEvent.click(screen.getByText('Project A'))
+    fireEvent.click(projectList().getByText('Project A'))
     await waitFor(() => expect(prompt().value).toBe('A clip for my desk'))
     fireEvent.click(screen.getByTestId('send'))
     await waitFor(() => expect(sends()).toHaveLength(3))
@@ -1703,7 +1725,7 @@ describe('StudioApp', () => {
   it('shows the code a device sign-in asks for, with its page', async () => {
     mockSidecar()
     render(<StudioApp />)
-    await screen.findByText('Project B')
+    await projectList().findByText('Project B')
     await emit({ type: 'login', provider: 'openai-codex', step: 'open', url: 'https://auth.openai.com/codex/device', code: 'ABCD-1234' })
     const ask = screen.getByTestId('sign-in')
     expect(ask.textContent).toContain('ABCD-1234')
@@ -1715,7 +1737,7 @@ describe('StudioApp', () => {
   it('answers what a sign-in asks in the window: a choice by its id, and typed text', async () => {
     mockSidecar()
     render(<StudioApp />)
-    await screen.findByText('Project B')
+    await projectList().findByText('Project B')
     await emit({ type: 'login', provider: 'anthropic', step: 'ask', kind: 'select', message: 'Which account?', options: [{ id: 'max', label: 'Claude Max' }] })
     fireEvent.click(screen.getByText('Claude Max'))
     await emit({ type: 'login', provider: 'anthropic', step: 'ask', kind: 'manual_code', message: 'Paste the code' })
@@ -1728,5 +1750,92 @@ describe('StudioApp', () => {
       ]),
     )
     expect(screen.queryByTestId('sign-in')).toBeNull()
+  })
+
+  it('fills the prompt from a suggestion, and offers the newest projects with their newest render and their status', async () => {
+    const projectC = { id: '2026-11-06-c', conversation: 4, title: 'Project C', createdMs: 0 }
+    const projectD = { id: '2026-11-06-d', conversation: 5, title: 'Project D', createdMs: 0 }
+    const status = (lastMs: number, more: object = {}) => ({ running: false, printed: false, printFiles: 0, lastMs, ...more })
+    mockSidecar(
+      {
+        'projects.status': () =>
+          Promise.resolve({ [projectA.id]: status(50, { printFiles: 1 }), [projectB.id]: status(40, { running: true }), [projectC.id]: status(30), [projectD.id]: status(20) }),
+      },
+      [projectD, projectC, projectB, projectA],
+      {},
+      {
+        [projectA.id]: [
+          { rel: 'render-old.png', size: 1, modifiedMs: 1 },
+          { rel: 'parts/render-new.png', size: 1, modifiedMs: 3 },
+          // The person's own photo is newer, but it is not a render.
+          { rel: 'refs/draft-1/photo.png', size: 1, modifiedMs: 9 },
+        ],
+      },
+    )
+    render(<StudioApp />)
+    fireEvent.click(screen.getByRole('button', { name: 'A desk organizer' }))
+    expect(prompt().value).toBe('A desk organizer')
+
+    const recent = await screen.findByTestId('recent')
+    await waitFor(() =>
+      expect(within(recent).getAllByRole('button').map((chip) => chip.textContent)).toEqual(['Project A1 print file', 'Project BBuilding parts', 'Project C']),
+    )
+    await waitFor(() => expect(within(recent).getByTestId(`recent-${projectA.id}`).querySelector('img')?.getAttribute('src')).toBe(`m3dfile://${projectA.id}/parts/render-new.png?v=3`))
+    expect(within(recent).getByTestId(`recent-${projectB.id}`).querySelector('img')).toBeNull()
+    fireEvent.click(within(recent).getByTestId(`recent-${projectA.id}`))
+    await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project A'))
+  })
+
+  it('attaches any dropped file, and sends a PDF and an STL beside a picture', async () => {
+    const store = mockSidecar()
+    render(<StudioApp />)
+    await projectList().findByText('Project B')
+    expect(screen.getByTestId('attach').textContent).toBe('Attach')
+    expect(screen.getByText('Photo, PDF, 3MF, STL')).toBeTruthy()
+    const files = ['/Users/me/bracket.pdf', '/Users/me/bracket.stl', '/Users/me/photo.jpg']
+    await drop(files)
+    expect(within(screen.getByTestId('attachments')).getAllByRole('listitem').map((item) => item.textContent)).toEqual(['bracket.pdf×', 'bracket.stl×', 'photo.jpg×'])
+    expect(screen.queryByRole('alert')).toBeNull()
+    type('Make this')
+    await waitFor(() => expect(screen.getByTestId('send').hasAttribute('disabled')).toBe(false))
+    fireEvent.click(screen.getByTestId('send'))
+    await waitFor(() => expect(store.sent).toEqual([expect.objectContaining({ text: 'Make this', attachments: files })]))
+  })
+
+  it("lists the signed-in providers' models with their marks, and keeps each project's pick", async () => {
+    const store = mockSidecar({}, [projectA, projectB])
+    render(<StudioApp />)
+    const picked = () => screen.getByTestId('model-picker').textContent
+    await waitFor(() => expect(picked()).toBe('Claude Opus 5.5'))
+
+    fireEvent.click(await projectList().findByText('Project A'))
+    await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project A'))
+    fireEvent.click(screen.getByTestId('model-picker'))
+    const items = within(screen.getByRole('menu', { name: 'Models' })).getAllByRole('menuitemradio')
+    expect(items.map((item) => [item.textContent, item.getAttribute('aria-checked')])).toEqual([
+      ['Claude Opus 5.5', 'true'],
+      ['Claude Sonnet 5.5', 'false'],
+      ['GPT-6.1 Sol', 'false'],
+    ])
+    // The Claude mark in its own color, and the OpenAI mark in the text color.
+    expect(items.map((item) => item.querySelector('.model-mark svg')?.getAttribute('fill'))).toEqual(['#D97757', '#D97757', 'currentColor'])
+    fireEvent.click(items[2])
+    await waitFor(() => expect(sidecarCalls('projects.setModel')).toEqual([{ project: projectA.id, model: { provider: 'openai-codex', modelId: 'gpt-6.1-sol' } }]))
+    await waitFor(() => expect(picked()).toBe('GPT-6.1 Sol'))
+
+    fireEvent.click(projectList().getByText('Project B'))
+    await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project B'))
+    expect(picked()).toBe('Claude Opus 5.5')
+    fireEvent.click(projectList().getByText('Project A'))
+    await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project A'))
+    expect(picked()).toBe('GPT-6.1 Sol')
+
+    // On the start screen, a pick is the model the next project starts with.
+    fireEvent.click(screen.getByTestId('new-project'))
+    fireEvent.click(screen.getByTestId('model-picker'))
+    fireEvent.click(within(screen.getByRole('menu', { name: 'Models' })).getByText('Claude Sonnet 5.5'))
+    await waitFor(() => expect(picked()).toBe('Claude Sonnet 5.5'))
+    expect(sidecarCalls('settings.set')).toEqual([{ model: { provider: 'anthropic', modelId: 'claude-sonnet-5-5' } }])
+    expect(store.model).toEqual({ provider: 'anthropic', modelId: 'claude-sonnet-5-5' })
   })
 })

@@ -89,7 +89,7 @@ A control that stays at opacity 0 until its row is hovered is not displayed for 
 Native GTK dialogs are outside the webview, so WebDriver cannot see them. Answer them the way a user does with `m3d.sh file-dialog <abs-path>`. The helper finds which dialog is open, "Open File" or "Save File", and types the path into it. "Open File" needs an existing file. "Save File" needs a new file name in an existing directory, because an existing target makes GTK ask to replace it in a second dialog the helper does not answer.
 
 ```bash
-$S/wd.ts click "text=Add picture"
+$S/wd.ts click "text=Attach"
 $S/m3d.sh file-dialog /absolute/path/to/sketch.png
 $S/wd.ts wait "[data-testid=attachments]"     # the helper cannot see the outcome, but the webview can
 ```

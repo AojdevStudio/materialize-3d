@@ -24,6 +24,17 @@ The sidebar icons in `src/assets/icons/` are by Streamline (https://www.streamli
 | Rating star | `src/assets/icons/rating-star.svg` |
 | Module three | `src/assets/icons/module-three.svg` |
 
+The Attach icon, `src/assets/icons/attach.svg`, is Streamline's Form Edition Image Attach icon from its Freehand Color set, under the same CC BY 4.0 license. Its black parts were changed to draw in the current text color, so it shows in dark mode. Its blue stays as Streamline drew it.
+
+## Model marks
+
+The model picker shows each maker's official mark beside its models. The marks are the makers' trademarks. They are used only to name the maker of a model, not to suggest that the maker endorses Materialize 3D. The SVG paths come from Simple Icons 15.22.0 (https://simpleicons.org, CC0 1.0), which collects each mark from its maker's own site.
+
+| Mark | File | Owner and source |
+|---|---|---|
+| Claude | `src/assets/icons/claude.svg` | Anthropic, PBC. Taken from https://claude.ai, in its brand color #D97757 |
+| OpenAI | `src/assets/icons/openai.svg` | OpenAI. Taken from https://openai.com/brand, drawn in the current text color |
+
 ## Bambu Studio
 
 Materialize 3D does not include or redistribute Bambu Studio. It runs a copy that you install from Bambu Lab.
