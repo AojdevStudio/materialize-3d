@@ -8,7 +8,7 @@ The studio is the whole app. Each chat is a project folder in `~/Documents/Mater
 - `prompt` takes text, pasted pictures, and links. The text is saved as the project's draft a moment after typing stops, and comes back when the project opens. A picture dropped on the window or chosen with `Add picture` shows in `attachments` and is copied to the project's `refs/` on send. It reaches the model as an image block.
 - `messages` shows committed chat lines only: each tool step on one line (`.tool`, with `.tool-running` until its result is committed), agent text, and `file-cards` after a turn that wrote previewable files or a 3MF. `working` shows while a turn runs, and `stop` replaces `send`.
 - `chat-model` names the model the current turn runs with.
-- `readiness` shows on the start screen while the agent lacks a sign-in, uv, or a Python uv can run, with the fix for each. A missing sign-in shows the same sign-in controls as `waiting`. `send` stays off until nothing is missing.
+- `readiness` shows on the start screen while the agent lacks something, with the fix for each need: a sign-in, uv, a Python uv can run, or a model from a provider the app offers (the fix names the offered providers). A missing sign-in shows the same sign-in controls as `waiting`. `Check again` reruns the check. `send` stays disabled until nothing is missing.
 - `waiting` shows when a turn stopped before its answer: the fix, and the control for it. A provider with no login shows `Sign in with Claude` or `Sign in with ChatGPT`, and for Anthropic and OpenCode Go a key form (`API key or token`, and for Anthropic `Proxy URL`). Once the login is saved, the turn goes on by itself. Any other failure shows its error and `Try again`.
 - A turn cut off by quitting or a crash goes on from its last committed step when the app opens again.
 - `engine` in the sidebar shows the sidecar's version, or why it stopped.
@@ -30,9 +30,11 @@ bun $S/mac.ts wait '[data-testid=readiness]' 20000
 bun $S/mac.ts type '[aria-label="API key or token"]' "$ANTHROPIC_TOKEN"
 bun $S/mac.ts type '[aria-label="Proxy URL"]' "$ANTHROPIC_PROXY"
 bun $S/mac.ts click 'text=Save'
+# If readiness still names uv or Python, install it, click 'text=Check again', and wait for the banner to clear.
 bun $S/mac.ts dialog "$HOME/fixtures/sketch.png"
 bun $S/mac.ts click 'text=Add picture'
 bun $S/mac.ts type '[data-testid=prompt]' 'Make a cable clip like in this sketch, then slice it to a 3MF'
+bun $S/mac.ts wait '[data-testid=send]:not([disabled])' 20000
 bun $S/mac.ts click '[data-testid=send]'
 bun $S/mac.ts wait '[data-testid=working]' 20000
 # A full job takes minutes. The file cards appear when the turn's last step is committed. One mac.ts wait is one
