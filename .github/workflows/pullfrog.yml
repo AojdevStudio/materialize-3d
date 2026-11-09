@@ -31,12 +31,12 @@ jobs:
           script: |
             const payload = JSON.parse(process.env.PULLFROG_PROMPT);
             const event = payload?.['~pullfrog'] === true ? payload.event : undefined;
-            if (event?.is_pr !== true || !Number.isSafeInteger(event.issue_number) || event.issue_number <= 0) {
-              throw new Error('The prompt is not a Pullfrog pull request envelope.');
+            if (event?.is_pr !== true || !Number.isSafeInteger(event.issue_number) || event.issue_number <= 0 ||
+              !['admin', 'maintain', 'write'].includes(event.authorPermission)) {
+              throw new Error('The prompt is not a Pullfrog pull request envelope from a trusted role.');
             }
             const isDependabot = (login) => login === 'dependabot[bot]';
-            let run = ['admin', 'maintain', 'write'].includes(event.authorPermission) &&
-              !isDependabot(process.env.GITHUB_ACTOR) && !isDependabot(payload.triggerer);
+            let run = !isDependabot(process.env.GITHUB_ACTOR) && !isDependabot(payload.triggerer);
             if (run) {
               const { data: pr } = await github.rest.pulls.get({
                 ...context.repo,
