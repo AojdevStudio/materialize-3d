@@ -47,6 +47,8 @@ pub enum BambuError {
     UnvalidatedStudio { found: Vec<FoundBuild> },
     #[error("could not determine Bambu Studio version from {exe} --help")]
     VersionUndetected { exe: PathBuf },
+    #[error("Bambu Studio did not answer its version check. macOS may be asking about it. Open Bambu Studio once from Applications, then try again.")]
+    VersionCheckTimedOut { exe: PathBuf },
     #[error("no Bambu profile directory found next to {exe}")]
     ProfilesNotFound { exe: PathBuf },
     #[error("{0}")]

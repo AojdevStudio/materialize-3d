@@ -1,11 +1,14 @@
 use std::env;
 use std::fmt;
+use std::fs::File;
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
-use super::{BambuError, Result};
+use super::{io_err, BambuError, Result};
 
 /// Bambu Studio builds whose CLI slicing has been proven end to end.
 pub const VALIDATED_VERSIONS: &[&str] = &["02.08.02.61"];
@@ -75,7 +78,7 @@ struct Candidate {
 struct Probed {
     exe: PathBuf,
     profiles_dir: Option<PathBuf>,
-    version: Option<BambuVersion>,
+    version: Result<Option<BambuVersion>>,
 }
 
 impl Probed {
@@ -140,39 +143,91 @@ impl BambuStudio {
 
 /// Runs `exe --help` in a private scratch directory, because Bambu Studio writes
 /// `result.json` into its working directory even for `--help`.
-fn detect_version(exe: &Path) -> Option<BambuVersion> {
-    detect_version_with_timeout(exe, std::time::Duration::from_secs(15))
+fn detect_version(exe: &Path) -> Result<Option<BambuVersion>> {
+    detect_version_with_timeout(exe, Duration::from_secs(15))
 }
 
-fn detect_version_with_timeout(exe: &Path, _timeout: std::time::Duration) -> Option<BambuVersion> {
-    let exe = std::path::absolute(exe).ok()?;
-    let scratch = tempfile::tempdir().ok()?;
-    let output = Command::new(exe)
+fn detect_version_with_timeout(exe: &Path, timeout: Duration) -> Result<Option<BambuVersion>> {
+    let Ok(exe) = std::path::absolute(exe) else {
+        return Ok(None);
+    };
+    let Ok(scratch) = tempfile::tempdir() else {
+        return Ok(None);
+    };
+    // Files cannot fill a pipe or wait for EOF on a descriptor a descendant inherited.
+    let stdout = scratch.path().join("stdout");
+    let stderr = scratch.path().join("stderr");
+    let output = File::create(&stdout).map_err(io_err(&stdout))?;
+    let errors = File::create(&stderr).map_err(io_err(&stderr))?;
+    let start = Instant::now();
+    let Ok(mut child) = Command::new(&exe)
         .arg("--help")
         .current_dir(scratch.path())
-        .output()
-        .ok()?;
-    let text = format!(
-        "{}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    BambuVersion::from_help(&text)
+        .stdin(Stdio::null())
+        .stdout(output)
+        .stderr(errors)
+        .spawn()
+    else {
+        return Ok(None);
+    };
+    let outcome = loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break Ok(()),
+            Ok(None) if start.elapsed() >= timeout => {
+                log::warn!(
+                    "bambu: version check timed out after {} ms for {}",
+                    timeout.as_millis(),
+                    exe.display()
+                );
+                break Err(BambuError::VersionCheckTimedOut { exe: exe.clone() });
+            }
+            Ok(None) => std::thread::sleep(
+                Duration::from_millis(10).min(timeout.saturating_sub(start.elapsed())),
+            ),
+            Err(source) => {
+                break Err(BambuError::Io {
+                    path: exe.clone(),
+                    source,
+                })
+            }
+        }
+    };
+    if outcome.is_err() {
+        let killed = child.kill();
+        let reaped = child.wait();
+        killed.map_err(io_err(&exe))?;
+        reaped.map_err(io_err(&exe))?;
+    }
+    outcome?;
+    for path in [stdout, stderr] {
+        let mut output = Vec::new();
+        File::open(&path)
+            .map_err(io_err(&path))?
+            .take(1024 * 1024)
+            .read_to_end(&mut output)
+            .map_err(io_err(&path))?;
+        if let Some(version) = BambuVersion::from_help(&String::from_utf8_lossy(&output)) {
+            return Ok(Some(version));
+        }
+    }
+    Ok(None)
 }
 
 /// Picks the first validated candidate, or explains what was found instead.
 fn select(mut probed: Vec<Probed>) -> Result<BambuStudio> {
     let chosen = probed
         .iter()
-        .position(|p| p.version.as_ref().is_some_and(BambuVersion::is_validated));
+        .position(|p| matches!(&p.version, Ok(Some(version)) if version.is_validated()));
     let Some(index) = chosen else {
         let found = probed
             .into_iter()
-            .map(|p| FoundBuild {
-                path: p.exe,
-                version: p.version,
+            .map(|p| {
+                Ok(FoundBuild {
+                    path: p.exe,
+                    version: p.version?,
+                })
             })
-            .collect();
+            .collect::<Result<Vec<_>>>()?;
         return Err(BambuError::UnvalidatedStudio { found });
     };
     let Probed {
@@ -180,7 +235,7 @@ fn select(mut probed: Vec<Probed>) -> Result<BambuStudio> {
         profiles_dir,
         version,
     } = probed.swap_remove(index);
-    let version = version.ok_or(BambuError::VersionUndetected { exe: exe.clone() })?;
+    let version = version?.ok_or(BambuError::VersionUndetected { exe: exe.clone() })?;
     let profiles_dir = match profiles_dir {
         Some(dir) => dir,
         None => derive_profiles_dir(&exe)
@@ -307,7 +362,7 @@ mod tests {
         let start = Instant::now();
         let probe = std::thread::spawn(move || {
             let result = detect_version_with_timeout(&exe, Duration::from_millis(100));
-            send.send(format!("{result:?}")).expect("probe result");
+            send.send(result).expect("probe result");
         });
         let result = receive.recv_timeout(Duration::from_secs(2));
         let elapsed = start.elapsed();
@@ -323,12 +378,22 @@ mod tests {
             result.is_ok(),
             "version check exceeded the outer 2 s limit with a 100 ms probe limit"
         );
+        let error = result
+            .expect("bounded result")
+            .expect_err("the timeout has its own error");
         assert!(
-            result
-                .expect("bounded result")
-                .contains("VersionCheckTimedOut"),
-            "the timeout has its own error"
+            matches!(error, BambuError::VersionCheckTimedOut { .. }),
+            "{error}"
         );
+        let message = error.to_string();
+        for guidance in [
+            "Bambu Studio did not answer",
+            "macOS",
+            "Applications",
+            "try again",
+        ] {
+            assert!(message.contains(guidance), "{message}");
+        }
         assert!(elapsed < Duration::from_secs(1), "probe took {elapsed:?}");
         assert!(
             !Command::new("kill")
@@ -340,11 +405,76 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn help_output_cannot_hold_the_probe_open() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir().expect("tempdir");
+        let exe = root.path().join("BambuStudio");
+        let holder_pid = root.path().join("holder-pid");
+        for body in [
+            "dd if=/dev/zero bs=65536 count=32 2>/dev/null\necho 'BambuStudio-02.08.02.61:' >&2\n"
+                .to_owned(),
+            format!(
+                "sleep 5 &\necho $! > '{}'\necho 'BambuStudio-02.08.02.61:'\n",
+                holder_pid.display()
+            ),
+        ] {
+            std::fs::write(&exe, format!("#!/bin/sh\n{body}")).expect("script");
+            std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+            let start = Instant::now();
+            let result = detect_version_with_timeout(&exe, Duration::from_millis(100));
+            let elapsed = start.elapsed();
+            if let Ok(pid) = std::fs::read_to_string(&holder_pid) {
+                assert!(Command::new("kill")
+                    .arg(pid.trim())
+                    .status()
+                    .expect("stop descriptor holder")
+                    .success());
+            }
+            assert!(
+                elapsed < Duration::from_secs(1),
+                "output held the probe open for {elapsed:?}"
+            );
+            assert_eq!(
+                result.expect("probe").expect("version").as_str(),
+                "02.08.02.61"
+            );
+        }
+    }
+
+    #[test]
+    fn discovery_surfaces_a_timeout_unless_a_validated_candidate_is_available() {
+        let timed_out = || Probed {
+            exe: PathBuf::from("/held/BambuStudio"),
+            profiles_dir: None,
+            version: Err(BambuError::VersionCheckTimedOut {
+                exe: PathBuf::from("/held/BambuStudio"),
+            }),
+        };
+        let error = select(vec![
+            probed("/unknown", None, Path::new("/profiles")),
+            timed_out(),
+        ])
+        .expect_err("timeout is kept");
+        assert!(
+            matches!(error, BambuError::VersionCheckTimedOut { .. }),
+            "{error}"
+        );
+        let studio = select(vec![
+            timed_out(),
+            probed("/validated", Some("02.08.02.61"), Path::new("/profiles")),
+        ])
+        .expect("later validated build");
+        assert_eq!(studio.exe, Path::new("/validated"));
+    }
+
     fn probed(exe: &str, version: Option<&str>, profiles: &Path) -> Probed {
         Probed {
             exe: PathBuf::from(exe),
             profiles_dir: Some(profiles.to_path_buf()),
-            version: version.map(|v| BambuVersion(v.to_owned())),
+            version: Ok(version.map(|v| BambuVersion(v.to_owned()))),
         }
     }
 
@@ -479,7 +609,7 @@ mod tests {
     #[test]
     fn probe_child() {
         if let Some(exe) = env::var_os("M3D_PROBE_EXE") {
-            let version = detect_version(Path::new(&exe));
+            let version = detect_version(Path::new(&exe)).expect("probe completes");
             println!(
                 "probe-version={}",
                 version.as_ref().map_or("none", BambuVersion::as_str)
