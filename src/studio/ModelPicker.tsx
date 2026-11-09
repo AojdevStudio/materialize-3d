@@ -29,9 +29,10 @@ export default function ModelPicker({ models, chosen, onPick }: Props) {
   const box = useRef<HTMLDivElement>(null)
   const isChosen = (model: ModelChoice) => model.provider === chosen?.provider && model.modelId === chosen.modelId
 
-  // The open menu closes on a click outside it, or on Escape.
+  // The open menu shows the chosen model, and closes on a click outside it, or on Escape.
   useEffect(() => {
     if (!open) return
+    box.current?.querySelector('[aria-checked="true"]')?.scrollIntoView({ block: 'nearest' })
     const close = (event: Event) => {
       if (event instanceof KeyboardEvent ? event.key === 'Escape' : !box.current?.contains(event.target as Node)) setOpen(false)
     }
@@ -53,7 +54,6 @@ export default function ModelPicker({ models, chosen, onPick }: Props) {
               key={`${provider}/${modelId}`}
               role="menuitemradio"
               aria-checked={isChosen({ provider, modelId })}
-              ref={isChosen({ provider, modelId }) ? (el) => el?.scrollIntoView({ block: 'nearest' }) : undefined}
               onClick={() => {
                 setOpen(false)
                 if (!isChosen({ provider, modelId })) onPick({ provider, modelId })

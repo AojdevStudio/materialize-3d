@@ -1,6 +1,6 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import type { Project, ProjectStatus } from '../../sidecar/src/protocol'
-import { fileUrl, sidecar, studio, type ProjectFile } from './api'
+import { fileUrl, onSidecarEvent, sidecar, studio, type ProjectFile } from './api'
 import { detail, groupOf, lastActivity } from './sidebarGroups'
 
 /** The suggestions under the prompt box. A click puts one in the box. */
@@ -27,12 +27,31 @@ type Props = {
 export default function Start({ projects, composer, onSuggest, onOpen, onError }: Props) {
   const [status, setStatus] = useState<Record<string, ProjectStatus>>({})
   const [renders, setRenders] = useState<Record<string, ProjectFile | undefined>>({})
+  /** The status on screen, for the event listener to compare a chat change with. */
+  const shown = useRef(status)
+  shown.current = status
+  /** Counts status reads, so only the newest read's answer lands. */
+  const reads = useRef(0)
 
-  useEffect(() => {
+  const refresh = useCallback(() => {
+    const read = ++reads.current
     void sidecar('projects.status', {})
-      .then(setStatus)
+      .then((found) => read === reads.current && setStatus(found))
       .catch((err: unknown) => onError(String(err)))
-  }, [projects, onError])
+  }, [onError])
+
+  useEffect(refresh, [projects, refresh])
+
+  // As in the sidebar, a turn that starts or ends changes a project's status, and an engine that started again may
+  // hold a newer one.
+  useEffect(() => {
+    const unlisten = onSidecarEvent((event) => {
+      if (event.type === 'ready' || (event.type === 'chat' && shown.current[event.project]?.running !== event.running)) refresh()
+    })
+    return () => {
+      void unlisten.then((stop) => stop())
+    }
+  }, [refresh])
 
   const recent = [...projects].sort((a, b) => lastActivity(b, status[b.id]) - lastActivity(a, status[a.id])).slice(0, RECENT)
   const recentIds = recent.map((p) => p.id).join('\n')

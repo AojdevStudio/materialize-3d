@@ -3,7 +3,8 @@
  * removal of the draft that holds the message together. A turn that stops before its answer waits with the fix named,
  * and continues once it is fixed. The window sees committed entries only.
  */
-import { constants, copyFileSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync } from 'node:fs'
+import { constants, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs'
+import { copyFile, rename } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, extname, join, relative } from 'node:path'
 import type { Context } from '@earendil-works/chord'
@@ -80,14 +81,18 @@ function picture(folder: string, rel: string): ImageContent | undefined {
 
 /**
  * The message the model reads: the text, a note naming where each attachment is saved, and each picture as a picture.
- * A file that is not a picture, such as a PDF, 3MF, or STL, goes by its path only, for the agent to open itself.
+ * A file that is not a picture, such as a PDF, 3MF, or STL, goes by its path only, for the agent to open itself. So does
+ * a picture the model cannot read, such as a HEIC photo that could not be made a JPEG.
  */
 function userContent(folder: string, text: string, pictures: string[], files: string[]): string | (TextContent | ImageContent)[] {
+  const read = pictures.map((rel) => ({ rel, image: picture(folder, rel) }))
+  const shown = read.flatMap(({ rel, image }) => (image === undefined ? [] : [rel]))
+  const named = [...files, ...read.flatMap(({ rel, image }) => (image === undefined ? [rel] : []))]
   let note = ''
-  if (pictures.length > 0) note += `\n\n(Pictures attached, saved in this folder as: ${pictures.join(', ')})`
-  if (files.length > 0) note += `\n\n(Files attached, saved in this folder as: ${files.join(', ')})`
+  if (shown.length > 0) note += `\n\n(Pictures attached, saved in this folder as: ${shown.join(', ')})`
+  if (named.length > 0) note += `\n\n(Files attached, saved in this folder as: ${named.join(', ')})`
   if (note === '') return text
-  return [{ type: 'text', text: `${text}${note}` }, ...pictures.flatMap((rel) => picture(folder, rel) ?? [])]
+  return [{ type: 'text', text: `${text}${note}` }, ...read.flatMap(({ image }) => image ?? [])]
 }
 
 /**
@@ -95,7 +100,7 @@ function userContent(folder: string, text: string, pictures: string[], files: st
  * written beside its place and then renamed into it, so a send of the same revision again, as after a crash or a
  * refused send, finds every finished copy and makes no second one.
  */
-function copyAttachments(folder: string, rev: number, sources: string[]): string[] {
+async function copyAttachments(folder: string, rev: number, sources: string[]): Promise<string[]> {
   if (sources.length === 0) return []
   const rel = join('refs', `draft-${rev}`)
   const dir = join(folder, rel)
@@ -106,7 +111,10 @@ function copyAttachments(folder: string, rev: number, sources: string[]): string
     if (leaves(relative(realpathSync.native(folder), realpathSync.native(path)))) throw new Error('refs/ leads outside the project folder')
   }
   const names = new Set<string>()
-  return sources.map((source) => {
+  const copied: string[] = []
+  // One at a time, so each name is taken before the next is chosen. A copy runs off the event loop, as a model file
+  // can be large.
+  for (const source of sources) {
     const clean = basename(source).replace(/[^A-Za-z0-9._-]/g, '-')
     const file = clean.replace(/\./g, '') === '' ? 'picture.png' : clean
     const dot = file.lastIndexOf('.')
@@ -123,11 +131,12 @@ function copyAttachments(folder: string, rev: number, sources: string[]): string
       }
       const part = join(dir, `.${name}.part`)
       rmSync(part, { force: true })
-      copyFileSync(source, part, constants.COPYFILE_EXCL)
-      renameSync(part, target)
+      await copyFile(source, part, constants.COPYFILE_EXCL)
+      await rename(part, target)
     }
-    return join(rel, name)
-  })
+    copied.push(join(rel, name))
+  }
+  return copied
 }
 
 export class Chats {
@@ -274,7 +283,7 @@ export class Chats {
     const draft = started?.draft ?? (await store.draft(project.id))
     if (draft?.rev !== rev) throw new Error(DRAFT_CHANGED)
     const folder = store.projectFolder(project.id)
-    const attachments = copyAttachments(folder, rev, draft.attachments)
+    const attachments = await copyAttachments(folder, rev, draft.attachments)
     const pictures = attachments.filter((rel) => PICTURE.test(rel))
     const files = attachments.filter((rel) => !PICTURE.test(rel))
     const content = userContent(folder, draft.text, pictures, files)

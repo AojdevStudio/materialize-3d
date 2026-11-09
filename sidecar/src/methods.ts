@@ -48,16 +48,17 @@ export function handlers({ store, models, logins, chats, version, legacy, pictur
       },
     },
     'setup.check': {
-      params: compile(obj({})),
-      run: async () => {
-        // The chosen model must be one the app offers, and its provider must have a login. A refused or expired login
-        // still waits in the turn, with its fix.
+      params: compile(obj({ project: opt(str()) })),
+      run: async ({ project }) => {
+        // The model the next turn runs on must be one the app offers, and its provider must have a login: the project's
+        // own model, or the default on the start screen. A refused or expired login still waits in the turn, with its fix.
         const { settings } = await store.state()
+        const model = (project === undefined ? undefined : (await store.project(project)).model) ?? settings.model
         const offered = await logins.status()
-        const login = offered.find((l) => l.provider === settings.model.provider)
+        const login = offered.find((l) => l.provider === model.provider)
         const needs: Need[] =
           login === undefined
-            ? [{ kind: 'model', fix: `Choose a model from ${offered.map((l) => l.name).join(', ')}. The app does not offer ${settings.model.provider}.` }]
+            ? [{ kind: 'model', fix: `Choose a model from ${offered.map((l) => l.name).join(', ')}. The app does not offer ${model.provider}.` }]
             : login.login === null
               ? [{ kind: 'login', provider: login.provider, name: login.name, fix: `Sign in to ${login.name} before you send.` }]
               : []

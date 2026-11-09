@@ -690,13 +690,15 @@ describe('StudioApp', () => {
   })
 
   it('checks again when the engine is ready, so a check that failed during a restart does not keep Send off', async () => {
-    let checks = 0
-    mockSidecar({ 'setup.check': () => (++checks === 1 ? Promise.reject('The engine restarted before it answered.') : Promise.resolve([])) })
+    // Every check fails while the engine restarts, the one for the opened project too.
+    let restarting = true
+    mockSidecar({ 'setup.check': () => (restarting ? Promise.reject('The engine restarted before it answered.') : Promise.resolve([])) })
     render(<StudioApp />)
     fireEvent.click(await projectList().findByText('Project B'))
     await screen.findByRole('banner')
     type('A clip')
     expect((screen.getByTestId('send') as HTMLButtonElement).disabled).toBe(true)
+    restarting = false
     await emit({ type: 'ready', version: '1.2.3' })
     await waitFor(() => expect((screen.getByTestId('send') as HTMLButtonElement).disabled).toBe(false))
   })
@@ -1522,10 +1524,10 @@ describe('StudioApp', () => {
   it.each(['load error', 'unrelated error'])('recovers from an engine reload failure with a current %s', async (shownError) => {
     const recovery = held()
     let opens = 0
-    let checks = 0
+    let checkFails = false
     mockSidecar({
       // The check that the second engine start asks for fails, for an error that has nothing to do with the chat.
-      'setup.check': (_, real) => (shownError === 'unrelated error' && ++checks === 3 ? Promise.reject('The check failed.') : real()),
+      'setup.check': (_, real) => (checkFails ? Promise.reject('The check failed.') : real()),
       'chat.open': (params) => {
         const project = String(params.project)
         switch (++opens) {
@@ -1548,6 +1550,7 @@ describe('StudioApp', () => {
     await screen.findByText('The chat is open.')
     await emit({ type: 'ready', version: '1.2.3' })
     expect((await screen.findByRole('alert')).textContent).toContain('The chat could not be loaded.')
+    checkFails = shownError === 'unrelated error'
     await emit({ type: 'ready', version: '1.2.3' })
 
     await recovery.release()
@@ -1822,6 +1825,8 @@ describe('StudioApp', () => {
     fireEvent.click(items[2])
     await waitFor(() => expect(sidecarCalls('projects.setModel')).toEqual([{ project: projectA.id, model: { provider: 'openai-codex', modelId: 'gpt-6.1-sol' } }]))
     await waitFor(() => expect(picked()).toBe('GPT-6.1 Sol'))
+    // Send waits for the sign-in of the project's own model, so the check asks about this project.
+    await waitFor(() => expect(last(sidecarCalls('setup.check'))).toEqual({ project: projectA.id }))
 
     fireEvent.click(projectList().getByText('Project B'))
     await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project B'))

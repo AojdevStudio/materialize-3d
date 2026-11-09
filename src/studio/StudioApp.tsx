@@ -216,11 +216,19 @@ export default function StudioApp() {
     setImportBlocked(state.importBlocked)
   }
 
-  /** Asks the sidecar what the agent still needs before a send, and which models the person can pick. */
+  /**
+   * Asks the sidecar what the agent still needs before a send from the open screen, as its model's provider may differ
+   * from another screen's. An answer for a screen the person left is dropped.
+   */
   const checkReady = () => {
-    void sidecar('setup.check', {})
-      .then(setNeeds)
+    const project = currentId.current
+    void sidecar('setup.check', project === null ? {} : { project })
+      .then((found) => project === currentId.current && setNeeds(found))
       .catch((err: unknown) => setError(String(err)))
+  }
+
+  /** Reads the models the person can pick, which change with each sign-in. */
+  const loadModels = () => {
     void sidecar('models.list', {})
       .then(setModels)
       .catch((err: unknown) => setError(String(err)))
@@ -248,6 +256,7 @@ export default function StudioApp() {
         .catch((err: unknown) => setError(String(err)))
     void readState()
     checkReady()
+    loadModels()
     // The listener is in place before the ping, so no engine change is missed, and a ping that answers late never
     // hides one.
     let engineChanged = false
@@ -258,6 +267,7 @@ export default function StudioApp() {
           setEngine(`Engine ${event.version}`)
           // A check that failed while the engine started again is asked again, so Send does not stay off.
           checkReady()
+          loadModels()
           for (const wake of readyWaiters.current.splice(0)) wake()
           if (!stateRead) void readState()
           // An engine that started again holds what a crash cut off from the window, such as a turn's last entry, so
@@ -291,6 +301,7 @@ export default function StudioApp() {
           if (event.step === 'done') {
             setSignIn(null)
             checkReady()
+            loadModels()
           }
           if (event.step === 'failed') {
             setSignIn(null)
@@ -432,6 +443,7 @@ export default function StudioApp() {
     setSelected(null)
     setTab('preview')
     setError(null)
+    checkReady()
   }
 
   /** Loads the open project's chat, with the changes that arrived while it loaded. */
@@ -530,7 +542,7 @@ export default function StudioApp() {
 
   /**
    * Saves a pick: the open project's model, or on the start screen the default the next project takes. The check runs
-   * again then, as the default's provider may differ.
+   * again then, as the new model's provider may differ.
    */
   const pickModel = (model: ModelChoice) => {
     const project = current?.id
@@ -544,7 +556,10 @@ export default function StudioApp() {
       return
     }
     void sidecar('projects.setModel', { project, model })
-      .then(() => setProjects((all) => all.map((p) => (p.id === project ? { ...p, model } : p))))
+      .then(() => {
+        setProjects((all) => all.map((p) => (p.id === project ? { ...p, model } : p)))
+        checkReady()
+      })
       .catch((err: unknown) => setError(String(err)))
   }
 

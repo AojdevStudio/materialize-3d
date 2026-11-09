@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { ChatEntry, ChatView, ModelOption, ProjectStatus, StoredState } from '../src/protocol'
+import type { ChatEntry, ChatView, ModelOption, Need, ProjectStatus, StoredState } from '../src/protocol'
 import { spawnSidecar } from './sidecar'
 
 type App = ReturnType<typeof spawnSidecar>
@@ -85,6 +85,16 @@ describe('an attached file', () => {
     expect(await sentBy(app, project)).toMatchObject([{ images: [`refs/draft-${rev}/photo.png`], files: [] }])
     await app.quit()
   }, 30_000)
+
+  test('that is a picture the model cannot read goes by its path', async () => {
+    const where = scratch()
+    const app = await start(where, 'attachments')
+    // Off macOS no HEIC photo can be made a JPEG, and on macOS these bytes are no photo.
+    const { project, rev } = await app.sendDraft('new', 'Like this', [file(where, 'photo.heic')])
+    const [answer] = await answers(app, project, 1)
+    expect(answer).toBe(`pictures=0 | Like this\n\n(Files attached, saved in this folder as: refs/draft-${rev}/photo.heic)`)
+    await app.quit()
+  }, 30_000)
 })
 
 describe('the model', () => {
@@ -116,6 +126,23 @@ describe('the model', () => {
     await expect(second.call('projects.setModel', { project: a, model: { provider: 'faux', modelId: 'faux-z' } })).rejects.toThrow('faux has no model faux-z')
     await second.quit()
   }, 60_000)
+
+  test("is the one readiness checks the sign-in for: the open project's own, or the default on the start screen", async () => {
+    const where = scratch()
+    const app = await start(where, 'models')
+    const { project } = await app.sendDraft('new', 'make the project')
+    await answers(app, project, 1)
+    await app.call('projects.setModel', { project, model: { provider: 'anthropic', modelId: 'claude-opus-5-5' } })
+    await app.call('settings.set', { model: { provider: 'openai-codex', modelId: 'gpt-6-astra' } })
+    const logins = async (params: object) =>
+      ((await app.call('setup.check', params)) as Need[]).flatMap((need) => (need.kind === 'login' ? [need.provider] : []))
+    expect(await logins({ project })).toEqual(['anthropic'])
+    expect(await logins({})).toEqual(['openai-codex'])
+    await app.call('auth.setKey', { provider: 'anthropic', key: 'sk-test-dummy-0000' })
+    expect(await logins({ project })).toEqual([])
+    expect(await logins({})).toEqual(['openai-codex'])
+    await app.quit()
+  }, 30_000)
 
   test('list holds the models of the providers the person signed in to, as each provider names them', async () => {
     const where = scratch()

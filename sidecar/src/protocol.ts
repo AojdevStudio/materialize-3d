@@ -141,8 +141,11 @@ export interface Methods {
   'drafts.set': { params: { key: string } & Draft; result: { rev: number } }
   /** Keeps a pasted picture in a file of its own, outside any project, and answers its path, for a draft to keep. */
   'drafts.picture': { params: { name: string; data: string }; result: string }
-  /** What the agent needs before a send: the chosen model's sign-in, uv, and a Python uv can run. Empty when ready. */
-  'setup.check': { params: Record<string, never>; result: Need[] }
+  /**
+   * What the agent needs before a send from the project, or from the start screen without one: its model's sign-in,
+   * uv, and a Python uv can run. Empty when ready.
+   */
+  'setup.check': { params: { project?: string }; result: Need[] }
   /** Imports the chats from before the store again, as after the person let the app read the projects folder. */
   'legacy.import': { params: Record<string, never>; result: { imported: number; blocked: string | null } }
   'auth.status': { params: Record<string, never>; result: Login[] }
