@@ -51,7 +51,7 @@ Why not `bun tauri dev` or `bun tauri build`? `tauri dev` attaches the app to th
 $S/m3d.sh doctor
 ```
 
-This is a read-only check. It verifies that the checkout HEAD matches the built revision, that the binary exists, and that our Xvfb, Vite, and tauri-driver processes are alive and answering. It also checks that the WebDriver session answers and that the app DB lives inside the run dir. Run it first whenever anything looks off. A `FAIL` on the revision line means the build is stale: run `down`, then `up`.
+This is a read-only check. It verifies that the checkout HEAD matches the built revision, that the binary exists, and that our Xvfb, Vite, and tauri-driver processes are alive and answering. It also checks that the WebDriver session answers and that the sidecar's store lives inside the run dir. Run it first whenever anything looks off. A `FAIL` on the revision line means the build is stale: run `down`, then `up`.
 
 ## Drive
 

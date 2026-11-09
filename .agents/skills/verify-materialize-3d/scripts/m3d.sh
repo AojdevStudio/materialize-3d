@@ -101,7 +101,7 @@ up() {
   (cd "$ROOT" && spawn vite bun run dev)
   wait_for "curl -sf http://localhost:$VITE_PORT/" 60 || die "Vite not answering on :$VITE_PORT; see $RUN/logs/vite.log"
 
-  # XDG_* isolates the app's SQLite DB, library files, and WebKit storage per run.
+  # XDG_* isolates the sidecar's store and WebKit storage per run.
   # A private bus and Secret Service keep credentials out of the user's keyring.
   # The empty password unlocks only this disposable run's collection.
   # Keep a separate kernel session too, for before/after checks of older builds.
@@ -136,7 +136,7 @@ doctor() {
   if [[ -s "$RUN/session" ]]; then
     check "WebDriver session $(cat "$RUN/session") answers" \
       "curl -sf http://127.0.0.1:$DRIVER_PORT/session/$(cat "$RUN/session")/url | jq -e '.value | strings'"
-    check "app DB is inside the run dir" "[[ -e $RUN/xdg/data/com.aojdevstudio.materialize3d/materialize.db ]]"
+    check "sidecar store is inside the run dir" "[[ -e $RUN/xdg/data/com.aojdevstudio.materialize3d/state/store.sqlite ]]"
   else
     echo "  --    no WebDriver session yet (bun wd.ts session)"
   fi

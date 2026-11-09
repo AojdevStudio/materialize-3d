@@ -10,9 +10,6 @@ use super::{BambuError, Result};
 /// Bambu Studio builds whose CLI slicing has been proven end to end.
 pub const VALIDATED_VERSIONS: &[&str] = &["02.08.02.61"];
 
-/// The official release page for the validated build.
-pub const DOWNLOAD_URL: &str = "https://github.com/bambulab/BambuStudio/releases/tag/v02.08.02.61";
-
 /// Version string reported by `BambuStudio --help`, e.g. `02.08.02.61`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -68,33 +65,6 @@ impl fmt::Display for FoundBuild {
     }
 }
 
-/// What the app would slice with right now, for Settings.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(tag = "state", rename_all = "snake_case")]
-pub enum StudioState {
-    Found {
-        path: PathBuf,
-        version: BambuVersion,
-    },
-    Unvalidated {
-        builds: Vec<FoundBuild>,
-    },
-    NotFound {
-        detail: String,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct StudioStatus {
-    #[serde(flatten)]
-    pub state: StudioState,
-    /// The app the person chose in Settings, if any.
-    pub chosen_path: Option<PathBuf>,
-    pub validated_versions: &'static [&'static str],
-    pub download_url: &'static str,
-}
-
 /// An executable found on disk, before its version is known.
 struct Candidate {
     exe: PathBuf,
@@ -118,20 +88,18 @@ impl Probed {
     }
 }
 
-/// Where Bambu Studio can come from, strongest first. The env var and the person's choice
-/// are each the only candidate when set; discovery runs only when neither is.
+/// Where Bambu Studio can come from, strongest first. The env var is the only candidate
+/// when set; discovery runs only when it is not.
 struct Sources {
     env_cli: Option<PathBuf>,
     env_profiles: Option<PathBuf>,
-    chosen: Option<PathBuf>,
 }
 
 impl Sources {
-    fn new(chosen: Option<&Path>) -> Self {
+    fn new() -> Self {
         Self {
             env_cli: env::var_os("BAMBU_STUDIO_CLI").map(PathBuf::from),
             env_profiles: env::var_os("BAMBU_STUDIO_PROFILES").map(PathBuf::from),
-            chosen: chosen.map(Path::to_path_buf),
         }
     }
 
@@ -148,9 +116,6 @@ impl Sources {
             };
             return select(vec![Probed::of(candidate)]);
         }
-        if let Some(chosen) = &self.chosen {
-            return BambuStudio::at(chosen);
-        }
         let candidates = discover();
         if candidates.is_empty() {
             return Err(BambuError::StudioNotFound {
@@ -159,79 +124,17 @@ impl Sources {
         }
         select(candidates.into_iter().map(Probed::of).collect())
     }
-
-    fn status(&self, discover: impl FnOnce() -> Vec<Candidate>) -> StudioStatus {
-        let state = match self.locate(discover) {
-            Ok(studio) => StudioState::Found {
-                path: studio.exe,
-                version: studio.version,
-            },
-            Err(BambuError::UnvalidatedStudio { found }) => {
-                StudioState::Unvalidated { builds: found }
-            }
-            Err(BambuError::ChosenStudioUnvalidated { build }) => StudioState::Unvalidated {
-                builds: vec![build],
-            },
-            Err(other) => StudioState::NotFound {
-                detail: other.to_string(),
-            },
-        };
-        StudioStatus {
-            state,
-            chosen_path: self.chosen.clone(),
-            validated_versions: VALIDATED_VERSIONS,
-            download_url: DOWNLOAD_URL,
-        }
-    }
-}
-
-/// Reports what [`BambuStudio::locate`] would find, given the person's choice.
-pub fn studio_status(chosen: Option<&Path>) -> StudioStatus {
-    Sources::new(chosen).status(discover_candidates)
 }
 
 impl BambuStudio {
     /// Finds a validated Bambu Studio.
     ///
-    /// `BAMBU_STUDIO_CLI` (with optional `BAMBU_STUDIO_PROFILES`) comes first, then the app
-    /// the person chose in Settings (`chosen`); either is the only candidate when set.
-    /// Otherwise the platform install locations are searched in order and the first
-    /// validated build wins over any earlier unvalidated one. There is no fallback to an
-    /// unvalidated build.
-    pub fn locate(chosen: Option<&Path>) -> Result<Self> {
-        Sources::new(chosen).locate(discover_candidates)
-    }
-
-    /// Probes one app a person chose: a macOS `.app` bundle or an executable. Refuses a
-    /// missing path and an unvalidated or unreadable version.
-    pub fn at(chosen: &Path) -> Result<Self> {
-        let exe = if chosen.is_dir() {
-            chosen.join("Contents/MacOS/BambuStudio")
-        } else {
-            chosen.to_path_buf()
-        };
-        if !exe.is_file() {
-            return Err(BambuError::ChosenStudioMissing {
-                path: chosen.to_path_buf(),
-            });
-        }
-        let probed = Probed::of(Candidate {
-            exe,
-            profiles_dir: None,
-        });
-        if !probed
-            .version
-            .as_ref()
-            .is_some_and(BambuVersion::is_validated)
-        {
-            return Err(BambuError::ChosenStudioUnvalidated {
-                build: FoundBuild {
-                    path: probed.exe,
-                    version: probed.version,
-                },
-            });
-        }
-        select(vec![probed])
+    /// `BAMBU_STUDIO_CLI` (with optional `BAMBU_STUDIO_PROFILES`) comes first and is the only
+    /// candidate when set. Otherwise the platform install locations are searched in order and
+    /// the first validated build wins over any earlier unvalidated one. There is no fallback
+    /// to an unvalidated build.
+    pub fn locate() -> Result<Self> {
+        Sources::new().locate(discover_candidates)
     }
 }
 
@@ -485,148 +388,21 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn a_stored_choice_wins_over_discovery_and_loses_to_the_env_var() {
+    fn the_env_var_wins_over_discovery() {
         let root = tempfile::tempdir().expect("tempdir");
         let discovered = fake_app(root.path(), "Discovered.app", "02.08.02.61");
-        let chosen = fake_app(root.path(), "Chosen.app", "02.08.02.61");
         let env = fake_app(root.path(), "Env.app", "02.08.02.61");
 
-        let from_choice = Sources {
-            env_cli: None,
-            env_profiles: None,
-            chosen: Some(chosen.clone()),
-        }
-        .locate(discovers(&discovered))
-        .expect("chosen app");
-        assert_eq!(from_choice.exe, exe_of(&chosen));
-        assert_eq!(
-            from_choice.profiles_dir,
-            chosen.join("Contents/Resources/profiles/BBL")
-        );
-
-        let from_env = Sources {
-            env_cli: Some(exe_of(&env)),
-            env_profiles: None,
-            chosen: Some(chosen),
-        }
-        .locate(discovers(&discovered))
-        .expect("env app");
+        let from_env = Sources { env_cli: Some(exe_of(&env)), env_profiles: None }
+            .locate(discovers(&discovered))
+            .expect("env app");
         assert_eq!(from_env.exe, exe_of(&env));
 
-        let from_discovery = Sources {
-            env_cli: None,
-            env_profiles: None,
-            chosen: None,
-        }
-        .locate(discovers(&discovered))
-        .expect("discovered app");
+        let from_discovery = Sources { env_cli: None, env_profiles: None }
+            .locate(discovers(&discovered))
+            .expect("discovered app");
         assert_eq!(from_discovery.exe, exe_of(&discovered));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn a_stored_unvalidated_or_missing_app_is_refused_and_discovery_is_not_used_instead() {
-        let root = tempfile::tempdir().expect("tempdir");
-        let discovered = fake_app(root.path(), "Discovered.app", "02.08.02.61");
-        let old = fake_app(root.path(), "Old.app", "02.07.01.62");
-        let gone = root.path().join("Gone.app");
-
-        let refused = Sources {
-            env_cli: None,
-            env_profiles: None,
-            chosen: Some(old.clone()),
-        }
-        .locate(discovers(&discovered))
-        .expect_err("unvalidated choice refused");
-        let message = refused.to_string();
-        assert!(
-            message.contains("Old.app") && message.contains("02.07.01.62"),
-            "{message}"
-        );
-        assert!(message.contains("not a validated version"), "{message}");
-
-        let missing = Sources {
-            env_cli: None,
-            env_profiles: None,
-            chosen: Some(gone.clone()),
-        }
-        .locate(discovers(&discovered))
-        .expect_err("missing choice refused");
-        let message = missing.to_string();
-        assert!(message.contains(&gone.display().to_string()), "{message}");
-        assert!(message.contains("not found"), "{message}");
-
-        assert!(
-            BambuStudio::at(&old).is_err(),
-            "choosing an unvalidated app is refused"
-        );
-        assert!(
-            BambuStudio::at(&gone).is_err(),
-            "choosing a missing app is refused"
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn status_reports_found_unvalidated_and_not_found() {
-        let root = tempfile::tempdir().expect("tempdir");
-        let good = fake_app(root.path(), "Good.app", "02.08.02.61");
-        let old = fake_app(root.path(), "Old.app", "02.07.01.62");
-        let gone = root.path().join("Gone.app");
-        let status = |chosen: &Path| {
-            Sources {
-                env_cli: None,
-                env_profiles: None,
-                chosen: Some(chosen.to_path_buf()),
-            }
-            .status(Vec::new)
-        };
-
-        let found = status(&good);
-        assert_eq!(
-            found.state,
-            StudioState::Found {
-                path: exe_of(&good),
-                version: BambuVersion("02.08.02.61".into())
-            }
-        );
-        assert_eq!(found.chosen_path.as_deref(), Some(good.as_path()));
-        let json = serde_json::to_value(&found).expect("json");
-        assert_eq!(json["state"], "found");
-        assert_eq!(json["version"], "02.08.02.61");
-        assert_eq!(
-            json["validatedVersions"],
-            serde_json::json!(["02.08.02.61"])
-        );
-        assert_eq!(json["downloadUrl"], DOWNLOAD_URL);
-
-        assert_eq!(
-            status(&old).state,
-            StudioState::Unvalidated {
-                builds: vec![FoundBuild {
-                    path: exe_of(&old),
-                    version: Some(BambuVersion("02.07.01.62".into()))
-                }]
-            }
-        );
-
-        let StudioState::NotFound { detail } = status(&gone).state else {
-            panic!("a missing choice is not found");
-        };
-        assert!(detail.contains(&gone.display().to_string()), "{detail}");
-
-        let nothing = Sources {
-            env_cli: None,
-            env_profiles: None,
-            chosen: None,
-        }
-        .status(Vec::new);
-        assert!(
-            matches!(nothing.state, StudioState::NotFound { .. }),
-            "{:?}",
-            nothing.state
-        );
-        assert_eq!(nothing.chosen_path, None);
+        assert_eq!(from_discovery.profiles_dir, discovered.join("Contents/Resources/profiles/BBL"));
     }
 
     /// Child half of the probe test. It runs only when the parent sets `M3D_PROBE_EXE`,

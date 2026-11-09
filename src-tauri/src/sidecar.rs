@@ -21,8 +21,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::{mpsc, oneshot, watch, Notify, OnceCell};
 
 use crate::credentials;
-use crate::fabrication::build_gate::{BuildGate, OwnedRunning};
-use crate::state::AppState;
+use crate::build_gate::{BuildGate, OwnedRunning};
 use crate::studio;
 
 /// The one event the window listens to. The sidecar's own events and the engine's state both arrive here.
@@ -68,7 +67,7 @@ struct Pass {
     /// How many sidecar runs ended. A run's requests carry the count from its start, so a request still on its way
     /// when its run ended never takes the pass.
     run: u64,
-    held: Option<OwnedRunning<StateGate>>,
+    held: Option<OwnedRunning<Arc<BuildGate>>>,
 }
 
 /// Outside work by operation id: one result each, shared by every request that names the id.
@@ -86,32 +85,22 @@ where
     cell.get_or_init(work).await.clone()
 }
 
-/// The gate inside the app's state, so the sidecar's pass can own its way to it.
-struct StateGate(Arc<AppState>);
-
-impl std::ops::Deref for StateGate {
-    type Target = BuildGate;
-    fn deref(&self) -> &BuildGate {
-        &self.0.builds
-    }
-}
-
 /// The pass that holds an update off while the sidecar works. The updater restarts the app only once no build
 /// and no sidecar work holds one. While an update installs, the gate is closed and the pass, and with it a send,
 /// is refused.
-fn take_pass(state: Arc<AppState>) -> Result<OwnedRunning<StateGate>, String> {
-    BuildGate::enter_owned(StateGate(state))
+fn take_pass(gate: Arc<BuildGate>) -> Result<OwnedRunning<Arc<BuildGate>>, String> {
+    BuildGate::enter_owned(gate)
         .ok_or_else(|| "An update is installing, and the app restarts when it is done. Send this again after it opens.".to_owned())
 }
 
 /// Runs `work` under a pass of its own. Work Rust does for the sidecar can outlive the sidecar run that asked for it,
 /// as a slice does after a crash, so the run's pass cannot hold the update off for it.
-async fn with_own_pass<F, Fut, T>(state: Arc<AppState>, work: F) -> Result<T, String>
+async fn with_own_pass<F, Fut, T>(gate: Arc<BuildGate>, work: F) -> Result<T, String>
 where
     F: FnOnce() -> Fut,
     Fut: Future<Output = Result<T, String>>,
 {
-    let _pass = take_pass(state)?;
+    let _pass = take_pass(gate)?;
     work().await
 }
 
@@ -533,13 +522,13 @@ struct Busy {
 
 /// Takes the update gate's pass for the sidecar run `run`, or gives it back. Taking it again while held changes
 /// nothing. A run that ended changes nothing either.
-fn set_busy(sidecar: &Sidecar, state: &Arc<AppState>, run: u64, busy: bool) -> Result<(), String> {
+fn set_busy(sidecar: &Sidecar, gate: &Arc<BuildGate>, run: u64, busy: bool) -> Result<(), String> {
     let mut pass = sidecar.pass.lock().unwrap_or_else(|e| e.into_inner());
     if pass.run != run {
         return Err("This engine has exited.".to_owned());
     }
     match (busy, pass.held.is_some()) {
-        (true, false) => pass.held = Some(take_pass(state.clone())?),
+        (true, false) => pass.held = Some(take_pass(gate.clone())?),
         (false, true) => pass.held = None,
         _ => {}
     }
@@ -589,7 +578,7 @@ async fn answer(app: &AppHandle, run: u64, method: &str, params: Value) -> Resul
         }
         "busy" => {
             let Busy { busy } = parse(method, params)?;
-            set_busy(&app.state::<Sidecar>(), app.state::<Arc<AppState>>().inner(), run, busy)?;
+            set_busy(&app.state::<Sidecar>(), app.state::<Arc<BuildGate>>().inner(), run, busy)?;
             Ok(Value::Null)
         }
         "slice" => {
@@ -597,9 +586,9 @@ async fn answer(app: &AppHandle, run: u64, method: &str, params: Value) -> Resul
             let cache = app.path().app_cache_dir().map_err(|e| format!("finding the app's cache folder: {e}"))?.join("bambu-presets");
             // The pass comes first, so a refusal while an update installs is not kept as the operation's result, and
             // the same slice can run once the gate opens.
-            let state = app.state::<Arc<AppState>>().inner().clone();
+            let gate = app.state::<Arc<BuildGate>>().inner().clone();
             let sidecar = app.state::<Sidecar>();
-            with_own_pass(state, || {
+            with_own_pass(gate, || {
                 once_per_operation(&sidecar.slices, operation, || async move {
                     let sliced = tauri::async_runtime::spawn_blocking(move || studio::slice::slice(&request, &cache))
                         .await
@@ -752,21 +741,21 @@ printf '__M3D_PATH__/opt/tools/bin__M3D_PATH__'
     #[tokio::test]
     async fn work_under_its_own_pass_holds_an_update_until_it_ends() {
         const SETTLE: Duration = Duration::from_millis(50);
-        let state = Arc::new(AppState::default());
+        let gate = Arc::new(BuildGate::default());
         let sidecar = Sidecar::default();
-        set_busy(&sidecar, &state, 0, true).expect("the sidecar takes the pass");
+        set_busy(&sidecar, &gate, 0, true).expect("the sidecar takes the pass");
         let (finish, finished) = oneshot::channel::<()>();
-        let slice = tokio::spawn(with_own_pass(state.clone(), || async move {
+        let slice = tokio::spawn(with_own_pass(gate.clone(), || async move {
             finished.await.map_err(|e| e.to_string())
         }));
         tokio::time::sleep(SETTLE).await;
         sidecar.run_ended();
-        let mut close = std::pin::pin!(state.builds.close_when_idle(|_| {}));
+        let mut close = std::pin::pin!(gate.close_when_idle(|_| {}));
         assert!(tokio::time::timeout(SETTLE, &mut close).await.is_err(), "the update waits for the slice its sidecar left");
         finish.send(()).expect("the slice is still running");
         slice.await.expect("the slice task").expect("the slice");
         let closed = tokio::time::timeout(SETTLE, &mut close).await.expect("the update goes ahead once the slice ends");
-        let refused = with_own_pass(state.clone(), || async { Ok(()) }).await.expect_err("no slice starts while the update installs");
+        let refused = with_own_pass(gate.clone(), || async { Ok(()) }).await.expect_err("no slice starts while the update installs");
         assert!(refused.contains("update is installing"), "{refused}");
         drop(closed);
     }
@@ -784,32 +773,32 @@ printf '__M3D_PATH__/opt/tools/bin__M3D_PATH__'
     #[tokio::test]
     async fn an_update_waits_for_a_busy_sidecar_and_refuses_it_work_while_it_installs() {
         const SETTLE: Duration = Duration::from_millis(50);
-        let state = Arc::new(AppState::default());
+        let gate = Arc::new(BuildGate::default());
         let sidecar = Sidecar::default();
         let run = sidecar.run_started();
-        set_busy(&sidecar, &state, run, true).expect("the sidecar takes the pass");
-        set_busy(&sidecar, &state, run, true).expect("asking again while it holds the pass changes nothing");
-        let mut close = std::pin::pin!(state.builds.close_when_idle(|_| {}));
+        set_busy(&sidecar, &gate, run, true).expect("the sidecar takes the pass");
+        set_busy(&sidecar, &gate, run, true).expect("asking again while it holds the pass changes nothing");
+        let mut close = std::pin::pin!(gate.close_when_idle(|_| {}));
         assert!(tokio::time::timeout(SETTLE, &mut close).await.is_err(), "the update waits while the sidecar is busy");
-        set_busy(&sidecar, &state, run, false).expect("the sidecar gives the pass back");
+        set_busy(&sidecar, &gate, run, false).expect("the sidecar gives the pass back");
         let closed = tokio::time::timeout(SETTLE, &mut close).await.expect("the update goes ahead once the sidecar is idle");
-        let refused = set_busy(&sidecar, &state, run, true).expect_err("work is refused while the update installs");
+        let refused = set_busy(&sidecar, &gate, run, true).expect_err("work is refused while the update installs");
         assert!(refused.contains("update is installing"), "{refused}");
         drop(closed);
-        set_busy(&sidecar, &state, run, true).expect("a failed install lets the sidecar work again");
+        set_busy(&sidecar, &gate, run, true).expect("a failed install lets the sidecar work again");
     }
 
     /// A busy request from a sidecar that already exited, answered after its exit gave the pass back, takes
     /// nothing, so an idle replacement never leaves an update waiting.
     #[tokio::test]
     async fn a_sidecar_that_exited_cannot_take_the_pass() {
-        let state = Arc::new(AppState::default());
+        let gate = Arc::new(BuildGate::default());
         let sidecar = Sidecar::default();
         let exited = sidecar.run_started();
         sidecar.run_ended();
         let _replacement = sidecar.run_started();
-        set_busy(&sidecar, &state, exited, true).expect_err("the exited sidecar's request is refused");
-        let close = state.builds.close_when_idle(|_| {});
+        set_busy(&sidecar, &gate, exited, true).expect_err("the exited sidecar's request is refused");
+        let close = gate.close_when_idle(|_| {});
         let _closed = tokio::time::timeout(Duration::from_millis(50), close).await.expect("the update goes ahead");
     }
 

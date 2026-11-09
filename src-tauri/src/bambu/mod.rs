@@ -1,45 +1,32 @@
-//! Slice a Bambu project 3MF with Bambu Studio's CLI, the way milestone 1 proved works:
-//! resolve the project's system presets from the installed profile tree, run the exact
-//! proven command, and verify the output against the project's geometry.
-//!
-//! Flow: [`BambuStudio::locate`] -> [`read_preset_selection`] -> [`resolve_presets`]
-//! -> [`slice_project`] -> [`verify`] (with [`part_footprints`]).
+//! The validated Bambu Studio and its system presets, for the agent's slice step
+//! (`crate::studio::slice`): [`BambuStudio::locate`] finds the build, and
+//! [`resolve_presets`] flattens the named presets into files its CLI loads.
 
-mod coverage;
-mod gcode;
 mod presets;
-mod slice;
 mod studio;
-mod threemf;
-mod verify;
-
-#[cfg(test)]
-mod integration_tests;
 
 use std::fs::{self, File};
-use std::io::{self, Read, Write};
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
-pub use gcode::{ExtrusionSegment, ToolFootprint};
-pub use presets::{
-    resolve_presets, resolve_presets_with_defaults, PresetKind, ResolvedPreset, ResolvedPresets,
-    RESOLVER_SCHEMA_VERSION,
-};
-pub use slice::{slice_project, EffectiveSettings, GcodeFile, PlateWarning, SliceReport};
-pub use studio::{
-    studio_status, BambuStudio, BambuVersion, FoundBuild, StudioState, StudioStatus, DOWNLOAD_URL,
-    VALIDATED_VERSIONS,
-};
-pub use threemf::{part_footprints, read_preset_selection, PartFootprint, PresetSelection};
-pub use verify::{is_support_warning, verify, verify_part, Check, CheckId};
+pub use presets::resolve_presets;
+pub use studio::{BambuStudio, FoundBuild, VALIDATED_VERSIONS};
 
 pub type Result<T, E = BambuError> = std::result::Result<T, E>;
 
 /// A JSON object as Bambu profiles and exported settings use it.
 pub type JsonMap = serde_json::Map<String, serde_json::Value>;
+
+/// System preset names to slice with.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PresetSelection {
+    pub machine: String,
+    pub process: String,
+    /// One per filament slot, in slot order; duplicates are expected.
+    pub filaments: Vec<String>,
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum BambuError {
@@ -50,13 +37,6 @@ pub enum BambuError {
         path: PathBuf,
         source: serde_json::Error,
     },
-    #[error("{path}: {source}")]
-    Zip {
-        path: PathBuf,
-        source: zip::result::ZipError,
-    },
-    #[error("{path}: {detail}")]
-    Model { path: PathBuf, detail: String },
     #[error("no Bambu Studio installation found; searched {}", display_paths(.searched))]
     StudioNotFound { searched: Vec<PathBuf> },
     #[error(
@@ -65,37 +45,17 @@ pub enum BambuError {
         join_display(.found)
     )]
     UnvalidatedStudio { found: Vec<FoundBuild> },
-    #[error("the chosen Bambu Studio was not found at {}", .path.display())]
-    ChosenStudioMissing { path: PathBuf },
-    #[error(
-        "the chosen Bambu Studio {build} is not a validated version (validated: {})",
-        VALIDATED_VERSIONS.join(", ")
-    )]
-    ChosenStudioUnvalidated { build: FoundBuild },
     #[error("could not determine Bambu Studio version from {exe} --help")]
     VersionUndetected { exe: PathBuf },
     #[error("no Bambu profile directory found next to {exe}")]
     ProfilesNotFound { exe: PathBuf },
     #[error("{0}")]
     Preset(String),
-    #[error("{path}: {key} is missing or empty")]
-    MissingSelection { path: PathBuf, key: &'static str },
-    #[error("input file does not exist: {0}")]
-    InputMissing(PathBuf),
-    #[error("output directory must be empty to prevent stale slice evidence: {0}")]
-    OutputDirNotEmpty(PathBuf),
     #[error("Bambu default probe exited {exit_code:?}: {stderr}")]
     ProbeFailed {
         exit_code: Option<i32>,
         stderr: String,
     },
-    #[error("Bambu Studio exited {exit_code:?} without a readable result.json: {detail}")]
-    NoResult {
-        exit_code: Option<i32>,
-        detail: String,
-    },
-    #[error("slice cancelled")]
-    Cancelled,
 }
 
 fn join_display(items: &[impl std::fmt::Display]) -> String {
@@ -112,52 +72,6 @@ fn display_paths(paths: &[PathBuf]) -> String {
         .map(|p| p.display().to_string())
         .collect::<Vec<_>>()
         .join(", ")
-}
-
-/// Axis-aligned XY bounding box in plate millimetres.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub struct Bbox {
-    pub min_x: f64,
-    pub max_x: f64,
-    pub min_y: f64,
-    pub max_y: f64,
-}
-
-impl Bbox {
-    fn point(x: f64, y: f64) -> Self {
-        Self {
-            min_x: x,
-            max_x: x,
-            min_y: y,
-            max_y: y,
-        }
-    }
-
-    fn include(&mut self, x: f64, y: f64) {
-        self.min_x = self.min_x.min(x);
-        self.max_x = self.max_x.max(x);
-        self.min_y = self.min_y.min(y);
-        self.max_y = self.max_y.max(y);
-    }
-
-    fn union(&self, other: &Bbox) -> Bbox {
-        let mut out = *self;
-        out.include(other.min_x, other.min_y);
-        out.include(other.max_x, other.max_y);
-        out
-    }
-
-    /// Largest distance between corresponding edges of the two boxes.
-    pub fn max_edge_deviation(&self, other: &Bbox) -> f64 {
-        [
-            self.min_x - other.min_x,
-            self.max_x - other.max_x,
-            self.min_y - other.min_y,
-            self.max_y - other.max_y,
-        ]
-        .into_iter()
-        .fold(0.0, |acc, d| acc.max(d.abs()))
-    }
 }
 
 fn io_err(path: &Path) -> impl FnOnce(io::Error) -> BambuError + '_ {
@@ -188,20 +102,6 @@ fn read_json_object(path: &Path) -> Result<JsonMap> {
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
-
-fn sha256_file(path: &Path) -> Result<String> {
-    let mut file = File::open(path).map_err(io_err(path))?;
-    let mut hasher = Sha256::new();
-    let mut buf = vec![0u8; 1 << 16];
-    loop {
-        let n = file.read(&mut buf).map_err(io_err(path))?;
-        if n == 0 {
-            break;
-        }
-        hasher.update(&buf[..n]);
-    }
-    Ok(hex(&hasher.finalize()))
 }
 
 /// Write via a sibling temp file and rename, so readers never see a partial file.

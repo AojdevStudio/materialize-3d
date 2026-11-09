@@ -18,10 +18,7 @@ tauri-build = { version = "~2.7.4", features = [] }
 
 [features]
 # Verification harness for driving the app on macOS; never enabled in release builds.
-e2e = ["dep:objc2", "dep:objc2-web-kit", "dep:objc2-app-kit", "dep:objc2-foundation", "dep:block2"]
-# The CAD worker's Linux test backend (QEMU microvm on KVM), for the self-hosted Linux runner. The macOS release
-# never enables it, so it cannot ship.
-linux-cad-test = []
+e2e = ["dep:axum", "dep:objc2", "dep:objc2-web-kit", "dep:objc2-app-kit", "dep:objc2-foundation", "dep:block2"]
 
 [dependencies]
 log = "0.4"
@@ -35,63 +32,30 @@ tauri-macros = "~2.7.4"
 tauri-codegen = "~2.7.4"
 tauri-plugin-log = "2"
 tauri-plugin-opener = "2"
-rumqttc = { version = "0.25", features = ["use-rustls"] }
-reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
 tokio = { version = "1", features = ["full"] }
-rustls-pemfile = "2"
-x509-parser = { version = "0.18", features = ["verify"] }
-webpki = { version = "0.103", package = "rustls-webpki" }
-chrono = { version = "0.4", features = ["serde"] }
 dirs = "5"
 thiserror = "1"
 url = "2"
-# zip 9's default deflate feature switches flate2 to zlib-rs for the whole build, which changes
-# package bytes (see tests/fixtures/signs/characterization.json). These are zip 2's defaults on
-# flate2's default Rust backend, so packages stay byte-identical.
-zip = { version = "9", default-features = false, features = ["aes-crypto", "bzip2", "deflate64", "deflate-flate2", "deflate-zopfli", "lzma", "time", "xz", "zstd"] }
-flate2 = "1"
-quick-xml = "0.38"
 tempfile = "3"
-suppaftp = { version = "12", features = ["native-tls", "deprecated"] }
-md5 = "0.7"
-native-tls = "0.2"
-rusqlite = { version = "0.32", features = ["bundled"] }
-uuid = { version = "1", features = ["v4"] }
-tauri-plugin-notification = "2"
 tauri-plugin-dialog = "~2.6.0"
 # The zip feature only unpacks Windows installers and pulls in zip 4, which carries advisories. macOS updates are .tar.gz.
 tauri-plugin-updater = { version = "~2.12.0", default-features = false, features = ["rustls-tls", "system-proxy"] }
 
-# studio: pictures sent to the agent, and the m3dfile:// protocol
-base64 = "0.22"
+# studio: the m3dfile:// protocol
 percent-encoding = "2"
-# studio: Astra's own codex config, and the person's skills it turns off
-toml = "0.9"
-walkdir = "2"
-
-# fabrication
-earcutr = "0.5"
-i_overlay = "9"
+# the slice step: reading a sliced 3MF's slice_info.config
+zip = { version = "9", default-features = false, features = ["deflate"] }
+quick-xml = "0.38"
+# the slice step: Bambu Studio's presets, flattened and cached
 sha2 = "0.10"
-tiny-skia = "0.12"
-ttf-parser = "0.25"
-usvg = { version = "0.48", default-features = false }
-# local HTTP servers: the e2e harness, and the updater tests' release feed
-axum = "0.8"
-
-# fabrication: the JSON schemas of the build kinds' specs
-schemars = "1"
+uuid = { version = "1", features = ["v4"] }
+# the e2e harness's local HTTP server
+axum = { version = "0.8", optional = true }
 
 [dev-dependencies]
-rcgen = "0.14.10"
 tauri = { version = "~2.12.5", features = ["test"] }
-
-[target.'cfg(target_os = "linux")'.dev-dependencies]
-gtk = "0.18"
-socket2 = "0.6"
-# Also the floor for the wry that tauri runs: 0.57.1 gives each Linux download its own failure state
-# (#102), and tauri-runtime-wry 2.12 still accepts 0.57.0.
-wry = { version = "0.57.1", default-features = false }
+# the updater tests' local release feed
+axum = "0.8"
 
 # OS-native credential store: Keychain (macOS), Credential Manager (Windows),
 # Secret Service (Linux).
@@ -109,7 +73,7 @@ keyring = { version = "3", features = ["windows-native"] }
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
 keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
 
-# openat and fstat for reading a build's views without following symlinks; the CAD worker's Linux backend too.
+# The sidecar's process group and its signals.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 

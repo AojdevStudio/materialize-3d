@@ -156,7 +156,8 @@ pub fn resolve_presets(
 
 /// Same as [`resolve_presets`] with the compiled defaults supplied by the caller (the
 /// wrapper's `--defaults-file`), so no Bambu binary is needed.
-pub fn resolve_presets_with_defaults(
+#[cfg(test)]
+fn resolve_presets_with_defaults(
     profiles_dir: &Path,
     app_version: &str,
     defaults: JsonMap,

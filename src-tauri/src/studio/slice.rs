@@ -7,8 +7,7 @@ use std::process::{Command, Stdio};
 
 use serde::{Deserialize, Serialize};
 
-use crate::fabrication::bambu::{resolve_presets, BambuStudio, PresetSelection};
-use crate::slicer::parse_slice_info;
+use crate::bambu::{resolve_presets, BambuStudio, PresetSelection};
 
 /// The presets the agent's workflow names: the P2S with a 0.4 mm nozzle, standard layers, PETG.
 const MACHINE: &str = "Bambu Lab P2S 0.4 nozzle";
@@ -44,7 +43,7 @@ struct Outcome {
 
 pub fn slice(request: &Request, cache_root: &Path) -> Result<Sliced, String> {
     let dir = super::project_dir(&request.project)?;
-    let studio = BambuStudio::locate(None).map_err(|e| e.to_string())?;
+    let studio = BambuStudio::locate().map_err(|e| e.to_string())?;
     slice_in(&studio, &dir, &request.inputs, &request.output, cache_root)
 }
 
@@ -138,17 +137,60 @@ fn slice_in(studio: &BambuStudio, dir: &Path, inputs: &[String], output: &str, c
             return Err(format!("Bambu Studio exited with {status} and reported nothing. Its log ends:\n{tail}"));
         }
     }
-    let info = parse_slice_info(&staged).map_err(|e| e.to_string())?;
-    if info.sliced_parts != inputs.len() {
-        return Err(format!("Bambu Studio sliced {} of {} parts, so a part is off the plate or too small", info.sliced_parts, inputs.len()));
+    let info = slice_info(&staged)?;
+    if info.parts != inputs.len() {
+        return Err(format!("Bambu Studio sliced {} of {} parts, so a part is off the plate or too small", info.parts, inputs.len()));
     }
     std::fs::rename(&staged, &target).map_err(|e| format!("{}: {e}", target.display()))?;
-    Ok(Sliced {
-        output: output.to_owned(),
-        parts: info.sliced_parts,
-        print_seconds: info.estimates.time_seconds,
-        filament_grams: info.estimates.filament_grams,
-    })
+    Ok(Sliced { output: output.to_owned(), ..info })
+}
+
+/// What a sliced 3MF's `Metadata/slice_info.config` reports, with `output` left for the caller.
+fn slice_info(path: &Path) -> Result<Sliced, String> {
+    let mut archive = zip::ZipArchive::new(File::open(path).map_err(|e| format!("{}: {e}", path.display()))?)
+        .map_err(|e| format!("{}: not a 3MF: {e}", path.display()))?;
+    let mut xml = String::new();
+    std::io::Read::read_to_string(
+        &mut archive.by_name("Metadata/slice_info.config").map_err(|e| format!("the 3MF has no slice_info.config: {e}"))?,
+        &mut xml,
+    )
+    .map_err(|e| format!("reading slice_info.config: {e}"))?;
+    parse_slice_info(&xml)
+}
+
+/// Reads the plates' `<metadata key="prediction">`, every `<object>` Bambu did not skip, and each `<filament used_g>`:
+///
+/// ```xml
+/// <config><plate>
+///   <metadata key="prediction" value="631"/>
+///   <object identify_id="7" name="part.stl" skipped="false"/>
+///   <filament id="1" type="PETG" used_m="1.29" used_g="3.85"/>
+/// </plate></config>
+/// ```
+fn parse_slice_info(xml: &str) -> Result<Sliced, String> {
+    use quick_xml::events::Event;
+
+    let mut info = Sliced { output: String::new(), parts: 0, print_seconds: 0, filament_grams: 0.0 };
+    let mut reader = quick_xml::Reader::from_str(xml);
+    loop {
+        match reader.read_event().map_err(|e| format!("slice_info.config: {e}"))? {
+            Event::Empty(tag) | Event::Start(tag) => {
+                let attr = |name: &[u8]| {
+                    tag.attributes().flatten().find(|a| a.key.as_ref() == name).map(|a| String::from_utf8_lossy(&a.value).into_owned())
+                };
+                match tag.name().as_ref() {
+                    b"metadata" if attr(b"key").as_deref() == Some("prediction") => {
+                        info.print_seconds = attr(b"value").and_then(|v| v.parse().ok()).unwrap_or(0);
+                    }
+                    b"object" if attr(b"skipped").as_deref() != Some("true") => info.parts += 1,
+                    b"filament" => info.filament_grams += attr(b"used_g").and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0),
+                    _ => {}
+                }
+            }
+            Event::Eof => return Ok(info),
+            _ => {}
+        }
+    }
 }
 
 #[cfg(test)]
@@ -175,6 +217,24 @@ mod tests {
         let (inputs, target) = resolve(project.path(), &["cube.stl".to_owned()], "out/cube.3mf").expect("inside");
         let root = project.path().canonicalize().expect("root");
         assert_eq!((inputs, target), (vec![root.join("cube.stl")], root.join("out/cube.3mf")));
+    }
+
+    #[test]
+    fn slice_info_counts_the_parts_bambu_kept_and_sums_their_filament() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<config>
+  <plate>
+    <metadata key="prediction" value="631"/>
+    <metadata key="weight" value="3.85"/>
+    <object identify_id="7" name="a.stl" skipped="false"/>
+    <object identify_id="8" name="b.stl" skipped="true"/>
+    <filament id="1" type="PETG" used_m="1.29" used_g="3.85"/>
+    <filament id="2" type="PETG" used_m="0.87" used_g="0.00"/>
+  </plate>
+</config>"#;
+        let info = parse_slice_info(xml).expect("parses");
+        assert_eq!((info.parts, info.print_seconds), (1, 631));
+        assert!((info.filament_grams - 3.85).abs() < 0.001, "{info:?}");
     }
 
     #[test]
@@ -216,7 +276,7 @@ mod tests {
     #[test]
     #[ignore = "runs the real Bambu Studio"]
     fn a_cube_slices_to_a_print_ready_3mf_and_a_missing_part_is_refused() {
-        let studio = BambuStudio::locate(None).expect("a validated Bambu Studio");
+        let studio = BambuStudio::locate().expect("a validated Bambu Studio");
         let project = tempfile::tempdir().expect("project");
         let cache = tempfile::tempdir().expect("cache");
         std::fs::write(project.path().join("cube.stl"), cube_stl(20.0)).expect("stl");

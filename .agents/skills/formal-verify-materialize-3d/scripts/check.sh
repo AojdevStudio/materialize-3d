@@ -13,11 +13,7 @@ no-build-cut-off        UpdateRestart UpdateRestart            INVARIANT NoBuild
 gate-held-until-restart UpdateRestart UpdateRestart            INVARIANT GateHeldUntilRestart    holds
 failed-update-reopens   UpdateRestart UpdateRestart            INVARIANT FailedUpdateReopens     holds
 update-wakes            UpdateRestart UpdateRestartBuildsStop  PROPERTY  UpdateGoesAhead         holds
-queue-file-at-restart   UpdateRestart UpdateRestart            INVARIANT QueueFileWholeAtRestart fails
 update-not-starved      UpdateRestart UpdateRestart            PROPERTY  UpdateGoesAhead         fails
-job-sent-once           AutoSend      AutoSend                 INVARIANT SentAtMostOnce          holds
-one-run-at-a-time       AutoSend      AutoSend                 INVARIANT OneRunAtATime           holds
-send-only-when-wanted   AutoSend      AutoSend                 INVARIANT SentOnlyWhenWanted      holds
 '
 
 # mutant | check it must fail
@@ -29,9 +25,6 @@ ungated-turn   no-build-cut-off
 early-release  no-build-cut-off
 guard-dropped  no-build-cut-off
 guard-leaked   failed-update-reopens
-unguarded          one-run-at-a-time
-released-on-switch one-run-at-a-time
-no-recheck         send-only-when-wanted
 '
 
 jar=${TLA2TOOLS_JAR:-}

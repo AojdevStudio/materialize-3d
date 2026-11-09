@@ -6,7 +6,7 @@ Use this checklist for release acceptance. A pass requires the installed release
 
 Record one of these labels with the actual installed GUI evidence.
 
-- **Fresh-account GUI**. Use a fresh standard account logged into a desktop. This is the strongest GUI isolation option. The headless clean-install wrapper's account never logs in, so its results do not prove this GUI path.
+- **Fresh-account GUI**. Use a fresh standard account logged into a desktop. This is the strongest GUI isolation option.
 - **Isolated-HOME GUI under existing console login**. Use fresh app data and a throwaway test keychain in an isolated HOME under the existing desktop login. Use a new isolated HOME for GUI first-run acceptance.
 
 Both options require the actual installed app with only the system `PATH`, `/usr/bin:/bin:/usr/sbin:/sbin`. Record the app's effective `PATH` and data location. Neither isolation label proves an independent-machine run. Record the machine separately, including whether it built the DMG.
@@ -81,7 +81,7 @@ Inspect the recordings before attaching them. Keep credentials and unrelated des
 Keep one evidence record for the exact installed DMG. Include these results.
 
 - DMG filename, checksum, source commit, installed path and version, macOS version, chip, and Bambu Studio path and version.
-- GUI isolation label, console account, app data location, effective `PATH`, and whether this Mac built the DMG. Keep headless wrapper evidence separately labeled.
+- GUI isolation label, console account, app data location, effective `PATH`, and whether this Mac built the DMG.
 - The provider, the model, and the exact chat request. Include any follow-up prompts or errors.
 - A watchable recording of the chat, the preview, and Open in Bambu Studio.
 - The 3MF's path and full SHA-256, and the Bambu Studio screenshot.
@@ -91,4 +91,4 @@ Keep one evidence record for the exact installed DMG. Include these results.
 
 The [verification skill](../.agents/skills/verify-materialize-3d/SKILL.md) describes the Linux debug app and the macOS `--features e2e` debug build. `.agents/skills/verify-materialize-3d/scripts/mac.ts` controls that debug build through its test endpoint and scripted dialogs. The release binary omits that endpoint and dialog override. A `mac.ts` run does not verify the installed release.
 
-The [release procedure](releasing.md) describes the bundle check and the clean-account CAD self-test. Those checks support acceptance but do not exercise chat or the slice.
+The [release procedure](releasing.md) describes the bundle check. It supports acceptance but does not exercise chat or the slice.
