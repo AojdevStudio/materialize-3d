@@ -444,6 +444,7 @@ export default function StudioApp() {
   }
 
   const openProject = async (project: Project) => {
+    if (project.id === currentId.current) return
     show(project)
     const request = loadRequest.current
     try {
