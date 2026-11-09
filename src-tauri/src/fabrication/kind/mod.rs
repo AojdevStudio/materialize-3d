@@ -121,7 +121,6 @@ pub trait ObjectKind: Send + Sync + 'static {
 
 /// One rendered view of a build.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum View {
     /// A sign's finished face, as a person reads it.

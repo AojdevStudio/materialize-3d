@@ -1,18 +1,12 @@
 mod commands;
 mod credentials;
 mod database;
-pub mod actions;
-#[cfg(test)]
-mod caller_identity_tests;
-pub mod agent;
 pub mod fabrication;
 #[cfg(feature = "e2e")]
 mod e2e;
-mod mcp;
 mod sidecar;
 mod studio;
 mod studio_commands;
-pub mod tools;
 mod makerworld;
 pub mod openscad;
 pub mod platform;
@@ -59,7 +53,7 @@ fn app_context() -> tauri::Context<tauri::Wry> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     studio::register_protocol(tauri::Builder::default())
-        .plugin(tauri_plugin_log::Builder::default().filter(agent::turn::app_log_keeps).build())
+        .plugin(tauri_plugin_log::Builder::default().build())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
@@ -72,7 +66,6 @@ pub fn run() {
         .manage(MakerWorldService::default())
         .manage(SlicerService::default())
         .manage(OpenScadService::default())
-        .manage(agent::commands::AgentTurns::default())
         .manage(updater::PendingUpdate::default())
         .manage(sidecar::Sidecar::default())
         .manage(studio::quit::QuitFlush::default())
@@ -104,28 +97,6 @@ pub fn run() {
             get_queue,
             remove_from_queue,
             get_print_history,
-            mcp::mcp_status,
-            mcp::mcp_set_enabled,
-            mcp::mcp_token,
-            mcp::mcp_rotate_token,
-            actions::gui::design_build,
-            actions::gui::design_cancel,
-            actions::gui::design_list,
-            actions::gui::design_lineage,
-            actions::gui::design_get,
-            actions::gui::design_preview,
-            actions::gui::design_approve,
-            actions::gui::design_export,
-            actions::gui::design_record_print,
-            agent::commands::agent_status,
-            agent::commands::agent_set_api_key,
-            agent::commands::agent_clear_api_key,
-            agent::commands::agent_set_model,
-            agent::commands::agent_set_base_url,
-            agent::commands::agent_history,
-            agent::commands::agent_new_conversation,
-            agent::commands::agent_send,
-            agent::commands::agent_cancel,
             delete_print_history_item,
             get_library_models,
             search_library_models,
@@ -237,31 +208,8 @@ pub fn run() {
                 cleanup.removed_dirs
             );
 
-            // An agent tool call that was running when the app stopped is
-            // shown as interrupted and never re-run.
-            let interrupted_calls = agent::store::with_conn(&app_state, |conn| agent::store::reconcile_interrupted(conn))
-                .map_err(|e| format!("agent tool call reconcile failed: {e}"))?;
-            log::info!("setup: agent reconciled ({interrupted_calls} interrupted tool calls)");
             #[cfg(feature = "e2e")]
             e2e::start(app.handle())?;
-            let app_actions =
-                actions::Actions::new(actions::gui::app_events(app.handle().clone()), app_state.inner().clone(), workspace);
-            // The GUI commands use `Actions`; the agent and MCP get only what a model may request.
-            app.manage::<Arc<dyn actions::RequestActions>>(Arc::new(app_actions.clone()));
-            app.manage(app_actions);
-            app.manage(actions::gui::GuiBuilds::default());
-            app.manage(mcp::McpServer::default());
-            {
-                let handle = app.handle().clone();
-                tauri::async_runtime::spawn(async move {
-                    let server = handle.state::<mcp::McpServer>();
-                    let actions = handle.state::<Arc<dyn actions::RequestActions>>().inner().clone();
-                    let state = handle.state::<Arc<AppState>>();
-                    if let Err(err) = mcp::start_if_enabled(&server, actions, &state, mcp::token).await {
-                        log::error!("mcp: failed to start at launch: {err}");
-                    }
-                });
-            }
 
             // Scan library filesystem for existing metadata.json files
             let library_root = app_data_dir.join("library").join("makerworld");

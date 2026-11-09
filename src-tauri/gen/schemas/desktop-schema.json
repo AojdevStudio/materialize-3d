@@ -357,60 +357,6 @@
           "markdownDescription": "Enables the add_to_queue command without any pre-configured scope."
         },
         {
-          "description": "Enables the agent_cancel command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-agent-cancel",
-          "markdownDescription": "Enables the agent_cancel command without any pre-configured scope."
-        },
-        {
-          "description": "Enables the agent_clear_api_key command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-agent-clear-api-key",
-          "markdownDescription": "Enables the agent_clear_api_key command without any pre-configured scope."
-        },
-        {
-          "description": "Enables the agent_history command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-agent-history",
-          "markdownDescription": "Enables the agent_history command without any pre-configured scope."
-        },
-        {
-          "description": "Enables the agent_new_conversation command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-agent-new-conversation",
-          "markdownDescription": "Enables the agent_new_conversation command without any pre-configured scope."
-        },
-        {
-          "description": "Enables the agent_send command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-agent-send",
-          "markdownDescription": "Enables the agent_send command without any pre-configured scope."
-        },
-        {
-          "description": "Enables the agent_set_api_key command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-agent-set-api-key",
-          "markdownDescription": "Enables the agent_set_api_key command without any pre-configured scope."
-        },
-        {
-          "description": "Enables the agent_set_base_url command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-agent-set-base-url",
-          "markdownDescription": "Enables the agent_set_base_url command without any pre-configured scope."
-        },
-        {
-          "description": "Enables the agent_set_model command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-agent-set-model",
-          "markdownDescription": "Enables the agent_set_model command without any pre-configured scope."
-        },
-        {
-          "description": "Enables the agent_status command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-agent-status",
-          "markdownDescription": "Enables the agent_status command without any pre-configured scope."
-        },
-        {
           "description": "Enables the bambu_studio_status command without any pre-configured scope.",
           "type": "string",
           "const": "allow-bambu-studio-status",
@@ -463,60 +409,6 @@
           "type": "string",
           "const": "allow-delete-printer-config",
           "markdownDescription": "Enables the delete_printer_config command without any pre-configured scope."
-        },
-        {
-          "description": "Enables the design_approve command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-design-approve",
-          "markdownDescription": "Enables the design_approve command without any pre-configured scope."
-        },
-        {
-          "description": "Enables the design_build command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-design-build",
-          "markdownDescription": "Enables the design_build command without any pre-configured scope."
-        },
-        {
-          "description": "Enables the design_cancel command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-design-cancel",
-          "markdownDescription": "Enables the design_cancel command without any pre-configured scope."
-        },
-        {
-          "description": "Enables the design_export command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-design-export",
-          "markdownDescription": "Enables the design_export command without any pre-configured scope."
-        },
-        {
-          "description": "Enables the design_get command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-design-get",
-          "markdownDescription": "Enables the design_get command without any pre-configured scope."
-        },
-        {
-          "description": "Enables the design_lineage command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-design-lineage",
-          "markdownDescription": "Enables the design_lineage command without any pre-configured scope."
-        },
-        {
-          "description": "Enables the design_list command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-design-list",
-          "markdownDescription": "Enables the design_list command without any pre-configured scope."
-        },
-        {
-          "description": "Enables the design_preview command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-design-preview",
-          "markdownDescription": "Enables the design_preview command without any pre-configured scope."
-        },
-        {
-          "description": "Enables the design_record_print command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-design-record-print",
-          "markdownDescription": "Enables the design_record_print command without any pre-configured scope."
         },
         {
           "description": "Enables the disconnect_printer command without any pre-configured scope.",
@@ -613,30 +505,6 @@
           "type": "string",
           "const": "allow-makerworld-reload",
           "markdownDescription": "Enables the makerworld_reload command without any pre-configured scope."
-        },
-        {
-          "description": "Enables the mcp_rotate_token command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-mcp-rotate-token",
-          "markdownDescription": "Enables the mcp_rotate_token command without any pre-configured scope."
-        },
-        {
-          "description": "Enables the mcp_set_enabled command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-mcp-set-enabled",
-          "markdownDescription": "Enables the mcp_set_enabled command without any pre-configured scope."
-        },
-        {
-          "description": "Enables the mcp_status command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-mcp-status",
-          "markdownDescription": "Enables the mcp_status command without any pre-configured scope."
-        },
-        {
-          "description": "Enables the mcp_token command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-mcp-token",
-          "markdownDescription": "Enables the mcp_token command without any pre-configured scope."
         },
         {
           "description": "Enables the navigate_makerworld command without any pre-configured scope.",
@@ -873,60 +741,6 @@
           "markdownDescription": "Denies the add_to_queue command without any pre-configured scope."
         },
         {
-          "description": "Denies the agent_cancel command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-agent-cancel",
-          "markdownDescription": "Denies the agent_cancel command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the agent_clear_api_key command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-agent-clear-api-key",
-          "markdownDescription": "Denies the agent_clear_api_key command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the agent_history command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-agent-history",
-          "markdownDescription": "Denies the agent_history command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the agent_new_conversation command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-agent-new-conversation",
-          "markdownDescription": "Denies the agent_new_conversation command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the agent_send command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-agent-send",
-          "markdownDescription": "Denies the agent_send command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the agent_set_api_key command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-agent-set-api-key",
-          "markdownDescription": "Denies the agent_set_api_key command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the agent_set_base_url command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-agent-set-base-url",
-          "markdownDescription": "Denies the agent_set_base_url command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the agent_set_model command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-agent-set-model",
-          "markdownDescription": "Denies the agent_set_model command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the agent_status command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-agent-status",
-          "markdownDescription": "Denies the agent_status command without any pre-configured scope."
-        },
-        {
           "description": "Denies the bambu_studio_status command without any pre-configured scope.",
           "type": "string",
           "const": "deny-bambu-studio-status",
@@ -979,60 +793,6 @@
           "type": "string",
           "const": "deny-delete-printer-config",
           "markdownDescription": "Denies the delete_printer_config command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the design_approve command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-design-approve",
-          "markdownDescription": "Denies the design_approve command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the design_build command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-design-build",
-          "markdownDescription": "Denies the design_build command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the design_cancel command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-design-cancel",
-          "markdownDescription": "Denies the design_cancel command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the design_export command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-design-export",
-          "markdownDescription": "Denies the design_export command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the design_get command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-design-get",
-          "markdownDescription": "Denies the design_get command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the design_lineage command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-design-lineage",
-          "markdownDescription": "Denies the design_lineage command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the design_list command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-design-list",
-          "markdownDescription": "Denies the design_list command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the design_preview command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-design-preview",
-          "markdownDescription": "Denies the design_preview command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the design_record_print command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-design-record-print",
-          "markdownDescription": "Denies the design_record_print command without any pre-configured scope."
         },
         {
           "description": "Denies the disconnect_printer command without any pre-configured scope.",
@@ -1129,30 +889,6 @@
           "type": "string",
           "const": "deny-makerworld-reload",
           "markdownDescription": "Denies the makerworld_reload command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the mcp_rotate_token command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-mcp-rotate-token",
-          "markdownDescription": "Denies the mcp_rotate_token command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the mcp_set_enabled command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-mcp-set-enabled",
-          "markdownDescription": "Denies the mcp_set_enabled command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the mcp_status command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-mcp-status",
-          "markdownDescription": "Denies the mcp_status command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the mcp_token command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-mcp-token",
-          "markdownDescription": "Denies the mcp_token command without any pre-configured scope."
         },
         {
           "description": "Denies the navigate_makerworld command without any pre-configured scope.",

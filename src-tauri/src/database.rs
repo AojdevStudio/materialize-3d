@@ -46,6 +46,38 @@ struct StoredImportMetadataCompat {
     files: Vec<String>,
 }
 
+/// The tables of the in-app agent that used to run in Rust. Kept so the schema
+/// version means the same tables in every database.
+const MIGRATION_005: &str = "
+CREATE TABLE IF NOT EXISTS agent_conversations (
+    id TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS agent_messages (
+    id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL REFERENCES agent_conversations(id) ON DELETE CASCADE,
+    turn_id TEXT NOT NULL,
+    role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+    text TEXT NOT NULL,
+    rig_json TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS agent_messages_conversation ON agent_messages (conversation_id, created_at);
+CREATE TABLE IF NOT EXISTS agent_tool_calls (
+    id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL REFERENCES agent_conversations(id) ON DELETE CASCADE,
+    turn_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    args_json TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('started', 'completed', 'failed', 'cancelled', 'interrupted')),
+    output_json TEXT,
+    started_at TEXT NOT NULL,
+    finished_at TEXT
+);
+CREATE INDEX IF NOT EXISTS agent_tool_calls_conversation ON agent_tool_calls (conversation_id, started_at);
+CREATE INDEX IF NOT EXISTS agent_tool_calls_status ON agent_tool_calls (status);
+";
+
 /// Why `init_db` returned no connection.
 #[derive(Debug, thiserror::Error)]
 pub enum InitError {
@@ -201,7 +233,7 @@ pub(crate) fn run_migrations(conn: &Connection) -> Result<(), InitError> {
 
     if version < 5 {
         log::info!("database: applying migration 005 — create agent conversation tables");
-        conn.execute_batch(crate::agent::store::MIGRATION_005)
+        conn.execute_batch(MIGRATION_005)
             .map_err(|e| format!("migration 005 failed: {e}"))?;
         conn.pragma_update(None, "user_version", 5)
             .map_err(|e| format!("failed to set user_version to 5: {e}"))?;
