@@ -121,6 +121,8 @@ export default function StudioApp() {
   const early = useRef<View[]>([])
   /** Counts chat loads, so only the newest load of the open chat replaces its view, not an older one that answers late. */
   const loads = useRef(0)
+  /** Counts readiness checks, so only the newest check's answer reaches the screen. */
+  const checks = useRef(0)
 
   const items = useMemo(() => buildChat(view?.entries ?? [], view?.running ?? true), [view?.entries, view?.running])
   const running = view?.running ?? false
@@ -218,13 +220,15 @@ export default function StudioApp() {
 
   /**
    * Asks the sidecar what the agent still needs before a send from the open screen, as its model's provider may differ
-   * from another screen's. An answer for a screen the person left is dropped.
+   * from another screen's. Each change of screen, model, or sign-in asks again, so an older check's answer is about a
+   * screen or a model the person left, and it is dropped.
    */
   const checkReady = () => {
+    const check = ++checks.current
     const project = currentId.current
     void sidecar('setup.check', project === null ? {} : { project })
-      .then((found) => project === currentId.current && setNeeds(found))
-      .catch((err: unknown) => setError(String(err)))
+      .then((found) => check === checks.current && setNeeds(found))
+      .catch((err: unknown) => check === checks.current && setError(String(err)))
   }
 
   /** Reads the models the person can pick, which change with each sign-in. */

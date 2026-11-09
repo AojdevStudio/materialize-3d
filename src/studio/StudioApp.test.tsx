@@ -703,6 +703,23 @@ describe('StudioApp', () => {
     await waitFor(() => expect((screen.getByTestId('send') as HTMLButtonElement).disabled).toBe(false))
   })
 
+  it('drops a check for a model the person already left, even when it answers after the check for the new one', async () => {
+    const login = { kind: 'login', provider: 'anthropic', name: 'Anthropic', fix: 'Sign in to Anthropic before you send.' }
+    const first = held()
+    let checks = 0
+    mockSidecar({ 'setup.check': (params, real) => (checks++ === 0 ? first.call(params, () => Promise.resolve([login])) : real()) })
+    render(<StudioApp />)
+    await waitFor(() => expect(screen.getByTestId('model-picker').textContent).toBe('Claude Opus 5.5'))
+    type('A clip')
+    fireEvent.click(screen.getByTestId('model-picker'))
+    fireEvent.click(within(screen.getByRole('menu', { name: 'Models' })).getByText('GPT-6.1 Sol'))
+    await waitFor(() => expect((screen.getByTestId('send') as HTMLButtonElement).disabled).toBe(false))
+    await first.release()
+    await pause(50)
+    expect(screen.queryByTestId('readiness')).toBeNull()
+    expect((screen.getByTestId('send') as HTMLButtonElement).disabled).toBe(false)
+  })
+
   it('never brings a sent picture back in the next draft', async () => {
     const send = held()
     mockSidecar({ 'chat.send': send.call }, [projectA, projectB])
