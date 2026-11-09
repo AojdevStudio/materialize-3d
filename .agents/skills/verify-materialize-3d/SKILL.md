@@ -139,7 +139,7 @@ $S/mac.ts count <sel>
 $S/mac.ts shot <name>            # WebKit snapshot
 $S/mac.ts eval <js>              # inspection only
 $S/mac.ts restart                # relaunch on the same data
-$S/mac.ts dialog <open-path>
+$S/mac.ts dialog <open-path>     # the next Open takes this path and skips the native panel
 $S/mac.ts down
 ```
 
