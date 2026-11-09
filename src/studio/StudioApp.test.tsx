@@ -1806,6 +1806,28 @@ describe('StudioApp', () => {
     await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project A'))
   })
 
+  it("shows the render a recent project's background turn wrote once the turn ends, while the start screen stays open", async () => {
+    let finished = false
+    const files: Record<string, ProjectFile[]> = { [projectB.id]: [{ rel: 'old.png', size: 1, modifiedMs: 1 }] }
+    mockSidecar(
+      {
+        'projects.status': () =>
+          Promise.resolve({ [projectB.id]: { running: !finished, printed: false, printFiles: 0, lastMs: finished ? 45 : 40 } }),
+      },
+      [projectB],
+      {},
+      files,
+    )
+    render(<StudioApp />)
+    const thumbnail = () => screen.getByTestId(`recent-${projectB.id}`).querySelector('img')?.getAttribute('src')
+    await waitFor(() => expect(thumbnail()).toBe(`m3dfile://${projectB.id}/old.png?v=1`))
+    files[projectB.id] = [...files[projectB.id], { rel: 'new.png', size: 1, modifiedMs: 2 }]
+    finished = true
+    await emit({ type: 'chat', ...view(projectB.id, { running: false, seq: 2 }) })
+    await waitFor(() => expect(thumbnail()).toBe(`m3dfile://${projectB.id}/new.png?v=2`))
+    expect(screen.getByTestId('start-screen')).toBeTruthy()
+  })
+
   it('attaches any dropped file, and sends a PDF and an STL beside a picture', async () => {
     const store = mockSidecar()
     render(<StudioApp />)

@@ -55,18 +55,21 @@ export default function Start({ projects, composer, onSuggest, onOpen, onError }
 
   const recent = [...projects].sort((a, b) => lastActivity(b, status[b.id]) - lastActivity(a, status[a.id])).slice(0, RECENT)
   const recentIds = recent.map((p) => p.id).join('\n')
+  /** When each recent project last changed, as the status read says. A file a turn writes moves it on. */
+  const recentActivity = recent.map((p) => lastActivity(p, status[p.id])).join('\n')
 
-  // Each recent project's newest render, read again when the recent projects change.
+  // Each recent project's newest render, read again when the recent projects change, or when a status read shows one
+  // changed, as when its turn ended after it wrote a render. Only the newest read lands.
   useEffect(() => {
     const ids = recentIds === '' ? [] : recentIds.split('\n')
     let live = true
     void Promise.all(ids.map(async (id) => [id, newestRender(await studio.files(id))] as const))
       .then((found) => live && setRenders(Object.fromEntries(found)))
-      .catch((err: unknown) => onError(String(err)))
+      .catch((err: unknown) => live && onError(String(err)))
     return () => {
       live = false
     }
-  }, [recentIds, onError])
+  }, [recentIds, recentActivity, onError])
 
   return (
     <div className="start" data-testid="start-screen">
