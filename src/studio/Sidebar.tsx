@@ -110,10 +110,14 @@ export default function Sidebar({ projects, current, engine, onOpen, onNew, onEr
   // A turn that starts or ends changes a project's group, and a turn that ends has written its files. So a chat change
   // reads the status again only when its running state differs from the last one seen for that project. That is the
   // last chat event, not the status on screen, because a read for a start can still be out when the end arrives. An
-  // engine that started again may hold a newer state.
+  // engine that started again may hold a newer state, and its events start fresh.
   useEffect(() => {
     const unlisten = onSidecarEvent((event) => {
-      if (event.type === 'ready') return refresh()
+      if (event.type === 'ready') {
+        // A new engine run starts its own turns, so what the old run's events said no longer holds.
+        seen.current = {}
+        return refresh()
+      }
       if (event.type !== 'chat') return
       const before = seen.current[event.project] ?? shown.current[event.project]?.running
       seen.current[event.project] = event.running

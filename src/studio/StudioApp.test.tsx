@@ -386,6 +386,23 @@ describe('StudioApp', () => {
     },
   )
 
+  it('sees the first turn after an engine restart start, even when the turn before it was running', async () => {
+    let running = false
+    mockSidecar({ 'projects.status': () => Promise.resolve({ [projectB.id]: { running, printed: false, printFiles: 0, lastMs: Date.now() } }) })
+    render(<StudioApp />)
+    await screen.findByTestId('group-drafts')
+    running = true
+    await emit({ type: 'chat', ...view(projectB.id, { running: true, seq: 2 }) })
+    await screen.findByTestId('group-working')
+    running = false
+    await emit({ type: 'engine', state: 'restarting' })
+    await emit({ type: 'ready', version: '1.2.3' })
+    await screen.findByTestId('group-drafts')
+    running = true
+    await emit({ type: 'chat', ...view(projectB.id, { running: true, seq: 1 }) })
+    expect(within(await screen.findByTestId('group-working')).getByText('Project B')).toBeTruthy()
+  })
+
   it('hides the sidebar to a narrow rail from its panel toggle, and shows it again', async () => {
     mockSidecar()
     render(<StudioApp />)
