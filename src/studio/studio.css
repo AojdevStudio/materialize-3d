@@ -270,14 +270,11 @@ pre {
   line-height: 21px;
 }
 
-/* The row's menu button sits over its time, and shows on hover or keyboard focus. */
-.row-actions {
-  position: absolute;
-  top: 4px;
-  right: 4px;
-}
-
+/* The row's menu button sits over its time, and shows only while the row is hovered or holds keyboard focus. */
 .row-menu-button {
+  position: absolute;
+  top: 6px;
+  right: 4px;
   display: grid;
   place-items: center;
   width: 24px;
@@ -286,30 +283,25 @@ pre {
   border: none;
   background: var(--s-soft);
   color: var(--s-muted);
-  opacity: 0;
+  visibility: hidden;
 }
 
 .project-row:hover .row-menu-button,
-.row-menu-button:focus-visible,
-.row-menu-button[aria-expanded='true'] {
-  opacity: 1;
+.project-row:focus-within .row-menu-button {
+  visibility: visible;
 }
 
 .row-menu-button:hover {
   color: var(--s-text);
 }
 
+/* The menu opens in the list under its row, so the list's scroll never cuts it off. */
 .row-menu {
-  position: absolute;
-  top: 28px;
-  right: 0;
-  z-index: 10;
-  min-width: 160px;
+  margin: 2px 8px 4px 30px;
   padding: 4px;
   border: 1px solid var(--s-line);
   border-radius: 8px;
   background: var(--s-raised);
-  box-shadow: 0 4px 16px rgb(0 0 0 / 0.12);
 }
 
 .row-menu button {

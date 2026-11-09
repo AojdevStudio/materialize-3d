@@ -138,9 +138,12 @@ export class Chats {
   }
 
   async #conversation(project: string): Promise<Conversation> {
-    const { conversation } = await this.#o.store.project(project)
-    const found = await this.#o.store.harness.conversation(conversation as ConversationId, context)
-    if (found === undefined) throw new Error(`project ${project} has no conversation`)
+    return this.#conversationOf(await this.#o.store.project(project))
+  }
+
+  async #conversationOf(project: Project): Promise<Conversation> {
+    const found = await this.#o.store.harness.conversation(project.conversation as ConversationId, context)
+    if (found === undefined) throw new Error(`project ${project.id} has no conversation`)
     return found
   }
 
@@ -392,7 +395,7 @@ export class Chats {
     const { store } = this.#o
     const rows = await Promise.all(
       (await store.projects()).map(async (project) => {
-        const { running, turn } = await this.#state(await this.#conversation(project.id))
+        const { running, turn } = await this.#state(await this.#conversationOf(project))
         const { printFiles, newestMs } = store.folderSummary(project.id)
         const lastMs = Math.max(project.createdMs, turn?.startedMs ?? 0, newestMs)
         return [project.id, { running, printed: project.printed === true, printFiles, lastMs }] as const

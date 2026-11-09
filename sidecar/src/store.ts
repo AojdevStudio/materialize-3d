@@ -4,7 +4,7 @@
  *
  * App state lives as Pi documents on the root conversation. Each project is a conversation of its own.
  */
-import { existsSync, mkdirSync, readdirSync, statSync } from 'node:fs'
+import { type Dirent, existsSync, mkdirSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
@@ -369,12 +369,23 @@ export class Store implements LoginIndex {
     const summary = { printFiles: 0, newestMs: 0 }
     if (!existsSync(root)) return summary
     const walk = (dir: string, refs: boolean) => {
-      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      let entries: Dirent[]
+      try {
+        entries = readdirSync(dir, { withFileTypes: true })
+      } catch (error) {
+        // The agent may remove a folder while it is read. A folder that is gone holds nothing to count.
+        if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return
+        throw error
+      }
+      for (const entry of entries) {
         if (entry.name.startsWith('.') || ['__pycache__', 'node_modules', 'venv'].includes(entry.name)) continue
         const path = join(dir, entry.name)
         if (entry.isDirectory()) walk(path, refs || (dir === root && entry.name === 'refs'))
         else if (entry.isFile()) {
-          summary.newestMs = Math.max(summary.newestMs, statSync(path).mtimeMs)
+          // Likewise a file removed since the folder was read.
+          const stat = statSync(path, { throwIfNoEntry: false })
+          if (stat === undefined) continue
+          summary.newestMs = Math.max(summary.newestMs, stat.mtimeMs)
           if (!refs && entry.name.toLowerCase().endsWith('.3mf')) summary.printFiles++
         }
       }

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Project, ProjectStatus } from '../../sidecar/src/protocol'
 import { onSidecarEvent, sidecar } from './api'
-import { ago, detail, type Group, groupOf, groupProjects, lastActivity } from './sidebar'
+import { ago, detail, type Group, groupProjects, lastActivity } from './sidebar'
 import { useTheme } from './theme'
 import mark from '../assets/brand/mark-small-32.svg'
 import blocks from '../assets/icons/module-three.svg?raw'
@@ -80,7 +80,10 @@ export default function Sidebar({ projects, current, engine, onOpen, onNew, onEr
   const [now, setNow] = useState(() => Date.now())
   const [menuFor, setMenuFor] = useState<string | null>(null)
   const [collapsed, setCollapsed] = useState(false)
-  const menu = useRef<HTMLDivElement>(null)
+  const menu = useRef<HTMLLIElement>(null)
+  /** The status on screen, for the event listener to compare a chat change with. */
+  const shown = useRef(status)
+  shown.current = status
   /** One status read at a time. A read asked for meanwhile runs once that one ends, so the newest state always lands. */
   const reading = useRef<{ busy: boolean; again: boolean }>({ busy: false, again: false })
 
@@ -103,10 +106,12 @@ export default function Sidebar({ projects, current, engine, onOpen, onNew, onEr
     })()
   }, [onError])
 
-  // A chat change can start or end a turn, or come with new files. An engine that started again may hold a newer state.
+  // A turn that starts or ends changes a project's group, and a turn that ends has written its files. So a chat change
+  // reads the status again only when its running state differs from the one shown. An engine that started again may
+  // hold a newer state.
   useEffect(() => {
     const unlisten = onSidecarEvent((event) => {
-      if (event.type === 'chat' || event.type === 'ready') refresh()
+      if (event.type === 'ready' || (event.type === 'chat' && shown.current[event.project]?.running !== event.running)) refresh()
     })
     return () => {
       void unlisten.then((stop) => stop())
@@ -120,7 +125,7 @@ export default function Sidebar({ projects, current, engine, onOpen, onNew, onEr
     return () => window.clearInterval(timer)
   }, [])
 
-  // The open menu closes on a click outside it and its button, or on Escape.
+  // The open menu closes on a click outside its row, or on Escape.
   useEffect(() => {
     if (menuFor === null) return
     const close = (event: Event) => {
@@ -189,7 +194,7 @@ export default function Sidebar({ projects, current, engine, onOpen, onNew, onEr
               {rows.map((p) => {
                 const line = detail(group, status[p.id])
                 return (
-                  <li key={p.id} className="project-row" data-testid={`project-${p.id}`}>
+                  <li key={p.id} className="project-row" data-testid={`project-${p.id}`} ref={menuFor === p.id ? menu : undefined}>
                     <button type="button" className="row-open" aria-current={p.id === current} onClick={() => onOpen(p)} title={p.title}>
                       <StatusMark group={group} />
                       <span className="row-text">
@@ -198,29 +203,27 @@ export default function Sidebar({ projects, current, engine, onOpen, onNew, onEr
                       </span>
                       <span className="row-time">{ago(lastActivity(p, status[p.id]), now)}</span>
                     </button>
-                    {groupOf(status[p.id]) !== 'printed' && (
-                      <div className="row-actions" ref={menuFor === p.id ? menu : undefined}>
-                        <button
-                          type="button"
-                          className="row-menu-button"
-                          aria-label={`${p.title} menu`}
-                          aria-haspopup="menu"
-                          aria-expanded={menuFor === p.id}
-                          onClick={() => setMenuFor(menuFor === p.id ? null : p.id)}
-                        >
-                          <svg viewBox="0 0 16 16" width={14} height={14} fill="currentColor" aria-hidden="true">
-                            <circle cx={3} cy={8} r={1.3} />
-                            <circle cx={8} cy={8} r={1.3} />
-                            <circle cx={13} cy={8} r={1.3} />
-                          </svg>
+                    {status[p.id]?.printed !== true && (
+                      <button
+                        type="button"
+                        className="row-menu-button"
+                        aria-label={`${p.title} menu`}
+                        aria-haspopup="menu"
+                        aria-expanded={menuFor === p.id}
+                        onClick={() => setMenuFor(menuFor === p.id ? null : p.id)}
+                      >
+                        <svg viewBox="0 0 16 16" width={14} height={14} fill="currentColor" aria-hidden="true">
+                          <circle cx={3} cy={8} r={1.3} />
+                          <circle cx={8} cy={8} r={1.3} />
+                          <circle cx={13} cy={8} r={1.3} />
+                        </svg>
+                      </button>
+                    )}
+                    {menuFor === p.id && (
+                      <div className="row-menu" role="menu" ref={(el) => el?.scrollIntoView({ block: 'nearest' })}>
+                        <button type="button" role="menuitem" onClick={() => markPrinted(p.id)}>
+                          Mark as printed
                         </button>
-                        {menuFor === p.id && (
-                          <div className="row-menu" role="menu">
-                            <button type="button" role="menuitem" onClick={() => markPrinted(p.id)}>
-                              Mark as printed
-                            </button>
-                          </div>
-                        )}
                       </div>
                     )}
                   </li>
