@@ -446,6 +446,17 @@ describe('StudioApp', () => {
     expect(screen.queryByTestId('group-working')).toBeNull()
   })
 
+  it('ignores a chat state older than the one it has, so a late start cannot undo an end', async () => {
+    const state = { running: false, printFiles: 1 }
+    mockSidecar({ 'projects.status': () => Promise.resolve({ [projectB.id]: { ...state, printed: false, lastMs: Date.now() } }) })
+    render(<StudioApp />)
+    await screen.findByTestId('group-ready')
+    await emit({ type: 'chat', ...view(projectB.id, { running: false, seq: 21 }) })
+    await emit({ type: 'chat', ...view(projectB.id, { running: true, seq: 20 }) })
+    expect(within(await screen.findByTestId('group-ready')).getByText('Project B')).toBeTruthy()
+    expect(screen.queryByTestId('group-working')).toBeNull()
+  })
+
   it('hides the sidebar to a narrow rail from its panel toggle, and shows it again', async () => {
     mockSidecar()
     render(<StudioApp />)

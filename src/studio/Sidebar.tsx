@@ -82,7 +82,7 @@ export default function Sidebar({ projects, current, engine, onOpen, onNew, onEr
    * Whether each project's turn runs, as this engine run's chat events said it. Events come in order, so they are newer
    * than any read, and a read that comes back late cannot move a project out of Working or into it.
    */
-  const [live, setLive] = useState<Record<string, boolean>>({})
+  const [live, setLive] = useState<Record<string, { running: boolean; seq: number }>>({})
   /** The same states, updated as each event arrives, so two events before one render still compare in order. */
   const liveNow = useRef(live)
   const [now, setNow] = useState(() => Date.now())
@@ -120,8 +120,11 @@ export default function Sidebar({ projects, current, engine, onOpen, onNew, onEr
         setLive(liveNow.current)
         return refresh()
       }
-      if (event.type !== 'chat' || liveNow.current[event.project] === event.running) return
-      liveNow.current = { ...liveNow.current, [event.project]: event.running }
+      if (event.type !== 'chat') return
+      // `seq` orders a chat's states, as in the chat view. An older state that arrives late changes nothing.
+      const before = liveNow.current[event.project]
+      if (before !== undefined && (event.seq < before.seq || event.running === before.running)) return
+      liveNow.current = { ...liveNow.current, [event.project]: { running: event.running, seq: event.seq } }
       setLive(liveNow.current)
       refresh()
     })
@@ -160,7 +163,7 @@ export default function Sidebar({ projects, current, engine, onOpen, onNew, onEr
 
   const status = useMemo(
     () =>
-      Object.fromEntries(Object.entries(read).map(([id, s]) => [id, { ...s, running: live[id] ?? s.running }])),
+      Object.fromEntries(Object.entries(read).map(([id, s]) => [id, { ...s, running: live[id]?.running ?? s.running }])),
     [read, live],
   )
   const groups = useMemo(() => groupProjects(projects, status), [projects, status])
