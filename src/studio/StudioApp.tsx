@@ -262,7 +262,7 @@ export default function StudioApp() {
           if (project !== null) {
             loaded.current = null
             early.current = []
-            void load(project, loadRequest.current).catch((err: unknown) => setError(String(err)))
+            void load(project, loadRequest.current)
           }
           break
         }
@@ -438,11 +438,17 @@ export default function StudioApp() {
   /** Loads the open project's chat, with the changes that arrived while it loaded. */
   const load = async (project: string, request: number) => {
     const load = ++loads.current
-    const opened = await sidecar('chat.open', { project })
-    if (request !== loadRequest.current || load !== loads.current) return
-    setView(early.current.reduce(merge, opened))
-    early.current = []
-    loaded.current = project
+    try {
+      const opened = await sidecar('chat.open', { project })
+      if (request !== loadRequest.current || load !== loads.current) return
+      setView(early.current.reduce(merge, opened))
+      early.current = []
+      loaded.current = project
+    } catch (err) {
+      if (request !== loadRequest.current || load !== loads.current) return
+      failedLoad.current = project
+      setError(String(err))
+    }
   }
 
   const openProject = async (project: Project) => {
@@ -453,15 +459,7 @@ export default function StudioApp() {
     } else {
       show(project)
     }
-    const request = loadRequest.current
-    try {
-      await load(project.id, request)
-    } catch (err) {
-      if (request === loadRequest.current) {
-        failedLoad.current = project.id
-        setError(String(err))
-      }
-    }
+    await load(project.id, loadRequest.current)
   }
 
   /**

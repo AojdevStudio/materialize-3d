@@ -1245,6 +1245,30 @@ describe('StudioApp', () => {
     expect(screen.queryByTestId('working')).toBeNull()
   })
 
+  it('ignores a superseded chat load rejection after an engine reload', async () => {
+    let failFirst: (reason: string) => void = () => {}
+    let opens = 0
+    mockSidecar({
+      'chat.open': (params) => ++opens === 1
+        ? new Promise((_, reject) => (failFirst = reject))
+        : Promise.resolve(view(String(params.project), {
+          entries: [{ id: 1, kind: 'assistant', text: 'The clip is ready.', calls: [] }],
+        })),
+    })
+    render(<StudioApp />)
+    const sidebar = within(screen.getByRole('navigation', { name: 'Projects' }))
+    fireEvent.click(await sidebar.findByText('Project B'))
+    await screen.findByRole('banner')
+    await emit({ type: 'ready', version: '1.2.3' })
+    await screen.findByText('The clip is ready.')
+
+    await act(async () => failFirst('The chat could not be loaded.'))
+    expect(screen.queryByRole('alert')).toBeNull()
+    fireEvent.click(sidebar.getByText('Project B'))
+    expect(sidecarCalls('chat.open')).toHaveLength(2)
+    expect(screen.getByText('The clip is ready.')).toBeTruthy()
+  })
+
   it("clears a sent project's saved draft even when the person typed in another project meanwhile", async () => {
     const send = held()
     mockSidecar({ 'chat.send': send.call }, [projectA, projectB])
