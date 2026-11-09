@@ -29,39 +29,24 @@ jobs:
           PULLFROG_PROMPT: ${{ inputs.prompt }}
         with:
           script: |
-            let payload;
-            try {
-              payload = JSON.parse(process.env.PULLFROG_PROMPT);
-            } catch {
-              payload = undefined;
+            const payload = JSON.parse(process.env.PULLFROG_PROMPT);
+            const event = payload?.['~pullfrog'] === true ? payload.event : undefined;
+            if (event?.is_pr !== true || !Number.isSafeInteger(event.issue_number) || event.issue_number <= 0) {
+              throw new Error('The prompt is not a Pullfrog pull request envelope.');
             }
-            const envelope = payload?.['~pullfrog'] === true;
-            const event = envelope ? payload.event : undefined;
             const isDependabot = (login) => login === 'dependabot[bot]';
-            const trustedRole = !envelope ||
-              ['admin', 'maintain', 'write'].includes(event?.authorPermission);
-            let run = trustedRole &&
-              !isDependabot(process.env.GITHUB_ACTOR) && !isDependabot(payload?.triggerer);
-            if (run && (event?.is_pr === true || event?.issue_number !== undefined)) {
-              if (!Number.isSafeInteger(event.issue_number) || event.issue_number <= 0) {
-                throw new Error('Pullfrog sent an event without a valid issue or pull request number.');
-              }
-              let pr;
-              try {
-                ({ data: pr } = await github.rest.pulls.get({
-                  ...context.repo,
-                  pull_number: event.issue_number,
-                }));
-              } catch (error) {
-                if (error.status !== 404 || event.is_pr === true) throw error;
-              }
-              if (pr) {
-                run = pr.head?.repo?.full_name === `${context.repo.owner}/${context.repo.repo}` &&
-                  !isDependabot(pr.user?.login);
-              }
+            let run = ['admin', 'maintain', 'write'].includes(event.authorPermission) &&
+              !isDependabot(process.env.GITHUB_ACTOR) && !isDependabot(payload.triggerer);
+            if (run) {
+              const { data: pr } = await github.rest.pulls.get({
+                ...context.repo,
+                pull_number: event.issue_number,
+              });
+              run = pr.head.repo?.full_name === `${context.repo.owner}/${context.repo.repo}` &&
+                !isDependabot(pr.user?.login);
             }
             core.setOutput('run', String(run));
-            if (!run) core.notice('Pullfrog skipped: fork, Dependabot, or outside pull request.');
+            if (!run) core.notice('Pullfrog skipped: untrusted role, fork, or Dependabot.');
       - name: Checkout code
         if: steps.trust.outputs.run == 'true'
         uses: actions/checkout@v6
