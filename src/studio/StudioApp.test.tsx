@@ -28,6 +28,7 @@ vi.mock('@tauri-apps/api/webview', () => ({
 import type { Project } from '../../sidecar/src/protocol'
 import type { ProjectFile } from './api'
 import StudioApp from './StudioApp'
+import mark from '../assets/brand/mark-small-32.svg'
 
 // jsdom has no layout, so the chat's scroll to its newest line is a no-op here, and no object URLs for previews.
 Element.prototype.scrollIntoView = vi.fn()
@@ -286,6 +287,14 @@ describe('StudioApp', () => {
     }) })
     expect(screen.queryByTestId('working')).toBeNull()
     expect(screen.getByText('The clip is ready.')).toBeTruthy()
+  })
+
+  it('shows the small mark and the app name at the top of the sidebar', async () => {
+    mockSidecar()
+    render(<StudioApp />)
+    const brand = await within(screen.getByRole('navigation', { name: 'Projects' })).findByTestId('brand')
+    expect(brand.textContent).toBe('Materialize 3D')
+    expect(brand.querySelector('img')?.getAttribute('src')).toBe(mark)
   })
 
   it('shows the engine version the sidecar answers with', async () => {

@@ -9,6 +9,7 @@ import { buildChat } from './transcript'
 import { ImportBlockedBanner, ReadinessBanner, SignInAsk, WaitingBanner } from './Waiting'
 import { UpdateBanner } from '../components/UpdateBanner'
 import { checkForUpdatesAtLaunch, useUpdateEvents } from '../stores/updates'
+import mark from '../assets/brand/mark-small-32.svg'
 import './studio.css'
 
 const SUGGESTIONS = [
@@ -552,6 +553,10 @@ export default function StudioApp() {
   return (
     <div className={`studio ${current ? 'studio-work' : 'studio-start'}`}>
       <nav className="sessions" aria-label="Projects">
+        <div className="brand" data-testid="brand">
+          <img src={mark} alt="" width={20} height={20} />
+          Materialize 3D
+        </div>
         <button type="button" className="new-project" onClick={() => show(null)} data-testid="new-project">
           New project
         </button>
