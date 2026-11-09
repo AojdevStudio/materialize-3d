@@ -66,3 +66,5 @@ Issues and pull requests are welcome. Open an issue before large changes. CI use
 ## License
 
 MIT. See [LICENSE](LICENSE). Bundled fonts keep their own licenses, listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+The sidebar icons are by [Streamline](https://www.streamlinehq.com), licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).

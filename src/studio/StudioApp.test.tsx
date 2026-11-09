@@ -131,6 +131,8 @@ function mockSidecar(overrides: Calls = {}, projects: Project[] = [projectB], dr
         return Promise.resolve(view(String(params.project)))
       case 'setup.check':
         return Promise.resolve([])
+      case 'projects.status':
+        return Promise.resolve({})
       case 'drafts.set': {
         const rev = ++draftRevs
         const draft = { text: String(params.text), attachments: params.attachments as string[], rev }
@@ -298,6 +300,71 @@ describe('StudioApp', () => {
     const brand = await within(screen.getByRole('navigation', { name: 'Projects' })).findByTestId('brand')
     expect(brand.textContent).toBe('Materialize 3D')
     expect(brand.querySelector('img')?.getAttribute('src')).toBe(mark)
+  })
+
+  it('groups the projects by status, with a count on each group, and hides an empty group', async () => {
+    const projectC = { id: '2026-11-06-c', conversation: 4, title: 'Project C', createdMs: 0 }
+    const now = Date.now()
+    mockSidecar({
+      'projects.status': () => Promise.resolve({
+        [projectA.id]: { running: true, printed: false, printFiles: 0, lastMs: now - 2 * 60_000 },
+        [projectB.id]: { running: false, printed: false, printFiles: 2, lastMs: now - 60 * 60_000 },
+        [projectC.id]: { running: false, printed: false, printFiles: 1, lastMs: now - 3 * 24 * 60 * 60_000 },
+      }),
+    }, [projectA, projectB, projectC])
+    render(<StudioApp />)
+    const working = await screen.findByTestId('group-working')
+    expect(within(working).getByRole('heading').textContent?.trim()).toBe('Working1')
+    expect(within(working).getByTestId(`project-${projectA.id}`).textContent).toBe('Project ABuilding parts2m')
+    const ready = screen.getByTestId('group-ready')
+    expect(within(ready).getByRole('heading').textContent?.trim()).toBe('Ready to print2')
+    expect(within(ready).getAllByRole('listitem').map((row) => row.textContent)).toEqual([
+      'Project B2 print files1h',
+      'Project C1 print file3d',
+    ])
+    expect(screen.queryByTestId('group-printed')).toBeNull()
+    expect(screen.queryByTestId('group-drafts')).toBeNull()
+  })
+
+  it('moves a project to Printed from its menu', async () => {
+    let printed = false
+    mockSidecar({
+      'projects.status': () => Promise.resolve({ [projectB.id]: { running: false, printed, printFiles: 1, lastMs: Date.now() } }),
+      'projects.markPrinted': () => {
+        printed = true
+        return Promise.resolve(null)
+      },
+    })
+    render(<StudioApp />)
+    const ready = await screen.findByTestId('group-ready')
+    fireEvent.click(within(ready).getByRole('button', { name: 'Project B menu' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Mark as printed' }))
+    expect(sidecarCalls('projects.markPrinted')).toEqual([{ project: projectB.id }])
+    const done = await screen.findByTestId('group-printed')
+    expect(within(done).getByText('Project B')).toBeTruthy()
+    expect(screen.queryByTestId('group-ready')).toBeNull()
+    expect(within(done).queryByRole('button', { name: 'Project B menu' })).toBeNull()
+  })
+
+  it('reads the status again when a chat changes, so a project that starts working moves to Working', async () => {
+    let running = false
+    mockSidecar({ 'projects.status': () => Promise.resolve({ [projectB.id]: { running, printed: false, printFiles: 0, lastMs: Date.now() } }) })
+    render(<StudioApp />)
+    await screen.findByTestId('group-drafts')
+    running = true
+    await emit({ type: 'chat', ...view(projectB.id, { running: true, seq: 2 }) })
+    expect(within(await screen.findByTestId('group-working')).getByText('Project B')).toBeTruthy()
+    expect(screen.queryByTestId('group-drafts')).toBeNull()
+  })
+
+  it('hides the sidebar to a narrow rail from its panel toggle, and shows it again', async () => {
+    mockSidecar()
+    render(<StudioApp />)
+    await screen.findByText('Project B')
+    fireEvent.click(screen.getByRole('button', { name: 'Hide sidebar' }))
+    expect(screen.queryByText('Project B')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Show sidebar' }))
+    expect(screen.getByText('Project B')).toBeTruthy()
   })
 
   it('flips the theme from the toggle at the bottom of the sidebar, and saves the choice', async () => {

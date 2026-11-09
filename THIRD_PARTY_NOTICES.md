@@ -12,6 +12,18 @@ The app interface uses Inter, Instrument Serif, and JetBrains Mono. All three ar
 | Instrument Serif | `src/assets/fonts/InstrumentSerif-Italic.ttf` | Copyright 2022 The Instrument Serif Project Authors (https://github.com/Instrument/instrument-serif) |
 | JetBrains Mono | `src/assets/fonts/JetBrainsMono-*.ttf` | Copyright 2020 The JetBrains Mono Project Authors (https://github.com/JetBrains/JetBrainsMono) |
 
+## Icons
+
+The sidebar icons in `src/assets/icons/` are by Streamline (https://www.streamlinehq.com), licensed under the Creative Commons Attribution 4.0 International License (CC BY 4.0, https://creativecommons.org/licenses/by/4.0/). They were changed from two-tone to outline only, drawn in the current text color.
+
+| Icon | File |
+|---|---|
+| Layout left | `src/assets/icons/layout-left.svg` |
+| Loading half | `src/assets/icons/loading-half.svg` |
+| Layers stacked | `src/assets/icons/layers-stacked.svg` |
+| Rating star | `src/assets/icons/rating-star.svg` |
+| Module three | `src/assets/icons/module-three.svg` |
+
 ## Bambu Studio
 
 Materialize 3D does not include or redistribute Bambu Studio. It runs a copy that you install from Bambu Lab.

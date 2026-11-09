@@ -24,7 +24,7 @@ import {
 import type { ConversationView } from '@earendil-works/pi-durable'
 import { leaves, WORKFLOW, WORKFLOW_VERSION } from './agent'
 import type { Busy } from './busy'
-import { type ChatEntry, type ChatView, type Project, type SidecarEvent, START, type Turn, type Waiting } from './protocol'
+import { type ChatEntry, type ChatView, type Project, type ProjectStatus, type SidecarEvent, START, type Turn, type Waiting } from './protocol'
 import { isLoginFailure } from './inference'
 import { DRAFT_CHANGED, DraftsDoc, LoginSavesDoc, SettingsDoc, type Store, TurnDoc, WaitingDoc } from './store'
 import { chatEntry } from './transcript'
@@ -385,6 +385,20 @@ export class Chats {
   /** Sends the window a chat's state, for a change its watch does not see. */
   async #show(project: string): Promise<void> {
     await this.#changed(project, await this.#conversation(project))
+  }
+
+  /** Each project's status for the sidebar, by project id. */
+  async status(): Promise<Record<string, ProjectStatus>> {
+    const { store } = this.#o
+    const rows = await Promise.all(
+      (await store.projects()).map(async (project) => {
+        const { running, turn } = await this.#state(await this.#conversation(project.id))
+        const { printFiles, newestMs } = store.folderSummary(project.id)
+        const lastMs = Math.max(project.createdMs, turn?.startedMs ?? 0, newestMs)
+        return [project.id, { running, printed: project.printed === true, printFiles, lastMs }] as const
+      }),
+    )
+    return Object.fromEntries(rows)
   }
 
   async retry(project: string): Promise<void> {

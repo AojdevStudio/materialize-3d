@@ -16,6 +16,8 @@
   --s-accent: #c2410c;
   --s-user: var(--s-soft);
   --s-error: #b42318;
+  --s-working: #2563eb;
+  --s-ready: #2f7d4f;
   --s-code: var(--s-soft);
   /* The shared tokens the update banner reads, in light values. */
   --bg-deep: var(--s-bg);
@@ -43,6 +45,8 @@
   --s-primary-text: #000000;
   --s-accent: #ff7a1a;
   --s-error: #f97066;
+  --s-working: #60a5fa;
+  --s-ready: #4ade80;
   --accent-blue: #60a5fa;
   --accent-blue-dim: #60a5fa26;
 }
@@ -103,59 +107,221 @@ pre {
 
 .studio {
   display: grid;
-  grid-template-columns: 220px minmax(380px, 1fr) minmax(420px, 1.25fr);
+  grid-template-columns: auto minmax(380px, 1fr) minmax(420px, 1.25fr);
   height: 100%;
 }
 
 .studio-start {
-  grid-template-columns: 220px 1fr;
+  grid-template-columns: auto 1fr;
 }
 
 /* Projects */
 .sessions {
   display: flex;
   flex-direction: column;
+  width: 240px;
   min-height: 0;
-  overflow-y: auto;
   background: var(--s-side);
   border-right: 1px solid var(--s-line);
   padding: 12px 8px 8px;
+}
+
+.sessions.collapsed {
+  width: 48px;
+  align-items: center;
+}
+
+.side-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 0 10px;
 }
 
 .brand {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 2px 8px 12px;
+  padding: 0 8px;
   font-weight: 600;
 }
 
-.sessions ul {
+.side-icon {
+  display: inline-grid;
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+
+.side-icon svg {
+  width: 100%;
+  height: 100%;
+}
+
+.new-project {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 12px;
+  font-weight: 500;
+}
+
+.groups {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  margin-top: 12px;
+}
+
+.group + .group {
+  margin-top: 14px;
+}
+
+.group-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 4px 8px;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.group-name {
+  flex: 1;
+}
+
+.group-count {
+  color: var(--s-muted);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.groups ul {
   list-style: none;
-  margin: 12px 0 0;
+  margin: 2px 0 0;
   padding: 0;
 }
 
-.sessions li button {
-  display: block;
+.project-row {
+  position: relative;
+}
+
+.row-open {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
   width: 100%;
-  text-align: left;
+  padding: 6px 8px;
   border: none;
   background: none;
-  padding: 6px 8px;
+  text-align: left;
+}
+
+.row-open:hover {
+  background: var(--s-soft);
+}
+
+.row-open[aria-current='true'] {
+  background: var(--s-soft);
+}
+
+.mark {
+  flex: none;
+  margin-top: 3px;
+}
+
+.mark.working {
+  color: var(--s-working);
+}
+
+.mark.ready {
+  color: var(--s-ready);
+}
+
+.mark.printed,
+.mark.draft {
+  color: var(--s-muted);
+}
+
+.row-text {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+
+.row-title,
+.row-detail {
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.sessions li button[aria-current='true'] {
-  background: var(--s-line);
+.row-detail {
+  color: var(--s-muted);
+  font-size: 12px;
 }
 
-.new-project {
+.row-time {
+  flex: none;
+  color: var(--s-muted);
+  font-size: 12px;
+  line-height: 21px;
+}
+
+/* The row's menu button sits over its time, and shows on hover or keyboard focus. */
+.row-actions {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+}
+
+.row-menu-button {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  background: var(--s-soft);
+  color: var(--s-muted);
+  opacity: 0;
+}
+
+.project-row:hover .row-menu-button,
+.row-menu-button:focus-visible,
+.row-menu-button[aria-expanded='true'] {
+  opacity: 1;
+}
+
+.row-menu-button:hover {
+  color: var(--s-text);
+}
+
+.row-menu {
+  position: absolute;
+  top: 28px;
+  right: 0;
+  z-index: 10;
+  min-width: 160px;
+  padding: 4px;
+  border: 1px solid var(--s-line);
+  border-radius: 8px;
+  background: var(--s-raised);
+  box-shadow: 0 4px 16px rgb(0 0 0 / 0.12);
+}
+
+.row-menu button {
+  display: block;
   width: 100%;
+  border: none;
+  background: none;
+  text-align: left;
+}
+
+.row-menu button:hover {
+  background: var(--s-soft);
 }
 
 .sessions-footer {
@@ -164,6 +330,17 @@ pre {
   gap: 4px;
   padding: 8px 4px 0;
   border-top: 1px solid var(--s-line);
+}
+
+.sessions .engine {
+  flex: 1;
+  margin: 0;
+  overflow: hidden;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--s-muted);
 }
 
 .icon-button {
@@ -577,12 +754,6 @@ pre {
 .file-size {
   color: var(--s-muted);
   font-size: 12px;
-}
-
-.sessions .engine {
-  padding: 8px;
-  font-size: 12px;
-  color: var(--s-muted);
 }
 
 .chat-model {

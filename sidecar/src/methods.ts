@@ -127,6 +127,14 @@ export function handlers({ store, logins, chats, version, legacy, pictures }: Se
         return null
       },
     },
+    'projects.status': { params: compile(obj({})), run: () => chats.status() },
+    'projects.markPrinted': {
+      params: compile(obj({ project: str() })),
+      run: async ({ project }) => {
+        await store.markPrinted(project)
+        return null
+      },
+    },
     'agent.tools': { params: compile(obj({ project: str() })), run: ({ project }) => chats.tools(project) },
   }
 }
