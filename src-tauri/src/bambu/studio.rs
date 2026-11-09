@@ -141,6 +141,10 @@ impl BambuStudio {
 /// Runs `exe --help` in a private scratch directory, because Bambu Studio writes
 /// `result.json` into its working directory even for `--help`.
 fn detect_version(exe: &Path) -> Option<BambuVersion> {
+    detect_version_with_timeout(exe, std::time::Duration::from_secs(15))
+}
+
+fn detect_version_with_timeout(exe: &Path, _timeout: std::time::Duration) -> Option<BambuVersion> {
     let exe = std::path::absolute(exe).ok()?;
     let scratch = tempfile::tempdir().ok()?;
     let output = Command::new(exe)
@@ -281,6 +285,61 @@ fn derive_profiles_dir(exe: &Path) -> Option<PathBuf> {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
+    #[test]
+    fn a_hung_version_probe_times_out_and_reaps_its_process() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::time::{Duration, Instant};
+
+        let root = tempfile::tempdir().expect("tempdir");
+        let exe = root.path().join("BambuStudio");
+        let pid_file = root.path().join("pid");
+        std::fs::write(
+            &exe,
+            format!(
+                "#!/bin/sh\necho $$ > '{}'\nexec sleep 86400\n",
+                pid_file.display()
+            ),
+        )
+        .expect("script");
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        let (send, receive) = std::sync::mpsc::channel();
+        let start = Instant::now();
+        let probe = std::thread::spawn(move || {
+            let result = detect_version_with_timeout(&exe, Duration::from_millis(100));
+            send.send(format!("{result:?}")).expect("probe result");
+        });
+        let result = receive.recv_timeout(Duration::from_secs(2));
+        let elapsed = start.elapsed();
+        let pid = std::fs::read_to_string(&pid_file).expect("probe pid");
+        if result.is_err() {
+            Command::new("kill")
+                .arg(pid.trim())
+                .status()
+                .expect("stop the unbounded probe");
+        }
+        probe.join().expect("probe thread");
+        assert!(
+            result.is_ok(),
+            "version check exceeded the outer 2 s limit with a 100 ms probe limit"
+        );
+        assert!(
+            result
+                .expect("bounded result")
+                .contains("VersionCheckTimedOut"),
+            "the timeout has its own error"
+        );
+        assert!(elapsed < Duration::from_secs(1), "probe took {elapsed:?}");
+        assert!(
+            !Command::new("kill")
+                .args(["-0", pid.trim()])
+                .status()
+                .expect("check probe pid")
+                .success(),
+            "the probe is gone and reaped"
+        );
+    }
+
     fn probed(exe: &str, version: Option<&str>, profiles: &Path) -> Probed {
         Probed {
             exe: PathBuf::from(exe),
@@ -393,16 +452,25 @@ mod tests {
         let discovered = fake_app(root.path(), "Discovered.app", "02.08.02.61");
         let env = fake_app(root.path(), "Env.app", "02.08.02.61");
 
-        let from_env = Sources { env_cli: Some(exe_of(&env)), env_profiles: None }
-            .locate(discovers(&discovered))
-            .expect("env app");
+        let from_env = Sources {
+            env_cli: Some(exe_of(&env)),
+            env_profiles: None,
+        }
+        .locate(discovers(&discovered))
+        .expect("env app");
         assert_eq!(from_env.exe, exe_of(&env));
 
-        let from_discovery = Sources { env_cli: None, env_profiles: None }
-            .locate(discovers(&discovered))
-            .expect("discovered app");
+        let from_discovery = Sources {
+            env_cli: None,
+            env_profiles: None,
+        }
+        .locate(discovers(&discovered))
+        .expect("discovered app");
         assert_eq!(from_discovery.exe, exe_of(&discovered));
-        assert_eq!(from_discovery.profiles_dir, discovered.join("Contents/Resources/profiles/BBL"));
+        assert_eq!(
+            from_discovery.profiles_dir,
+            discovered.join("Contents/Resources/profiles/BBL")
+        );
     }
 
     /// Child half of the probe test. It runs only when the parent sets `M3D_PROBE_EXE`,
