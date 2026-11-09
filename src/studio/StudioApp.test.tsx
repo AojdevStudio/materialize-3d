@@ -202,6 +202,31 @@ describe('StudioApp', () => {
     expect(screen.getByTestId('files-list').textContent).toContain('hello.html')
   })
 
+  it('retries a failed chat load when reopening the same project without losing files or preview', async () => {
+    let opens = 0
+    mockSidecar({
+      'chat.open': (params) => ++opens === 1
+        ? Promise.reject('The chat could not be loaded.')
+        : Promise.resolve(view(String(params.project), {
+          entries: [{ id: 1, kind: 'assistant', text: 'The clip is ready.', calls: [] }],
+        })),
+    }, [projectB], {}, { [projectB.id]: [{ rel: 'hello.html', size: 334, modifiedMs: 1 }] })
+    render(<StudioApp />)
+    const sidebar = within(screen.getByRole('navigation', { name: 'Projects' }))
+    fireEvent.click(await sidebar.findByText('Project B'))
+    expect((await screen.findByRole('alert')).textContent).toContain('The chat could not be loaded.')
+    expect((await screen.findByTestId('html-preview')).getAttribute('src')).toContain('/hello.html?')
+    fireEvent.click(screen.getByTestId('files-tab'))
+    expect(screen.getByTestId('files-list').textContent).toContain('hello.html')
+
+    fireEvent.click(sidebar.getByText('Project B'))
+    expect(await screen.findByText('The clip is ready.')).toBeTruthy()
+    expect(screen.getByTestId('files-tab').getAttribute('aria-selected')).toBe('true')
+    expect(screen.getByTestId('files-list').textContent).toContain('hello.html')
+    fireEvent.click(screen.getByRole('tab', { name: 'Preview' }))
+    expect(screen.getByTestId('html-preview').getAttribute('src')).toContain('/hello.html?')
+  })
+
   it('keeps a pending chat load and its buffered changes when reopening the same project', async () => {
     const opening = held()
     mockSidecar({ 'chat.open': opening.call })
