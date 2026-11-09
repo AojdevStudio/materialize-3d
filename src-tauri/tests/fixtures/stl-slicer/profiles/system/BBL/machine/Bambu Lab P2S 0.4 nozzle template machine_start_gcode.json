@@ -1,7 +1,0 @@
-{
-    "type": "machine",
-    "name": "Bambu Lab P2S 0.4 nozzle template machine_start_gcode",
-    "from": "system",
-    "instantiation": "false",
-    "machine_start_gcode": ";===== P2S start gcode =====\nG28\n"
-}

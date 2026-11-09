@@ -24,7 +24,7 @@ odd="$(cd "$app" && find . -name "*$newline*" -print -quit)"
 expected="$(printf '%s\n' \
   Contents/CodeResources Contents/Info.plist \
   Contents/MacOS/materialize-3d Contents/MacOS/materialize-cad-host Contents/MacOS/materialize-sidecar \
-  Contents/Resources/AGPL-3.0.txt Contents/Resources/Assets.car Contents/Resources/LICENSE \
+  Contents/Resources/Assets.car Contents/Resources/LICENSE \
   Contents/Resources/THIRD_PARTY_NOTICES.md Contents/Resources/icon.icns \
   Contents/Resources/cad-runtime/Image Contents/Resources/cad-runtime/job.img \
   Contents/Resources/cad-runtime/rootfs.img \

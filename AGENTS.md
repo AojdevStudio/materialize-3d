@@ -5,14 +5,11 @@ Keep `CLAUDE.md`, `.claude/CLAUDE.md`, and `CLAUDE.local.md` absent from this re
 
 ## Project context
 
-Materialize 3D provides agent-driven 3D modeling and Bambu Lab printer control.
+Materialize 3D is a chat studio for agent-made 3D prints.
 
-- Sign packages are Bambu project 3MFs. `src-tauri/src/fabrication/bambu` slices them with only the validated Bambu Studio 02.08.02.61 build, resolves P2S presets, and verifies the G-code.
-- The older STL path in `packages/bambu-slicer` and `src-tauri/src/slicer.rs` uses OrcaSlicer. It patches Bambu Studio G-code templates for OrcaSlicer at slice time.
-- Development needs network access to the configured printer. Keep private device identifiers, addresses, and credentials outside tracked files.
-- P2S Developer Mode enables local MQTT control and disables Bambu Handy access.
-
-Run the headless slicer tests from `packages/bambu-slicer` with `bun test`.
+- The window is `src/studio`. A Bun sidecar (`sidecar/`) runs the agent on Pi Durable and owns every chat. Rust (`src-tauri/src`) starts the sidecar, forwards the window's calls, keeps sign-ins in the Keychain, serves project files, and gates updates.
+- The agent's `slice` step runs in `src-tauri/src/studio/slice.rs`. It slices STL parts with only the validated Bambu Studio 02.08.02.61 build and the P2S presets that `src-tauri/src/bambu` resolves.
+- Keep private device identifiers, addresses, and credentials outside tracked files.
 
 ## App verification
 
