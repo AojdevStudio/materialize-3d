@@ -9,6 +9,10 @@
     <script>
       document.documentElement.dataset.theme = localStorage.getItem('materialize-3d.theme') === 'dark' ? 'dark' : 'light'
     </script>
+    <!-- The page is black from the first paint in dark, before studio.css loads. -->
+    <style>
+      html[data-theme='dark'] { background: #000; color-scheme: dark; }
+    </style>
   </head>
 
   <body>
