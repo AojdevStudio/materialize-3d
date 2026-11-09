@@ -4,11 +4,11 @@ Materialize 3D is MIT licensed (see `LICENSE`). It ships the third-party materia
 
 ## Fonts
 
-The app interface uses DM Sans, Instrument Serif, and JetBrains Mono. All three are licensed under the SIL Open Font License, Version 1.1, reproduced once at the end of this file. Each family's own license file sits next to its font files.
+The app interface uses Inter, Instrument Serif, and JetBrains Mono. All three are licensed under the SIL Open Font License, Version 1.1, reproduced once at the end of this file. Each family's own license file sits next to its font files.
 
 | Font | Files | Copyright |
 |---|---|---|
-| DM Sans | `src/assets/fonts/DMSans-*.ttf` | Copyright 2014 The DM Sans Project Authors (https://github.com/googlefonts/dm-fonts) |
+| Inter | `src/assets/fonts/Inter-Latin-Variable.woff2` | Copyright 2016 The Inter Project Authors (https://github.com/rsms/inter) |
 | Instrument Serif | `src/assets/fonts/InstrumentSerif-Italic.ttf` | Copyright 2022 The Instrument Serif Project Authors (https://github.com/Instrument/instrument-serif) |
 | JetBrains Mono | `src/assets/fonts/JetBrainsMono-*.ttf` | Copyright 2020 The JetBrains Mono Project Authors (https://github.com/JetBrains/JetBrainsMono) |
 

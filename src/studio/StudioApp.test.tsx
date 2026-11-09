@@ -297,6 +297,21 @@ describe('StudioApp', () => {
     expect(brand.querySelector('img')?.getAttribute('src')).toBe(mark)
   })
 
+  it('flips the theme from the toggle at the bottom of the sidebar, and saves the choice', async () => {
+    mockSidecar()
+    render(<StudioApp />)
+    const toggle = within(screen.getByRole('navigation', { name: 'Projects' })).getByRole('button', { name: 'Dark mode' })
+    expect(document.documentElement.dataset.theme).toBe('light')
+    expect(toggle.getAttribute('aria-pressed')).toBe('false')
+    fireEvent.click(toggle)
+    expect(document.documentElement.dataset.theme).toBe('dark')
+    expect(toggle.getAttribute('aria-pressed')).toBe('true')
+    expect(window.localStorage.getItem('materialize-3d.theme')).toBe('dark')
+    fireEvent.click(toggle)
+    expect(document.documentElement.dataset.theme).toBe('light')
+    expect(window.localStorage.getItem('materialize-3d.theme')).toBe('light')
+  })
+
   it('shows the engine version the sidecar answers with', async () => {
     mockSidecar()
     render(<StudioApp />)
