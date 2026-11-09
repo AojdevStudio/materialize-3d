@@ -126,7 +126,7 @@ export async function runSidecar({ argv, addProviders }: SidecarOptions): Promis
   }
   // The pipe opens before the pass is asked for and before the reconcile, which asks Rust's Keychain whether a
   // waited-on login is there now.
-  const serving = host.serve(handlers({ store, logins, chats, version, legacy, pictures }), process.stdin)
+  const serving = host.serve(handlers({ store, models, logins, chats, version, legacy, pictures }), process.stdin)
   // Work a crash cut off resumes only with the pass. Without it an update is installing, and the work resumes after
   // the restart.
   const resumable = await busy.watch(store.harness)

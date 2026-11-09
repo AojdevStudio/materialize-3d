@@ -38,6 +38,17 @@ const scripts: Record<string, (messages: Message[], model: Model<string>) => Ass
     if (text.includes('wait') && results.length === 0) return run('touch started; while [ ! -f go ]; do sleep 0.05; done')
     return fauxAssistantMessage(fauxText(`answered by ${model.id}`))
   },
+  /**
+   * Says what the model was given: how many pictures the newest message holds, and the text of every message the person
+   * sent in this chat, so a test can see a path still reaches the model in a later turn.
+   */
+  attachments: (messages) => {
+    const users = messages.filter((m) => m.role === 'user')
+    const newest = users.at(-1)?.content
+    const pictures = typeof newest === 'string' || newest === undefined ? 0 : newest.filter((b) => b.type === 'image').length
+    const texts = users.map((m) => (typeof m.content === 'string' ? m.content : m.content.map((b) => ('text' in b ? b.text : '')).join('')))
+    return fauxAssistantMessage(fauxText(`pictures=${pictures} | ${texts.join(' || ')}`))
+  },
   /** Hands Astra a task, then repeats what Astra answered. */
   astra: (messages) => {
     const { results } = sinceUser(messages)

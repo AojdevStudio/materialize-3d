@@ -7,6 +7,9 @@
  */
 
 export type ModelChoice = { provider: string; modelId: string }
+
+/** A model the picker offers: one of a signed-in provider's models, with the name the provider gives it. */
+export type ModelOption = ModelChoice & { name: string }
 export type Thinking = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 
 /** Where first-launch setup stands. Setup reopens on `step` until it is `done`. */
@@ -19,8 +22,12 @@ export type Settings = {
   printer: { machine: string; process: string; filament: string }
 }
 
-/** `conversation` is the project's Pi conversation id. `printed` is set once the person marks the project printed. */
-export type Project = { id: string; conversation: number; title: string; createdMs: number; printed?: boolean }
+/**
+ * `conversation` is the project's Pi conversation id. `printed` is set once the person marks the project printed.
+ * `model` is the model the project's next turn runs on. A project gets the app's default when it is made. A project
+ * from before the picker has none, and runs on the default until the person picks one.
+ */
+export type Project = { id: string; conversation: number; title: string; createdMs: number; printed?: boolean; model?: ModelChoice }
 
 /**
  * What the sidebar groups a project by. `printFiles` counts the `.3mf` files in its folder, outside `refs/`. `lastMs` is
@@ -32,8 +39,9 @@ export type ProjectStatus = { running: boolean; printed: boolean; printFiles: nu
 export const START = 'new'
 
 /**
- * An unsent message, by project id, or `START` for the start screen. Attachments are the paths of its pictures where
- * they are now: a dropped file, or a pasted picture the sidecar keeps. A send copies them into its project.
+ * An unsent message, by project id, or `START` for the start screen. Attachments are the paths of its files where they
+ * are now: a picked or dropped file of any kind, or a pasted picture the sidecar keeps. A send copies them into the
+ * project's `refs/` folder.
  */
 export type Draft = { text: string; attachments: string[] }
 
@@ -72,10 +80,14 @@ export type ImportedEntry =
   | { role: 'assistant'; text: string }
   | { role: 'tool'; name: string; text: string; result: string; failed: boolean }
 
-/** One committed line of a chat. Tool calls fold under their assistant line; each result is its own line. */
+/**
+ * One committed line of a chat. Tool calls fold under their assistant line; each result is its own line. A person's
+ * message holds the paths of its pictures, which went to the model as pictures, and of its other files, which the
+ * message named.
+ */
 export type ChatEntry =
   | ({ id: number; kind: 'imported' } & ImportedEntry)
-  | { id: number; kind: 'user'; text: string; images: string[] }
+  | { id: number; kind: 'user'; text: string; images: string[]; files: string[] }
   | { id: number; kind: 'assistant'; text: string; calls: { id: string; name: string; args: unknown }[] }
   | { id: number; kind: 'tool'; callId: string; name: string; text: string; failed: boolean }
 
@@ -148,6 +160,10 @@ export interface Methods {
   'chat.send': { params: { key: string; rev: number }; result: { project: Project } }
   'chat.stop': { params: { project: string }; result: null }
   'chat.retry': { params: { project: string }; result: null }
+  /** The models of each provider the person signed in to, as that provider lists them. */
+  'models.list': { params: Record<string, never>; result: ModelOption[] }
+  /** Saves the model a project's next turn runs on. */
+  'projects.setModel': { params: { project: string; model: ModelChoice }; result: null }
   /** Each project's status for the sidebar, by project id. */
   'projects.status': { params: Record<string, never>; result: Record<string, ProjectStatus> }
   /** Marks a project printed, which moves it to the sidebar's Printed group. */
