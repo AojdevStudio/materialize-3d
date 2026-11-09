@@ -357,6 +357,35 @@ describe('StudioApp', () => {
     expect(screen.queryByTestId('group-drafts')).toBeNull()
   })
 
+  it.each(['returns', 'fails'])(
+    'lands a turn that ends while the status read for its start is still out, when that read %s',
+    async (outcome) => {
+      const state = { running: false, printFiles: 0 }
+      const held: Array<() => void> = []
+      let hold = false
+      mockSidecar({
+        'projects.status': () => {
+          const snapshot = { [projectB.id]: { ...state, printed: false, lastMs: Date.now() } }
+          if (!hold) return Promise.resolve(snapshot)
+          return new Promise((resolve, reject) =>
+            held.push(() => (outcome === 'returns' ? resolve(snapshot) : reject(new Error('status read failed')))),
+          )
+        },
+      })
+      render(<StudioApp />)
+      await screen.findByTestId('group-drafts')
+      hold = true
+      state.running = true
+      await emit({ type: 'chat', ...view(projectB.id, { running: true, seq: 2 }) })
+      Object.assign(state, { running: false, printFiles: 1 })
+      await emit({ type: 'chat', ...view(projectB.id, { running: false, seq: 3 }) })
+      hold = false
+      await act(async () => held.forEach((release) => release()))
+      expect(within(await screen.findByTestId('group-ready')).getByText('Project B')).toBeTruthy()
+      expect(screen.queryByTestId('group-working')).toBeNull()
+    },
+  )
+
   it('hides the sidebar to a narrow rail from its panel toggle, and shows it again', async () => {
     mockSidecar()
     render(<StudioApp />)

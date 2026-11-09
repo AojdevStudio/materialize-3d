@@ -81,9 +81,11 @@ export default function Sidebar({ projects, current, engine, onOpen, onNew, onEr
   const [menuFor, setMenuFor] = useState<string | null>(null)
   const [collapsed, setCollapsed] = useState(false)
   const menu = useRef<HTMLLIElement>(null)
-  /** The status on screen, for the event listener to compare a chat change with. */
+  /** The status on screen. */
   const shown = useRef(status)
   shown.current = status
+  /** Each project's running state as the last chat event said it, which can be newer than the status on screen. */
+  const seen = useRef<Record<string, boolean>>({})
   /** One status read at a time. A read asked for meanwhile runs once that one ends, so the newest state always lands. */
   const reading = useRef<{ busy: boolean; again: boolean }>({ busy: false, again: false })
 
@@ -93,25 +95,29 @@ export default function Sidebar({ projects, current, engine, onOpen, onNew, onEr
     if (read.busy) return
     read.busy = true
     void (async () => {
-      try {
-        while (read.again) {
-          read.again = false
+      while (read.again) {
+        read.again = false
+        try {
           setStatus(await sidecar('projects.status', {}))
+        } catch (err) {
+          onError(String(err))
         }
-      } catch (err) {
-        onError(String(err))
-      } finally {
-        read.busy = false
       }
+      read.busy = false
     })()
   }, [onError])
 
   // A turn that starts or ends changes a project's group, and a turn that ends has written its files. So a chat change
-  // reads the status again only when its running state differs from the one shown. An engine that started again may
-  // hold a newer state.
+  // reads the status again only when its running state differs from the last one seen for that project. That is the
+  // last chat event, not the status on screen, because a read for a start can still be out when the end arrives. An
+  // engine that started again may hold a newer state.
   useEffect(() => {
     const unlisten = onSidecarEvent((event) => {
-      if (event.type === 'ready' || (event.type === 'chat' && shown.current[event.project]?.running !== event.running)) refresh()
+      if (event.type === 'ready') return refresh()
+      if (event.type !== 'chat') return
+      const before = seen.current[event.project] ?? shown.current[event.project]?.running
+      seen.current[event.project] = event.running
+      if (before !== event.running) refresh()
     })
     return () => {
       void unlisten.then((stop) => stop())
