@@ -438,6 +438,7 @@ export default function StudioApp() {
   /** Loads the open project's chat, with the changes that arrived while it loaded. */
   const load = async (project: string, request: number) => {
     const load = ++loads.current
+    failedLoad.current = null
     try {
       const opened = await sidecar('chat.open', { project })
       if (request !== loadRequest.current || load !== loads.current) return
