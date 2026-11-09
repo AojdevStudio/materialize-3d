@@ -1,29 +1,20 @@
 # Third-party notices
 
-Materialize 3D is MIT licensed (see `LICENSE`). It ships the third-party material below, each under its own license. The app bundle carries this file, `LICENSE`, and the AGPL-3.0 text in `Contents/Resources`.
+Materialize 3D is MIT licensed (see `LICENSE`). It ships the third-party material below, each under its own license. The app bundle carries this file and `LICENSE` in `Contents/Resources`.
 
 ## Fonts
 
-The app interface uses DM Sans, Instrument Serif, and JetBrains Mono. Sign lettering uses Lato. All four are licensed under the SIL Open Font License, Version 1.1, reproduced once at the end of this file. Each family's own license file sits next to its font files.
+The app interface uses DM Sans, Instrument Serif, and JetBrains Mono. All three are licensed under the SIL Open Font License, Version 1.1, reproduced once at the end of this file. Each family's own license file sits next to its font files.
 
 | Font | Files | Copyright |
 |---|---|---|
 | DM Sans | `src/assets/fonts/DMSans-*.ttf` | Copyright 2014 The DM Sans Project Authors (https://github.com/googlefonts/dm-fonts) |
 | Instrument Serif | `src/assets/fonts/InstrumentSerif-Italic.ttf` | Copyright 2022 The Instrument Serif Project Authors (https://github.com/Instrument/instrument-serif) |
 | JetBrains Mono | `src/assets/fonts/JetBrainsMono-*.ttf` | Copyright 2020 The JetBrains Mono Project Authors (https://github.com/JetBrains/JetBrainsMono) |
-| Lato | `src-tauri/resources/fonts/Lato-*.ttf` | Copyright (c) 2010-2014 by tyPoland Lukasz Dziedzic (team@latofonts.com) with Reserved Font Name "Lato" |
 
-## Bambu Studio print settings
+## Bambu Studio
 
-`src-tauri/resources/bambu/p2s-0.4-pla-basic-x3.project_settings.json` is embedded in every sign package. It was exported by Bambu Studio 02.08.02.61 from its bundled Bambu Lab system profiles (profile bundle 02.08.00.05); `src-tauri/resources/bambu/README.md` records how. Bambu Studio is licensed under the GNU Affero General Public License v3.0, and its source, including those profiles, is at https://github.com/bambulab/BambuStudio/tree/v02.08.02.61. This settings file is distributed under the same license; the full text is in `src-tauri/resources/bambu/AGPL-3.0.txt`.
-
-Materialize 3D does not include or redistribute Bambu Studio itself. It runs a copy that you install from Bambu Lab.
-
-## Bambu Lab CA certificates
-
-`src-tauri/certs/bambu-ca.pem` is Bambu Lab's public `BBL CA` root certificate (`O=BBL Technologies Co., Ltd`). The app embeds it for the Bambu cloud MQTT connection.
-
-`src-tauri/certs/bambu-printer-roots.pem` is a copy of Bambu Studio's `resources/cert/printer.cer` at https://github.com/bambulab/BambuStudio/blob/f75448910c279287556ff8347606c87138c22347/resources/cert/printer.cer. It holds Bambu Lab's public printer root certificates: `BBL CA` and the `BBL CA2 RSA` and `BBL CA2 ECC` roots. The app embeds them to verify TLS connections to a printer on the local network.
+Materialize 3D does not include or redistribute Bambu Studio. It runs a copy that you install from Bambu Lab.
 
 ## Software dependencies
 

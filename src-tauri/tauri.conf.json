@@ -43,8 +43,7 @@
     "copyright": "Copyright (c) 2026 Ossie Irondi",
     "resources": {
       "../LICENSE": "LICENSE",
-      "../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md",
-      "resources/bambu/AGPL-3.0.txt": "AGPL-3.0.txt"
+      "../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md"
     },
     "macOS": {
       "minimumSystemVersion": "26.0",

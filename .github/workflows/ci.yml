@@ -75,9 +75,6 @@ jobs:
         run: bun run build
       - name: The frontend build carries no verification override
         run: "! grep -rl __M3D_E2E_DIALOGS__ dist"
-      - name: Slicer package tests
-        working-directory: packages/bambu-slicer
-        run: bun run test
       - name: Sidecar typecheck and tests
         working-directory: sidecar
         run: bun install --frozen-lockfile && bunx tsc --noEmit && bun test
@@ -136,9 +133,6 @@ jobs:
       - name: Typecheck
         run: bunx tsc --noEmit
       - name: Frontend tests
-        run: bun run test
-      - name: Slicer package tests
-        working-directory: packages/bambu-slicer
         run: bun run test
       - name: Sidecar typecheck and tests
         working-directory: sidecar
