@@ -98,6 +98,14 @@ pre {
   overflow-y: auto;
 }
 
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 8px 12px;
+  font-weight: 600;
+}
+
 .sessions ul {
   list-style: none;
   margin: 12px 0 0;
