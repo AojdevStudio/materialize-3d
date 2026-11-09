@@ -1,19 +1,22 @@
 @import '../styles/fonts.css';
 
-/* Light first. A true-black dark mode swaps these tokens later. */
+/* Light by default. The theme toggle sets data-theme="dark" on the root, which swaps these for true black. */
 :root {
   color-scheme: light;
-  --s-bg: #ffffff;
-  --s-side: #f7f7f5;
-  --s-panel: #fbfbfa;
-  --s-line: #e6e5e1;
-  --s-text: #16161a;
-  --s-muted: #5c5b61;
-  --s-accent: #e8682a;
-  --s-accent-text: #ffffff;
-  --s-user: #f1f0ec;
+  --s-bg: #fafaf8;
+  --s-side: #f5f4f1;
+  --s-panel: #fafaf8;
+  --s-raised: #ffffff;
+  --s-line: #e6e4df;
+  --s-soft: #f0eee9;
+  --s-text: #1b1b1b;
+  --s-muted: #6b6b6b;
+  --s-primary: #1b1b1b;
+  --s-primary-text: #ffffff;
+  --s-accent: #c2410c;
+  --s-user: var(--s-soft);
   --s-error: #b42318;
-  --s-code: #f4f3f0;
+  --s-code: var(--s-soft);
   /* The shared tokens the update banner reads, in light values. */
   --bg-deep: var(--s-bg);
   --bg-surface: var(--s-panel);
@@ -24,6 +27,24 @@
   --accent-blue: #2563eb;
   --accent-blue-dim: #2563eb1a;
   --accent-red: var(--s-error);
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --s-bg: #000000;
+  --s-side: #000000;
+  --s-panel: #000000;
+  --s-raised: #000000;
+  --s-line: #262626;
+  --s-soft: #1a1a1a;
+  --s-text: #ffffff;
+  --s-muted: #a3a3a3;
+  --s-primary: #ffffff;
+  --s-primary-text: #000000;
+  --s-accent: #ff7a1a;
+  --s-error: #f97066;
+  --accent-blue: #60a5fa;
+  --accent-blue-dim: #60a5fa26;
 }
 
 * {
@@ -41,7 +62,7 @@ body,
 body {
   background: var(--s-bg);
   color: var(--s-text);
-  font: 14px/1.5 'DM Sans', system-ui, sans-serif;
+  font: 14px/1.5 'Inter', system-ui, sans-serif;
 }
 
 button,
@@ -52,7 +73,7 @@ textarea {
 
 button {
   border: 1px solid var(--s-line);
-  background: var(--s-bg);
+  background: var(--s-raised);
   border-radius: 6px;
   padding: 4px 10px;
   cursor: pointer;
@@ -64,9 +85,9 @@ button:hover {
 }
 
 button.primary {
-  background: var(--s-accent);
-  border-color: var(--s-accent);
-  color: var(--s-accent-text);
+  background: var(--s-primary);
+  border-color: var(--s-primary);
+  color: var(--s-primary-text);
 }
 
 button:disabled {
@@ -92,10 +113,13 @@ pre {
 
 /* Projects */
 .sessions {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
   background: var(--s-side);
   border-right: 1px solid var(--s-line);
-  padding: 12px 8px;
-  overflow-y: auto;
+  padding: 12px 8px 8px;
 }
 
 .brand {
@@ -107,6 +131,9 @@ pre {
 }
 
 .sessions ul {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
   list-style: none;
   margin: 12px 0 0;
   padding: 0;
@@ -129,6 +156,30 @@ pre {
 
 .new-project {
   width: 100%;
+}
+
+.sessions-footer {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 4px 0;
+  border-top: 1px solid var(--s-line);
+}
+
+.icon-button {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--s-muted);
+}
+
+.icon-button:hover {
+  color: var(--s-text);
+  background: var(--s-soft);
 }
 
 /* Chat */
@@ -298,7 +349,7 @@ pre {
   border: 1px solid var(--s-line);
   border-radius: 12px;
   padding: 8px 10px;
-  background: var(--s-bg);
+  background: var(--s-raised);
 }
 
 .composer textarea {

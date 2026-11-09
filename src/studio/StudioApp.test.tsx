@@ -28,6 +28,7 @@ vi.mock('@tauri-apps/api/webview', () => ({
 import type { Project } from '../../sidecar/src/protocol'
 import type { ProjectFile } from './api'
 import StudioApp from './StudioApp'
+import { useTheme } from './theme'
 import mark from '../assets/brand/mark-small-32.svg'
 
 // jsdom has no layout, so the chat's scroll to its newest line is a no-op here, and no object URLs for previews.
@@ -46,6 +47,8 @@ afterEach(() => {
   listeners.sidecar.length = 0
   listeners.drop.length = 0
   listeners.flush.length = 0
+  window.localStorage.clear()
+  useTheme.setState({ theme: 'light' })
 })
 
 /** An event from the sidecar, as Rust forwards it to the window. */
@@ -295,6 +298,21 @@ describe('StudioApp', () => {
     const brand = await within(screen.getByRole('navigation', { name: 'Projects' })).findByTestId('brand')
     expect(brand.textContent).toBe('Materialize 3D')
     expect(brand.querySelector('img')?.getAttribute('src')).toBe(mark)
+  })
+
+  it('flips the theme from the toggle at the bottom of the sidebar, and saves the choice', async () => {
+    mockSidecar()
+    render(<StudioApp />)
+    const toggle = within(screen.getByRole('navigation', { name: 'Projects' })).getByRole('button', { name: 'Dark mode' })
+    expect(document.documentElement.dataset.theme).toBe('light')
+    expect(toggle.getAttribute('aria-pressed')).toBe('false')
+    fireEvent.click(toggle)
+    expect(document.documentElement.dataset.theme).toBe('dark')
+    expect(toggle.getAttribute('aria-pressed')).toBe('true')
+    expect(window.localStorage.getItem('materialize-3d.theme')).toBe('dark')
+    fireEvent.click(toggle)
+    expect(document.documentElement.dataset.theme).toBe('light')
+    expect(window.localStorage.getItem('materialize-3d.theme')).toBe('light')
   })
 
   it('shows the engine version the sidecar answers with', async () => {

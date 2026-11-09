@@ -1,24 +1,9 @@
+/* Inter, latin subset, one variable file for weights 100 to 900. */
 @font-face {
-  font-family: 'DM Sans';
-  src: url('../assets/fonts/DMSans-Regular.ttf') format('truetype');
+  font-family: 'Inter';
+  src: url('../assets/fonts/Inter-Latin-Variable.woff2') format('woff2');
   font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-}
-
-@font-face {
-  font-family: 'DM Sans';
-  src: url('../assets/fonts/DMSans-Medium.ttf') format('truetype');
-  font-style: normal;
-  font-weight: 500;
-  font-display: swap;
-}
-
-@font-face {
-  font-family: 'DM Sans';
-  src: url('../assets/fonts/DMSans-Bold.ttf') format('truetype');
-  font-style: normal;
-  font-weight: 700;
+  font-weight: 100 900;
   font-display: swap;
 }
 
