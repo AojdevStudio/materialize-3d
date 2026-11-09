@@ -105,12 +105,9 @@ jobs:
       - name: The agent's slice step with real Bambu Studio (P2S presets and plate, staged output)
         working-directory: src-tauri
         run: cargo test --lib --locked studio::slice -- --ignored --nocapture
-      - name: Caller identity, approval enforcement, app ACL, and MCP boundary
+      - name: App ACL and revision integrity
         working-directory: src-tauri
-        run: >
-          cargo test --lib --locked -- --include-ignored --test-threads=1
-          caller_identity_tests acl_tests mcp::tests fabrication::revisions
-          agent::tests::the_model_is_offered_exactly_the_registry_and_no_approval_tool
+        run: cargo test --lib --locked -- --include-ignored --test-threads=1 acl_tests fabrication::revisions
 
   macos:
     name: macOS desktop build gate
@@ -172,12 +169,9 @@ jobs:
       - name: The agent's slice step with real Bambu Studio (P2S presets and plate, staged output)
         working-directory: src-tauri
         run: cargo test --lib --locked studio::slice -- --ignored --nocapture
-      - name: Caller identity, approval enforcement, app ACL, and MCP boundary
+      - name: App ACL and revision integrity
         working-directory: src-tauri
-        run: >
-          cargo test --lib --locked -- --include-ignored --test-threads=1
-          caller_identity_tests acl_tests mcp::tests fabrication::revisions
-          agent::tests::the_model_is_offered_exactly_the_registry_and_no_approval_tool
+        run: cargo test --lib --locked -- --include-ignored --test-threads=1 acl_tests fabrication::revisions
       - name: Build the desktop app (release profile)
         run: bun tauri build --bundles app
       - name: The release app carries no verification harness or dialog override

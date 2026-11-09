@@ -139,7 +139,6 @@ fn remove_dir_if_present(dir: &Path) -> std::io::Result<bool> {
 
 /// Coarse progress, in order. Each step is reported once it completes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum BuildStep {
     SpecValidated,
@@ -152,7 +151,6 @@ pub enum BuildStep {
 /// Where a failed build stopped. A caller repairing a script reads it beside
 /// the error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum Stage {
     /// The generation guest, running the script.
@@ -922,9 +920,6 @@ fn handoff_matches_slice(template: &Value, palette: &Palette, printer: &PrinterP
 }
 
 #[cfg(test)]
-mod import_tests;
-
-#[cfg(test)]
 mod tests {
     use std::cell::{Cell, RefCell};
 
@@ -1528,65 +1523,6 @@ mod tests {
         assert_eq!(kept.views.len(), 2);
         assert_eq!(kept.missing, [format!("top: {most} bytes, over the {MAX_VIEWS_BYTES}-byte cap for one result's views")]);
         assert!(kept.views.iter().map(|(_, png)| png.len() as u64).sum::<u64>() <= MAX_VIEWS_BYTES);
-    }
-
-    /// The shared actions over `state` and `workspace`, with no window to notify.
-    fn actions(state: AppState, workspace: Workspace) -> crate::actions::Actions {
-        crate::actions::Actions::new(std::sync::Arc::new(|_, _| {}), std::sync::Arc::new(state), workspace)
-    }
-
-    /// A merge patch that makes an invalid spec is refused exactly like the
-    /// patched spec built fresh, before any revision or slicer.
-    #[test]
-    fn revise_refuses_a_patch_that_makes_an_invalid_spec_like_a_fresh_spec() {
-        use crate::actions::{merge_patch, RequestActions, RequestActor};
-        let dir = tempfile::tempdir().expect("tempdir");
-        let state = app_state(dir.path());
-        let parent = claim(&state, "parent");
-        let actions = actions(state, Workspace::new(&dir.path().join("data"), &dir.path().join("cache")));
-        let quiet = BuildControl::new(&|_| {}, &|| false);
-        for patch in [json!({ "width_mm": "wide" }), json!({ "inks": null }), json!({ "colour": "navy" })] {
-            let revised = actions.revise(parent.id.as_str(), &patch, RequestActor::Agent, &quiet).expect_err("refused");
-            let fresh = RequestActions::build(&actions, "sign", merge_patch(fixture(), &patch), None, RequestActor::Agent, &quiet)
-                .expect_err("refused fresh");
-            assert!(matches!(revised, crate::actions::ActionError::Build(BuildError::Spec(_))), "{patch}: {revised}");
-            assert_eq!(revised.to_string(), fresh.to_string(), "{patch}");
-        }
-        assert_eq!(actions.list(10).expect("list").len(), 1, "no revision was recorded");
-    }
-
-    /// `revise` through the shared actions with the real slicer: a merge
-    /// patch is revision n+1, a patch back to the first spec is revision 3 on
-    /// the first build, and nothing runs for it.
-    #[test]
-    #[ignore = "needs a validated Bambu Studio (BAMBU_STUDIO_CLI or a standard install)"]
-    fn revise_makes_the_next_revision_and_a_patch_back_reuses_the_first_build() {
-        use crate::actions::{RequestActions, RequestActor};
-        let dir = tempfile::tempdir().expect("tempdir");
-        let actions = actions(app_state(dir.path()), Workspace::new(&dir.path().join("data"), &dir.path().join("cache")));
-        let quiet = BuildControl::new(&|_| {}, &|| false);
-        let first = RequestActions::build(&actions, "sign", fixture(), None, RequestActor::Agent, &quiet).expect("first");
-        assert!(matches!(first.revision.build, BuildState::Verified { .. }), "{:?}", first.revision.build);
-
-        let taller = actions.revise(first.revision.id.as_str(), &json!({ "height_mm": 215 }), RequestActor::Agent, &quiet).expect("revise");
-        assert_eq!((taller.revision.number, taller.reused), (2, false));
-        assert_eq!(taller.revision.lineage_id, first.revision.lineage_id);
-        assert_eq!(taller.revision.spec["height_mm"], json!(215));
-        assert_eq!(taller.revision.spec["width_mm"], first.revision.spec["width_mm"], "fields the patch did not name keep their values");
-        assert!(matches!(taller.revision.build, BuildState::Verified { .. }) && matches!(taller.revision.approval, Approval::Pending));
-
-        let steps = RefCell::new(Vec::new());
-        let back = actions
-            .revise(
-                taller.revision.id.as_str(),
-                &json!({ "height_mm": first.revision.spec["height_mm"] }),
-                RequestActor::Agent,
-                &BuildControl::new(&|s| steps.borrow_mut().push(s), &|| false),
-            )
-            .expect("revise back");
-        assert_eq!((back.revision.number, back.reused), (3, true));
-        assert_eq!(back.revision.build_id, first.revision.build_id, "the first build is reused");
-        assert_eq!(*steps.borrow(), [BuildStep::SpecValidated], "nothing past validation ran");
     }
 
     /// Slices `package` with the validated Bambu Studio and the P2S presets, as `build` does.

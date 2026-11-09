@@ -7,9 +7,9 @@ Use this checklist for release acceptance. A pass requires the installed release
 Record one of these labels with the actual installed GUI evidence.
 
 - **Fresh-account GUI**. Use a fresh standard account logged into a desktop. This is the strongest GUI isolation option. The headless clean-install wrapper's account never logs in, so its results do not prove this GUI path.
-- **Isolated-HOME GUI under existing console login**. Use fresh app data and a throwaway test keychain in an isolated HOME under the existing desktop login. The installed-release wrapper demonstrates this HOME and keychain isolation for its scripted checks. It does not prove chat or native dialogs. Use a new isolated HOME for GUI first-run acceptance, separate from the wrapper's data.
+- **Isolated-HOME GUI under existing console login**. Use fresh app data and a throwaway test keychain in an isolated HOME under the existing desktop login. Use a new isolated HOME for GUI first-run acceptance.
 
-Both options require the actual installed app with only the system `PATH`, `/usr/bin:/bin:/usr/sbin:/sbin`. Record the app's effective `PATH` and data location. The installed-release wrapper adds developer directories to its shell `PATH`, so its log alone cannot prove this requirement. Neither isolation label proves an independent-machine run. Record the machine separately, including whether it built the DMG.
+Both options require the actual installed app with only the system `PATH`, `/usr/bin:/bin:/usr/sbin:/sbin`. Record the app's effective `PATH` and data location. Neither isolation label proves an independent-machine run. Record the machine separately, including whether it built the DMG.
 
 Use the same launch method and test keychain after every quit or interruption. For fresh-account GUI, launch from Applications in the test user's Finder and verify the effective system-only `PATH`. For isolated-HOME GUI, do not launch through Finder. In the test desktop security session, set `M3D_GUI_HOME` to the recorded isolated home and launch the installed app with explicit environment values.
 
@@ -24,7 +24,7 @@ For isolated-HOME GUI, keep the recorded test keychain setup active for each lau
 
 1. Use an Apple Silicon Mac on macOS 26.0 or later with the desktop session required by your selected GUI isolation option.
 2. Record the exact DMG filename, SHA-256, source commit, macOS version, and chip. Compare the DMG hash with its release checksum.
-3. Follow the [install guide](install-macos.md). Copy the app from the DMG to Applications and eject the DMG. Preserve download quarantine for first-launch GUI acceptance. Use the launch method for your selected GUI isolation option above and record any macOS confirmation. The installed-release wrapper removes quarantine before launch, so its launch does not prove this step. If macOS shows no confirmation, record that observation and the machine's prior exposure to these bytes.
+3. Follow the [install guide](install-macos.md). Copy the app from the DMG to Applications and eject the DMG. Preserve download quarantine for first-launch GUI acceptance. Use the launch method for your selected GUI isolation option above and record any macOS confirmation. If macOS shows no confirmation, record that observation and the machine's prior exposure to these bytes.
 4. Confirm the installed bundle version matches the release. For an installation in `/Applications`, read it with this command.
 
    ```bash
@@ -91,4 +91,4 @@ Keep one evidence record for the exact installed DMG. Include these results.
 
 The [verification skill](../.agents/skills/verify-materialize-3d/SKILL.md) describes the Linux debug app and the macOS `--features e2e` debug build. `.agents/skills/verify-materialize-3d/scripts/mac.ts` controls that debug build through its test endpoint and scripted dialogs. The release binary omits that endpoint and dialog override. A `mac.ts` run does not verify the installed release.
 
-The [release procedure](releasing.md) describes bundle, clean-account, migration, keychain, MCP, and CAD self-tests. Those checks support acceptance but do not exercise chat or the slice.
+The [release procedure](releasing.md) describes the bundle check and the clean-account CAD self-test. Those checks support acceptance but do not exercise chat or the slice.

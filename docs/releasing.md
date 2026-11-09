@@ -53,7 +53,7 @@ Do not rotate or rewrite user credentials to satisfy these limits. If existing c
 
    The script stops when either updater secret is missing or signing fails.
 
-4. Run the clean-install and installed-release scripts below. Then run the [installed GUI checklist](verify-on-mac.md) on that exact DMG, with OpenAI chat for both signs and parts. Keep the exported 3MFs, matching approval and export hashes, Bambu Studio P2S 0.4 mm slice proof, and the GUI recording. Backend and MCP checks do not replace this GUI run.
+4. Run the clean-install script below. Then run the [installed GUI checklist](verify-on-mac.md) on that exact DMG, with OpenAI chat for both signs and parts. Keep the exported 3MFs, matching approval and export hashes, Bambu Studio P2S 0.4 mm slice proof, and the GUI recording. Backend checks do not replace this GUI run.
 5. Complete the required software acceptance record below and prepare an external release body from the source notes. Put the exact tagged source commit and final DMG checksum in both. Do not edit tracked notes to insert their own source commit or DMG checksum. Keep shared release tags unchanged. If source or packaging changes, build and test a new candidate. Required software checks and release approval gate publication. After they pass, publish the DMG, its checksum, the completed record, and both actual approved exports. The filenames below require the completed files described here, not placeholders.
 
    ```bash
@@ -88,7 +88,7 @@ Do not rotate or rewrite user credentials to satisfy these limits. If existing c
 
 The completed record is a publication gate. Attach it to the eventual release with accessible recordings, screenshots, and logs. Keep it outside tracked source so recording the final bytes cannot change their source commit. Do not publish with missing or failed required software checks. A rehearsal result cannot replace a final tagged DMG test.
 
-Record the exact source tag and commit, DMG filename and full SHA-256, installed bundle version, helper identity and signing team, runtime pins and verification, and bundle inventory. Identify each machine, macOS version, chip, test account, isolation option, effective HOME and `PATH`, and whether that machine built the DMG. Keep headless fresh-account, installed-release wrapper, GUI, and independent-machine results separately labeled.
+Record the exact source tag and commit, DMG filename and full SHA-256, installed bundle version, helper identity and signing team, runtime pins and verification, and bundle inventory. Identify each machine, macOS version, chip, test account, isolation option, effective HOME and `PATH`, and whether that machine built the DMG. Keep headless fresh-account, GUI, and independent-machine results separately labeled.
 
 Include every result required by the [source release notes](releases/v0.2.2.md) and [installed GUI checklist](verify-on-mac.md). Retain exact OpenAI model IDs, prompts and follow-ups, tool results, revision IDs, geometry measurements, checks, warnings, approval hashes, export IDs, destinations, and full exported-file hashes. Include watchable direct human GUI approval and native Save evidence, Bambu Studio 02.08.02.61 P2S 0.4 mm import and slice proof, and each persistence, cancellation, interruption, failure, and successful recovery result. Report failures and unrun checks with reasons. Excluded candidates must not appear as accepted exports.
 
@@ -108,29 +108,13 @@ It creates a fresh standard account (not an admin, no password, so nobody can lo
 
 What "clean" covers: an account that has never run, approved, or installed Materialize 3D, with no developer tools on its `PATH`, so nothing it owns can vouch for the app. What it does not cover: the Mac itself is shared. Gatekeeper's system-wide records (its assessment cache and any notarization ticket it has already fetched) belong to the machine, so a build that `build-macos.sh` already assessed on the same Mac is not new to Gatekeeper there. The Xcode command line tools are installed system-wide, which `check-app-bundle.sh` uses for `lipo`. The account never logs in at the console, so the app's own first-launch prompt and its window are not exercised; the helper runs from the shell. Run it on a Mac that did not build the DMG to take the build machine's records out of the picture.
 
-## Verify the installed release
-
-`scripts/release/verify-installed-macos.sh` installs the built DMG into `/Applications` on an Apple Silicon Mac and checks Gatekeeper and the staple, the signature, the schema 3 migration, MCP off without the setting, the app's own keychain item remaining unchanged with MCP listening after a relaunch, the MCP endpoint's 401 without a valid token, and a sign built over MCP with a seeded token that stays pending, because the endpoint refuses to approve and approval stays with a person in the app. Each of these fails the run when it does not hold. It records the bundle inventory for inspection; the build script enforces the exact bundle file list. It takes the DMG and a checkout that holds `docs/acceptance/` and the schema 3 fixture.
-
-Label this evidence **installed-release wrapper, isolated HOME under existing console login**. The wrapper uses a fresh throwaway HOME and keychains, with a schema 3 fixture for migration. It creates no fresh account. Its shell adds developer directories to `PATH`, so it does not establish the system-only `PATH` required for GUI acceptance. Its migration, keychain, and MCP results do not prove OpenAI GUI acceptance or an independent-machine test.
-
-```bash
-scripts/release/verify-installed-macos.sh dist-release/Materialize-3D-0.2.2-macos-arm64.dmg .
-```
-
-It is designed to run unattended over SSH. Confirm that its desktop-session and credential prerequisites hold before running it. The body does not run in the calling shell: keychain unlock state belongs to a security session and the app runs in the logged-in user's desktop session, so the script bootstraps the body as a transient LaunchAgent in `gui/<uid>`, waits up to 15 minutes, streams the job log, and exits with the job's status. Someone must be logged in at the console; with no desktop session the script says so and stops instead of waiting.
-
-Secrets stay out of `ps`. The throwaway keychain password is random per run, every `security` subcommand that takes a password is fed to `security -i` on stdin, and the MCP token reaches curl through a mode-600 header file. The run fails if securityd recorded a keychain prompt or if a new Terminal.app process appeared while it ran, and fails rather than waiting when the app, the MCP endpoint, or the job itself does not arrive in time.
-
-Run it only when replacing the app in `/Applications` is intended: it refuses a running app, removes any existing copy, installs the DMG's app, and leaves that installed release in place. Personal app data stays in the real home directory; verification uses a throwaway home. On exit the DMG is detached, the test app is quit, the throwaway keychains and token header are deleted, and the real default keychain and search list are put back if needed. A successful run also requires that neither real keychain setting changed before teardown. The run directory, its evidence, and the job log remain under `~/m3d-verify/release-verify-<timestamp>/`.
-
 ## Complete installed GUI acceptance
 
 Follow [Verify the installed Mac app](verify-on-mac.md) after the scripted checks. Its native verification section covers the signed CuaDriver route exercised on the mini. Use real input and native dialogs. Record a missing tool or permission as an unmet prerequisite rather than substituting the debug e2e endpoint.
 
 A fresh standard account logged into a desktop is the strongest GUI isolation option. An isolated HOME and test keychain under an existing console login are a separate option. Label the GUI evidence with the option used. Neither an isolated HOME nor a fresh account proves an independent-machine test. Both GUI options require fresh app data, only the system `PATH`, and no checkout runtime dependencies or CAD cache.
 
-A passing `--cad-self-test` proves a backend path through the installed binary. An MCP build proves the endpoint path. Neither proves OpenAI chat, the part detail, human approval, or the native Save dialog. `.agents/skills/verify-materialize-3d/scripts/mac.ts` launches an e2e debug bundle, not the release installed from the DMG.
+A passing `--cad-self-test` proves a backend path through the installed binary. It does not prove OpenAI chat, the part detail, human approval, or the native Save dialog. `.agents/skills/verify-materialize-3d/scripts/mac.ts` launches an e2e debug bundle, not the release installed from the DMG.
 
 The app must find its CAD helper and pinned runtime inside its installed bundle. Acceptance cannot depend on a source checkout, a developer Python environment, or a CAD cache. Preserve the bundle inventory and the runtime verification output with the GUI evidence.
 
