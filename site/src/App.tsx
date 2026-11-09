@@ -168,7 +168,11 @@ export function App() {
                 </>
               )}
             </li>
-            <li>Follow the steps the app shows on first launch.</li>
+            <li>Add your Anthropic or OpenAI API key in Settings, under Agent.</li>
+            <li>
+              If Settings, under Bambu Studio, does not show version {release.bambuStudio.version},
+              click Choose Bambu Studio and select that copy.
+            </li>
           </ol>
         </section>
 
