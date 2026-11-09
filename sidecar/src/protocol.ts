@@ -19,8 +19,14 @@ export type Settings = {
   printer: { machine: string; process: string; filament: string }
 }
 
-/** `conversation` is the project's Pi conversation id. */
-export type Project = { id: string; conversation: number; title: string; createdMs: number }
+/** `conversation` is the project's Pi conversation id. `printed` is set once the person marks the project printed. */
+export type Project = { id: string; conversation: number; title: string; createdMs: number; printed?: boolean }
+
+/**
+ * What the sidebar groups a project by. `printFiles` counts the `.3mf` files in its folder, outside `refs/`. `lastMs` is
+ * its last activity: when it was made, when its last turn started, or when a file in its folder last changed.
+ */
+export type ProjectStatus = { running: boolean; printed: boolean; printFiles: number; lastMs: number }
 
 /** The draft key of the start screen, whose message has no project yet. Every other draft is keyed by its project id. */
 export const START = 'new'
@@ -142,6 +148,10 @@ export interface Methods {
   'chat.send': { params: { key: string; rev: number }; result: { project: Project } }
   'chat.stop': { params: { project: string }; result: null }
   'chat.retry': { params: { project: string }; result: null }
+  /** Each project's status for the sidebar, by project id. */
+  'projects.status': { params: Record<string, never>; result: Record<string, ProjectStatus> }
+  /** Marks a project printed, which moves it to the sidebar's Printed group. */
+  'projects.markPrinted': { params: { project: string }; result: null }
   /** The tools a project's agent is offered, as Pi resolves them. */
   'agent.tools': { params: { project: string }; result: string[] }
 }

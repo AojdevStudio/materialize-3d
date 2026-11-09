@@ -131,6 +131,8 @@ function mockSidecar(overrides: Calls = {}, projects: Project[] = [projectB], dr
         return Promise.resolve(view(String(params.project)))
       case 'setup.check':
         return Promise.resolve([])
+      case 'projects.status':
+        return Promise.resolve({})
       case 'drafts.set': {
         const rev = ++draftRevs
         const draft = { text: String(params.text), attachments: params.attachments as string[], rev }
@@ -298,6 +300,172 @@ describe('StudioApp', () => {
     const brand = await within(screen.getByRole('navigation', { name: 'Projects' })).findByTestId('brand')
     expect(brand.textContent).toBe('Materialize 3D')
     expect(brand.querySelector('img')?.getAttribute('src')).toBe(mark)
+  })
+
+  it('groups the projects by status, with a count on each group, and hides an empty group', async () => {
+    const projectC = { id: '2026-11-06-c', conversation: 4, title: 'Project C', createdMs: 0 }
+    const now = Date.now()
+    mockSidecar({
+      'projects.status': () => Promise.resolve({
+        [projectA.id]: { running: true, printed: false, printFiles: 0, lastMs: now - 2 * 60_000 },
+        [projectB.id]: { running: false, printed: false, printFiles: 2, lastMs: now - 60 * 60_000 },
+        [projectC.id]: { running: false, printed: false, printFiles: 1, lastMs: now - 3 * 24 * 60 * 60_000 },
+      }),
+    }, [projectA, projectB, projectC])
+    render(<StudioApp />)
+    const working = await screen.findByTestId('group-working')
+    expect(within(working).getByRole('heading').textContent?.trim()).toBe('Working1')
+    expect(within(working).getByTestId(`project-${projectA.id}`).textContent).toBe('Project ABuilding parts2m')
+    const ready = screen.getByTestId('group-ready')
+    expect(within(ready).getByRole('heading').textContent?.trim()).toBe('Ready to print2')
+    expect(within(ready).getAllByRole('listitem').map((row) => row.textContent)).toEqual([
+      'Project B2 print files1h',
+      'Project C1 print file3d',
+    ])
+    expect(screen.queryByTestId('group-printed')).toBeNull()
+    expect(screen.queryByTestId('group-drafts')).toBeNull()
+  })
+
+  it('moves a project to Printed from its menu', async () => {
+    let printed = false
+    mockSidecar({
+      'projects.status': () => Promise.resolve({ [projectB.id]: { running: false, printed, printFiles: 1, lastMs: Date.now() } }),
+      'projects.markPrinted': () => {
+        printed = true
+        return Promise.resolve(null)
+      },
+    })
+    render(<StudioApp />)
+    const ready = await screen.findByTestId('group-ready')
+    fireEvent.click(within(ready).getByRole('button', { name: 'Project B menu' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Mark as printed' }))
+    expect(sidecarCalls('projects.markPrinted')).toEqual([{ project: projectB.id }])
+    const done = await screen.findByTestId('group-printed')
+    expect(within(done).getByText('Project B')).toBeTruthy()
+    expect(screen.queryByTestId('group-ready')).toBeNull()
+    expect(within(done).queryByRole('button', { name: 'Project B menu' })).toBeNull()
+  })
+
+  it('reads the status again when a chat changes, so a project that starts working moves to Working', async () => {
+    let running = false
+    mockSidecar({ 'projects.status': () => Promise.resolve({ [projectB.id]: { running, printed: false, printFiles: 0, lastMs: Date.now() } }) })
+    render(<StudioApp />)
+    await screen.findByTestId('group-drafts')
+    running = true
+    await emit({ type: 'chat', ...view(projectB.id, { running: true, seq: 2 }) })
+    expect(within(await screen.findByTestId('group-working')).getByText('Project B')).toBeTruthy()
+    expect(screen.queryByTestId('group-drafts')).toBeNull()
+  })
+
+  it.each(['returns', 'fails'])(
+    'lands a turn that ends while the status read for its start is still out, when that read %s',
+    async (outcome) => {
+      const state = { running: false, printFiles: 0 }
+      const held: Array<() => void> = []
+      let hold = false
+      mockSidecar({
+        'projects.status': () => {
+          const snapshot = { [projectB.id]: { ...state, printed: false, lastMs: Date.now() } }
+          if (!hold) return Promise.resolve(snapshot)
+          return new Promise((resolve, reject) =>
+            held.push(() => (outcome === 'returns' ? resolve(snapshot) : reject(new Error('status read failed')))),
+          )
+        },
+      })
+      render(<StudioApp />)
+      await screen.findByTestId('group-drafts')
+      hold = true
+      state.running = true
+      await emit({ type: 'chat', ...view(projectB.id, { running: true, seq: 2 }) })
+      Object.assign(state, { running: false, printFiles: 1 })
+      await emit({ type: 'chat', ...view(projectB.id, { running: false, seq: 3 }) })
+      hold = false
+      await act(async () => held.forEach((release) => release()))
+      expect(within(await screen.findByTestId('group-ready')).getByText('Project B')).toBeTruthy()
+      expect(screen.queryByTestId('group-working')).toBeNull()
+    },
+  )
+
+  it('sees the first turn after an engine restart start, even when the turn before it was running', async () => {
+    let running = false
+    mockSidecar({ 'projects.status': () => Promise.resolve({ [projectB.id]: { running, printed: false, printFiles: 0, lastMs: Date.now() } }) })
+    render(<StudioApp />)
+    await screen.findByTestId('group-drafts')
+    running = true
+    await emit({ type: 'chat', ...view(projectB.id, { running: true, seq: 2 }) })
+    await screen.findByTestId('group-working')
+    running = false
+    await emit({ type: 'engine', state: 'restarting' })
+    await emit({ type: 'ready', version: '1.2.3' })
+    await screen.findByTestId('group-drafts')
+    running = true
+    await emit({ type: 'chat', ...view(projectB.id, { running: true, seq: 1 }) })
+    expect(within(await screen.findByTestId('group-working')).getByText('Project B')).toBeTruthy()
+  })
+
+  it('keeps a turn that starts while the read after an engine restart is still out in Working', async () => {
+    const state = { running: true }
+    const held: Array<() => void> = []
+    let hold = false
+    mockSidecar({
+      'projects.status': () => {
+        const snapshot = { [projectB.id]: { ...state, printed: false, printFiles: 0, lastMs: Date.now() } }
+        return hold ? new Promise((resolve) => held.push(() => resolve(snapshot))) : Promise.resolve(snapshot)
+      },
+    })
+    render(<StudioApp />)
+    await screen.findByTestId('group-working')
+    state.running = false
+    hold = true
+    await emit({ type: 'engine', state: 'restarting' })
+    await emit({ type: 'ready', version: '1.2.3' })
+    await emit({ type: 'chat', ...view(projectB.id, { running: true, seq: 1 }) })
+    hold = false
+    await act(async () => held.forEach((release) => release()))
+    expect(within(await screen.findByTestId('group-working')).getByText('Project B')).toBeTruthy()
+    expect(screen.queryByTestId('group-drafts')).toBeNull()
+  })
+
+  it('lands a turn that starts and ends before the sidebar renders, and reads once per change', async () => {
+    const state = { running: false, printFiles: 0 }
+    mockSidecar({ 'projects.status': () => Promise.resolve({ [projectB.id]: { ...state, printed: false, lastMs: Date.now() } }) })
+    render(<StudioApp />)
+    await screen.findByTestId('group-drafts')
+    await emit({ type: 'chat', ...view(projectB.id, { running: false, seq: 2 }) })
+    const reads = sidecarCalls('projects.status').length
+    await emit({ type: 'chat', ...view(projectB.id, { running: false, seq: 3 }) })
+    expect(sidecarCalls('projects.status')).toHaveLength(reads)
+    Object.assign(state, { printFiles: 1 })
+    await act(async () =>
+      listeners.sidecar.forEach((listener) => {
+        listener({ payload: { type: 'chat', ...view(projectB.id, { running: true, seq: 4 }) } })
+        listener({ payload: { type: 'chat', ...view(projectB.id, { running: false, seq: 5 }) } })
+      }),
+    )
+    expect(within(await screen.findByTestId('group-ready')).getByText('Project B')).toBeTruthy()
+    expect(screen.queryByTestId('group-working')).toBeNull()
+  })
+
+  it('ignores a chat state older than the one it has, so a late start cannot undo an end', async () => {
+    const state = { running: false, printFiles: 1 }
+    mockSidecar({ 'projects.status': () => Promise.resolve({ [projectB.id]: { ...state, printed: false, lastMs: Date.now() } }) })
+    render(<StudioApp />)
+    await screen.findByTestId('group-ready')
+    await emit({ type: 'chat', ...view(projectB.id, { running: false, seq: 10 }) })
+    await emit({ type: 'chat', ...view(projectB.id, { running: false, seq: 30 }) })
+    await emit({ type: 'chat', ...view(projectB.id, { running: true, seq: 20 }) })
+    expect(within(await screen.findByTestId('group-ready')).getByText('Project B')).toBeTruthy()
+    expect(screen.queryByTestId('group-working')).toBeNull()
+  })
+
+  it('hides the sidebar to a narrow rail from its panel toggle, and shows it again', async () => {
+    mockSidecar()
+    render(<StudioApp />)
+    await screen.findByText('Project B')
+    fireEvent.click(screen.getByRole('button', { name: 'Hide sidebar' }))
+    expect(screen.queryByText('Project B')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Show sidebar' }))
+    expect(screen.getByText('Project B')).toBeTruthy()
   })
 
   it('flips the theme from the toggle at the bottom of the sidebar, and saves the choice', async () => {

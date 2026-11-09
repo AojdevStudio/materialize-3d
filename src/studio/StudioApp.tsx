@@ -6,11 +6,10 @@ import { autoOpens, onQuitFlush, onSidecarEvent, sidecar, studio, type ProjectFi
 import { ChatView, Composer, releaseAttachment, savedAttachment, type PastedPicture } from './Chat'
 import RightPanel, { type Tab } from './RightPanel'
 import { buildChat } from './transcript'
-import { useTheme } from './theme'
+import Sidebar from './Sidebar'
 import { ImportBlockedBanner, ReadinessBanner, SignInAsk, WaitingBanner } from './Waiting'
 import { UpdateBanner } from '../components/UpdateBanner'
 import { checkForUpdatesAtLaunch, useUpdateEvents } from '../stores/updates'
-import mark from '../assets/brand/mark-small-32.svg'
 import './studio.css'
 
 const SUGGESTIONS = [
@@ -69,26 +68,6 @@ function toBase64(bytes: Uint8Array): string {
   let binary = ''
   for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
   return btoa(binary)
-}
-
-/** The sidebar's theme toggle: a sun in light, a moon in dark. */
-function ThemeToggle() {
-  const dark = useTheme((s) => s.theme === 'dark')
-  const toggle = useTheme((s) => s.toggle)
-  return (
-    <button type="button" className="icon-button" aria-label="Dark mode" aria-pressed={dark} onClick={toggle} data-testid="theme-toggle">
-      <svg viewBox="0 0 24 24" width={18} height={18} fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        {dark ? (
-          <path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5Z" />
-        ) : (
-          <>
-            <circle cx={12} cy={12} r={4} />
-            <path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" />
-          </>
-        )}
-      </svg>
-    </button>
-  )
 }
 
 function newestAutoOpen(files: ProjectFile[]): ProjectFile | undefined {
@@ -573,30 +552,14 @@ export default function StudioApp() {
 
   return (
     <div className={`studio ${current ? 'studio-work' : 'studio-start'}`}>
-      <nav className="sessions" aria-label="Projects">
-        <div className="brand" data-testid="brand">
-          <img src={mark} alt="" width={20} height={20} />
-          Materialize 3D
-        </div>
-        <button type="button" className="new-project" onClick={() => show(null)} data-testid="new-project">
-          New project
-        </button>
-        <ul>
-          {projects.map((p) => (
-            <li key={p.id}>
-              <button type="button" aria-current={p.id === current?.id} onClick={() => void openProject(p)} title={p.title}>
-                {p.title}
-              </button>
-            </li>
-          ))}
-        </ul>
-        <p className="engine" data-testid="engine">
-          {engine}
-        </p>
-        <footer className="sessions-footer">
-          <ThemeToggle />
-        </footer>
-      </nav>
+      <Sidebar
+        projects={projects}
+        current={current?.id ?? null}
+        engine={engine}
+        onOpen={(project) => void openProject(project)}
+        onNew={() => show(null)}
+        onError={setError}
+      />
 
       <main className="chat" aria-label="Chat">
         <UpdateBanner />

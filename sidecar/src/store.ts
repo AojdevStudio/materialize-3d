@@ -4,7 +4,7 @@
  *
  * App state lives as Pi documents on the root conversation. Each project is a conversation of its own.
  */
-import { existsSync, mkdirSync } from 'node:fs'
+import { type Dirent, existsSync, mkdirSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
@@ -349,6 +349,49 @@ export class Store implements LoginIndex {
       if (done) imported.push(old.id)
     }
     return imported
+  }
+
+  /** Marks a project printed. */
+  async markPrinted(id: string): Promise<void> {
+    await this.harness.commit(async (tx) => {
+      const project = (await tx.doc(ProjectsDoc, this.root.id)).projects.find((p) => p.id === id)
+      if (project === undefined) throw new Error(`no project ${id}`)
+      project.printed = true
+    }, context)
+  }
+
+  /**
+   * What the project's folder holds for the sidebar: its `.3mf` files outside `refs/`, where the person's own files go,
+   * and when a file in it last changed. Folders the file list skips are skipped here too. A folder not made yet is empty.
+   */
+  folderSummary(id: string): { printFiles: number; newestMs: number } {
+    const root = join(this.projectsDir, id)
+    const summary = { printFiles: 0, newestMs: 0 }
+    if (!existsSync(root)) return summary
+    const walk = (dir: string, refs: boolean) => {
+      let entries: Dirent[]
+      try {
+        entries = readdirSync(dir, { withFileTypes: true })
+      } catch (error) {
+        // The agent may remove a folder while it is read. A folder that is gone holds nothing to count.
+        if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return
+        throw error
+      }
+      for (const entry of entries) {
+        if (entry.name.startsWith('.') || ['__pycache__', 'node_modules', 'venv'].includes(entry.name)) continue
+        const path = join(dir, entry.name)
+        if (entry.isDirectory()) walk(path, refs || (dir === root && entry.name === 'refs'))
+        else if (entry.isFile()) {
+          // Likewise a file removed since the folder was read.
+          const stat = statSync(path, { throwIfNoEntry: false })
+          if (stat === undefined) continue
+          summary.newestMs = Math.max(summary.newestMs, stat.mtimeMs)
+          if (!refs && entry.name.toLowerCase().endsWith('.3mf')) summary.printFiles++
+        }
+      }
+    }
+    walk(root, false)
+    return summary
   }
 
   /** The project's folder, made if it is missing. */
