@@ -8,9 +8,8 @@ For installed macOS release acceptance, use [Verify the installed Mac app](../..
 
 - `$S/m3d.sh up` printed `m3d: ready`, and `$S/m3d.sh doctor` exits 0.
 - `$S/wd.ts session` is open, and `$S/m3d.sh close-inspector` reports a 1440x900 viewport.
-- Since 2026-11-06 the app opens on the [studio](./studio.md) start screen. Wait for `[data-testid=start-screen]` instead of `nav[aria-label=Primary]`, and skip onboarding, which no longer shows. The rest of this list applies to the hidden screens.
-- A fresh run starts at onboarding. Every recipe except [onboarding](./onboarding.md) starts from the main UI, so complete onboarding first: `$S/wd.ts click "[data-testid=btn-get-started]"`, `$S/wd.ts click "[data-testid=btn-llm-skip]"`, `$S/wd.ts click "[data-testid=btn-bambu-skip]"`, `$S/wd.ts click "[data-testid=btn-launch-app]"`, `$S/wd.ts wait "nav[aria-label=Primary]"`.
-- `DB` means `$(readlink -f ~/m3d-verify/current)/xdg/data/com.aojdevstudio.materialize3d/materialize.db`. Read it with the bun one-liner in SKILL.md.
+- The app opens on the [studio](./studio.md) start screen. Wait for `[data-testid=start-screen]`.
+- `STORE` means `$(readlink -f "${M3D_RUNS:-$HOME/m3d-verify}/current")/xdg/data/com.aojdevstudio.materialize3d/state/store.sqlite`, the sidecar's store. `m3d.sh` keeps its runs under `M3D_RUNS` when that is set.
 
 ## Driving conventions
 
@@ -23,38 +22,24 @@ For installed macOS release acceptance, use [Verify the installed Mac app](../..
 ## Proof and skip reporting
 
 - Take a screenshot before and after each user action that matters. `actions.log` records the commands.
-- Mutation proof includes the SQLite row or the file on disk, plus the state after a relaunch.
+- Mutation proof includes the file on disk or the state after a relaunch.
 - Record the feature file and entry point used with every artifact.
-- Report an unreachable path with the attempted command and the unmet precondition: no `openscad`, no provider credential, no printer on the network.
+- Report an unreachable path with the attempted command and the unmet precondition, such as no inference login or no uv.
 - Do not report a skipped entry point as verified through a different path.
 
 ## Host facts (dev-substrate, 2026-11-03)
 
 - The Linux host is dev-substrate (`ssh ossie@dev-substrate`, Ubuntu 24.04.5). It has Bun 1.4.4, tauri-driver 2.1.0, WebKitGTK 2.52.6, and Google Chrome 156 at `/opt/google/chrome`. The app on `main` builds with Tauri 2.12.5 and wry 0.57.1.
 - aojdevlinux cannot run the app harness and cannot run the site tests as installed, see SKILL.md and [site](./site.md). Drive dev-substrate from it over ssh.
-- `openscad` is not installed. Design renders end in `Error`, see [design](./design-openscad.md).
-- makerworld.com loads in the embedded browser, but the embedded session is signed out. Import fails on a model page, see [makerworld](./makerworld.md).
-- Bambu Studio 02.08.02.61 is at `/home/ossie/actions-runner-materialize-3d/_work/_tool/bambu-studio/02.08.02.61/squashfs-root/AppRun`, the self-hosted runner's tool cache installed by `scripts/ci/install-bambu-linux.sh`. Export `BAMBU_STUDIO_CLI` to it before `up`, or choose it in Settings > Bambu Studio, see [signs](./signs.md).
-- The CAD runtime cache is `~/.cache/m3d-tool-cache/cad-runtime/amd64-<hash>/` with `vmlinux`, `rootfs.img`, and `job.img`, see [parts](./parts.md).
-- `/dev/kvm`, `/dev/vhost-vsock`, `qemu-system-x86_64`, and `keyctl` are present.
-- The test P2S printer sits on a separate VLAN. Treat printer connection as unreachable unless you have confirmed the route.
+- Bambu Studio 02.08.02.61 is at `/home/ossie/actions-runner-materialize-3d/_work/_tool/bambu-studio/02.08.02.61/squashfs-root/AppRun`, the self-hosted runner's tool cache installed by `scripts/ci/install-bambu-linux.sh`. Export `BAMBU_STUDIO_CLI` to it before `up` so the agent's `slice` tool finds it.
+- The harness build has no `e2e` feature, so the studio keeps its projects in the host user's `~/Documents/Materialize 3D/`, not in the run directory.
 
 ## Feature entry contract
 
-Each feature file has an H1 and one paragraph of user-visible behavior, followed by exactly four H2s in this order: `Sub-features`, `How to get to it (user POV)`, `Driving it with wd.ts`, and `Gotchas`. Lines marked **(observed 2026-11-03)** were driven live on `ce33b74`. Lines marked **(observed 2026-11-01)** were driven live on `4205181`. Lines marked **(observed 2026-10-05)** were driven live on `f01f418`. Lines marked **(observed 2026-09-25)** were driven on `86ea7c8`, which is not an ancestor of `main`, and lines marked **(observed 2026-09-26)** in [signs](./signs.md) on `e258688`. Everything else comes from reading the code and should be confirmed on first use. [Site](./site.md) keeps the same four H2s, and its driving section uses Playwright instead of `wd.ts`.
+Each feature file has an H1 and one paragraph of user-visible behavior, followed by exactly four H2s in this order: `Sub-features`, `How to get to it (user POV)`, `Driving it with wd.ts`, and `Gotchas`. A line marked **(observed <date>)** was driven live on that date. Everything else comes from reading the code and should be confirmed on first use. [Site](./site.md) keeps the same four H2s, and its driving section uses Playwright instead of `wd.ts`.
 
 ## Features
 
-- [Studio](./studio.md) is the app since 2026-11-06: chat with a local Claude Code agent, pictures, the preview and Files panel, and Open in Bambu Studio. It has no onboarding, so its recipe starts at the start screen. The recipes below describe screens the studio hides.
-- [Onboarding](./onboarding.md) covers the four-step first-run wizard, its skip paths, and the persisted completion flag.
-- [Navigation](./navigation.md) covers the sidebar, the workspace tabs, the Library and History views, the status bar, and the launch refusal for a newer database.
-- [MakerWorld](./makerworld.md) covers the embedded MakerWorld browser, model detection, Import to Library, and how downloads land in the Library.
-- [Settings](./settings.md) covers the Bambu Studio location, print defaults, the agent provider, model, and API key, notifications, auto-connect, and the External agents (MCP) switch, and links the About section.
-- [Updater](./updater.md) covers the update banner at launch, Later, Settings > About with its manual check, the wait for running builds, and the failed check and failed install states.
-- [Design (OpenSCAD)](./design-openscad.md) covers opening a `.scad` file, rendering, and parameters.
-- [Signs](./signs.md) covers building a sign from a spec file, reviewing a revision, hash-bound approval, export, and recording a print result.
-- [Printers](./printers.md) covers adding, switching, and deleting printer configs, and connection states.
-- [Chat](./chat.md) covers the always-on AI assistant panel, including how provider errors hide the API key.
-- [Parts](./parts.md) covers agent-built functional parts, the part detail, measured requirements, warnings, approval, and 3MF export. Installed-release acceptance is separate from backend tests.
-- [MCP](./mcp.md) covers the local MCP server for external agents, including `import_part`.
+- [Studio](./studio.md) is the whole app: chat with the agent, pictures, the preview and Files panel, and Open in Bambu Studio. Its recipe starts at the start screen.
+- [Updater](./updater.md) covers the update banner at launch, Later, the wait for the agent's work, and the failed check and failed install states.
 - [Site](./site.md) covers the landing site's Playwright tests on Google Chrome. They do not use `wd.ts`.

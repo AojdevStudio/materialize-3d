@@ -1,13 +1,14 @@
 # Studio
 
-The studio is the whole app. Each chat is a project folder in `~/Documents/Materialize 3D/<date>-<slug>/` (an `e2e` build uses `<M3D_E2E_DATA_DIR>/projects/`), and a conversation in the sidecar's store, `<app data>/state/store.sqlite` (an `e2e` build: `<M3D_E2E_DATA_DIR>/state/`). The sidecar, `Contents/MacOS/materialize-sidecar`, runs the agent through Pi Durable on the person's own inference login, with the app's own tools: `read`, `write`, and `edit` inside the project folder, `run` (uv), `slice` (the validated Bambu Studio, through Rust), and `astra` (GPT 6 Astra as a child task). The right panel shows whatever the agent writes: HTML in a sandboxed frame, STL, 3MF, and GLB in an orbit viewer, and pictures. The newest such file opens on its own. The Files tab lists every file, with Reveal in Finder and, for a 3MF, Open in Bambu Studio. The other recipes in this map describe screens the studio hides.
+The studio is the whole app. Each chat is a project folder in `~/Documents/Materialize 3D/<date>-<slug>/` (an `e2e` build uses `<M3D_E2E_DATA_DIR>/projects/`), and a conversation in the sidecar's store, `<app data>/state/store.sqlite` (an `e2e` build: `<M3D_E2E_DATA_DIR>/state/`). The sidecar, `Contents/MacOS/materialize-sidecar`, runs the agent through Pi Durable on the person's own inference login, with the app's own tools: `read`, `write`, and `edit` inside the project folder, `run` (uv), `slice` (the validated Bambu Studio, through Rust), and `astra` (GPT 6 Astra as a child task). The right panel shows whatever the agent writes: HTML in a sandboxed frame, STL, 3MF, and GLB in an orbit viewer, and pictures. The newest such file opens on its own. The Files tab lists every file, with Reveal in Finder and, for a 3MF, Open in Bambu Studio.
 
 ## Sub-features
 
 - `start-screen` holds "What are we making?", the `prompt` box, `Add picture`, `send`, and three suggestion chips that fill the box.
 - `prompt` takes text, pasted pictures, and links. The text is saved as the project's draft a moment after typing stops, and comes back when the project opens. A picture dropped on the window or chosen with `Add picture` shows in `attachments` and is copied to the project's `refs/` on send. It reaches the model as an image block.
 - `messages` shows committed chat lines only: each tool step on one line (`.tool`, with `.tool-running` until its result is committed), agent text, and `file-cards` after a turn that wrote previewable files or a 3MF. `working` shows while a turn runs, and `stop` replaces `send`.
-- `chat-model` names the model the current turn runs with. A settings change applies from the next message.
+- `chat-model` names the model the current turn runs with.
+- `readiness` shows on the start screen while the agent lacks something, with the fix for each need: a sign-in, uv, a Python uv can run, or a model from a provider the app offers (the fix names the offered providers). A missing sign-in shows the same sign-in controls as `waiting`. `Check again` reruns the check. `send` stays disabled until nothing is missing.
 - `waiting` shows when a turn stopped before its answer: the fix, and the control for it. A provider with no login shows `Sign in with Claude` or `Sign in with ChatGPT`, and for Anthropic and OpenCode Go a key form (`API key or token`, and for Anthropic `Proxy URL`). Once the login is saved, the turn goes on by itself. Any other failure shows its error and `Try again`.
 - A turn cut off by quitting or a crash goes on from its last committed step when the app opens again.
 - `engine` in the sidebar shows the sidecar's version, or why it stopped.
@@ -21,18 +22,20 @@ The studio is the whole app. Each chat is a project folder in `~/Documents/Mater
 
 ## Driving it with wd.ts
 
-On macOS, drive it with `mac.ts` from an `e2e` build. Answer `Add picture` with `mac.ts dialog <png>` before the click. A fresh data folder has no login, so the first turn waits for one. `ANTHROPIC_TOKEN` and `ANTHROPIC_PROXY` are the host's proxy token and URL.
+On macOS, drive it with `mac.ts` from an `e2e` build. Answer `Add picture` with `mac.ts dialog <png>` before the click. A fresh data folder has no login, so `readiness` asks for one before `send` turns on. That order is from the code (`notReady` in `src/studio/StudioApp.tsx`). `ANTHROPIC_TOKEN` and `ANTHROPIC_PROXY` are the host's proxy token and URL.
 
 ```bash
 bun $S/mac.ts wait '[data-testid=start-screen]' 30000
-bun $S/mac.ts dialog "$HOME/fixtures/sketch.png"
-bun $S/mac.ts click 'text=Add picture'
-bun $S/mac.ts type '[data-testid=prompt]' 'Make a cable clip like in this sketch, then slice it to a 3MF'
-bun $S/mac.ts click '[data-testid=send]'
-bun $S/mac.ts wait '[data-testid=waiting]' 20000
+bun $S/mac.ts wait '[data-testid=readiness]' 20000
 bun $S/mac.ts type '[aria-label="API key or token"]' "$ANTHROPIC_TOKEN"
 bun $S/mac.ts type '[aria-label="Proxy URL"]' "$ANTHROPIC_PROXY"
 bun $S/mac.ts click 'text=Save'
+# If readiness still names uv or Python, install it, click 'text=Check again', and wait for the banner to clear.
+bun $S/mac.ts dialog "$HOME/fixtures/sketch.png"
+bun $S/mac.ts click 'text=Add picture'
+bun $S/mac.ts type '[data-testid=prompt]' 'Make a cable clip like in this sketch, then slice it to a 3MF'
+bun $S/mac.ts wait '[data-testid=send]:not([disabled])' 20000
+bun $S/mac.ts click '[data-testid=send]'
 bun $S/mac.ts wait '[data-testid=working]' 20000
 # A full job takes minutes. The file cards appear when the turn's last step is committed. One mac.ts wait is one
 # HTTP request, which Bun ends after about five minutes, so a long wait goes in rounds.
