@@ -7,24 +7,19 @@
 //! `update_install` is the whole install, and the only way to install. It
 //! downloads the archive, which the updater refuses unless its minisign
 //! signature verifies against the public key in `tauri.conf.json` and was made
-//! for the announced version. Then it waits until no build runs (issue #79),
-//! backs up the database and print queue to
-//! `<app data>/backups/<from>-to-<to>-<time>/`, and only after a checked backup
-//! does it replace the app and restart. No build starts from the end of that
-//! wait to the restart. Any failure leaves the running app as it was. The
-//! webview holds no updater plugin permission, so it cannot install without
-//! the backup.
+//! for the announced version. Then it waits until no work holds the gate
+//! (issue #79): a sidecar turn or a slice. Only then does it replace the app
+//! and restart. No work starts from the end of that wait to the restart. Any
+//! failure leaves the running app as it was. The webview holds no updater
+//! plugin permission, so it cannot install around the gate.
 
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use rusqlite::{Connection, OpenFlags};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Runtime, State};
 use tauri_plugin_updater::{Update, Updater, UpdaterExt};
 
-use crate::fabrication::build_gate::Closed;
-use crate::state::AppState;
+use crate::build_gate::{BuildGate, Closed};
 
 /// The update the last check found, kept for `update_install`.
 #[derive(Default)]
@@ -102,11 +97,11 @@ pub async fn update_check(app: AppHandle, pending: State<'_, PendingUpdate>) -> 
     Ok(check)
 }
 
-/// Installs the update the last check found once no build runs, after a checked backup, then restarts.
+/// Installs the update the last check found once no work holds the gate, then restarts.
 #[tauri::command]
 pub async fn update_install(
     app: AppHandle,
-    state: State<'_, Arc<AppState>>,
+    gate: State<'_, Arc<BuildGate>>,
     pending: State<'_, PendingUpdate>,
     version: String,
 ) -> Result<(), String> {
@@ -141,97 +136,23 @@ pub async fn update_install(
             log::warn!("updater: could not report the builds it waits for: {e}");
         }
     };
-    let (backup, _closed) = install_when_idle(&state, &update.current_version, &update.version, waiting, || {
-        update.install(&bytes).map_err(|e| format!("The update did not install: {e}"))
-    })
-    .await?;
-    log::info!("updater: installed {}, backup at {}; restarting", update.version, backup.display());
+    let _closed = install_when_idle(&gate, waiting, || update.install(&bytes).map_err(|e| format!("The update did not install: {e}"))).await?;
+    log::info!("updater: installed {}; restarting", update.version);
     app.restart()
 }
 
-/// Waits until no build runs, backs up the database and print queue, then runs
-/// `install` only if the backup is complete and checked. `waiting` hears how many
-/// builds are running at each check. Builds are refused from the end of the wait
-/// until this fails, or until the returned guard drops. The caller holds it
+/// Waits until no work holds the gate, then runs `install`. `waiting` hears how
+/// many passes are held at each check. Work is refused from the end of the wait
+/// until `install` fails, or until the returned guard drops. The caller holds it
 /// through the restart.
-///
-/// The locks are held for the backup only. On macOS the install can ask for an
-/// administrator's approval on the main thread, and a command waiting there for
-/// one of these locks would deadlock it. A write between the backup and the
-/// restart stays in the live database, not in the backup.
-pub(crate) async fn install_when_idle<'a>(
-    state: &'a AppState,
-    from: &str,
-    to: &str,
+pub(crate) async fn install_when_idle(
+    gate: &BuildGate,
     waiting: impl FnMut(usize),
     install: impl FnOnce() -> Result<(), String>,
-) -> Result<(PathBuf, Closed<'a>), String> {
-    let closed = state.builds.close_when_idle(waiting).await;
-    let backup = {
-        let db = state.db.lock().map_err(|e| format!("Did not update: the database lock failed: {e}"))?;
-        let conn = db.as_ref().ok_or("Did not update: the database is not open")?;
-        let _queue = state
-            .print_queue
-            .lock()
-            .map_err(|e| format!("Did not update: the print queue lock failed: {e}"))?;
-        back_up(conn, state.print_queue_file.as_deref(), from, to)
-            .map_err(|e| format!("Did not update, because the backup failed: {e}"))?
-    };
-    log::info!("updater: backed up the app data to {}", backup.display());
-    install().map_err(|e| format!("{e}. Your data was backed up to {} first.", backup.display()))?;
-    Ok((backup, closed))
-}
-
-/// Writes `backups/<from>-to-<to>-<time>/` beside the live database: a
-/// `VACUUM INTO` copy of it (one file, WAL included) that must pass an
-/// integrity check at the same schema version, and a copy of the print queue
-/// file when one exists. A failed backup removes its folder.
-fn back_up(conn: &Connection, queue_file: Option<&Path>, from: &str, to: &str) -> Result<PathBuf, String> {
-    for version in [from, to] {
-        if version.is_empty() || !version.bytes().all(|b| b.is_ascii_alphanumeric() || b".+-".contains(&b)) {
-            return Err(format!("{version:?} is not a version"));
-        }
-    }
-    let live = conn.path().filter(|path| !path.is_empty()).ok_or("the database has no file")?;
-    let root = Path::new(live).parent().ok_or("the database has no folder")?.join("backups");
-    let dir = root.join(format!("{from}-to-{to}-{}", chrono::Utc::now().format("%Y%m%dT%H%M%S%.3fZ")));
-    std::fs::create_dir_all(&root).map_err(|e| format!("could not create {}: {e}", root.display()))?;
-    // `create_dir`, not `create_dir_all`: cleaning up must never remove another run's folder.
-    std::fs::create_dir(&dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
-
-    let written = write_backup(conn, queue_file, &dir);
-    if let Err(why) = written {
-        return Err(match std::fs::remove_dir_all(&dir) {
-            Ok(()) => why,
-            Err(e) => format!("{why}; the incomplete {} could not be removed: {e}", dir.display()),
-        });
-    }
-    Ok(dir)
-}
-
-fn write_backup(conn: &Connection, queue_file: Option<&Path>, dir: &Path) -> Result<(), String> {
-    let copy = dir.join("materialize.db");
-    conn.execute("VACUUM INTO ?1", [copy.to_string_lossy()])
-        .map_err(|e| format!("could not copy the database: {e}"))?;
-    let schema = |conn: &Connection| conn.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0));
-    let expected = schema(conn).map_err(|e| format!("could not read the schema version: {e}"))?;
-    let check = Connection::open_with_flags(&copy, OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .map_err(|e| format!("could not open the copy: {e}"))?;
-    let integrity: String = check
-        .query_row("PRAGMA integrity_check", [], |row| row.get(0))
-        .map_err(|e| format!("could not check the copy: {e}"))?;
-    if integrity != "ok" {
-        return Err(format!("the copy failed its integrity check: {integrity}"));
-    }
-    let copied = schema(&check).map_err(|e| format!("could not read the copy's schema version: {e}"))?;
-    if copied != expected {
-        return Err(format!("the copy is at schema {copied}, the database at {expected}"));
-    }
-    if let Some(queue) = queue_file.filter(|queue| queue.exists()) {
-        std::fs::copy(queue, dir.join("print_queue.json"))
-            .map_err(|e| format!("could not copy the print queue {}: {e}", queue.display()))?;
-    }
-    Ok(())
+) -> Result<Closed<'_>, String> {
+    let closed = gate.close_when_idle(waiting).await;
+    install()?;
+    Ok(closed)
 }
 
 #[cfg(test)]
@@ -239,9 +160,6 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     use tauri::test::{mock_builder, mock_context, noop_assets, MockRuntime};
-    use tauri::Manager;
-
-    use crate::slicer::SlicerService;
 
     use super::*;
 
@@ -369,161 +287,42 @@ mod tests {
         assert!(updater.check().await.is_err());
     }
 
-    fn state_in(dir: &Path) -> AppState {
-        let state = AppState { print_queue_file: Some(dir.join("print_queue.json")), ..AppState::default() };
-        let conn = crate::database::init_db(&dir.join("materialize.db")).expect("db");
-        crate::database::upsert_setting(&conn, "connection.auto_connect", "true").expect("setting");
-        *state.db.lock().expect("db") = Some(conn);
-        std::fs::write(dir.join("print_queue.json"), "[]").expect("queue");
-        state
-    }
-
     #[tokio::test]
-    async fn a_checked_backup_comes_before_the_install() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let state = state_in(dir.path());
-        let (backup, _closed) = install_when_idle(&state, "0.2.1", "0.3.0", |_| {}, || {
-            let backups: Vec<_> = std::fs::read_dir(dir.path().join("backups")).expect("backups").collect();
-            assert_eq!(backups.len(), 1, "the backup exists before the install runs");
-            assert!(state.db.try_lock().is_ok() && state.print_queue.try_lock().is_ok(), "the install runs unlocked");
-            assert!(state.builds.enter().is_none(), "no build starts between the idle check and the restart");
-            Ok(())
-        })
-        .await
-        .expect("installed");
-        let backups = dir.path().canonicalize().expect("canonical").join("backups");
-        assert_eq!(backup.parent(), Some(backups.as_path()), "the backup sits in the app data folder");
-        assert!(backup.file_name().expect("name").to_string_lossy().starts_with("0.2.1-to-0.3.0-"));
-        let copy = Connection::open(backup.join("materialize.db")).expect("copy");
-        assert_eq!(crate::database::get_setting(&copy, "connection.auto_connect").expect("read"), Some("true".into()));
-        assert_eq!(std::fs::read_to_string(backup.join("print_queue.json")).expect("queue"), "[]");
-    }
-
-    #[tokio::test]
-    async fn a_running_build_holds_the_install_and_restart_until_it_ends() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let state = state_in(dir.path());
-        let build = state.builds.enter().expect("a build starts");
+    async fn running_work_holds_the_install_and_restart_until_it_ends() {
+        let gate = BuildGate::default();
+        let work = BuildGate::enter_owned(&gate).expect("work starts");
         let installed = AtomicBool::new(false);
-        let mut update = std::pin::pin!(install_when_idle(&state, "0.2.1", "0.3.0", |_| {}, || {
+        let mut update = std::pin::pin!(install_when_idle(&gate, |_| {}, || {
             installed.store(true, Ordering::SeqCst);
             Ok(())
         }));
         let wait = std::time::Duration::from_millis(100);
-        assert!(tokio::time::timeout(wait, &mut update).await.is_err(), "the update waits while the build runs");
-        assert!(!installed.load(Ordering::SeqCst), "nothing installs while a build runs");
-        drop(build);
+        assert!(tokio::time::timeout(wait, &mut update).await.is_err(), "the update waits while the work runs");
+        assert!(!installed.load(Ordering::SeqCst), "nothing installs while work runs");
+        drop(work);
         let _installed =
-            tokio::time::timeout(wait, &mut update).await.expect("the update goes ahead once the build ends").expect("installed");
+            tokio::time::timeout(wait, &mut update).await.expect("the update goes ahead once the work ends").expect("installed");
         assert!(installed.load(Ordering::SeqCst));
     }
 
     #[tokio::test]
-    async fn no_build_starts_after_the_install_until_the_restart() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let state = state_in(dir.path());
-        let _installed = install_when_idle(&state, "0.2.1", "0.3.0", |_| {}, || Ok(())).await.expect("installed");
-        assert!(state.builds.enter().is_none(), "the restart would kill a build that starts now");
-    }
-
-    /// An app whose OrcaSlicer is `/bin/sh`, so the STL it gets first is the slicer script. The
-    /// script touches `started`, waits for `release` or for the test's folder to go, then writes
-    /// a 3MF with the one part sliced. A script written moments ago and run as its own executable
-    /// races other test threads' forks (ETXTBSY).
-    fn app_with_slow_slicer(dir: &Path) -> (tauri::App<MockRuntime>, PathBuf) {
-        let slicer =
-            SlicerService { orca_cli_path: "/bin/sh".into(), profile_base_path: crate::slicer::tests::fixture_profiles() };
-        let sliced = dir.join("sliced.3mf");
-        crate::slicer::tests::write_sliced_3mf(&sliced, 1, 0);
-        let stl = dir.join("model.stl");
-        let script = format!(
-            "for arg; do out=$arg; done\ntouch '{dir}/started'\nwhile [ ! -e '{dir}/release' ] && [ -d '{dir}' ]; do sleep 0.02; done\ncp '{sliced}' \"$out\"\n",
-            dir = dir.display(),
-            sliced = sliced.display()
-        );
-        std::fs::write(&stl, script).expect("slicer script");
-        let app = mock_builder()
-            .manage(Arc::new(state_in(dir)))
-            .manage(slicer)
-            .build(mock_context(noop_assets()))
-            .expect("mock app");
-        (app, stl)
-    }
-
-    #[tokio::test]
-    async fn a_running_stl_slice_holds_the_install_and_restart_until_it_ends() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let (app, stl) = app_with_slow_slicer(dir.path());
-        let state = app.state::<Arc<AppState>>();
-        let wait = std::time::Duration::from_millis(200);
-        let mut slice = std::pin::pin!(crate::commands::slice_model(
-            stl.display().to_string(),
-            None,
-            None,
-            app.state(),
-            app.state()
-        ));
-        while !dir.path().join("started").exists() {
-            assert!(tokio::time::timeout(wait, &mut slice).await.is_err(), "the slice runs until its release");
-        }
-
-        let installed = AtomicBool::new(false);
-        let mut update = std::pin::pin!(install_when_idle(&state, "0.2.1", "0.3.0", |_| {}, || {
-            installed.store(true, Ordering::SeqCst);
-            Ok(())
-        }));
-        assert!(tokio::time::timeout(wait, &mut update).await.is_err(), "the update waits while the slice runs");
-        assert!(!installed.load(Ordering::SeqCst), "nothing installs while a slice runs");
-
-        std::fs::write(dir.path().join("release"), "").expect("release");
-        let ends = std::time::Duration::from_secs(10);
-        let sliced = tokio::time::timeout(ends, &mut slice).await.expect("the slice ends").expect("sliced");
-        assert!(sliced.output_file.exists(), "the 3MF is written before the update goes ahead");
-        let _installed =
-            tokio::time::timeout(ends, &mut update).await.expect("the update goes ahead once the slice ends").expect("installed");
-        assert!(installed.load(Ordering::SeqCst));
-    }
-
-    #[tokio::test]
-    async fn no_stl_slice_starts_while_an_update_installs() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let (app, stl) = app_with_slow_slicer(dir.path());
-        let state = app.state::<Arc<AppState>>();
-        let _installed = install_when_idle(&state, "0.2.1", "0.3.0", |_| {}, || Ok(())).await.expect("installed");
-        std::fs::write(dir.path().join("release"), "").expect("release");
-        let error = crate::commands::slice_model(stl.display().to_string(), None, None, app.state(), app.state())
-            .await
-            .expect_err("the restart would kill a slice that starts now");
-        assert_eq!(error, "an update is installing and the app is about to restart. Slice again after it restarts.");
-        assert!(!dir.path().join("started").exists(), "OrcaSlicer never starts");
-    }
-
-    #[tokio::test]
-    async fn a_failed_backup_stops_the_install() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let state = state_in(dir.path());
-        std::fs::write(dir.path().join("backups"), "a file where the backups folder goes").expect("block");
-        let installed = AtomicBool::new(false);
-        let error = install_when_idle(&state, "0.2.1", "0.3.0", |_| {}, || {
-            installed.store(true, Ordering::SeqCst);
+    async fn no_work_starts_from_the_install_until_the_restart() {
+        let gate = BuildGate::default();
+        let _installed = install_when_idle(&gate, |_| {}, || {
+            assert!(BuildGate::enter_owned(&gate).is_none(), "no work starts between the idle check and the install");
             Ok(())
         })
         .await
-        .expect_err("the backup must fail");
-        assert!(!installed.load(Ordering::SeqCst), "nothing installs without a backup");
-        assert!(error.contains("backup failed"), "{error}");
-        assert!(state.builds.enter().is_some(), "the app runs on and builds again");
+        .expect("installed");
+        assert!(BuildGate::enter_owned(&gate).is_none(), "the restart would cut off work that starts now");
     }
 
     #[tokio::test]
-    async fn a_failed_install_names_the_backup_it_kept_and_lets_builds_start_again() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let state = state_in(dir.path());
-        let error = install_when_idle(&state, "0.2.1", "0.3.0", |_| {}, || Err("disk full".into()))
-            .await
-            .expect_err("install fails");
-        assert!(error.starts_with("disk full. Your data was backed up to"), "{error}");
-        assert!(state.builds.enter().is_some(), "the app runs on and builds again");
+    async fn a_failed_install_lets_work_start_again() {
+        let gate = BuildGate::default();
+        let error = install_when_idle(&gate, |_| {}, || Err("disk full".into())).await.expect_err("install fails");
+        assert_eq!(error, "disk full");
+        assert!(BuildGate::enter_owned(&gate).is_some(), "the app runs on and work starts again");
     }
 
     #[test]

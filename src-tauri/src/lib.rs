@@ -1,48 +1,15 @@
-mod commands;
+mod bambu;
+mod build_gate;
 mod credentials;
-mod database;
-pub mod fabrication;
 #[cfg(feature = "e2e")]
 mod e2e;
 mod sidecar;
 mod studio;
-mod studio_commands;
-mod makerworld;
-pub mod openscad;
-pub mod platform;
-mod print_queue;
-/// Exposed for integration tests only.
-#[doc(hidden)]
-pub mod printer;
-pub mod slicer;
-/// Exposed for integration tests only.
-#[doc(hidden)]
-pub mod state;
 mod updater;
 
 use std::sync::Arc;
 
-use commands::{
-    add_printer_config, add_to_queue, connect_printer, connect_printer_by_config,
-    delete_credential, delete_print_history_item, delete_printer_config, disconnect_printer,
-    download_model, get_app_state, get_credential, get_designs_dir, get_print_history,
-    get_printer_configs, get_printer_status, get_queue, get_settings, has_credential,
-    list_profiles, makerworld_back, makerworld_forward, makerworld_reload, navigate_makerworld,
-    pause_print, probe_camera, read_model_file, read_text_file, remove_from_queue,
-    report_makerworld_import_attempt, report_makerworld_page, resume_print, search_makerworld,
-    set_active_view, set_default_printer, slice_model, start_print,
-    store_credential, switch_printer, sync_makerworld_webview,
-    update_printer_config, update_settings, write_text_file,
-    get_library_models, search_library_models, delete_library_model, open_library_model,
-    openscad_check_installed, openscad_extract_params, openscad_render,
-};
-use makerworld::MakerWorldService;
-use openscad::OpenScadService;
-use printer::PrinterService;
-use slicer::SlicerService;
-use state::AppState;
 use tauri::Manager;
-use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 
 /// The one expansion of `generate_context!`: on macOS it embeds Info.plist as a
 /// symbol, so a second expansion (the ACL tests) would not link.
@@ -55,73 +22,13 @@ pub fn run() {
     studio::register_protocol(tauri::Builder::default())
         .plugin(tauri_plugin_log::Builder::default().build())
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .manage(Arc::new(AppState {
-            print_queue_file: Some(print_queue::queue_file_path()),
-            ..AppState::default()
-        }))
-        .manage(PrinterService::new())
-        .manage(MakerWorldService::default())
-        .manage(SlicerService::default())
-        .manage(OpenScadService::default())
+        .manage(Arc::new(build_gate::BuildGate::default()))
         .manage(updater::PendingUpdate::default())
         .manage(sidecar::Sidecar::default())
         .manage(studio::quit::QuitFlush::default())
         .invoke_handler(tauri::generate_handler![
-            get_app_state,
-            set_active_view,
-            sync_makerworld_webview,
-            navigate_makerworld,
-            search_makerworld,
-            makerworld_back,
-            makerworld_forward,
-            makerworld_reload,
-            download_model,
-            report_makerworld_page,
-            report_makerworld_import_attempt,
-            connect_printer,
-            disconnect_printer,
-            get_printer_status,
-            probe_camera,
-            pause_print,
-            resume_print,
-            start_print,
-            list_profiles,
-            slice_model,
-            read_model_file,
-            read_text_file,
-            write_text_file,
-            add_to_queue,
-            get_queue,
-            remove_from_queue,
-            get_print_history,
-            delete_print_history_item,
-            get_library_models,
-            search_library_models,
-            delete_library_model,
-            open_library_model,
-            openscad_check_installed,
-            openscad_extract_params,
-            openscad_render,
-            get_designs_dir,
-            store_credential,
-            get_credential,
-            delete_credential,
-            has_credential,
-            add_printer_config,
-            update_printer_config,
-            delete_printer_config,
-            get_printer_configs,
-            set_default_printer,
-            connect_printer_by_config,
-            switch_printer,
-            get_settings,
-            update_settings,
-            studio_commands::bambu_studio_status,
-            studio_commands::choose_bambu_studio,
-            studio_commands::clear_bambu_studio,
             updater::update_check,
             updater::update_install,
             studio::files::studio_files,
@@ -136,148 +43,13 @@ pub fn run() {
             sidecar::sidecar,
         ])
         .setup(|app| {
-            // Initialize SQLite database
-            let app_data_dir = app
-                .path()
-                .app_data_dir()
-                .map_err(|e| format!("failed to resolve app data dir: {e}"))?;
-            // Verification runs keep their state out of the person's real app data.
-            #[cfg(feature = "e2e")]
-            let app_data_dir = std::env::var_os("M3D_E2E_DATA_DIR").map(std::path::PathBuf::from).unwrap_or(app_data_dir);
-            let db_path = app_data_dir.join("materialize.db");
-
-            let app_state = app.state::<Arc<AppState>>();
-            let conn = match database::init_db(&db_path) {
-                Ok(conn) => conn,
-                Err(database::InitError::NewerSchema { found }) => {
-                    log::error!("setup: refusing {}: schema {found} is newer than {}", db_path.display(), database::SCHEMA_VERSION);
-                    let version = &app.package_info().version;
-                    let handle = app.handle().clone();
-                    app.dialog()
-                        .message(format!(
-                            "A newer version of Materialize 3D saved your data (database schema {found}). This version ({version}) reads schema {} and older, so it opened nothing and changed nothing.\n\n\
-                             Do one of these:\n\
-                             • Install the newer version of Materialize 3D again. Your data stays as it is.\n\
-                             • Or go back to your data from before the update. This loses everything saved since then. \
-                             Each in-app update made a backup folder in {}, named <old version>-to-<new version>-<time>. A folder that starts with \"{version}-to-\" is from an update away from this version. If there are several, use the one with the latest time. \
-                             With Materialize 3D closed, copy materialize.db from the folder of the update you are undoing over {}, and delete materialize.db-wal and materialize.db-shm beside it if they are there. \
-                             If the folder holds print_queue.json, copy it over {}.",
-                            database::SCHEMA_VERSION,
-                            app_data_dir.join("backups").display(),
-                            db_path.display(),
-                            print_queue::queue_file_path().display(),
-                        ))
-                        .title("Materialize 3D needs a newer version")
-                        .kind(MessageDialogKind::Error)
-                        .show(move |_| handle.exit(1));
-                    return Ok(());
-                }
-                Err(e) => return Err(format!("database init failed: {e}").into()),
-            };
-            {
-                let mut db_guard = app_state
-                    .db
-                    .lock()
-                    .map_err(|e| format!("failed to lock db mutex: {e}"))?;
-                *db_guard = Some(conn);
-            }
-            log::info!("setup: SQLite database initialized at {}", db_path.display());
-            // tauri.conf.json leaves the window uncreated, so a refused database never shows the UI.
             let main_window = app.config().app.windows.iter().find(|w| w.label == "main").ok_or("tauri.conf.json has no main window")?;
             tauri::WebviewWindowBuilder::from_config(app.handle(), main_window)?
                 .on_navigation(studio::may_navigate)
                 .build()?;
             sidecar::start(app.handle().clone());
-
-            // A build that was running when the app stopped can never finish;
-            // record it as failed and remove its directory.
-            let app_cache_dir = app
-                .path()
-                .app_cache_dir()
-                .map_err(|e| format!("failed to resolve app cache dir: {e}"))?;
-            #[cfg(feature = "e2e")]
-            let app_cache_dir = std::env::var_os("M3D_E2E_DATA_DIR")
-                .map(|dir| std::path::PathBuf::from(dir).join("cache"))
-                .unwrap_or(app_cache_dir);
-            let workspace = fabrication::pipeline::Workspace::new(&app_data_dir, &app_cache_dir);
-            let cleanup = fabrication::pipeline::reconcile_startup(&app_state, &workspace)
-                .map_err(|e| format!("build reconcile failed: {e}"))?;
-            log::info!(
-                "setup: builds reconciled ({} interrupted builds, {} unfinished build dirs removed)",
-                cleanup.interrupted,
-                cleanup.removed_dirs
-            );
-
             #[cfg(feature = "e2e")]
             e2e::start(app.handle())?;
-
-            // Scan library filesystem for existing metadata.json files
-            let library_root = app_data_dir.join("library").join("makerworld");
-            {
-                let db_guard = app_state
-                    .db
-                    .lock()
-                    .map_err(|e| format!("failed to lock db for library scan: {e}"))?;
-                if let Some(conn) = db_guard.as_ref() {
-                    match database::scan_library_filesystem(conn, &library_root) {
-                        Ok(count) => {
-                            log::info!("setup: library scan complete — indexed {count} models");
-                        }
-                        Err(e) => {
-                            log::error!("setup: library scan failed: {e}");
-                        }
-                    }
-                }
-            }
-
-            // Initialize print queue from persisted file
-            print_queue::init_queue(&app_state);
-
-            // Auto-connect: if enabled, spawn background connection to default printer
-            {
-                let db_guard = app_state
-                    .db
-                    .lock()
-                    .map_err(|e| format!("failed to lock db for auto-connect check: {e}"))?;
-                if let Some(conn) = db_guard.as_ref() {
-                    let auto_connect = database::get_setting(conn, "connection.auto_connect")
-                        .unwrap_or(None)
-                        .unwrap_or_else(|| "false".to_string());
-
-                    if auto_connect == "true" {
-                        // Find the default printer config
-                        let configs = database::get_all_printer_configs(conn).unwrap_or_default();
-                        let default_config = configs.into_iter().find(|c| c.is_default);
-
-                        match default_config {
-                            Some(config) => {
-                                let config_id = config.id.clone();
-                                log::info!("auto-connect:attempt config_id={}", config_id);
-
-                                let app_handle = app.handle().clone();
-                                let state_arc = std::sync::Arc::clone(&*app_state);
-                                let printer_service = app.state::<PrinterService>().inner().clone();
-
-                                tauri::async_runtime::spawn(async move {
-                                    if let Err(e) = commands::connect_printer_by_config_inner(
-                                        &config_id,
-                                        &app_handle,
-                                        &state_arc,
-                                        &printer_service,
-                                    ).await {
-                                        log::error!("auto-connect:failed {e}");
-                                    }
-                                });
-                            }
-                            None => {
-                                log::info!("auto-connect:no-default-config");
-                            }
-                        }
-                    } else {
-                        log::info!("auto-connect:disabled");
-                    }
-                }
-            }
 
             // The docked inspector shrinks the page; verification runs keep it closed.
             #[cfg(debug_assertions)]
@@ -318,8 +90,6 @@ pub fn run() {
 mod acl_tests {
     use std::collections::BTreeSet;
 
-    use tauri::ipc::Origin;
-
     fn quoted_names(text: &str) -> BTreeSet<String> {
         text.split('"').skip(1).step_by(2).map(str::to_owned).collect()
     }
@@ -348,35 +118,5 @@ mod acl_tests {
             .filter_map(|p| p.as_str()?.strip_prefix("allow-").map(|c| c.replace('-', "_")))
             .collect();
         assert_eq!(allowed, registered, "capabilities/default.json allow- entries");
-    }
-
-    #[test]
-    fn the_remote_makerworld_page_can_only_report_to_the_app() {
-        let mut context = super::app_context();
-        let authority = context.runtime_authority_mut();
-        let makerworld = Origin::Remote { url: "https://makerworld.com/en/models/1".parse().expect("url") };
-        for command in registered_commands() {
-            let from_main = authority.resolve_access(&command, "main", "main", &Origin::Local);
-            assert!(from_main.is_some(), "main webview must be allowed {command}");
-            let from_makerworld = authority.resolve_access(&command, "main", "makerworld", &makerworld);
-            let expected = matches!(command.as_str(), "report_makerworld_page" | "report_makerworld_import_attempt");
-            assert_eq!(from_makerworld.is_some(), expected, "makerworld access to {command}");
-        }
-        // Core plugin commands the main webview keeps, the remote page must not
-        // reach: the app event bus, window and webview control, app metadata.
-        for command in [
-            "plugin:event|listen",
-            "plugin:event|emit",
-            "plugin:event|emit_to",
-            "plugin:window|scale_factor",
-            "plugin:webview|get_all_webviews",
-            "plugin:app|version",
-        ] {
-            assert!(authority.resolve_access(command, "main", "main", &Origin::Local).is_some(), "main webview must be allowed {command}");
-            assert!(
-                authority.resolve_access(command, "main", "makerworld", &makerworld).is_none(),
-                "makerworld must not reach {command}"
-            );
-        }
     }
 }

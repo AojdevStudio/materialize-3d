@@ -144,13 +144,12 @@ helper_bin="${CARGO_TARGET_DIR:-$root/cad-host/target}/release/materialize-cad-h
   || die "the CAD runtime in $CAD_RUNTIME_DIR does not match the pins in cad-runtime/pins-arm64.json"
 
 # Tauri builds the app bundle; this script adds the CAD helper and runtime,
-# then signs, notarizes, and packages it. M3D_CAD_HELPER_TEAM compiles the
-# signing team into the app, which then trusts only a helper that team signed.
+# then signs, notarizes, and packages it.
 target="${CARGO_TARGET_DIR:-$root/src-tauri/target}"
 rm -rf "$target/release/bundle"
 bun install --frozen-lockfile
 # The updater key signs only the finished archive below, so the app build never sees it.
-RUSTFLAGS="--remap-path-prefix=$HOME=~" M3D_CAD_HELPER_TEAM="$team" env -u VITE_M3D_E2E -u APPLE_SIGNING_IDENTITY \
+RUSTFLAGS="--remap-path-prefix=$HOME=~" env -u VITE_M3D_E2E -u APPLE_SIGNING_IDENTITY \
   -u TAURI_SIGNING_PRIVATE_KEY -u TAURI_SIGNING_PRIVATE_KEY_PASSWORD bun tauri build --bundles app
 app="$target/release/bundle/macos/Materialize 3D.app"
 bin="$app/Contents/MacOS/materialize-3d"
@@ -195,9 +194,6 @@ for exe in "$bin" "$helper" "$sidecar"; do
   if grep -qE 'M3D_E2E_(TOKEN|PORT|DATA_DIR|UPDATE_FEED)' "$workdir/strings.txt"; then die "the e2e harness is in $exe"; fi
   if grep -qF "$HOME" "$workdir/strings.txt"; then die "$exe embeds the build machine's home path"; fi
 done
-# The team the app requires of its CAD helper, compiled in from M3D_CAD_HELPER_TEAM above.
-strings "$bin" > "$workdir/strings.txt"
-grep -qF "$team" "$workdir/strings.txt" || die "the app does not require its CAD helper to be signed by team $team"
 if grep -rlq __M3D_E2E_DIALOGS__ dist; then die "the scripted file dialog is in the frontend"; fi
 # The exact file list, the minimum macOS, the helper's signature and
 # entitlement, and the bundled runtime against the helper's pins.

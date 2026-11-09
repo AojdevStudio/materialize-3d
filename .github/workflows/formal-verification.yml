@@ -1,5 +1,5 @@
-# TLC model check of the update restart and the print queue's auto-send. The
-# models, the checks, and the code they describe live in
+# TLC model check of the update restart. The model, the checks, and the code
+# it describes live in
 # .agents/skills/formal-verify-materialize-3d/SKILL.md.
 #
 # It runs only when a covered source file, the skill, or this file changes. The
@@ -12,7 +12,7 @@
 # the models?" section says how to confirm them and record new hashes.
 #
 # check.sh exits 0 when every verdict matches the one recorded in its CHECKS
-# table, so the known findings F1 and F2, recorded as `fails`, pass. A finding
+# table, so the known finding F2, recorded as `fails`, passes. A finding
 # that a code change fixes, or a passing check that starts to fail, fails the job.
 #
 # The job runs on the Linux runner and carries ci.yml's guard against forks and
@@ -22,12 +22,8 @@ name: Formal verification
 on:
   pull_request:
     paths: &covered
-      - src-tauri/src/fabrication/build_gate.rs
+      - src-tauri/src/build_gate.rs
       - src-tauri/src/updater.rs
-      - src-tauri/src/print_queue.rs
-      - src-tauri/src/printer/mod.rs
-      - src-tauri/src/commands.rs
-      - src-tauri/src/fabrication/pipeline.rs
       - src-tauri/src/sidecar.rs
       - sidecar/src/busy.ts
       - sidecar/src/chat.ts

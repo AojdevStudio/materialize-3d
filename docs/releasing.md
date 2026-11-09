@@ -42,7 +42,7 @@ Do not rotate or rewrite user credentials to satisfy these limits. If existing c
    scripts/release/build-macos.sh
    ```
 
-   With `ALLOW_UNTAGGED` unset, the script refuses a dirty tree, an untagged commit, mismatched versions, a `TAURI_CONFIG` override, or a CAD runtime that does not match the helper's pins. Never use the rehearsal override for the final build. It builds the CAD helper from `cad-host/` and places it at `Contents/MacOS/materialize-cad-host`, with the runtime at `Contents/Resources/cad-runtime/{Image,rootfs.img,job.img}`. It compiles the signing team into the app with `M3D_CAD_HELPER_TEAM` and requires that team for the helper. It signs the helper first, with the hardened runtime and the virtualization entitlement, then the app around it, and notarizes and staples both the app and the DMG; the app's staple covers the helper. Then it checks Gatekeeper acceptance, the architecture, the absence of the e2e harness and of build-machine paths in both executables, and runs `scripts/release/check-app-bundle.sh`: the exact file list of the app bundle, macOS 26.0 as the minimum, the helper's signature and its only entitlement, and the bundled runtime against the helper's pins. It writes `dist-release/Materialize-3D-<version>-macos-arm64.dmg` and a `.sha256` file.
+   With `ALLOW_UNTAGGED` unset, the script refuses a dirty tree, an untagged commit, mismatched versions, a `TAURI_CONFIG` override, or a CAD runtime that does not match the helper's pins. Never use the rehearsal override for the final build. It builds the CAD helper from `cad-host/` and places it at `Contents/MacOS/materialize-cad-host`, with the runtime at `Contents/Resources/cad-runtime/{Image,rootfs.img,job.img}`. It signs the helper first, with the hardened runtime and the virtualization entitlement, then the app around it, and notarizes and staples both the app and the DMG; the app's staple covers the helper. Then it checks Gatekeeper acceptance, the architecture, the absence of the e2e harness and of build-machine paths in both executables, and runs `scripts/release/check-app-bundle.sh`: the exact file list of the app bundle, macOS 26.0 as the minimum, the helper's signature and its only entitlement, and the bundled runtime against the helper's pins. It writes `dist-release/Materialize-3D-<version>-macos-arm64.dmg` and a `.sha256` file.
 
    The script also writes the update assets from the same stapled app, after the bundle check and before the DMG:
 
@@ -53,15 +53,15 @@ Do not rotate or rewrite user credentials to satisfy these limits. If existing c
 
    The script stops when either updater secret is missing or signing fails.
 
-4. Run the clean-install script below. Then run the [installed GUI checklist](verify-on-mac.md) on that exact DMG, with OpenAI chat for both signs and parts. Keep the exported 3MFs, matching approval and export hashes, Bambu Studio P2S 0.4 mm slice proof, and the GUI recording. Backend checks do not replace this GUI run.
-5. Complete the required software acceptance record below and prepare an external release body from the source notes. Put the exact tagged source commit and final DMG checksum in both. Do not edit tracked notes to insert their own source commit or DMG checksum. Keep shared release tags unchanged. If source or packaging changes, build and test a new candidate. Required software checks and release approval gate publication. After they pass, publish the DMG, its checksum, the completed record, and both actual approved exports. The filenames below require the completed files described here, not placeholders.
+4. Run the [installed GUI checklist](verify-on-mac.md) on that exact DMG. Keep the sliced 3MF and its hash, the Bambu Studio P2S 0.4 mm proof, and the GUI recording.
+5. Complete the required software acceptance record below and prepare an external release body from the source notes. Put the exact tagged source commit and final DMG checksum in both. Do not edit tracked notes to insert their own source commit or DMG checksum. Keep shared release tags unchanged. If source or packaging changes, build and test a new candidate. Required software checks and release approval gate publication. After they pass, publish the DMG, its checksum, and the completed record. The filenames below require the completed files described here, not placeholders.
 
    ```bash
    gh release create v0.2.2 --verify-tag --title "Materialize 3D 0.2.2" --notes-file dist-release/release-notes.md \
      dist-release/Materialize-3D-0.2.2-macos-arm64.dmg dist-release/Materialize-3D-0.2.2-macos-arm64.dmg.sha256 \
      dist-release/latest.json dist-release/Materialize-3D-0.2.2-macos-arm64.app.tar.gz \
      dist-release/Materialize-3D-0.2.2-macos-arm64.app.tar.gz.sig \
-     dist-release/software-acceptance.md dist-release/Acceptance-Sign-P2S.3mf dist-release/Acceptance-Desk-Clip-P2S.3mf
+     dist-release/software-acceptance.md
    ```
 
    Attach the three update assets under exactly these names, because `latest.json` names the archive's URL.
@@ -70,7 +70,7 @@ Do not rotate or rewrite user credentials to satisfy these limits. If existing c
 
    The first release that contains the updater must still be installed by hand from its DMG. Only later releases arrive as updates.
 
-6. Download the published DMG, checksum file, update assets, record, and approved exports from the actual release. Compare the downloaded DMG's full SHA-256 with the build checksum, published checksum file, release body, and acceptance record. Compare the downloaded archive's full SHA-256 with its build checksum. Compare the downloaded `latest.json` and `.sig` byte for byte with the files in `dist-release/`. Compare both downloaded 3MF hashes with their approved and exported hashes in the record. Then confirm that the Latest feed URL serves the same `latest.json`. Stop on any mismatch or missing attachment. Retain this published-download proof with the release evidence.
+6. Download the published DMG, checksum file, update assets, and record from the actual release. Compare the downloaded DMG's full SHA-256 with the build checksum, published checksum file, release body, and acceptance record. Compare the downloaded archive's full SHA-256 with its build checksum. Compare the downloaded `latest.json` and `.sig` byte for byte with the files in `dist-release/`. Then confirm that the Latest feed URL serves the same `latest.json`. Stop on any mismatch or missing attachment. Retain this published-download proof with the release evidence.
 
    ```bash
    mkdir -p dist-release/published && cd dist-release/published
@@ -88,34 +88,14 @@ Do not rotate or rewrite user credentials to satisfy these limits. If existing c
 
 The completed record is a publication gate. Attach it to the eventual release with accessible recordings, screenshots, and logs. Keep it outside tracked source so recording the final bytes cannot change their source commit. Do not publish with missing or failed required software checks. A rehearsal result cannot replace a final tagged DMG test.
 
-Record the exact source tag and commit, DMG filename and full SHA-256, installed bundle version, helper identity and signing team, runtime pins and verification, and bundle inventory. Identify each machine, macOS version, chip, test account, isolation option, effective HOME and `PATH`, and whether that machine built the DMG. Keep headless fresh-account, GUI, and independent-machine results separately labeled.
+Record the exact source tag and commit, DMG filename and full SHA-256, and installed bundle version. Identify each machine, macOS version, chip, isolation option, effective HOME and `PATH`, and whether that machine built the DMG.
 
-Include every result required by the [source release notes](releases/v0.2.2.md) and [installed GUI checklist](verify-on-mac.md). Retain exact OpenAI model IDs, prompts and follow-ups, tool results, revision IDs, geometry measurements, checks, warnings, approval hashes, export IDs, destinations, and full exported-file hashes. Include watchable direct human GUI approval and native Save evidence, Bambu Studio 02.08.02.61 P2S 0.4 mm import and slice proof, and each persistence, cancellation, interruption, failure, and successful recovery result. Report failures and unrun checks with reasons. Excluded candidates must not appear as accepted exports.
-
-Copy the two accepted exports to the proposed distribution filenames without changing their bytes. Record those names and matching hashes. State all remaining limits. Physical acceptance remains pending until Ossie records an actual print and inspection. Only Ossie decides to print.
-
-## Clean-install test
-
-Label this evidence **headless fresh-account**. Keep it separate from installed GUI evidence and record whether the Mac also built the DMG.
-
-`scripts/release/clean-install-test-macos.sh` installs the DMG the way a new person meets it, runs the CAD helper from the installed app, and has the app itself build the cable clip:
-
-```bash
-scripts/release/clean-install-test-macos.sh dist-release/Materialize-3D-0.2.2-macos-arm64.dmg
-```
-
-It creates a fresh standard account (not an admin, no password, so nobody can log in as it) and works as that account with an empty home and only the system `PATH`. The DMG lands in `~/Downloads` with the quarantine attribute a browser sets, Gatekeeper assesses the DMG and then the app copied into `~/Applications` (a standard account cannot write `/Applications`), `check-app-bundle.sh` checks the installed copy, and the bundled helper, still quarantined, verifies its runtime, boots both guests, and builds the cable clip from `cad-host/spike/cable-clip-fillet-first.py` into a closed mesh. Then the installed app, still quarantined, builds the same clip through its own `part` kind and pipeline (`materialize-3d --cad-self-test`): it verifies its bundled helper and runtime, runs both guests, checks the mesh and both requirements, slices with Bambu Studio, and keeps the STEP inside the package. Each step fails the run. The account and its home are deleted on exit, and the evidence stays in `~/m3d-verify/clean-install-<timestamp>/`. It needs macOS 26 or later, `sudo` without a password prompt, and a validated Bambu Studio the test account can run: in `/Applications`, or named by `BAMBU_STUDIO_CLI` at a path the account can read (for example under `/Users/Shared`).
-
-What "clean" covers: an account that has never run, approved, or installed Materialize 3D, with no developer tools on its `PATH`, so nothing it owns can vouch for the app. What it does not cover: the Mac itself is shared. Gatekeeper's system-wide records (its assessment cache and any notarization ticket it has already fetched) belong to the machine, so a build that `build-macos.sh` already assessed on the same Mac is not new to Gatekeeper there. The Xcode command line tools are installed system-wide, which `check-app-bundle.sh` uses for `lipo`. The account never logs in at the console, so the app's own first-launch prompt and its window are not exercised; the helper runs from the shell. Run it on a Mac that did not build the DMG to take the build machine's records out of the picture.
+Include every result required by the [installed GUI checklist](verify-on-mac.md): the provider and model, the prompt and its follow-ups, the sliced 3MF's path and full SHA-256, Bambu Studio 02.08.02.61 P2S 0.4 mm proof, and each persistence, interruption, failure, and recovery result. Report failures and unrun checks with reasons. State all remaining limits.
 
 ## Complete installed GUI acceptance
 
-Follow [Verify the installed Mac app](verify-on-mac.md) after the scripted checks. Its native verification section covers the signed CuaDriver route exercised on the mini. Use real input and native dialogs. Record a missing tool or permission as an unmet prerequisite rather than substituting the debug e2e endpoint.
+Follow [Verify the installed Mac app](verify-on-mac.md) on the built DMG. Its native verification section covers the signed CuaDriver route exercised on the mini. Use real input and native dialogs. Record a missing tool or permission as an unmet prerequisite rather than substituting the debug e2e endpoint.
 
-A fresh standard account logged into a desktop is the strongest GUI isolation option. An isolated HOME and test keychain under an existing console login are a separate option. Label the GUI evidence with the option used. Neither an isolated HOME nor a fresh account proves an independent-machine test. Both GUI options require fresh app data, only the system `PATH`, and no checkout runtime dependencies or CAD cache.
+A fresh standard account logged into a desktop is the strongest GUI isolation option. An isolated HOME and test keychain under an existing console login are a separate option. Label the GUI evidence with the option used. Neither an isolated HOME nor a fresh account proves an independent-machine test. Both GUI options require fresh app data, only the system `PATH`, and no checkout runtime dependencies.
 
-A passing `--cad-self-test` proves a backend path through the installed binary. It does not prove OpenAI chat, the part detail, human approval, or the native Save dialog. `.agents/skills/verify-materialize-3d/scripts/mac.ts` launches an e2e debug bundle, not the release installed from the DMG.
-
-The app must find its CAD helper and pinned runtime inside its installed bundle. Acceptance cannot depend on a source checkout, a developer Python environment, or a CAD cache. Preserve the bundle inventory and the runtime verification output with the GUI evidence.
-
-Physical print validation is separate from this checklist. Use [Physically accept the P2S sign and desk clip](acceptance/p2s-sign-and-part.md) for the exact software-verified exports. A release never records a print result on a user's behalf.
+`.agents/skills/verify-materialize-3d/scripts/mac.ts` launches an e2e debug bundle, not the release installed from the DMG.

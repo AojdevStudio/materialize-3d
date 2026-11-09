@@ -60,21 +60,6 @@ pub async fn delete_credential(key: &str) -> Result<bool, String> {
     .map_err(|e| format!("spawn_blocking join error: {e}"))?
 }
 
-/// Check whether a credential exists in the OS-native credential store.
-pub async fn has_credential(key: &str) -> Result<bool, String> {
-    let key = key.to_owned();
-    tokio::task::spawn_blocking(move || {
-        let entry = keyring::Entry::new(SERVICE, &key).map_err(|e| format!("keyring entry error for key={key}: {e}"))?;
-        match entry.get_password() {
-            Ok(_) => Ok(true),
-            Err(keyring::Error::NoEntry) => Ok(false),
-            Err(e) => Err(format!("keyring has_credential error for key={key}: {e}")),
-        }
-    })
-    .await
-    .map_err(|e| format!("spawn_blocking join error: {e}"))?
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
