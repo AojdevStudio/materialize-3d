@@ -83,8 +83,8 @@ export default function Sidebar({ projects, current, engine, onOpen, onNew, onEr
    * than any read, and a read that comes back late cannot move a project out of Working or into it.
    */
   const [live, setLive] = useState<Record<string, boolean>>({})
+  /** The same states, updated as each event arrives, so two events before one render still compare in order. */
   const liveNow = useRef(live)
-  liveNow.current = live
   const [now, setNow] = useState(() => Date.now())
   const [menuFor, setMenuFor] = useState<string | null>(null)
   const [collapsed, setCollapsed] = useState(false)
@@ -116,11 +116,13 @@ export default function Sidebar({ projects, current, engine, onOpen, onNew, onEr
   useEffect(() => {
     const unlisten = onSidecarEvent((event) => {
       if (event.type === 'ready') {
-        setLive({})
+        liveNow.current = {}
+        setLive(liveNow.current)
         return refresh()
       }
       if (event.type !== 'chat' || liveNow.current[event.project] === event.running) return
-      setLive((before) => ({ ...before, [event.project]: event.running }))
+      liveNow.current = { ...liveNow.current, [event.project]: event.running }
+      setLive(liveNow.current)
       refresh()
     })
     return () => {

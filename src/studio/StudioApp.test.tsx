@@ -426,6 +426,26 @@ describe('StudioApp', () => {
     expect(screen.queryByTestId('group-drafts')).toBeNull()
   })
 
+  it('lands a turn that starts and ends before the sidebar renders, and reads once per change', async () => {
+    const state = { running: false, printFiles: 0 }
+    mockSidecar({ 'projects.status': () => Promise.resolve({ [projectB.id]: { ...state, printed: false, lastMs: Date.now() } }) })
+    render(<StudioApp />)
+    await screen.findByTestId('group-drafts')
+    await emit({ type: 'chat', ...view(projectB.id, { running: false, seq: 2 }) })
+    const reads = sidecarCalls('projects.status').length
+    await emit({ type: 'chat', ...view(projectB.id, { running: false, seq: 3 }) })
+    expect(sidecarCalls('projects.status')).toHaveLength(reads)
+    Object.assign(state, { printFiles: 1 })
+    await act(async () =>
+      listeners.sidecar.forEach((listener) => {
+        listener({ payload: { type: 'chat', ...view(projectB.id, { running: true, seq: 4 }) } })
+        listener({ payload: { type: 'chat', ...view(projectB.id, { running: false, seq: 5 }) } })
+      }),
+    )
+    expect(within(await screen.findByTestId('group-ready')).getByText('Project B')).toBeTruthy()
+    expect(screen.queryByTestId('group-working')).toBeNull()
+  })
+
   it('hides the sidebar to a narrow rail from its panel toggle, and shows it again', async () => {
     mockSidecar()
     render(<StudioApp />)
