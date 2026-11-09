@@ -22,8 +22,8 @@
 # - Assets.car, AppIcon.icon compiled by actool. The bundler copies it into the
 #   app and sets CFBundleIconName, so macOS 26 draws the icon from it.
 #   It is committed because the bundler's own .icon compile crashes actool
-#   when Tauri runs under bun (tauri-apps/tauri#15315), and so hosts without
-#   Xcode 26, such as the macos-15 CI runner, bundle the same file.
+#   when Tauri runs under bun (tauri-apps/tauri#15315), and so a host without
+#   Xcode 26 bundles the same file.
 set -euo pipefail
 
 die() { echo "build-icons: $*" >&2; exit 1; }
