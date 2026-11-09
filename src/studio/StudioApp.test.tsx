@@ -239,8 +239,35 @@ describe('StudioApp', () => {
       entries: [{ id: 1, kind: 'assistant', text: 'The clip is ready.', calls: [] }], seq: 2,
     }) })
     fireEvent.click(sidebar.getByText('Project B'))
+    expect(sidecarCalls('chat.open')).toHaveLength(1)
     await opening.release()
     expect(await screen.findByText('The clip is ready.')).toBeTruthy()
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('retries a chat load only after the pending load fails', async () => {
+    let failOpen: (reason: string) => void = () => {}
+    let opens = 0
+    mockSidecar({
+      'chat.open': (params) => ++opens === 1
+        ? new Promise((_, reject) => (failOpen = reject))
+        : Promise.resolve(view(String(params.project), {
+          entries: [{ id: 1, kind: 'assistant', text: 'The clip is ready.', calls: [] }],
+        })),
+    })
+    render(<StudioApp />)
+    const sidebar = within(screen.getByRole('navigation', { name: 'Projects' }))
+    fireEvent.click(await sidebar.findByText('Project B'))
+    await screen.findByRole('banner')
+    fireEvent.click(sidebar.getByText('Project B'))
+    expect(sidecarCalls('chat.open')).toHaveLength(1)
+
+    await act(async () => failOpen('The chat could not be loaded.'))
+    expect((await screen.findByRole('alert')).textContent).toContain('The chat could not be loaded.')
+    fireEvent.click(sidebar.getByText('Project B'))
+    expect(sidecarCalls('chat.open')).toHaveLength(2)
+    expect(await screen.findByText('The clip is ready.')).toBeTruthy()
+    expect(screen.queryByRole('alert')).toBeNull()
   })
 
   it('keeps the running chat visible when reopening the same project', async () => {

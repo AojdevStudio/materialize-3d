@@ -117,6 +117,7 @@ export default function StudioApp() {
   const startPicturesTouched = useRef(false)
   /** The project whose chat view is loaded. Chat changes for the open project wait in `early` until it is. */
   const loaded = useRef<string | null>(null)
+  const failedLoad = useRef<string | null>(null)
   const early = useRef<View[]>([])
   /** Counts chat loads, so only the newest load of the open chat replaces its view, not an older one that answers late. */
   const loads = useRef(0)
@@ -423,6 +424,7 @@ export default function StudioApp() {
     currentId.current = project?.id ?? null
     setShown(draftOf(openKey()))
     loaded.current = null
+    failedLoad.current = null
     early.current = []
     lastSeen.current = 0
     setCurrent(project)
@@ -445,7 +447,8 @@ export default function StudioApp() {
 
   const openProject = async (project: Project) => {
     if (project.id === currentId.current) {
-      if (loaded.current === project.id) return
+      if (failedLoad.current !== project.id) return
+      failedLoad.current = null
       setError(null)
     } else {
       show(project)
@@ -454,7 +457,10 @@ export default function StudioApp() {
     try {
       await load(project.id, request)
     } catch (err) {
-      if (request === loadRequest.current) setError(String(err))
+      if (request === loadRequest.current) {
+        failedLoad.current = project.id
+        setError(String(err))
+      }
     }
   }
 
