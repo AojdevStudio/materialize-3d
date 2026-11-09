@@ -221,6 +221,7 @@ describe('StudioApp', () => {
 
     fireEvent.click(sidebar.getByText('Project B'))
     expect(await screen.findByText('The clip is ready.')).toBeTruthy()
+    expect(screen.queryByRole('alert')).toBeNull()
     expect(screen.getByTestId('files-tab').getAttribute('aria-selected')).toBe('true')
     expect(screen.getByTestId('files-list').textContent).toContain('hello.html')
     fireEvent.click(screen.getByRole('tab', { name: 'Preview' }))
