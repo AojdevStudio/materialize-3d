@@ -10,7 +10,7 @@ The 0.2.2 candidate adds the in-app updater and fixes bugs found after 0.2.1. Th
 - A keychain that holds a Developer ID Application identity, and its password.
 - An App Store Connect API key for `notarytool`: key id, issuer id, and the `.p8` content.
 - The updater signing key: BWS secrets `MATERIALIZE3D_TAURI_UPDATER_PRIVATE_KEY` and `MATERIALIZE3D_TAURI_UPDATER_KEY_PASSWORD`. The build reads them as `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. Its public key is `plugins.updater.pubkey` in `src-tauri/tauri.conf.json`. This minisign key is separate from the Developer ID certificate. Never generate a new one for a release: installed apps accept only updates signed by the key they were built with.
-- The arm64 CAD runtime for the tagged commit: the `cad-runtime-arm64` artifact of a manual `CAD runtime` run on the tag (`gh workflow run cad-runtime.yml --ref v0.2.0`), which always does the full work, or the output of `cad-runtime/build.sh arm64` on a Linux machine with Docker, buildx, and arm64 binfmt. Either way it must match `cad-runtime/pins-arm64.json`, which the CAD helper compiles in.
+- The arm64 CAD runtime for the tagged commit: the output of `cad-runtime/build.sh arm64` on a Linux machine with Docker, buildx, and arm64 binfmt. It must match `cad-runtime/pins-arm64.json`, which the CAD helper compiles in.
 
 ### Release keychain input limits
 

@@ -13,8 +13,7 @@
 #   TAURI_SIGNING_PRIVATE_KEY           the updater's minisign private key
 #   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  its password
 # CAD_RUNTIME_DIR names the arm64 CAD runtime to bundle: the Image, rootfs.img,
-# and job.img that cad-runtime/build.sh arm64 writes (or the cad-runtime-arm64
-# artifact of the CAD runtime workflow). They must match the pins the helper
+# and job.img that cad-runtime/build.sh arm64 writes. They must match the pins the helper
 # compiles in from cad-runtime/pins-arm64.json, or the build stops.
 # ALLOW_UNTAGGED=1 permits a rehearsal build from a commit without the tag. Only
 # a rehearsal may set TAURI_CONFIG, which changes the config built into the app
