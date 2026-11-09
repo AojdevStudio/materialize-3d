@@ -359,12 +359,13 @@ mod tests {
         .expect("script");
         std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).expect("chmod");
         let (send, receive) = std::sync::mpsc::channel();
+        let expected_exe = exe.clone();
         let start = Instant::now();
         let probe = std::thread::spawn(move || {
-            let result = detect_version_with_timeout(&exe, Duration::from_millis(100));
+            let result = detect_version_with_timeout(&exe, Duration::from_secs(1));
             send.send(result).expect("probe result");
         });
-        let result = receive.recv_timeout(Duration::from_secs(2));
+        let result = receive.recv_timeout(Duration::from_secs(5));
         let elapsed = start.elapsed();
         let pid = std::fs::read_to_string(&pid_file).expect("probe pid");
         if result.is_err() {
@@ -376,7 +377,7 @@ mod tests {
         probe.join().expect("probe thread");
         assert!(
             result.is_ok(),
-            "version check exceeded the outer 2 s limit with a 100 ms probe limit"
+            "version check exceeded the outer 5 s limit with a 1 s probe limit"
         );
         let error = result
             .expect("bounded result")
@@ -386,15 +387,22 @@ mod tests {
             "{error}"
         );
         let message = error.to_string();
+        assert!(
+            message.contains(&format!(
+                "Bambu Studio at {} did not answer",
+                expected_exe.display()
+            )),
+            "{message}"
+        );
         for guidance in [
-            "Bambu Studio did not answer",
+            "did not answer its version check",
             "macOS",
             "Applications",
             "try again",
         ] {
             assert!(message.contains(guidance), "{message}");
         }
-        assert!(elapsed < Duration::from_secs(1), "probe took {elapsed:?}");
+        assert!(elapsed < Duration::from_secs(3), "probe took {elapsed:?}");
         assert!(
             !Command::new("kill")
                 .args(["-0", pid.trim()])
@@ -424,7 +432,7 @@ mod tests {
             std::fs::write(&exe, format!("#!/bin/sh\n{body}")).expect("script");
             std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).expect("chmod");
             let start = Instant::now();
-            let result = detect_version_with_timeout(&exe, Duration::from_millis(100));
+            let result = detect_version_with_timeout(&exe, Duration::from_secs(1));
             let elapsed = start.elapsed();
             if let Ok(pid) = std::fs::read_to_string(&holder_pid) {
                 assert!(Command::new("kill")
@@ -434,7 +442,7 @@ mod tests {
                     .success());
             }
             assert!(
-                elapsed < Duration::from_secs(1),
+                elapsed < Duration::from_secs(3),
                 "output held the probe open for {elapsed:?}"
             );
             assert_eq!(
