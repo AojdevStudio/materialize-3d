@@ -1828,6 +1828,17 @@ describe('StudioApp', () => {
     expect(screen.getByTestId('start-screen')).toBeTruthy()
   })
 
+  it("shows a recent project as building from the sidebar's own chat state, which a late status read does not undo", async () => {
+    mockSidecar({ 'projects.status': () => Promise.resolve({ [projectB.id]: { running: false, printed: false, printFiles: 1, lastMs: 5 } }) })
+    render(<StudioApp />)
+    const chip = () => screen.getByTestId(`recent-${projectB.id}`).textContent
+    await waitFor(() => expect(chip()).toBe('Project B1 print file'))
+    await emit({ type: 'chat', ...view(projectB.id, { running: true, seq: 5 }) })
+    await waitFor(() => expect(chip()).toBe('Project BBuilding parts'))
+    await pause(50)
+    expect(chip()).toBe('Project BBuilding parts')
+  })
+
   it('attaches any dropped file, and sends a PDF and an STL beside a picture', async () => {
     const store = mockSidecar()
     render(<StudioApp />)

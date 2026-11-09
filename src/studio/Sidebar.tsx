@@ -72,10 +72,12 @@ type Props = {
   onOpen: (project: Project) => void
   onNew: () => void
   onError: (message: string) => void
+  /** Hands each project's status on, so the start screen shows the same one. */
+  onStatus: (status: Record<string, ProjectStatus>) => void
 }
 
 /** The projects sidebar: projects grouped by status, newest first in each group, with the time of their last activity. */
-export default function Sidebar({ projects, current, engine, onOpen, onNew, onError }: Props) {
+export default function Sidebar({ projects, current, engine, onOpen, onNew, onError, onStatus }: Props) {
   /** The sidecar's last status read: print files, the printed mark, and last activity are only known from it. */
   const [read, setRead] = useState<Record<string, ProjectStatus>>({})
   /**
@@ -169,6 +171,7 @@ export default function Sidebar({ projects, current, engine, onOpen, onNew, onEr
     [read, live],
   )
   const groups = useMemo(() => groupProjects(projects, status), [projects, status])
+  useEffect(() => onStatus(status), [status, onStatus])
 
   const panelToggle = (
     <button

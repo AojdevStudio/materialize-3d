@@ -1,7 +1,7 @@
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { type AppState, type Draft, type LoginEvent, type ModelChoice, type ModelOption, type Need, type Project, START, type ChatView as View } from '../../sidecar/src/protocol'
+import { type AppState, type Draft, type LoginEvent, type ModelChoice, type ModelOption, type Need, type Project, type ProjectStatus, START, type ChatView as View } from '../../sidecar/src/protocol'
 import { autoOpens, onQuitFlush, onSidecarEvent, sidecar, studio, type ProjectFile } from './api'
 import { ChatView } from './Chat'
 import { Composer, releaseAttachment, savedAttachment, type PastedPicture } from './Composer'
@@ -93,6 +93,8 @@ export default function StudioApp() {
   const [models, setModels] = useState<ModelOption[]>([])
   /** The model a project made on the start screen runs on. Null until the saved state is read. */
   const [defaultModel, setDefaultModel] = useState<ModelChoice | null>(null)
+  /** Each project's status as the sidebar keeps it, for the start screen's recent projects. */
+  const [status, setStatus] = useState<Record<string, ProjectStatus>>({})
   const sendingNow = useRef(false)
   const currentId = useRef<string | null>(null)
   /** Bumped on every switch, so a slow load for a project already left is dropped. */
@@ -603,6 +605,7 @@ export default function StudioApp() {
         onOpen={(project) => void openProject(project)}
         onNew={() => show(null)}
         onError={setError}
+        onStatus={setStatus}
       />
 
       <main className="chat" aria-label="Chat">
@@ -648,6 +651,7 @@ export default function StudioApp() {
         ) : (
           <Start
             projects={projects}
+            status={status}
             composer={composer('Describe the part, paste a link, or attach a file', true)}
             onSuggest={type}
             onOpen={(project) => void openProject(project)}
