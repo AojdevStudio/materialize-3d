@@ -114,6 +114,10 @@ export function App() {
 
         <section id="requirements" aria-labelledby="req-title">
           <h2 id="req-title">Requirements</h2>
+          <p className="req-note">
+            These are for the chat studio. The {release.version} download is the earlier sign app, and
+            it uses an Anthropic or OpenAI API key instead of a sign-in.
+          </p>
           <dl className="facts facts-wide">
             <dt>Mac</dt>
             <dd>{release.architecture}. Tested on {release.testedMacOS}.</dd>

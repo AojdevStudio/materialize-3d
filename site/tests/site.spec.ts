@@ -148,6 +148,7 @@ test("how it works tells the chat studio story in order, and the page says no re
   ]);
   const text = await page.locator("body").innerText();
   expect(text).toContain("The chat studio is not in a release yet.");
+  expect(text).toContain(`This download is ${release.version}, the earlier sign app.`);
   expect(text).not.toMatch(/\bMCP\b/);
 });
 

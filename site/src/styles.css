@@ -307,6 +307,12 @@ figcaption {
   margin: 4px 0 8px;
 }
 
+.req-note {
+  max-width: 72ch;
+  margin-bottom: 20px;
+  color: var(--muted);
+}
+
 /* Definition tables */
 .facts {
   display: grid;
