@@ -32,7 +32,7 @@ For isolated-HOME GUI, keep the recorded test keychain setup active for each lau
    ```
 
 5. Confirm that the selected isolation option starts with fresh app data and a test keychain. Preserve existing user data and credentials. Record the installed app's path and confirm that no development copy is running.
-6. Provide only the installed app, Bambu Studio 02.08.02.61, uv with a Python it can run, network access, and an inference login. Confirm the system-only `PATH`. Keep source checkouts and developer tools out of the app's runtime inputs.
+6. Provide only the installed app, Bambu Studio 02.08.02.61, uv with a Python it can run, network access, and an inference login. Confirm the system-only `PATH`. Keep source checkouts and developer tools out of the app's runtime inputs. The agent finds uv in the app's own `~/.local/bin` (`commandEnv` in `sidecar/src/agent.ts`), so for isolated-HOME GUI install it there: `HOME="$M3D_GUI_HOME" sh -c 'curl -LsSf https://astral.sh/uv/install.sh | sh'`, then `HOME="$M3D_GUI_HOME" "$M3D_GUI_HOME/.local/bin/uv" python install`.
 7. Start a recording before the first chat request. Capture both the action and its resulting screen. Keep the login out of screenshots, recordings, and logs.
 
 ## Native verification tools
@@ -67,14 +67,14 @@ Inspect the recordings before attaching them. Keep credentials and unrelated des
 
 3. Wait for the turn to finish. Capture each tool step, the preview, and the file cards. An error or a text-only answer is not a finished part.
 4. Open the Files tab. Confirm that a 3MF is listed under Print files. Record its path in the project folder, `~/Documents/Materialize 3D/<project>/`.
-5. Hash the 3MF with `shasum -a 256` and record the full digest. Confirm that it holds `Metadata/plate_1.gcode` and `Metadata/slice_info.config` with `unzip -l`.
+5. Click **Reveal in Finder** and copy the 3MF's absolute path. For isolated-HOME GUI it is under `$M3D_GUI_HOME/Documents/Materialize 3D/`, not under the console user's `~`. Hash that path with `shasum -a 256` and record the full digest. Confirm that it holds `Metadata/plate_1.gcode` and `Metadata/slice_info.config` with `unzip -l`.
 6. Click **Open in Bambu Studio**. Confirm that Bambu Studio 02.08.02.61 opens the file with the P2S and a 0.4 mm nozzle. Do not send a print job for this software acceptance step.
 
 ## Check persistence and failure handling
 
 1. Type a new request on the start screen and do not send it. Quit with Cmd-Q and reopen the same installed copy with your selected isolation option's launch method. Preserve the same test HOME, keychain, and system-only PATH. Confirm that the draft, the earlier project and its chat, and the login persist.
 2. Send a request and quit while the turn runs. Reopen with the same launch method. Confirm that the turn goes on from its last committed step, and that a step that finished does not run twice.
-3. Launch the installed app with `BAMBU_STUDIO_CLI` set to a recorded nonexistent path, and ask for a slice. Capture the error the turn reports. Do not move or delete a real installation. Quit, relaunch without the override, and confirm that a slice succeeds.
+3. Quit the app. Launch it with `BAMBU_STUDIO_CLI` set to a recorded nonexistent path: `/usr/bin/open -n --env BAMBU_STUDIO_CLI=/nonexistent/BambuStudio --env HOME=... --env PATH=/usr/bin:/bin:/usr/sbin:/sbin "/Applications/Materialize 3D.app"`, with the same HOME the selected isolation option uses. A Finder launch does not read a variable exported in Terminal, so use this launch for the check in either option. Ask for a slice. Capture the error the turn reports. Do not move or delete a real installation. Quit, relaunch without the override, and confirm that a slice succeeds.
 
 ## Record the evidence
 
