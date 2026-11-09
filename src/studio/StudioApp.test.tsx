@@ -28,6 +28,7 @@ vi.mock('@tauri-apps/api/webview', () => ({
 import type { Project } from '../../sidecar/src/protocol'
 import type { ProjectFile } from './api'
 import StudioApp from './StudioApp'
+import { useTheme } from './theme'
 import mark from '../assets/brand/mark-small-32.svg'
 
 // jsdom has no layout, so the chat's scroll to its newest line is a no-op here, and no object URLs for previews.
@@ -46,6 +47,8 @@ afterEach(() => {
   listeners.sidecar.length = 0
   listeners.drop.length = 0
   listeners.flush.length = 0
+  window.localStorage.clear()
+  useTheme.setState({ theme: 'light' })
 })
 
 /** An event from the sidecar, as Rust forwards it to the window. */

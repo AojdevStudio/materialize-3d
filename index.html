@@ -5,6 +5,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" type="image/svg+xml" href="/src/assets/brand/mark-small-16.svg" />
     <title>Materialize 3D</title>
+    <!-- The saved theme before the first paint, so a dark choice never flashes light. src/studio/theme.ts owns it after. -->
+    <script>
+      document.documentElement.dataset.theme = localStorage.getItem('materialize-3d.theme') === 'dark' ? 'dark' : 'light'
+    </script>
   </head>
 
   <body>

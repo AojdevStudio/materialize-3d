@@ -116,6 +116,7 @@ pre {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  overflow-y: auto;
   background: var(--s-side);
   border-right: 1px solid var(--s-line);
   padding: 12px 8px 8px;

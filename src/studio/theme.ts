@@ -20,7 +20,7 @@ export const useTheme = create<ThemeState>()((set, get) => ({
   },
 }))
 
-// Set before the first render, so a dark choice never shows a light frame first.
+// index.html sets it before the first paint. This keeps it set where that script did not run, as in tests.
 document.documentElement.dataset.theme = useTheme.getState().theme
 useTheme.subscribe(({ theme }) => {
   document.documentElement.dataset.theme = theme

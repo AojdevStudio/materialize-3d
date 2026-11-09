@@ -73,8 +73,8 @@ function toBase64(bytes: Uint8Array): string {
 
 /** The sidebar's theme toggle: a sun in light, a moon in dark. */
 function ThemeToggle() {
-  const { theme, toggle } = useTheme()
-  const dark = theme === 'dark'
+  const dark = useTheme((s) => s.theme === 'dark')
+  const toggle = useTheme((s) => s.toggle)
   return (
     <button type="button" className="icon-button" aria-label="Dark mode" aria-pressed={dark} onClick={toggle} data-testid="theme-toggle">
       <svg viewBox="0 0 24 24" width={18} height={18} fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
