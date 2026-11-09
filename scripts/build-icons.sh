@@ -55,8 +55,9 @@ tauri_icon "$brand/mark-1024.png" -p 48 -o "$work/render48"
 tauri_icon "$brand/mark-small-32.svg" -p 24 -p 30 -p 32 -o "$work/small32"
 tauri_icon "$brand/mark-small-16.svg" -p 16 -o "$work/small16"
 
-# The PNGs. `tauri icon` also writes Android, iOS, and 64x64 files this desktop
-# app does not use, so only the files the repo already tracks are kept.
+# The PNGs. `tauri icon` also writes Android and iOS files this desktop app does
+# not use, so only the files the repo already tracks are copied. Its 64x64.png
+# stays in the render folder for the .icns and .ico entries below.
 for f in 128x128.png 128x128@2x.png icon.png StoreLogo.png \
   Square44x44Logo.png Square71x71Logo.png Square89x89Logo.png \
   Square107x107Logo.png Square142x142Logo.png Square150x150Logo.png \
