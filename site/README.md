@@ -36,6 +36,16 @@ The stageshow kit in `src/stageshow/kit/` is MIT licensed, and its license is in
 
 The sidebar icons in the hero (`src/assets/landing/line-*.svg`) are the app's outline icons from Streamline, licensed under CC BY 4.0. The repository's `THIRD_PARTY_NOTICES.md` credits them.
 
+## Search and sharing
+
+`index.html` carries the description, the canonical URL, and the Open Graph and Twitter card tags. Every URL in them is absolute and points at `https://materialize-3d.pages.dev/`. Vite copies `public/` into the root of `dist/` as is: `robots.txt` allows all crawlers and names the sitemap, `sitemap.xml` lists the one page, and `og-image.png` is the 1200 by 630 share image. Remake the image from the repository root with this command:
+
+```sh
+magick docs/images/studio-light.png -resize 1152x582 -background '#CFD0CF' -gravity center -extent 1200x630 -strip site/public/og-image.png
+```
+
+The tags and files go live at the next manual deploy.
+
 ## Tests
 
 `tests/site.spec.ts` covers:
@@ -49,6 +59,7 @@ The sidebar icons in the hero (`src/assets/landing/line-*.svg`) are the app's ou
 - How it works shows the Describe, Make, Look, and Print tiles in order, and the page says no release has the studio yet
 - with reduced motion, the hero shows the finished part and holds still
 - no signing or notarization claim appears while the flags are false
+- the head carries the canonical URL and an absolute share image, and the preview serves `robots.txt`, `sitemap.xml`, and `og-image.png` as real files
 
 The layout tests also save full-page screenshots to `test-results/screens/`, which is gitignored. The tests never fetch GitHub. CI runs them in the `Landing site` job.
 

@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://materialize-3d.pages.dev/sitemap.xml

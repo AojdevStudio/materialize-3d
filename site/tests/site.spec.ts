@@ -243,6 +243,20 @@ test("the pause control stops the hero on its finished frame", async ({ page }) 
   await expectHeroHoldsStill(page);
 });
 
+test("search and share tags point at the live site, and robots, sitemap, and share image are served", async ({ page, request }) => {
+  await open(page);
+  await expect(page.locator('link[rel="canonical"]')).toHaveAttribute("href", "https://materialize-3d.pages.dev/");
+  await expect(page.locator('meta[property="og:image"]')).toHaveAttribute("content", "https://materialize-3d.pages.dev/og-image.png");
+
+  // The preview, like the live host, answers a missing file with the page itself, so a 200 alone proves nothing.
+  const served = { "robots.txt": "text/plain", "sitemap.xml": "xml", "og-image.png": "image/png" };
+  for (const [file, type] of Object.entries(served)) {
+    const response = await request.get(file);
+    expect(response.status(), file).toBe(200);
+    expect(response.headers()["content-type"], file).toContain(type);
+  }
+});
+
 test("release claims match the release flags", async ({ page }) => {
   await open(page);
   const text = await page.locator("body").innerText();
