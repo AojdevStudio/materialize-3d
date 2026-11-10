@@ -47,7 +47,7 @@ const GROUP_ICONS: Record<Status, string> = { working: iconWorking, ready: iconR
 const TRACE_ICONS: Record<TraceIcon, typeof FilePen> = { file: FilePen, terminal: Terminal, layers: Layers };
 
 /** Where the cursor waits: on empty surface under Start, its first move each loop. */
-const REST = { wide: { x: 1080, y: 420 }, compact: { x: 290, y: 296 } };
+const REST = { wide: { x: 1080, y: 420 }, compact: { x: 330, y: 346 } };
 
 async function script(a: Act<Scene>) {
   await a.wait(500);
@@ -96,7 +96,7 @@ export function ProductHero() {
       key={fontsReady ? "fonts-ready" : "fonts-loading"}
       width={1360}
       height={740}
-      compact={{ below: 900, width: 358, height: 340 }}
+      compact={{ below: 900, width: 390, height: 446 }}
       initial={initial}
       poster={poster}
       script={script}
@@ -117,7 +117,7 @@ export function ProductHero() {
                   <div className="m3h-main">
                     <StartView draft={s.draft} on={view.screen === "start"} />
                     <div className="m3h-chatview" data-on={view.screen === "chat" || undefined}>
-                      <Chat steps={s.steps} done={view.done} folded={view.done && layout === "compact"} />
+                      <Chat steps={s.steps} done={view.done} />
                       <Panel guide={view.guide} done={view.done} />
                     </div>
                   </div>
@@ -230,8 +230,7 @@ function StartView({ draft, on }: { draft: string; on: boolean }) {
   );
 }
 
-/** `folded`: the compact crop folds the finished trace to its header, making room for the print files. */
-function Chat({ steps, done, folded }: { steps: number; done: boolean; folded: boolean }) {
+function Chat({ steps, done }: { steps: number; done: boolean }) {
   const elapsed = TRACE[Math.max(steps, 1) - 1]?.elapsed ?? TRACE[0].elapsed;
   return (
     <div className="m3h-chat">
@@ -256,7 +255,7 @@ function Chat({ steps, done, folded }: { steps: number; done: boolean; folded: b
           {TRACE.map((step, i) => {
             const Glyph = TRACE_ICONS[step.icon];
             return (
-              <Collapse key={step.title} open={steps > i && !folded}>
+              <Collapse key={step.title} open={steps > i}>
                 <div className="m3h-trace-line">
                   <Glyph size={13} strokeWidth={1.75} />
                   <span className="m3h-trace-title">{step.title}</span>
@@ -299,7 +298,7 @@ function Chat({ steps, done, folded }: { steps: number; done: boolean; folded: b
 
 function Panel({ guide, done }: { guide: boolean; done: boolean }) {
   return (
-    <div className="m3h-panel">
+    <div className="m3h-panel" data-open={guide || undefined}>
       <div className="m3h-empty" data-on={!guide || undefined}>
         Models, drawings, and guides the agent makes show up here.
       </div>

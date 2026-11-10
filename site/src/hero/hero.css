@@ -500,41 +500,57 @@
   gap: 8px;
 }
 
-/* Compact: the chat column alone, in a window that runs off the bottom and
-   shows no taller than it is wide. The finished trace folds to its header
-   and the print files card lands in the room it leaves. */
+/* Compact: one column in a window that runs off the right edge, which the
+   page puts on the screen's edge. The start screen and the chat, then the
+   guide slides in over the chat the way the app's right panel opens, and the
+   print files card straddles the window's foot. The views sit in the
+   visible 374px, so only empty window runs off. */
 .m3h .ss-stage[data-layout="compact"] .m3h-fade {
-  padding: 16px 16px 0;
+  padding: 16px 0 0 16px;
   mask-image: none;
 }
 
 /* A 16px inset has no room for the wide window's long shadow */
 .m3h .ss-stage[data-layout="compact"] .m3h-window {
+  width: 440px;
   height: 360px;
   box-shadow: 0 0 0 1px #b9bab9, 0 6px 14px -8px rgba(0, 0, 0, 0.22);
 }
 
 .m3h .ss-stage[data-layout="compact"] .m3h-app {
-  grid-template-columns: minmax(0, 1fr);
+  grid-template-columns: 374px;
 }
 
 .m3h .ss-stage[data-layout="compact"] .m3h-side,
-.m3h .ss-stage[data-layout="compact"] .m3h-panel,
-.m3h .ss-stage[data-layout="compact"] .m3h-composer,
-.m3h .ss-stage[data-layout="compact"] .m3h-chips,
+.m3h .ss-stage[data-layout="compact"] .m3h-composer .ss-button:not([data-variant="primary"]),
 .m3h .ss-stage[data-layout="compact"] .m3h-hint,
 .m3h .ss-stage[data-layout="compact"] .m3h-trace-detail,
 .m3h .ss-stage[data-layout="compact"] .m3h-answer-slot,
+.m3h .ss-stage[data-layout="compact"] .m3h-empty,
+.m3h .ss-stage[data-layout="compact"] .m3h-views,
+.m3h .ss-stage[data-layout="compact"] .m3h-printbar,
+.m3h .ss-stage[data-layout="compact"] .m3h-guide-step .ss-bar:nth-of-type(n + 4),
 .m3h .ss-stage[data-layout="compact"] .m3h-file {
   display: none;
+}
+
+.m3h .ss-stage[data-layout="compact"] .m3h-main {
+  overflow: hidden;
 }
 
 .m3h .ss-stage[data-layout="compact"] .m3h-chatview {
   grid-template-columns: minmax(0, 1fr);
 }
 
+/* With no sidebar beside them, the screens overlap their fades so the window
+   never shows empty. Their words sit in different rows, so none overlap. */
+.m3h .ss-stage[data-layout="compact"] .m3h-start[data-on],
+.m3h .ss-stage[data-layout="compact"] .m3h-chatview[data-on] {
+  transition-delay: 0.04s;
+}
+
 .m3h .ss-stage[data-layout="compact"] .m3h-chat {
-  padding: 14px 16px 0;
+  padding: 16px 16px 0;
   border-right: 0;
 }
 
@@ -547,16 +563,36 @@
   margin: 10px 0 6px;
 }
 
+/* One row: the request and Send, so the trace has room above it */
+.m3h .ss-stage[data-layout="compact"] .m3h-composer {
+  right: 16px;
+  bottom: 16px;
+  left: 16px;
+  display: flex;
+  align-items: center;
+  padding: 10px 10px 10px 14px;
+}
+
+.m3h .ss-stage[data-layout="compact"] .m3h-composer .m3h-prompt-row {
+  flex: 1;
+}
+
 .m3h .ss-stage[data-layout="compact"] .m3h-trace-line {
   padding: 3px 0;
 }
 
 .m3h .ss-stage[data-layout="compact"] .m3h-start {
-  padding: 64px 16px 0;
+  justify-content: center;
+  padding: 0 16px;
 }
 
 .m3h .ss-stage[data-layout="compact"] .m3h-ask {
   font-size: 18px;
+}
+
+.m3h .ss-stage[data-layout="compact"] .m3h-chips {
+  flex-wrap: wrap;
+  justify-content: center;
 }
 
 .m3h .ss-stage[data-layout="compact"] .m3h-prompt {
@@ -568,13 +604,57 @@
   min-height: 48px;
 }
 
+.m3h .ss-stage[data-layout="compact"] .m3h-panel {
+  position: absolute;
+  inset: 0;
+  translate: 100% 0;
+  box-shadow: -1px 0 0 #e6e4df;
+  will-change: transform;
+  transition: translate 0.6s cubic-bezier(0.25, 0.8, 0.25, 1);
+}
+
+.m3h .ss-stage[data-layout="compact"] .m3h-panel[data-open] {
+  translate: 0 0;
+}
+
+.m3h .ss-stage[data-layout="compact"] .m3h-guide-card {
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+}
+
+.m3h .ss-stage[data-layout="compact"] .m3h-guide-head {
+  padding: 12px 16px;
+}
+
+.m3h .ss-stage[data-layout="compact"] .m3h-render {
+  height: 162px;
+}
+
+.m3h .ss-stage[data-layout="compact"] .m3h-render img {
+  height: 150px;
+}
+
+.m3h .ss-stage[data-layout="compact"] .m3h-guide-step {
+  gap: 6px;
+  padding: 12px 16px;
+}
+
+/* The step text starts under the print files card's top edge */
+.m3h .ss-stage[data-layout="compact"] .m3h-step-title {
+  margin-bottom: 10px;
+  font-size: 14px;
+}
+
+/* Its center sits just inside the window, and the window's foot crosses it
+   in the gap above the buttons */
 .m3h .ss-stage[data-layout="compact"] .m3h-card {
-  top: auto;
-  bottom: 16px;
-  left: 16px;
-  width: 326px;
+  top: 317px;
+  left: 32px;
+  width: 342px;
 }
 
 .m3h .ss-stage[data-layout="compact"] .m3h-card-actions {
   display: flex;
+  margin-top: 10px;
 }

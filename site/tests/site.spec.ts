@@ -147,17 +147,29 @@ test("how it works tells the chat studio story in order, and the page says no re
   expect(text).not.toMatch(/\bMCP\b/);
 });
 
-test("with reduced motion the hero shows the finished part and holds still", async ({ page }) => {
-  await page.emulateMedia({ reducedMotion: "reduce" });
-  await open(page);
-  await page.evaluate(() => document.fonts.ready);
-  const hero = page.locator(".hero-stage");
-  const payoff = hero.getByText("2 print files ready").last();
-  expect(await payoff.evaluate((el) => el.checkVisibility({ opacityProperty: true })), "print files card shown").toBe(true);
-  const before = await hero.screenshot();
-  await page.waitForTimeout(2000);
-  expect(await hero.screenshot(), "the hero frame after two seconds").toEqual(before);
-});
+for (const layout of layouts) {
+  test(`${layout.name} ${layout.width}: with reduced motion the hero shows the finished part and holds still`, async ({ page }) => {
+    await page.setViewportSize({ width: layout.width, height: layout.height });
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await open(page);
+    await page.evaluate(() => document.fonts.ready);
+    const hero = page.locator(".hero-stage");
+    const payoff = hero.getByText("2 print files ready").last();
+    expect(await payoff.evaluate((el) => el.checkVisibility({ opacityProperty: true })), "print files card shown").toBe(true);
+
+    const part = hero.locator('img[src*="dock-mount-model"]');
+    expect(await part.evaluate((el) => el.checkVisibility({ opacityProperty: true })), "model render shown").toBe(true);
+    const [partBox, heroBox] = await Promise.all([part.boundingBox(), hero.boundingBox()]);
+    if (!partBox || !heroBox) throw new Error("the model render or the hero has no layout box");
+    expect(partBox.x, "render starts inside the hero").toBeGreaterThanOrEqual(heroBox.x);
+    expect(partBox.x + partBox.width, "render ends inside the hero").toBeLessThanOrEqual(heroBox.x + heroBox.width);
+    expect(partBox.y + partBox.height, "render ends above the hero's foot").toBeLessThanOrEqual(heroBox.y + heroBox.height);
+
+    const before = await hero.screenshot();
+    await page.waitForTimeout(2000);
+    expect(await hero.screenshot(), "the hero frame after two seconds").toEqual(before);
+  });
+}
 
 test("release claims match the release flags", async ({ page }) => {
   await open(page);

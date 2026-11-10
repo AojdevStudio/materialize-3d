@@ -641,10 +641,13 @@ p {
 }
 
 /* Below the wide design's 900px slot the stage shows its compact design,
-   grown to a tablet column rather than left at phone size. */
+   grown to a tablet column rather than left at phone size. Its window runs
+   off the right, so the stage ends on the screen's edge. */
 @media (max-width: 931px) {
   .hero-stage {
-    width: min(480px, 100vw - 32px);
+    align-self: flex-end;
+    width: min(100vw, 480px);
+    margin-right: calc(-1 * var(--gutter));
   }
 }
 
