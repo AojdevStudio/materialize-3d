@@ -21,10 +21,13 @@ const Ring = () => (
   </svg>
 )
 
-/** The mark of a trace that ended: a plain circle, as the sidebar marks a draft, since the entries cannot say it succeeded. */
+/**
+ * The mark of a trace that ended: a plain circle, as the sidebar marks a draft, since the entries cannot say it succeeded.
+ * It has the size and weight of the Lucide circle that marks a stopped trace.
+ */
 const Ended = () => (
-  <svg className="trace-icon" viewBox="0 0 16 16" aria-hidden="true">
-    <circle cx={8} cy={8} r={6} fill="none" stroke="currentColor" strokeWidth={1.5} />
+  <svg className="trace-icon" viewBox="0 0 24 24" aria-hidden="true">
+    <circle cx={12} cy={12} r={10} fill="none" stroke="currentColor" strokeWidth={1.75} />
   </svg>
 )
 
