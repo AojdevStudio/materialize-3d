@@ -2,7 +2,7 @@ import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { type AppState, type Draft, type LoginEvent, type ModelChoice, type ModelOption, type Need, type Project, type ProjectStatus, START, type ChatView as View } from '../../sidecar/src/protocol'
-import { firstView, onQuitFlush, onSidecarEvent, panelFiles, sidecar, studio, viewOf, type PanelView, type ProjectFile } from './api'
+import { announceFiles, firstView, onQuitFlush, onSidecarEvent, panelFiles, sidecar, studio, viewOf, type PanelView, type ProjectFile } from './api'
 import { ChatView } from './Chat'
 import { Composer, releaseAttachment, savedAttachment, type PastedPicture } from './Composer'
 import ModelPicker from './ModelPicker'
@@ -71,7 +71,8 @@ export default function StudioApp() {
   const [view, setView] = useState<View | null>(null)
   const [files, setFiles] = useState<ProjectFile[]>([])
   const [selected, setSelected] = useState<string | null>(null)
-  const [panelView, setPanelView] = useState<PanelView>('files')
+  /** Guide until the open project's files are first listed, so the panel shows its neutral note meanwhile. */
+  const [panelView, setPanelView] = useState<PanelView>('guide')
   const [error, setError] = useState<string | null>(null)
   /** A failed send's error, kept with the project it was sent to and shown only there. */
   const [sendErrors, setSendErrors] = useState<Record<string, string>>({})
@@ -412,6 +413,7 @@ export default function StudioApp() {
     const list = await studio.files(project)
     if (project !== currentId.current) return
     setFiles(list)
+    void announceFiles({ project, files: list }).catch((err: unknown) => setError(String(err)))
     const shown = panelFiles(list)
     const latest = shown.latest?.modifiedMs ?? 0
     if (lastSeen.current === null) {
@@ -450,7 +452,7 @@ export default function StudioApp() {
     setView(null)
     setFiles([])
     setSelected(null)
-    setPanelView('files')
+    setPanelView('guide')
     setError(null)
     checkReady()
   }

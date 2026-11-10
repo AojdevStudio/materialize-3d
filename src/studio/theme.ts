@@ -11,8 +11,10 @@ type ThemeState = { theme: Theme; toggle: () => void }
  * The app's theme. Light unless the person chose dark. Read it with `useTheme((s) => s.theme)`, or follow it outside
  * React with `useTheme.subscribe`. The root element's `data-theme` always matches it.
  */
+const parse = (saved: string | null): Theme => (saved === 'dark' ? 'dark' : 'light')
+
 export const useTheme = create<ThemeState>()((set, get) => ({
-  theme: window.localStorage.getItem(KEY) === 'dark' ? 'dark' : 'light',
+  theme: parse(window.localStorage.getItem(KEY)),
   toggle: () => {
     const theme = get().theme === 'dark' ? 'light' : 'dark'
     window.localStorage.setItem(KEY, theme)
@@ -24,4 +26,9 @@ export const useTheme = create<ThemeState>()((set, get) => ({
 document.documentElement.dataset.theme = useTheme.getState().theme
 useTheme.subscribe(({ theme }) => {
   document.documentElement.dataset.theme = theme
+})
+// A choice made in another window of the app reaches this one through the storage they share, so a pop out follows the
+// main window's toggle.
+window.addEventListener('storage', (event) => {
+  if (event.key === KEY) useTheme.setState({ theme: parse(event.newValue) })
 })

@@ -14,6 +14,7 @@ vi.mock('@tauri-apps/api/event', () => ({
     ;(name === 'studio://flush' ? listeners.flush : listeners.sidecar).push(listener)
     return Promise.resolve(() => {})
   },
+  emit: () => Promise.resolve(),
 }))
 vi.mock('@tauri-apps/plugin-opener', () => ({ openUrl: () => Promise.resolve() }))
 vi.mock('@tauri-apps/api/webview', () => ({

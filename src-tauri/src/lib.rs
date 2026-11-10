@@ -84,8 +84,11 @@ pub fn run() {
             // A pop out shows a file of the main window's project, so it closes with the main window, and the app quits as
             // before.
             tauri::RunEvent::WindowEvent { label, event: tauri::WindowEvent::Destroyed, .. } if label == "main" => {
-                for window in app.webview_windows().into_values() {
-                    let _ = window.destroy();
+                for (label, window) in app.webview_windows() {
+                    // The app is closing, so a pop out that will not go has nothing to fall back to. The log says so.
+                    if let Err(err) = window.destroy() {
+                        log::warn!("studio: could not close the {label} window with the main one: {err}");
+                    }
                 }
             }
             // The sidecar finishes its commits and exits before the app does.

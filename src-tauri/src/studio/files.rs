@@ -178,15 +178,16 @@ pub fn studio_open_in_bambu(project: String, rel: String) -> Result<(), String> 
 }
 
 /// Opens a project file in a window of its own. The window loads the app's page, which shows the file from the
-/// `m3dfile://` protocol as the panel does, so its relative files still load. It keeps the main window's guard, so a
-/// page in it cannot go to the internet either.
+/// `m3dfile://` protocol as the panel does, so its relative files still load. `version` is the file's time as the main
+/// window listed it, and the page reloads the file when the main window lists a newer one. The window keeps the main
+/// window's guard, so a page in it cannot go to the internet either.
 #[tauri::command]
-pub async fn studio_pop_out(app: tauri::AppHandle, project: String, rel: String) -> Result<(), String> {
+pub async fn studio_pop_out(app: tauri::AppHandle, project: String, rel: String, version: u64) -> Result<(), String> {
     let path = resolve(&project, &rel)?;
     static NEXT: AtomicU64 = AtomicU64::new(1);
     let label = format!("pop-out-{}", NEXT.fetch_add(1, Ordering::Relaxed));
     let query = |value: &str| percent_encoding::utf8_percent_encode(value, percent_encoding::NON_ALPHANUMERIC).to_string();
-    let page = format!("index.html?project={}&rel={}", query(&project), query(&rel));
+    let page = format!("index.html?project={}&rel={}&v={version}", query(&project), query(&rel));
     let title = path.file_name().map_or_else(|| rel.clone(), |name| name.to_string_lossy().into_owned());
     tauri::WebviewWindowBuilder::new(&app, label, tauri::WebviewUrl::App(page.into()))
         .title(title)

@@ -134,6 +134,7 @@ export default function RightPanel({ project, files, view, selected, onView, onO
             role="tab"
             aria-selected={view === v}
             disabled={v !== 'files' && fileOf(v) === undefined}
+            title={v === 'files' ? undefined : fileOf(v)?.rel}
             onClick={() => onView(v)}
             data-testid={`${v}-tab`}
           >
@@ -141,7 +142,7 @@ export default function RightPanel({ project, files, view, selected, onView, onO
           </button>
         ))}
         {file && previewable(file) && (
-          <button type="button" className="pop-out" onClick={() => studio.popOut(project, file.rel).catch((err: unknown) => onError(String(err)))} data-testid="pop-out">
+          <button type="button" className="pop-out" onClick={() => studio.popOut(project, file.rel, file.modifiedMs).catch((err: unknown) => onError(String(err)))} data-testid="pop-out">
             Pop out
             <svg viewBox="0 0 16 16" width={12} height={12} aria-hidden="true">
               <path d="M6 4h6v6M12 4l-7.5 7.5" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />

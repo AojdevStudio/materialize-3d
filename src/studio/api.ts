@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
-import { listen } from '@tauri-apps/api/event'
+import { emit, listen } from '@tauri-apps/api/event'
 import type { Method, Methods, SidecarEvent } from '../../sidecar/src/protocol'
 
 /** The window's one call into the sidecar. A call made while it starts waits for it. */
@@ -39,8 +39,13 @@ export const studio = {
     invoke<string>('studio_save_bytes', bytes, { headers: { 'm3d-project': project, 'm3d-name': encodeURIComponent(name) } }),
   reveal: (project: string, rel: string) => invoke<void>('studio_reveal', { project, rel }),
   openInBambu: (project: string, rel: string) => invoke<void>('studio_open_in_bambu', { project, rel }),
-  popOut: (project: string, rel: string) => invoke<void>('studio_pop_out', { project, rel }),
+  popOut: (project: string, rel: string, version: number) => invoke<void>('studio_pop_out', { project, rel, version }),
 }
+
+/** A listing of a project's files, as the main window tells its pop outs, so each shows its file's newest version. */
+type Listing = { project: string; files: ProjectFile[] }
+export const announceFiles = (listing: Listing) => emit('studio://files', listing)
+export const onFiles = (handler: (listing: Listing) => void) => listen<Listing>('studio://files', ({ payload }) => handler(payload))
 
 /**
  * A project file as served by the app's `m3dfile://` protocol. Each project is its own host, so a preview page
@@ -64,7 +69,7 @@ export function fileKind(rel: string): FileKind {
   return 'other'
 }
 
-/** Files that open in the preview on their own when the agent writes them. Ossie's own pictures in refs/ do not. */
+/** Files a turn's file cards offer to preview: the pages, models, and pictures the agent wrote. Ossie's own files in refs/ are not. */
 export function autoOpens(rel: string): boolean {
   const kind = fileKind(rel)
   return !rel.startsWith('refs/') && (kind === 'html' || kind === 'model' || kind === 'image')
@@ -82,7 +87,7 @@ export type PanelView = (typeof VIEWS)[number]
  */
 export function viewOf(rel: string): PanelView {
   const name = rel.toLowerCase()
-  if (!name.includes('/') && name.endsWith('.html')) {
+  if (!name.includes('/') && fileKind(rel) === 'html') {
     if (name.startsWith('guide')) return 'guide'
     if (name.startsWith('drawing')) return 'drawing'
   }
