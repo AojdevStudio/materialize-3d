@@ -1,12 +1,12 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { DownloadLink, ReleaseNote } from "./components/Download";
 import { HowItWorks } from "./components/HowItWorks";
 import { ReleaseFacts } from "./components/ReleaseFacts";
 import { ThemeToggle } from "./components/ThemeToggle";
-import { ProductHero } from "./hero/ProductHero";
-import markLarge from "./assets/brand/mark-256.png";
 import markSmall from "./assets/brand/mark-small-32.svg";
 import oflUrl from "./assets/fonts/OFL.txt?url";
 import { checksumPublished, dmgFileName, release } from "./release";
+import { ScrollStory } from "./story/ScrollStory";
 
 type Requirement = { label: string; text: string };
 
@@ -62,111 +62,115 @@ const installSteps = [
   </>,
 ];
 
-function Headline() {
-  return (
-    <>
-      <span className="headline-part">Describe a part.</span>{" "}
-      <span className="headline-part headline-accent">Print the 3MF.</span>
-    </>
-  );
-}
-
-function DownloadActions() {
-  return (
-    <>
-      <div className="actions">
-        <a className="button-primary" href={release.dmgUrl}>
-          Download for Mac ({release.architecture})
-        </a>
-        <a className="install-link" href="#install">
-          Install guide
-        </a>
-      </div>
-      <p className="facts-line">macOS 26.0 or later · Apple Silicon · The app is free</p>
-    </>
-  );
+/**
+ * The header is clear over the story and turns solid once the end section slides under it.
+ * It checks a one-pixel mark at the top of the end section against the header's own bottom edge
+ * on every scroll and resize, because an instant jump can carry the mark past the viewport
+ * without an intersection change, and the header is shorter on phones.
+ */
+function useSolidHeader() {
+  const header = useRef<HTMLElement>(null);
+  const mark = useRef<HTMLSpanElement>(null);
+  const [solid, setSolid] = useState(false);
+  useEffect(() => {
+    const bar = header.current;
+    const element = mark.current;
+    if (!bar || !element) return;
+    const update = () => setSolid(element.getBoundingClientRect().top < bar.getBoundingClientRect().bottom);
+    update();
+    window.addEventListener("scroll", update, { passive: true });
+    window.addEventListener("resize", update);
+    return () => {
+      window.removeEventListener("scroll", update);
+      window.removeEventListener("resize", update);
+    };
+  }, []);
+  return [header, mark, solid] as const;
 }
 
 export function App() {
-  const [heroPaused, setHeroPaused] = useState(false);
+  const [header, endMark, solid] = useSolidHeader();
   return (
     <>
-      <a className="skip-link" href="#main">
-        Skip to content
+      <a className="skip-link" href="#download">
+        Skip to the download
       </a>
-      <div className="band">
-        <header className="site-header">
-          <a className="lockup" href="#top" aria-label="Materialize 3D, top of page">
-            <img src={markSmall} alt="" width={28} height={28} />
-            <span>Materialize 3D</span>
-          </a>
-          <nav className="site-nav" aria-label="Sections">
-            <a href="#how">How it works</a>
-            <a href="#requirements">Requirements</a>
-            <a href="#install">Install</a>
-          </nav>
-          <ThemeToggle />
-          <a className="button-small" href={release.dmgUrl}>
-            Download
-          </a>
-        </header>
-      </div>
+      <header ref={header} className="site-header" data-solid={solid || undefined}>
+        <a className="lockup" href="#top" aria-label="Materialize 3D, back to top">
+          <svg viewBox="0 0 18 18" aria-hidden="true">
+            <path d="M9 1.5 16 5.2v7.6L9 16.5 2 12.8V5.2z" />
+            <path className="lockup-accent" d="M2 5.2 9 9l7-3.8M9 9v7.5" />
+          </svg>
+          <span>Materialize 3D</span>
+        </a>
+        <ThemeToggle />
+      </header>
 
       <main id="main">
-        <section className="band hero" id="top" aria-labelledby="hero-title">
-          <h1 id="hero-title">
-            <Headline />
-          </h1>
-          <p className="lede">
-            Materialize 3D is a Mac app where you describe a 3D-printable object in a chat, and an agent makes it.
-            The agent writes the model, previews it, and slices it to a print-ready 3MF for your printer.
-          </p>
-          <DownloadActions />
-          {!release.studio && (
-            <p className="release-note">
-              The chat studio is not in a release yet. This download is {release.version}, the earlier sign app.
-            </p>
-          )}
-          <div className="hero-stage" aria-hidden="true">
-            <ProductHero paused={heroPaused} />
-          </div>
-          <button type="button" className="hero-pause" onClick={() => setHeroPaused((paused) => !paused)}>
-            {heroPaused ? "Play animation" : "Pause animation"}
-          </button>
-        </section>
+        <ScrollStory />
 
-        <HowItWorks />
-
-        <section className="section" id="requirements" aria-labelledby="req-title">
-          <h2 id="req-title">Requirements</h2>
-          <dl className="requirements">
-            {requirements.map((row) => (
-              <div key={row.label} className="requirement">
-                <dt>{row.label}</dt>
-                <dd>{row.text}</dd>
+        <section className="end" id="download" aria-labelledby="end-title">
+          <span ref={endMark} className="end-mark" aria-hidden="true" />
+          <div className="end-top">
+            <div className="end-head">
+              <p className="kick">The end of the scroll</p>
+              <h2 id="end-title" className="end-title">
+                Materialize <b>3D</b>
+              </h2>
+            </div>
+            <div>
+              <p className="end-line">Describe a part. Print the 3MF.</p>
+              <p className="end-lede">
+                Materialize 3D is a Mac app where you describe a 3D-printable object in a chat, and an agent makes
+                it. The agent writes the model, previews it, and slices it to a print-ready 3MF for your printer.
+              </p>
+              <div className="cta">
+                <DownloadLink />
+                <a className="cta-secondary" href={release.repoUrl}>
+                  GitHub
+                  <svg viewBox="0 0 14 14" aria-hidden="true">
+                    <path d="M3 11 11 3M5 3h6v6" />
+                  </svg>
+                </a>
               </div>
-            ))}
-          </dl>
-        </section>
-
-        <section className="section" id="install" aria-labelledby="install-title">
-          <h2 id="install-title">Install</h2>
-          <div className="install">
-            <ol className="install-steps">
-              {installSteps.map((step, i) => (
-                <li key={i}>{step}</li>
-              ))}
-            </ol>
+              <ReleaseNote />
+            </div>
             <ReleaseFacts />
           </div>
-        </section>
 
-        <section className="closing">
-          <img className="closing-mark" src={markLarge} alt="" width={96} height={96} />
-          <h2>
-            <Headline />
-          </h2>
-          <DownloadActions />
+          <HowItWorks />
+
+          <div className="end-columns">
+            <section id="requirements" aria-labelledby="req-title">
+              <h2 id="req-title" className="end-heading">
+                Requirements
+              </h2>
+              <dl className="rows">
+                {requirements.map((row) => (
+                  <div key={row.label}>
+                    <dt>{row.label}</dt>
+                    <dd>{row.text}</dd>
+                  </div>
+                ))}
+              </dl>
+            </section>
+
+            <section id="install" aria-labelledby="install-title">
+              <h2 id="install-title" className="end-heading">
+                Install
+              </h2>
+              <ol className="install-steps">
+                {installSteps.map((step, i) => (
+                  <li key={i}>{step}</li>
+                ))}
+              </ol>
+            </section>
+          </div>
+
+          <p className="fine">
+            <span>Layer counts and temperatures on this page are illustrative</span>
+            <span>Printer model built in Blender for this page</span>
+          </p>
         </section>
       </main>
 
@@ -178,6 +182,7 @@ export function App() {
           <a href={release.releasesUrl}>Releases</a>
           <a href={release.docsUrl}>Docs</a>
           <a href={oflUrl}>Font license (SIL OFL 1.1)</a>
+          <a href={`${import.meta.env.BASE_URL}licenses/three-LICENSE.txt`}>three.js license (MIT)</a>
         </nav>
       </footer>
     </>

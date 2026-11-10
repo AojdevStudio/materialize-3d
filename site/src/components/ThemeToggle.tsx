@@ -1,4 +1,3 @@
-import { Sun } from "lucide-react";
 import { useState } from "react";
 
 type Theme = "light" | "dark";
@@ -28,7 +27,8 @@ export function ThemeToggle() {
 
   return (
     <button type="button" className="theme-toggle" aria-pressed={dark} aria-label="Dark mode" onClick={toggle}>
-      <Sun size={18} strokeWidth={1.75} aria-hidden="true" />
+      <span>Dark</span>
+      <i aria-hidden="true" />
     </button>
   );
 }

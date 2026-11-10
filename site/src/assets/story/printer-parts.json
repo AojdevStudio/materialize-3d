@@ -1,0 +1,157 @@
+{
+ "units": "metres, three.js axes (x right, y up, z towards the viewer)",
+ "outer_mm": [
+  392,
+  406,
+  478
+ ],
+ "build_volume_mm": [
+  256,
+  256,
+  256
+ ],
+ "plate_top_center": [
+  0.0,
+  0.165,
+  0.008
+ ],
+ "plate_size": 0.2575,
+ "nozzle_tip": [
+  0.004,
+  0.32,
+  0.058
+ ],
+ "parts": [
+  {
+   "name": "lid",
+   "label": "Top glass lid",
+   "offset": [
+    0.0,
+    0.86,
+    -0.0
+   ],
+   "top_mm": 478
+  },
+  {
+   "name": "screen",
+   "label": "Touchscreen",
+   "offset": [
+    0.0,
+    0.8,
+    0.1
+   ],
+   "top_mm": 491
+  },
+  {
+   "name": "top_frame",
+   "label": "Top frame",
+   "offset": [
+    0.0,
+    0.72,
+    -0.0
+   ],
+   "top_mm": 470
+  },
+  {
+   "name": "toolhead",
+   "label": "Toolhead",
+   "offset": [
+    0.0,
+    0.66,
+    -0.0
+   ],
+   "top_mm": 474
+  },
+  {
+   "name": "gantry",
+   "label": "CoreXY gantry, rods and belts",
+   "offset": [
+    0.0,
+    0.48,
+    -0.0
+   ],
+   "top_mm": 412
+  },
+  {
+   "name": "door",
+   "label": "Front door",
+   "offset": [
+    0.0,
+    0.0,
+    0.34
+   ],
+   "top_mm": 417
+  },
+  {
+   "name": "panel_left",
+   "label": "Side panel",
+   "offset": [
+    -0.3,
+    0.0,
+    -0.0
+   ],
+   "top_mm": 420
+  },
+  {
+   "name": "panel_right",
+   "label": "Side panel",
+   "offset": [
+    0.3,
+    0.0,
+    -0.0
+   ],
+   "top_mm": 420
+  },
+  {
+   "name": "panel_back",
+   "label": "Back panel",
+   "offset": [
+    0.0,
+    0.0,
+    -0.34
+   ],
+   "top_mm": 420
+  },
+  {
+   "name": "frame",
+   "label": "Frame, Z rods, lead screws",
+   "offset": [
+    0.0,
+    0.3,
+    -0.0
+   ],
+   "top_mm": 420
+  },
+  {
+   "name": "bed",
+   "label": "Heatbed",
+   "offset": [
+    0.0,
+    -0.07,
+    -0.0
+   ],
+   "top_mm": 163
+  },
+  {
+   "name": "base",
+   "label": "Base",
+   "offset": [
+    0.0,
+    -0.16,
+    -0.0
+   ],
+   "top_mm": 47
+  },
+  {
+   "name": "build_plate",
+   "label": "Build plate, textured PEI",
+   "offset": [
+    0.0,
+    0.0,
+    -0.0
+   ],
+   "top_mm": 165
+  }
+ ],
+ "triangles": 21952
+}

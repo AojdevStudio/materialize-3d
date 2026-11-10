@@ -2,3 +2,7 @@ node_modules/
 dist/
 test-results/
 playwright-report/
+# Model build intermediates and Blender stills, see "The 3D models" in README.md
+models/dock/meshes.json
+models/renders/
+__pycache__/
