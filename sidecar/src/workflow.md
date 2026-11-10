@@ -23,7 +23,7 @@ Keep each step's script, so a change to `params.json` rebuilds everything.
 
 ## Guides
 
-Start every guide from the app's template, `.m3d/guide-template.html`. It holds the app's font, colors, and three.js, and it follows the app's light and dark theme, so add no theme button or styles of your own. It is large, so do not read it. Write `build/guide.py`: it reads the template, puts the guide's data as JSON in place of `/*__DATA__*/null`, and writes `guide.html`. The data:
+Start every guide from the app's template, `.m3d/guide-template.html`. It holds the app's font, colors, and three.js, and it follows the app's light and dark theme, so add no theme button or styles of your own. It is large, so do not read it. Write `build/guide.py`: it reads the template, puts the guide's data in place of `/*__DATA__*/null` as `json.dumps(data).replace("<", "\\u003c")`, so no text in it can end the script, and writes `guide.html`. The data:
 
 - `title`: the guide's name. Optional `note`: a short line beside it, such as the revision and size.
 - `objects`: the parts by id. `mesh` is the part in mm, Z up: `pos` is base64 of its vertices as little-endian float32 x, y, z, and `idx` is base64 of its triangles as uint32 indices. With manifold3d, `to_mesh()` gives them as `vert_properties[:, :3]` and `tri_verts`. `off` is the [x, y, z] offset it flies in from. Optional: `kind: "owned"` for a thing Ossie already has, `xoff` for its place in the exploded view, and `anchor` and `label` for a label on it.

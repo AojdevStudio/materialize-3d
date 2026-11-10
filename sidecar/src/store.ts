@@ -410,8 +410,9 @@ export class Store implements LoginIndex {
   }
 
   /**
-   * The project's folder, made if it is missing. It gets this app's guide template in its hidden folder each time, so
-   * the agent's guide scripts read the template of the app that runs the turn, never one an older app left.
+   * The project's folder, made if it is missing. It gets this app's guide template in its hidden folder on each send,
+   * when the turn takes this app's instructions, so the template a guide script reads matches what its turn was told.
+   * A resumed turn keeps its send's instructions, and the template that send wrote.
    */
   projectFolder(id: string): string {
     const dir = join(this.projectsDir, id)
