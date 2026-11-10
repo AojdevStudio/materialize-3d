@@ -134,7 +134,7 @@ mod acl_tests {
     }
 
     #[test]
-    fn a_pop_out_window_may_only_read_its_file_version() {
+    fn pop_out_windows_may_only_read_file_versions() {
         let pop_out: serde_json::Value = serde_json::from_str(include_str!("../capabilities/pop-out.json")).expect("json");
         assert_eq!(pop_out["webviews"], serde_json::json!(["pop-out-*"]));
         assert_eq!(pop_out["permissions"], serde_json::json!(["allow-studio-file-version"]));
