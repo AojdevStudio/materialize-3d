@@ -4,7 +4,7 @@
  *
  * App state lives as Pi documents on the root conversation. Each project is a conversation of its own.
  */
-import { type Dirent, existsSync, mkdirSync, readdirSync, statSync } from 'node:fs'
+import { type Dirent, existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
@@ -14,8 +14,12 @@ import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite
 import type { LoginIndex } from './inference'
 import type { LegacyProject } from './legacy'
 import { type Draft, type LoginKind, type ModelChoice, type Project, type SavedDraft, type Settings, type Setup, START, type StoredState, type Turn, type Waiting } from './protocol'
+import { guideTemplate } from './templates/guide' with { type: 'macro' }
 
 const context = BACKGROUND_CONTEXT
+
+/** The app's guide template, made whole when the sidecar was built. */
+const GUIDE_TEMPLATE = guideTemplate()
 
 const always = () => true
 
@@ -405,10 +409,14 @@ export class Store implements LoginIndex {
     return summary
   }
 
-  /** The project's folder, made if it is missing. */
+  /**
+   * The project's folder, made if it is missing. A send calls this before it gives a turn this app's instructions, so
+   * the folder then holds this app's guide template in its hidden folder, which those instructions describe.
+   */
   projectFolder(id: string): string {
     const dir = join(this.projectsDir, id)
-    mkdirSync(dir, { recursive: true })
+    mkdirSync(join(dir, '.m3d'), { recursive: true })
+    writeFileSync(join(dir, '.m3d', 'guide-template.html'), GUIDE_TEMPLATE)
     return dir
   }
 

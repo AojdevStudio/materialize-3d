@@ -30,7 +30,7 @@ describe('PopOut', () => {
   it('shows the file its address names, and only the main window has none', () => {
     expect(popOutFile('')).toBeNull()
     render(<PopOut {...popOutFile(`?project=${project}&rel=guide.html&v=5`)!} />)
-    expect(src()).toBe(`m3dfile://${project}/guide.html?v=5`)
+    expect(src()).toBe(`m3dfile://${project}/guide.html?v=5&theme=light`)
   })
 
   it('reloads its file when it changes, says when it is gone, and goes on when it comes back', async () => {
@@ -49,9 +49,12 @@ describe('PopOut', () => {
     expect(src()).toContain('?v=12')
   })
 
-  it('follows a theme chosen in the main window', () => {
+  it('follows a theme chosen in the main window, and tells its page without reloading it', () => {
     render(<PopOut project={project} rel="guide.html" version={5} />)
+    const post = vi.spyOn((screen.getByTestId('html-preview') as HTMLIFrameElement).contentWindow!, 'postMessage')
     act(() => window.dispatchEvent(new StorageEvent('storage', { key: 'materialize-3d.theme', newValue: 'dark' })))
     expect(useTheme.getState().theme).toBe('dark')
+    expect(post).toHaveBeenCalledWith({ type: 'm3d:theme', theme: 'dark' }, '*')
+    expect(src()).toBe(`m3dfile://${project}/guide.html?v=5&theme=light`)
   })
 })

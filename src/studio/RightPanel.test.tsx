@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 
 const { invokeMock } = vi.hoisted(() => ({ invokeMock: vi.fn((_command: string, _args: { project: string; rel: string }) => Promise.resolve()) }))
 vi.mock('@tauri-apps/api/core', () => ({ invoke: invokeMock }))
@@ -9,10 +9,12 @@ vi.mock('./ModelView', () => ({ default: ({ url }: { url: string }) => <div data
 
 import type { PanelView, ProjectFile } from './api'
 import RightPanel from './RightPanel'
+import { useTheme } from './theme'
 
 afterEach(() => {
   cleanup()
   invokeMock.mockClear()
+  useTheme.setState({ theme: 'light' })
 })
 
 const file = (rel: string, modifiedMs: number): ProjectFile => ({ rel, size: 10, modifiedMs })
@@ -98,5 +100,18 @@ describe('RightPanel', () => {
     cleanup()
     show(project, 'files')
     expect(screen.queryByTestId('pop-out')).toBeNull()
+  })
+
+  it('opens a page in the app theme and tells it each toggle, without reloading it', () => {
+    act(() => useTheme.setState({ theme: 'dark' }))
+    show(project, 'guide')
+    const frame = screen.getByTestId('html-preview') as HTMLIFrameElement
+    const opened = frame.getAttribute('src')
+    expect(opened).toMatch(/\/guide-adapter\.html\?v=4&theme=dark$/)
+    const post = vi.spyOn(frame.contentWindow!, 'postMessage')
+    act(() => useTheme.getState().toggle())
+    expect(post).toHaveBeenCalledWith({ type: 'm3d:theme', theme: 'light' }, '*')
+    expect(screen.getByTestId('html-preview')).toBe(frame)
+    expect(frame.getAttribute('src')).toBe(opened)
   })
 })

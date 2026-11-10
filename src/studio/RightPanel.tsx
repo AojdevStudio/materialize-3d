@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { fileKind, fileUrl, formatSize, is3mf, isMac, panelFiles, studio, viewOf, VIEWS, type PanelView, type ProjectFile } from './api'
 import ModelView from './ModelView'
 import PrintFiles from './PrintFiles'
+import { useTheme, type Theme } from './theme'
 
 const LABELS: Record<PanelView, string> = { guide: 'Guide', model: 'Model', drawing: 'Drawing', files: 'Files' }
 
@@ -51,12 +52,37 @@ function TextView({ url }: { url: string }) {
 /** Whether the panel can show a file. A very large text file it leaves to the person's own editor. */
 const previewable = (file: ProjectFile) => fileKind(file.rel) !== 'other' && !(fileKind(file.rel) === 'text' && file.size >= 400_000)
 
+/** Tells the page in a frame the app's theme, in the message the guide template listens for. */
+const postTheme = (frame: HTMLIFrameElement | null, theme: Theme) => frame?.contentWindow?.postMessage({ type: 'm3d:theme', theme }, '*')
+
+/**
+ * A page in a frame, which cannot read the app's theme. The app owns it: the page opens in the theme named in its
+ * address, and each later change is posted to it, so a guide made from the template flips without a reload and keeps
+ * its step. A page that has loaded gets the theme once more, in case it changed while the page loaded.
+ */
+function HtmlFrame({ url, title }: { url: string; title: string }) {
+  const frame = useRef<HTMLIFrameElement>(null)
+  const [opened] = useState(() => useTheme.getState().theme)
+  useEffect(() => useTheme.subscribe(({ theme }) => postTheme(frame.current, theme)), [])
+  return (
+    <iframe
+      ref={frame}
+      title={title}
+      src={`${url}${url.includes('?') ? '&' : '?'}theme=${opened}`}
+      onLoad={(event) => postTheme(event.currentTarget, useTheme.getState().theme)}
+      sandbox="allow-scripts allow-same-origin allow-modals"
+      data-testid="html-preview"
+    />
+  )
+}
+
 /** A project file as the panel and a pop out show it, loaded from its project, so its relative links work. */
 export function FileBody({ project, rel, version }: { project: string; rel: string; version?: number }) {
   const url = fileUrl(project, rel, version)
   switch (fileKind(rel)) {
     case 'html':
-      return <iframe key={url} title={rel} src={url} sandbox="allow-scripts allow-same-origin allow-modals" data-testid="html-preview" />
+      // A new version is a new frame, which opens in the theme of that moment.
+      return <HtmlFrame key={url} url={url} title={rel} />
     case 'model':
       return <ModelView url={url} ext={rel.split('.').pop()!.toLowerCase()} />
     case 'image':

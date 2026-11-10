@@ -1,0 +1,329 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Assembly guide</title>
+<script>
+{
+  // The app owns the theme. It names it in this page's address (?theme=dark) and posts {type: 'm3d:theme', theme} on a change.
+  const follow = theme => { if (theme === 'light' || theme === 'dark') document.documentElement.dataset.theme = theme; };
+  follow(new URLSearchParams(location.search).get('theme'));
+  addEventListener('message', event => { if (event.source === parent && event.data?.type === 'm3d:theme') follow(event.data.theme); });
+}
+</script>
+<style>
+@font-face{font-family:Inter;font-style:normal;font-weight:100 900;font-display:block;src:url("data:font/woff2;base64,/*__INTER__*/") format("woff2")}
+:root{color-scheme:light;--bg:#FFFFFF;--fg:#1B1B1B;--dim:#6B6B6B;--line:#E6E4DF;--accent:#C2410C;--panel:#FFFFFF;--chip:#FFFFFF;--soft:#F5F4F1;--ok:#2F7D4F;
+  --btn:#1B1B1B;--btnfg:#FFFFFF;
+  --part:#c3c8ce;--newpart:#F2A266;--newhw:#C2410C;--edge:#3d4248;--owned:#4b5057;--steel:#6b7178;--brass:#c29a2e}
+:root[data-theme="dark"]{color-scheme:dark;--bg:#000;--fg:#FFFFFF;--dim:#A3A3A3;--line:#262626;--accent:#FF7A1A;--panel:#000;--chip:#000;--soft:#0D0D0D;--ok:#4ADE80;
+  --btn:#FFFFFF;--btnfg:#000;
+  --part:#7c838b;--newpart:#9c4512;--newhw:#ff8a3d;--edge:#e6e8eb;--owned:#5a616a;--steel:#b9bec4;--brass:#d9b04a}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);font:14px/1.6 Inter,-apple-system,BlinkMacSystemFont,sans-serif}
+header{display:flex;align-items:center;gap:12px;padding:12px 16px;border-bottom:1px solid var(--line)}
+/* The header stays one line, so main's 100% - 50px holds for any title. */
+header h1,header .rev{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+header h1{font-size:15px;margin:0;font-weight:600}
+header .rev{color:var(--dim);font-size:13px}
+button{font:inherit;font-weight:500;color:var(--fg);background:var(--chip);border:1px solid var(--line);border-radius:8px;padding:7px 14px;cursor:pointer}
+button.primary{background:var(--btn);border-color:var(--btn);color:var(--btnfg)}
+button:disabled{opacity:.4;cursor:default}
+main{display:grid;grid-template-columns:minmax(0,1fr) 420px;height:calc(100% - 50px)}
+#view{position:relative;min-height:0;overflow:hidden;background:var(--soft)}
+#view canvas{display:block;width:100%;height:100%;touch-action:none}
+#labels{position:absolute;inset:0;pointer-events:none}
+.lab{position:absolute;transform:translate(-50%,-120%);font-size:12px;font-weight:500;padding:2px 8px;border-radius:6px;background:var(--fg);color:var(--bg);white-space:nowrap}
+#viewbar{position:absolute;left:12px;bottom:12px;display:flex;gap:6px}
+#viewbar button{font-size:13px;padding:5px 10px}
+#hint{position:absolute;right:12px;bottom:14px;font-size:12px;color:var(--dim)}
+aside{border-left:1px solid var(--line);display:flex;flex-direction:column;min-height:0;background:var(--panel)}
+#panel{overflow:auto;padding:18px 20px 8px;flex:1}
+#panel:focus{outline:none}
+#count{font-size:13px;color:var(--accent);font-weight:500;margin:0 0 4px}
+#panel h2{font-size:20px;line-height:1.35;font-weight:600;margin:0 0 10px}
+#panel p{margin:0 0 12px}
+.tbl{overflow-x:auto;margin:4px 0 12px}
+table{border-collapse:collapse;width:100%;font-size:13px}
+td{border-top:1px solid var(--line);padding:8px 8px 8px 0;vertical-align:top}
+td:nth-child(2){font-weight:600;white-space:nowrap;padding-right:10px}
+h3{font-size:12px;text-transform:uppercase;letter-spacing:.04em;font-weight:500;color:var(--dim);margin:16px 0 6px}
+.chk{display:flex;gap:10px;align-items:flex-start;padding:8px 0;border-top:1px solid var(--line);cursor:pointer}
+.chk input{width:18px;height:18px;margin:2px 0 0;flex:none;accent-color:var(--fg)}
+.chk.done span{color:var(--dim);text-decoration:line-through}
+nav{display:flex;align-items:center;gap:8px;padding:12px 16px;border-top:1px solid var(--line)}
+#dots{flex:1;display:flex;gap:4px;flex-wrap:wrap;justify-content:center}
+#dots button{width:24px;height:24px;padding:0;font-size:11px;border-radius:50%;color:var(--dim)}
+#dots button.on{background:var(--fg);border-color:var(--fg);color:var(--bg)}
+#dots button.ok{border-color:var(--ok);color:var(--ok)}
+@media (max-width:860px){
+  main{display:block;height:auto}
+  #view{height:46vh;min-height:300px}
+  aside{border-left:0;border-top:1px solid var(--line)}
+  #panel{overflow:visible}
+  nav{position:sticky;bottom:0;background:var(--panel)}
+  #hint{display:none}
+  header .rev{display:none}
+}
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title"></h1><span class="rev" id="note"></span>
+</header>
+<main>
+  <div id="view">
+    <div id="labels"></div>
+    <div id="viewbar"><button id="replay" type="button">Replay</button><button id="reset" type="button">Reset view</button></div>
+    <div id="hint">Drag to turn. Pinch or scroll to zoom.</div>
+  </div>
+  <aside>
+    <div id="panel" aria-live="polite"></div>
+    <nav>
+      <button id="prev" type="button">Back</button>
+      <div id="dots"></div>
+      <button id="next" type="button" class="primary">Next</button>
+    </nav>
+  </aside>
+</main>
+<script>/*__THREE__*/</script>
+<script>
+const D = /*__DATA__*/null;
+const {Scene,PerspectiveCamera,WebGLRenderer,Group,Mesh,MeshStandardMaterial,BufferGeometry,BufferAttribute,CylinderGeometry,
+  HemisphereLight,DirectionalLight,Color,Vector3,EdgesGeometry,LineSegments,LineBasicMaterial,OrbitControls} = window.T;
+
+// Where the browser blocks storage, the ticks last only while the page is open.
+const store = {
+  get(k){ try { return JSON.parse(localStorage.getItem(k)); } catch { return null; } },
+  set(k,v){ try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+};
+const KEY = 'm3d-guide-checks:' + location.pathname;
+const checks = store.get(KEY) || {};
+// A tick belongs to its step and check by place and words, so a rebuilt guide keeps a tick only where both stayed.
+const tickKey = (i, j) => JSON.stringify([i, D.steps[i].title, j, D.steps[i].checks[j]]);
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+
+document.title = D.title;
+document.getElementById('title').textContent = D.title;
+document.getElementById('note').textContent = D.note || '';
+
+// Scene. Design coordinates: X right, Y away from the viewer, Z up. root turns them to three.js Y-up.
+const view = document.getElementById('view');
+const renderer = new WebGLRenderer({antialias:true});
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+view.prepend(renderer.domElement);
+const scene = new Scene();
+const camera = new PerspectiveCamera(35, 1, 5, 5000);
+const controls = new OrbitControls(camera, renderer.domElement);
+const root = new Group(); root.rotation.x = -Math.PI/2; scene.add(root);
+scene.add(new HemisphereLight(0xffffff, 0x8a8f96, 1.7));
+const sun = new DirectionalLight(0xffffff, 1.6); sun.position.set(300, 600, -400); scene.add(sun);
+const fill = new DirectionalLight(0xffffff, 0.6); fill.position.set(-400, 200, -200); scene.add(fill);
+
+// The materials stay the same objects. A theme change only repaints their colors.
+const std = (o={}) => new MeshStandardMaterial({roughness:.75, metalness:0, ...o});
+const mats = {
+  part: std(), newPart: std(), newHw: std(), owned: std({roughness:.5}),
+  ghost: std({transparent:true, opacity:.14, depthWrite:false}),
+  steel: std({metalness:.55, roughness:.4}), brass: std({metalness:.6, roughness:.35}),
+  edge: new LineBasicMaterial({transparent:true, opacity:.55}),
+};
+const COLORS = {part:'--part', newPart:'--newpart', newHw:'--newhw', owned:'--owned', ghost:'--part', steel:'--steel', brass:'--brass', edge:'--edge'};
+function paint(){
+  for (const [k, v] of Object.entries(COLORS)) mats[k].color.set(css(v));
+  scene.background = new Color(css('--bg'));
+}
+paint();
+
+const b64 = (s, T) => { const b = Uint8Array.from(atob(s), ch => ch.charCodeAt(0)); return new T(b.buffer); };
+const things = {};  // id -> {kind, items:[{node, off, meshes}]}
+for (const [id, o] of Object.entries(D.objects)) {
+  const g = new BufferGeometry();
+  g.setAttribute('position', new BufferAttribute(b64(o.mesh.pos, Float32Array), 3));
+  g.setIndex(new BufferAttribute(b64(o.mesh.idx, Uint32Array), 1));
+  const flat = g.toNonIndexed(); flat.computeVertexNormals();
+  const node = new Group();
+  const m = new Mesh(flat, mats.part); node.add(m);
+  const edges = new LineSegments(new EdgesGeometry(g, 25), mats.edge); node.add(edges);
+  root.add(node);
+  things[id] = {kind: o.kind || 'part', items:[{node, off:o.off, xoff:o.xoff, meshes:[m], edges}], anchor:o.anchor, label:o.label};
+}
+const AX = {y:[0,0,0], x:[0,0,-Math.PI/2], z:[Math.PI/2,0,0]};
+for (const [id, list] of Object.entries(D.hardware || {})) {
+  const items = list.map(it => {
+    const node = new Group(); const meshes = [];
+    for (const [axis, a0, a1, c1, c2, d] of it.cyls) {
+      const m = new Mesh(new CylinderGeometry(d/2, d/2, Math.abs(a1-a0), 28), mats.steel);
+      const mid = (a0+a1)/2;
+      m.position.set(...(axis === 'x' ? [mid,c1,c2] : axis === 'y' ? [c1,mid,c2] : [c1,c2,mid]));
+      m.rotation.set(...AX[axis]);
+      node.add(m); meshes.push(m);
+    }
+    root.add(node);
+    return {node, off:it.off, meshes};
+  });
+  things[id] = {kind: list[0].kind, items};
+}
+
+// Labels.
+const labelsEl = document.getElementById('labels');
+const labelDefs = {};
+for (const [id, t] of Object.entries(things)) if (t.anchor) labelDefs[id] = {anchor:t.anchor, label:t.label, thing:t};
+for (const [id, l] of Object.entries(D.labels || {})) labelDefs[id] = {anchor:l.anchor, label:l.label};
+let activeLabels = [];
+const v3 = new Vector3();
+function placeLabels(){
+  const w = view.clientWidth, h = view.clientHeight;
+  for (const {el, def} of activeLabels) {
+    const n = def.thing ? def.thing.items[0].node.position : {x:0,y:0,z:0};
+    v3.set(def.anchor[0]+n.x, def.anchor[1]+n.y, def.anchor[2]+n.z);
+    root.localToWorld(v3); v3.project(camera);
+    el.style.display = v3.z > 1 ? 'none' : '';
+    el.style.left = ((v3.x+1)/2*w) + 'px'; el.style.top = ((1-v3.y)/2*h) + 'px';
+  }
+}
+
+function render(){ renderer.render(scene, camera); placeLabels(); }
+controls.addEventListener('change', render);
+// A frame not laid out yet has no size. It is skipped, as an aspect of 0 sends the camera to infinity, and the first
+// real size frames the step again, as it was framed for a square view.
+let framed = false;
+function resize(){
+  const w = view.clientWidth, h = view.clientHeight;
+  if (!w || !h) return;
+  renderer.setSize(w, h, false); camera.aspect = w/h; camera.updateProjectionMatrix();
+  if (!framed) { framed = true; flyCamera(D.steps[cur].cam, true); }
+  render();
+}
+new ResizeObserver(resize).observe(view);
+
+// Tweens run only while something moves. No idle redraws.
+let tweens = [], raf = 0;
+const ease = t => 1 - Math.pow(1-t, 3);
+function tick(now){
+  tweens = tweens.filter(tw => {
+    const t = Math.min(1, Math.max(0, (now - tw.start)/tw.dur));
+    tw.apply(ease(t)); return t < 1;
+  });
+  render();
+  raf = tweens.length ? requestAnimationFrame(tick) : 0;
+}
+function run(){ if (!raf) raf = requestAnimationFrame(tick); }
+
+const toWorld = p => new Vector3(p[0], p[2], -p[1]);
+function camGoal(cam){
+  const target = toWorld(cam.target), pos = toWorld(cam.pos);
+  const k = Math.max(1, 1.15 / camera.aspect);
+  return {target, pos: target.clone().add(pos.sub(target).multiplyScalar(k))};
+}
+function flyCamera(cam, instant){
+  const g = camGoal(cam);
+  if (instant) { camera.position.copy(g.pos); controls.target.copy(g.target); controls.update(); return; }
+  const p0 = camera.position.clone(), t0 = controls.target.clone(), now = performance.now();
+  tweens.push({start:now, dur:700, apply:t => {
+    camera.position.lerpVectors(p0, g.pos, t); controls.target.lerpVectors(t0, g.target, t); controls.update();
+  }});
+  run();
+}
+
+let cur = 0;
+function setStep(i, {instant=false}={}){
+  cur = Math.max(0, Math.min(D.steps.length-1, i));
+  const s = D.steps[cur];
+  const show = new Set(s.show), fresh = new Set(s.new || []), ghost = new Set(s.ghost || []);
+  tweens = tweens.filter(tw => !tw.part);
+  const now = performance.now();
+  let order = 0;
+  for (const [id, t] of Object.entries(things)) {
+    const vis = show.has(id);
+    t.items.forEach(it => {
+      it.node.visible = vis;
+      if (!vis) return;
+      const hw = t.kind === 'screw' || t.kind === 'insert';
+      const mat = ghost.has(id) ? mats.ghost : t.kind === 'owned' ? mats.owned
+        : fresh.has(id) ? (hw ? mats.newHw : mats.newPart) : t.kind === 'screw' ? mats.steel : t.kind === 'insert' ? mats.brass : mats.part;
+      for (const m of it.meshes) m.material = mat;
+      if (it.edges) { it.edges.material = mats.edge; it.edges.visible = !ghost.has(id); }
+      if (s.explode) { it.node.position.set(...(it.xoff || it.off)); return; }
+      if (!fresh.has(id) || instant) { it.node.position.set(0,0,0); return; }
+      const o = it.off;
+      it.node.position.set(...o);
+      const start = now + 250 + (order++) * (hw ? 70 : 220);
+      tweens.push({part:true, start, dur:900, apply:e => it.node.position.set(o[0]*(1-e), o[1]*(1-e), o[2]*(1-e))});
+    });
+  }
+  labelsEl.textContent = '';
+  activeLabels = (s.labels || []).map(id => {
+    const el = document.createElement('div'); el.className = 'lab'; el.textContent = labelDefs[id].label;
+    labelsEl.appendChild(el); return {el, def:labelDefs[id]};
+  });
+  flyCamera(s.cam, instant);
+  renderPanel();
+  if (location.hash !== '#step-' + (cur+1)) history.replaceState(null, '', '#step-' + (cur+1));
+  run();
+}
+
+// Panel.
+const panel = document.getElementById('panel');
+const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+function stepDone(i){ const c = D.steps[i].checks || []; return c.length > 0 && c.every((_, j) => checks[tickKey(i, j)]); }
+function renderPanel(){
+  const s = D.steps[cur];
+  panel.textContent = '';
+  panel.append(el('p', null, `Step ${cur+1} of ${D.steps.length}`)); panel.lastChild.id = 'count';
+  panel.append(el('h2', null, s.title));
+  for (const t of s.body) panel.append(el('p', null, t));
+  if (s.table) {
+    const wrap = el('div', 'tbl'), tb = el('table');
+    for (const row of s.table) { const tr = el('tr'); for (const c of row) tr.append(el('td', null, c)); tb.append(tr); }
+    wrap.append(tb); panel.append(wrap);
+  }
+  if (s.checks) {
+    panel.append(el('h3', null, cur === 0 ? 'Have ready' : 'Check before you go on'));
+    s.checks.forEach((c, j) => {
+      const k = tickKey(cur, j);
+      const row = el('label', 'chk' + (checks[k] ? ' done' : ''));
+      const box = el('input'); box.type = 'checkbox'; box.checked = !!checks[k];
+      box.addEventListener('change', () => { checks[k] = box.checked; store.set(KEY, checks); row.classList.toggle('done', box.checked); renderDots(); });
+      row.append(box, el('span', null, c)); panel.append(row);
+    });
+  }
+  panel.scrollTop = 0;
+  document.getElementById('prev').disabled = cur === 0;
+  document.getElementById('next').disabled = cur === D.steps.length-1;
+  renderDots();
+}
+const dots = document.getElementById('dots');
+function renderDots(){
+  dots.textContent = '';
+  D.steps.forEach((s, i) => {
+    const b = el('button', (i === cur ? 'on' : '') + (stepDone(i) ? ' ok' : ''), String(i+1));
+    b.type = 'button'; b.title = s.title; b.setAttribute('aria-label', `Step ${i+1}: ${s.title}`);
+    b.addEventListener('click', () => setStep(i)); dots.append(b);
+  });
+}
+
+document.getElementById('prev').addEventListener('click', () => setStep(cur-1));
+document.getElementById('next').addEventListener('click', () => setStep(cur+1));
+document.getElementById('replay').addEventListener('click', () => setStep(cur));
+document.getElementById('reset').addEventListener('click', () => flyCamera(D.steps[cur].cam));
+// The arrow keys step the guide from anywhere, a check box too, but not from a field that uses them. A step rebuilds
+// the panel, so focus that was in it moves to the panel instead of falling back to the top of the page.
+panel.tabIndex = -1;
+document.addEventListener('keydown', e => {
+  if (e.target.closest('textarea,select,[contenteditable],input:not([type=checkbox])')) return;
+  const by = {ArrowRight: 1, ArrowLeft: -1}[e.key];
+  if (!by || !D.steps[cur+by]) return;
+  const inPanel = panel.contains(e.target);
+  setStep(cur+by);
+  if (inPanel) panel.focus({preventScroll: true});
+});
+// The theme script at the top sets data-theme. The scene repaints in place, so the step, the view, and the scroll stay.
+new MutationObserver(() => { paint(); render(); }).observe(document.documentElement, {attributeFilter:['data-theme']});
+resize();
+const fromHash = parseInt((location.hash.match(/step-(\d+)/) || [])[1], 10);
+setStep(Number.isFinite(fromHash) ? fromHash-1 : 0, {instant:true});
+</script>
+</body>
+</html>
