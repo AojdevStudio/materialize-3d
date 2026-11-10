@@ -17,8 +17,8 @@ export function popOutFile(search: string): Shown | null {
 }
 
 /**
- * A pop out window: one project file, filling the window. It lists the project itself, whatever the main window shows,
- * and reloads the file when it changes. One check runs at a time, so an older answer never replaces a newer one.
+ * A pop out window: one project file, filling the window. It checks its file itself, whatever the main window shows,
+ * and reloads it when it changes. One check runs at a time, so an older answer never replaces a newer one.
  */
 export default function PopOut({ project, rel, version: opened }: Shown) {
   const [version, setVersion] = useState(opened)
@@ -28,16 +28,16 @@ export default function PopOut({ project, rel, version: opened }: Shown) {
     let timer = 0
     const check = async () => {
       try {
-        const file = (await studio.files(project)).find((f) => f.rel === rel)
+        const now = await studio.fileVersion(project, rel)
         if (!live) return
         setError(null)
-        if (file) setVersion(file.modifiedMs)
+        setVersion(now)
       } catch (err) {
-        if (live) setError(`This window cannot check ${rel} for changes. ${String(err)}`)
+        if (live) setError(`This window cannot read ${rel}. ${String(err)}`)
       }
       if (live) timer = window.setTimeout(check, CHECK_MS)
     }
-    timer = window.setTimeout(check, CHECK_MS)
+    void check()
     return () => {
       live = false
       window.clearTimeout(timer)

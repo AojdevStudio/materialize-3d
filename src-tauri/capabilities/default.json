@@ -18,6 +18,7 @@
     "allow-studio-reveal",
     "allow-studio-open-in-bambu",
     "allow-studio-pop-out",
+    "allow-studio-file-version",
     "allow-studio-flush-started",
     "allow-studio-flush-failed",
     "allow-studio-flushed",

@@ -1,11 +1,11 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "pop-out",
-  "description": "A pop out window lists its project's files, so it shows its file's newest version",
+  "description": "A pop out window reads when its file last changed, so it shows the file's newest version",
   "webviews": [
     "pop-out-*"
   ],
   "permissions": [
-    "allow-studio-files"
+    "allow-studio-file-version"
   ]
 }

@@ -351,6 +351,12 @@
           "markdownDescription": "Enables the sidecar command without any pre-configured scope."
         },
         {
+          "description": "Enables the studio_file_version command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-studio-file-version",
+          "markdownDescription": "Enables the studio_file_version command without any pre-configured scope."
+        },
+        {
           "description": "Enables the studio_files command without any pre-configured scope.",
           "type": "string",
           "const": "allow-studio-files",
@@ -427,6 +433,12 @@
           "type": "string",
           "const": "deny-sidecar",
           "markdownDescription": "Denies the sidecar command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the studio_file_version command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-studio-file-version",
+          "markdownDescription": "Denies the studio_file_version command without any pre-configured scope."
         },
         {
           "description": "Denies the studio_files command without any pre-configured scope.",

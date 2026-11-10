@@ -40,8 +40,8 @@ export const studio = {
   reveal: (project: string, rel: string) => invoke<void>('studio_reveal', { project, rel }),
   openInBambu: (project: string, rel: string) => invoke<void>('studio_open_in_bambu', { project, rel }),
   popOut: (project: string, rel: string, version: number) => invoke<void>('studio_pop_out', { project, rel, version }),
+  fileVersion: (project: string, rel: string) => invoke<number>('studio_file_version', { project, rel }),
 }
-
 
 /**
  * A project file as served by the app's `m3dfile://` protocol. Each project is its own host, so a preview page

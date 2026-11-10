@@ -25,6 +25,11 @@ fn skipped(name: &str) -> bool {
     name.starts_with('.') || matches!(name, "__pycache__" | "node_modules" | "venv")
 }
 
+/// When a file last changed, in milliseconds since 1970: a file's version in the list and to a pop out.
+fn modified_ms(meta: &std::fs::Metadata) -> std::io::Result<u64> {
+    Ok(meta.modified()?.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64))
+}
+
 fn walk(root: &Path, dir: &Path, out: &mut Vec<ProjectFile>) -> std::io::Result<()> {
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
@@ -38,7 +43,7 @@ fn walk(root: &Path, dir: &Path, out: &mut Vec<ProjectFile>) -> std::io::Result<
             walk(root, &path, out)?;
         } else if kind.is_file() {
             let meta = entry.metadata()?;
-            let modified_ms = meta.modified()?.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
+            let modified_ms = modified_ms(&meta)?;
             let rel = path.strip_prefix(root).expect("walked under root").components().map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/");
             out.push(ProjectFile { rel, size: meta.len(), modified_ms });
         }
@@ -179,8 +184,8 @@ pub fn studio_open_in_bambu(project: String, rel: String) -> Result<(), String> 
 
 /// Opens a project file in a window of its own. The window loads the app's page, which shows the file from the
 /// `m3dfile://` protocol as the panel does, so its relative files still load. `version` is the file's time as the main
-/// window listed it. The page lists the project itself and reloads the file when it changes. The window keeps the main
-/// window's guard, so a page in it cannot go to the internet either.
+/// window listed it. The page asks `studio_file_version` and reloads the file when it changes. The window keeps the
+/// main window's guard, so a page in it cannot go to the internet either.
 #[tauri::command]
 pub async fn studio_pop_out(app: tauri::AppHandle, project: String, rel: String, version: u64) -> Result<(), String> {
     let path = resolve(&project, &rel)?;
@@ -196,6 +201,14 @@ pub async fn studio_pop_out(app: tauri::AppHandle, project: String, rel: String,
         .build()
         .map(drop)
         .map_err(|e| format!("opening a window for {rel}: {e}"))
+}
+
+/// One project file's version, so a pop out can follow its file without listing the project. A file that is gone is an
+/// error, which the pop out shows until the file comes back.
+#[tauri::command]
+pub async fn studio_file_version(project: String, rel: String) -> Result<u64, String> {
+    let path = resolve(&project, &rel)?;
+    std::fs::metadata(&path).and_then(|meta| modified_ms(&meta)).map_err(|e| format!("{rel}: {e}"))
 }
 
 fn content_type(path: &Path) -> &'static str {

@@ -37,6 +37,7 @@ pub fn run() {
             studio::files::studio_reveal,
             studio::files::studio_open_in_bambu,
             studio::files::studio_pop_out,
+            studio::files::studio_file_version,
             studio::quit::studio_flush_started,
             studio::quit::studio_flush_failed,
             studio::quit::studio_flushed,
