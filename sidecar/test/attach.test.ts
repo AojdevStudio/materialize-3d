@@ -93,6 +93,8 @@ describe('an attached file', () => {
     const { project, rev } = await app.sendDraft('new', 'Like this', [file(where, 'photo.heic')])
     const [answer] = await answers(app, project, 1)
     expect(answer).toBe(`pictures=0 | Like this\n\n(Files attached, saved in this folder as: refs/draft-${rev}/photo.heic)`)
+    // The chat shows it as the file the model got, not as a picture it never saw.
+    expect(await sentBy(app, project)).toMatchObject([{ images: [], files: [`refs/draft-${rev}/photo.heic`] }])
     await app.quit()
   }, 30_000)
 })

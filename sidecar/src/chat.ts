@@ -84,15 +84,22 @@ function picture(folder: string, rel: string): ImageContent | undefined {
  * A file that is not a picture, such as a PDF, 3MF, or STL, goes by its path only, for the agent to open itself. So does
  * a picture the model cannot read, such as a HEIC photo that could not be made a JPEG.
  */
-function userContent(folder: string, text: string, pictures: string[], files: string[]): string | (TextContent | ImageContent)[] {
-  const read = pictures.map((rel) => ({ rel, image: picture(folder, rel) }))
+function userContent(
+  folder: string,
+  text: string,
+  attachments: string[],
+): { content: string | (TextContent | ImageContent)[]; shown: string[]; named: string[] } {
+  const read = attachments.filter((rel) => PICTURE.test(rel)).map((rel) => ({ rel, image: picture(folder, rel) }))
   const shown = read.flatMap(({ rel, image }) => (image === undefined ? [] : [rel]))
-  const named = [...files, ...read.flatMap(({ rel, image }) => (image === undefined ? [rel] : []))]
+  const named = [
+    ...attachments.filter((rel) => !PICTURE.test(rel)),
+    ...read.flatMap(({ rel, image }) => (image === undefined ? [rel] : [])),
+  ]
   let note = ''
   if (shown.length > 0) note += `\n\n(Pictures attached, saved in this folder as: ${shown.join(', ')})`
   if (named.length > 0) note += `\n\n(Files attached, saved in this folder as: ${named.join(', ')})`
-  if (note === '') return text
-  return [{ type: 'text', text: `${text}${note}` }, ...read.flatMap(({ image }) => image ?? [])]
+  const content = note === '' ? text : [{ type: 'text' as const, text: `${text}${note}` }, ...read.flatMap(({ image }) => image ?? [])]
+  return { content, shown, named }
 }
 
 /**
@@ -284,9 +291,8 @@ export class Chats {
     if (draft?.rev !== rev) throw new Error(DRAFT_CHANGED)
     const folder = store.projectFolder(project.id)
     const attachments = await copyAttachments(folder, rev, draft.attachments)
-    const pictures = attachments.filter((rel) => PICTURE.test(rel))
-    const files = attachments.filter((rel) => !PICTURE.test(rel))
-    const content = userContent(folder, draft.text, pictures, files)
+    // The chat entry keeps the split the model got: a picture it could not read is shown as a file, by its path.
+    const { content, shown, named } = userContent(folder, draft.text, attachments)
     try {
       await busy.during(() => store.harness.commit(async (tx) => {
         if ((await tx.submissionByRequest(conversation.id, requestId)) !== undefined) return
@@ -300,7 +306,7 @@ export class Chats {
           content,
           requestId,
           whenBusy: 'reject',
-          entry: { kind: 'm3d.user', data: { text: draft.text, images: pictures, files } },
+          entry: { kind: 'm3d.user', data: { text: draft.text, images: shown, files: named } },
         })
         await configure(tx, conversation.id, { model, thinkingLevel: thinking, extensions: [extension], tools, instructions: WORKFLOW, cwd: folder })
         const turn: Turn = { requestId, model, thinking, tools: tools.map((t) => t.name), instructions: WORKFLOW_VERSION, app: version, startedMs: Date.now() }
