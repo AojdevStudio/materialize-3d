@@ -36,6 +36,7 @@ pub fn run() {
             studio::files::studio_save_bytes,
             studio::files::studio_reveal,
             studio::files::studio_open_in_bambu,
+            studio::files::studio_pop_out,
             studio::quit::studio_flush_started,
             studio::quit::studio_flush_failed,
             studio::quit::studio_flushed,
@@ -78,6 +79,13 @@ pub fn run() {
                     }
                 }) {
                     api.prevent_close();
+                }
+            }
+            // A pop out shows a file of the main window's project, so it closes with the main window, and the app quits as
+            // before.
+            tauri::RunEvent::WindowEvent { label, event: tauri::WindowEvent::Destroyed, .. } if label == "main" => {
+                for window in app.webview_windows().into_values() {
+                    let _ = window.destroy();
                 }
             }
             // The sidecar finishes its commits and exits before the app does.

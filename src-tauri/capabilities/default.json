@@ -17,6 +17,7 @@
     "allow-studio-save-bytes",
     "allow-studio-reveal",
     "allow-studio-open-in-bambu",
+    "allow-studio-pop-out",
     "allow-studio-flush-started",
     "allow-studio-flush-failed",
     "allow-studio-flushed",

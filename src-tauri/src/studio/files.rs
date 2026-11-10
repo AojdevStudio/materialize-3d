@@ -1,8 +1,9 @@
 //! The files in a project folder: the list, the pictures Ossie adds, the
-//! `m3dfile://` protocol the preview panel loads them through, and the two
-//! hand-offs to the operating system.
+//! `m3dfile://` protocol the preview panel loads them through, the two
+//! hand-offs to the operating system, and the pop out window.
 
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::UNIX_EPOCH;
 
 use serde::Serialize;
@@ -174,6 +175,26 @@ pub fn studio_open_in_bambu(project: String, rel: String) -> Result<(), String> 
     } else {
         spawn_detached("xdg-open", &[path.as_os_str()])
     }
+}
+
+/// Opens a project file in a window of its own. The window loads the app's page, which shows the file from the
+/// `m3dfile://` protocol as the panel does, so its relative files still load. It keeps the main window's guard, so a
+/// page in it cannot go to the internet either.
+#[tauri::command]
+pub async fn studio_pop_out(app: tauri::AppHandle, project: String, rel: String) -> Result<(), String> {
+    let path = resolve(&project, &rel)?;
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    let label = format!("pop-out-{}", NEXT.fetch_add(1, Ordering::Relaxed));
+    let query = |value: &str| percent_encoding::utf8_percent_encode(value, percent_encoding::NON_ALPHANUMERIC).to_string();
+    let page = format!("index.html?project={}&rel={}", query(&project), query(&rel));
+    let title = path.file_name().map_or_else(|| rel.clone(), |name| name.to_string_lossy().into_owned());
+    tauri::WebviewWindowBuilder::new(&app, label, tauri::WebviewUrl::App(page.into()))
+        .title(title)
+        .inner_size(1200.0, 820.0)
+        .on_navigation(super::may_navigate)
+        .build()
+        .map(drop)
+        .map_err(|e| format!("opening a window for {rel}: {e}"))
 }
 
 fn content_type(path: &Path) -> &'static str {

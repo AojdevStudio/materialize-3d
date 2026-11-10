@@ -2,11 +2,11 @@ import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { type AppState, type Draft, type LoginEvent, type ModelChoice, type ModelOption, type Need, type Project, type ProjectStatus, START, type ChatView as View } from '../../sidecar/src/protocol'
-import { autoOpens, onQuitFlush, onSidecarEvent, sidecar, studio, type ProjectFile } from './api'
+import { firstView, onQuitFlush, onSidecarEvent, panelFiles, sidecar, studio, viewOf, type PanelView, type ProjectFile } from './api'
 import { ChatView } from './Chat'
 import { Composer, releaseAttachment, savedAttachment, type PastedPicture } from './Composer'
 import ModelPicker from './ModelPicker'
-import RightPanel, { type Tab } from './RightPanel'
+import RightPanel from './RightPanel'
 import Start from './Start'
 import { buildChat } from './transcript'
 import Sidebar from './Sidebar'
@@ -65,17 +65,13 @@ function toBase64(bytes: Uint8Array): string {
   return btoa(binary)
 }
 
-function newestAutoOpen(files: ProjectFile[]): ProjectFile | undefined {
-  return files.filter((f) => autoOpens(f.rel)).sort((a, b) => b.modifiedMs - a.modifiedMs)[0]
-}
-
 export default function StudioApp() {
   const [projects, setProjects] = useState<Project[]>([])
   const [current, setCurrent] = useState<Project | null>(null)
   const [view, setView] = useState<View | null>(null)
   const [files, setFiles] = useState<ProjectFile[]>([])
   const [selected, setSelected] = useState<string | null>(null)
-  const [tab, setTab] = useState<Tab>('preview')
+  const [panelView, setPanelView] = useState<PanelView>('files')
   const [error, setError] = useState<string | null>(null)
   /** A failed send's error, kept with the project it was sent to and shown only there. */
   const [sendErrors, setSendErrors] = useState<Record<string, string>>({})
@@ -99,8 +95,11 @@ export default function StudioApp() {
   const currentId = useRef<string | null>(null)
   /** Bumped on every switch, so a slow load for a project already left is dropped. */
   const loadRequest = useRef(0)
-  /** The newest file time already shown, so only newer files take over the preview. */
-  const lastSeen = useRef(0)
+  /**
+   * The newest guide, model, or drawing time the panel has seen, so only a newer one takes the panel over. Null until
+   * the open project's files are first listed, which picks the view it opens on.
+   */
+  const lastSeen = useRef<number | null>(null)
   /**
    * Each screen the window changed or filled from the saved state, by project id, or `START` for the start screen.
    * Typing saves its screen once typing pauses, and at once when the person leaves it. A send saves first if the
@@ -413,11 +412,15 @@ export default function StudioApp() {
     const list = await studio.files(project)
     if (project !== currentId.current) return
     setFiles(list)
-    const newest = newestAutoOpen(list)
-    if (newest && newest.modifiedMs > lastSeen.current) {
-      lastSeen.current = newest.modifiedMs
-      setSelected(newest.rel)
-      setTab('preview')
+    const shown = panelFiles(list)
+    const latest = shown.latest?.modifiedMs ?? 0
+    if (lastSeen.current === null) {
+      lastSeen.current = latest
+      setPanelView(firstView(shown))
+    } else if (shown.latest && latest > lastSeen.current) {
+      lastSeen.current = latest
+      setSelected(null)
+      setPanelView(viewOf(shown.latest.rel))
     }
   }, [])
 
@@ -442,12 +445,12 @@ export default function StudioApp() {
     loaded.current = null
     failedLoad.current = null
     early.current = []
-    lastSeen.current = 0
+    lastSeen.current = null
     setCurrent(project)
     setView(null)
     setFiles([])
     setSelected(null)
-    setTab('preview')
+    setPanelView('files')
     setError(null)
     checkReady()
   }
@@ -532,6 +535,12 @@ export default function StudioApp() {
       setSending(false)
       autosave(key)
     }
+  }
+
+  /** Opens a file in the panel's view for it. Null goes back to the list of files. */
+  const openFile = (rel: string | null) => {
+    setSelected(rel)
+    if (rel !== null) setPanelView(viewOf(rel))
   }
 
   const shownError = error ?? (current ? sendErrors[current.id] : undefined)
@@ -641,10 +650,7 @@ export default function StudioApp() {
               items={items}
               running={running}
               startedMs={view?.turn?.startedMs}
-              onPreview={(rel) => {
-                setSelected(rel)
-                setTab('preview')
-              }}
+              onPreview={openFile}
               onError={setError}
             />
             {composer('Reply, paste a link, or attach a file', false)}
@@ -662,7 +668,7 @@ export default function StudioApp() {
       </main>
 
       {current && (
-        <RightPanel project={current.id} files={files} selected={selected} tab={tab} onTab={setTab} onSelect={setSelected} onError={setError} />
+        <RightPanel project={current.id} files={files} view={panelView} selected={selected} onView={setPanelView} onOpen={openFile} onError={setError} />
       )}
     </div>
   )
