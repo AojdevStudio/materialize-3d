@@ -1,8 +1,15 @@
 # Materialize 3D
 
-Materialize 3D is a Mac app where you describe a 3D-printable object in a chat, and an agent makes it. The agent writes the model, previews it, and slices it to a 3MF for a Bambu Lab P2S. You open the 3MF in Bambu Studio and print from there.
+Materialize 3D is a Mac app that makes 3D prints from a chat. You describe an object, and an agent writes the model, previews it, and slices it to a 3MF for a Bambu Lab P2S. You open the 3MF in Bambu Studio and print from there.
 
-**[Published Mac releases (Apple Silicon)](https://github.com/AojdevStudio/materialize-3d/releases/latest)** · [Install guide](docs/install-macos.md)
+**[Download for Mac (Apple Silicon)](https://github.com/AojdevStudio/materialize-3d/releases/latest)** · [Website](https://materialize-3d.pages.dev) · [Install guide](docs/install-macos.md) · [Docs](#docs) · [Issues](https://github.com/AojdevStudio/materialize-3d/issues)
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/studio-dark.png">
+  <img src="docs/images/studio-light.png" alt="The Materialize 3D studio window. A sidebar on the left lists projects. The chat in the middle explains how the agent made a two-part desk phone stand and lists the checks that passed. The right panel shows the Guide tab with a 3D view of the stand and step 2 of 3 of its assembly guide.">
+</picture>
+
+The picture and this README show the chat studio in version 0.3.0. That version is not released yet. The latest release is 0.2.2, the earlier sign app.
 
 ## How it works
 
@@ -17,12 +24,20 @@ A chat keeps its place. A turn that a quit or a crash cut off goes on from its l
 ## Requirements
 
 - A Mac with Apple Silicon and macOS 26.0 or later. Intel Macs, Windows, and Linux release builds are not offered.
-- A sign-in to one inference provider: Claude, ChatGPT, or OpenCode Go, by subscription or by API key. Your provider's plan or API charges apply. The app is free.
+- A sign-in to one inference provider: Claude, ChatGPT, or OpenCode Go. Claude takes a subscription sign-in or an API key. ChatGPT takes only its own sign-in. OpenCode Go takes only an API key. Your provider's plan or API charges apply. The app is free.
 - [uv](https://docs.astral.sh/uv/) and a Python it can run.
 - [Bambu Studio 02.08.02.61](https://github.com/bambulab/BambuStudio/releases/tag/v02.08.02.61), installed separately. The app never installs or bundles it.
 - To print, a Bambu Lab P2S with a 0.4 mm nozzle.
 
 See [docs/install-macos.md](docs/install-macos.md) for installation, Bambu Studio setup, and uninstalling.
+
+## Docs
+
+- [Install guide](docs/install-macos.md): install, update, set up Bambu Studio, and uninstall.
+- [Release notes](docs/releases): what each version changes.
+- [Release procedure](docs/releasing.md): how a Mac release is built, signed, and published.
+- [Installed GUI checklist](docs/verify-on-mac.md): the acceptance test for an installed release.
+- [CI runners](docs/ci-runners.md): the self-hosted runners that CI uses.
 
 ## Architecture
 
@@ -30,7 +45,7 @@ The app is a Tauri 2 window over a Bun sidecar. The sidecar runs the agent on Pi
 
 ## Build from source
 
-You need [Bun](https://bun.sh) 1.4, stable Rust, and on macOS the Xcode command line tools. On Linux, install the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/). Linux development builds also need a session D-Bus and an unlocked Secret Service, such as GNOME Keyring, to store sign-ins.
+You need [Bun](https://bun.sh) 1.4.4, stable Rust, and on macOS the Xcode command line tools. On Linux, install the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/). Linux development builds also need a session D-Bus and an unlocked Secret Service, such as GNOME Keyring, to store sign-ins.
 
 ```bash
 bun install
@@ -61,7 +76,7 @@ These are directions, not commitments or dates:
 
 ## Contributing
 
-Issues and pull requests are welcome. Open an issue before large changes. CI uses the configured self-hosted runners. Jobs that require trusted execution skip fork and Dependabot pull requests.
+[Issues](https://github.com/AojdevStudio/materialize-3d/issues) and pull requests are welcome. Open an issue before large changes. CI uses the configured [self-hosted runners](docs/ci-runners.md). Jobs that require trusted execution skip fork and Dependabot pull requests.
 
 ## License
 

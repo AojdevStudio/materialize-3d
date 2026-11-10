@@ -2,7 +2,7 @@
 
 Releases are built on an Apple Silicon Mac by `scripts/release/build-macos.sh`, outside GitHub Actions. Signing and notarization credentials never reach a pull request job.
 
-The 0.2.2 candidate adds the in-app updater and fixes bugs found after 0.2.1. The commands below describe the release procedure. They do not report a completed build or acceptance run.
+The 0.3.0 candidate replaces the 0.2.2 app with a chat studio. The commands below describe the release procedure. They do not report a completed build or acceptance run.
 
 ## What you need
 
@@ -21,12 +21,12 @@ Do not rotate or rewrite user credentials to satisfy these limits. If existing c
 
 ## Steps
 
-1. Set the same version in `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`. Update only the root `materialize-3d` package entry in `src-tauri/Cargo.lock`. Keep dependency versions unchanged. Prepare `docs/releases/v0.2.2.md` with source capabilities and publication requirements, then land the version change through a pull request. Keep the final source commit, DMG checksum, and measured acceptance results in the external release body and attached software acceptance record, not tracked source.
+1. Set the same version in `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`. Update only the root `materialize-3d` package entry in `src-tauri/Cargo.lock`. Keep dependency versions unchanged. Prepare `docs/releases/v0.3.0.md` with source capabilities and publication requirements, then land the version change through a pull request. Keep the final source commit, DMG checksum, and measured acceptance results in the external release body and attached software acceptance record, not tracked source.
 2. Tag the merged commit on `main` and push the tag:
 
    ```bash
    git switch main && git pull --ff-only
-   git tag v0.2.2 && git push origin v0.2.2
+   git tag v0.3.0 && git push origin v0.3.0
    ```
 
 3. In a clean checkout of the tag, have the authorized secret source inject the existing credentials into the shell environment. Set `RELEASE_KEYCHAIN` to the existing release keychain path. Do not type secret values into commands, enable shell tracing, or print the environment. With those values already supplied, export the variable names and run the script:
@@ -55,10 +55,10 @@ Do not rotate or rewrite user credentials to satisfy these limits. If existing c
 5. Complete the required software acceptance record below and prepare an external release body from the source notes. Put the exact tagged source commit and final DMG checksum in both. Do not edit tracked notes to insert their own source commit or DMG checksum. Keep shared release tags unchanged. If source or packaging changes, build and test a new candidate. Required software checks and release approval gate publication. After they pass, publish the DMG, its checksum, and the completed record. The filenames below require the completed files described here, not placeholders.
 
    ```bash
-   gh release create v0.2.2 --verify-tag --title "Materialize 3D 0.2.2" --notes-file dist-release/release-notes.md \
-     dist-release/Materialize-3D-0.2.2-macos-arm64.dmg dist-release/Materialize-3D-0.2.2-macos-arm64.dmg.sha256 \
-     dist-release/latest.json dist-release/Materialize-3D-0.2.2-macos-arm64.app.tar.gz \
-     dist-release/Materialize-3D-0.2.2-macos-arm64.app.tar.gz.sig \
+   gh release create v0.3.0 --verify-tag --title "Materialize 3D 0.3.0" --notes-file dist-release/release-notes.md \
+     dist-release/Materialize-3D-0.3.0-macos-arm64.dmg dist-release/Materialize-3D-0.3.0-macos-arm64.dmg.sha256 \
+     dist-release/latest.json dist-release/Materialize-3D-0.3.0-macos-arm64.app.tar.gz \
+     dist-release/Materialize-3D-0.3.0-macos-arm64.app.tar.gz.sig \
      dist-release/software-acceptance.md
    ```
 
@@ -72,11 +72,11 @@ Do not rotate or rewrite user credentials to satisfy these limits. If existing c
 
    ```bash
    mkdir -p dist-release/published && cd dist-release/published
-   gh release download v0.2.2 -R AojdevStudio/materialize-3d
-   shasum -a 256 Materialize-3D-0.2.2-macos-arm64.app.tar.gz
-   cat ../Materialize-3D-0.2.2-macos-arm64.app.tar.gz.sha256
+   gh release download v0.3.0 -R AojdevStudio/materialize-3d
+   shasum -a 256 Materialize-3D-0.3.0-macos-arm64.app.tar.gz
+   cat ../Materialize-3D-0.3.0-macos-arm64.app.tar.gz.sha256
    cmp latest.json ../latest.json
-   cmp Materialize-3D-0.2.2-macos-arm64.app.tar.gz.sig ../Materialize-3D-0.2.2-macos-arm64.app.tar.gz.sig
+   cmp Materialize-3D-0.3.0-macos-arm64.app.tar.gz.sig ../Materialize-3D-0.3.0-macos-arm64.app.tar.gz.sig
    curl -fsSL https://github.com/AojdevStudio/materialize-3d/releases/latest/download/latest.json | cmp - ../latest.json
    ```
 

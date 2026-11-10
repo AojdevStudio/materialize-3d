@@ -7,7 +7,7 @@ Use these steps with the DMG on the [Releases page](https://github.com/AojdevStu
 ## Requirements
 
 - **Mac:** Apple Silicon (M1 or later) with macOS 26.0 or later. Intel Macs are not supported.
-- **A sign-in to one inference provider:** Claude, ChatGPT, or OpenCode Go, by subscription or by API key. The agent uses it. Your provider's plan or API charges apply. Materialize 3D is free and adds no charge.
+- **A sign-in to one inference provider:** Claude, ChatGPT, or OpenCode Go. Claude takes a subscription sign-in or an API key. ChatGPT takes only its own sign-in. OpenCode Go takes only an API key. The agent uses it. Your provider's plan or API charges apply. Materialize 3D is free and adds no charge.
 - **uv and a Python it can run:** the agent runs its build and check scripts with [uv](https://docs.astral.sh/uv/). After you install uv, run `uv python install` in Terminal.
 - **Bambu Studio 02.08.02.61:** free from [Bambu Lab's release page](https://github.com/bambulab/BambuStudio/releases/tag/v02.08.02.61). Materialize 3D uses it to slice. The app does not install or bundle it.
 - **To print:** a Bambu Lab P2S with a 0.4 mm nozzle.
@@ -52,6 +52,8 @@ If you already use a different Bambu Studio version, keep it. Install 02.08.02.6
 4. Click **Open in Bambu Studio**, check the plate and the settings, and print from Bambu Studio. Materialize 3D does not send jobs to the printer.
 
 ## Uninstall
+
+If you used version 0.2.2 on this Mac, steps 2 and 4 also delete its data. Step 2 deletes `materialize.db` and the update backups. Step 4 deletes your 0.2.2 API keys and printer access codes. Copy anything you want to keep first. The [0.3.0 release notes](releases/v0.3.0.md#your-data) list where that data is.
 
 1. Quit the app and drag **Materialize 3D** from Applications to the Trash.
 2. To remove your chats, delete `~/Library/Application Support/com.aojdevstudio.materialize3d`.
