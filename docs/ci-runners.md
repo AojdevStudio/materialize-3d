@@ -7,11 +7,10 @@ Every job in this repository runs on a machine Ossie owns. No workflow selects a
 | `Linux build and checks` | `dev-substrate-materialize-3d` | `dev-substrate`, an x86_64 Ubuntu 24.04 VM (8 vCPUs) | `self-hosted`, `Linux`, `X64`, `m3d-linux-kvm` |
 | `macOS desktop build gate` | `mac-mini-m4-materialize-3d-cad` | the Mac mini (Apple M4, macOS 26) | `self-hosted`, `macOS`, `ARM64`, `m3d-mac-vz` |
 | `Landing site` | `mac-mini-m4-materialize-3d-cad` | the Mac mini | `self-hosted`, `macOS`, `ARM64`, `m3d-mac-vz` |
-| `Deploy the landing site` (`site-deploy.yml`, push to `main` only) | `mac-mini-m4-materialize-3d-cad` | the Mac mini | `self-hosted`, `macOS`, `ARM64`, `m3d-mac-vz` |
 | `TLA+ models match the code`, `PR body contract`, and Pullfrog | `dev-substrate-materialize-3d` | `dev-substrate` | `self-hosted`, `Linux`, `X64`, `m3d-linux-kvm` |
 | `Merge danger` | a homelab runner | homelab | `self-hosted`, `Linux`, `homelab-ci` |
 
-The site jobs run on the Mac mini because their tests launch the installed Google Chrome, which the Mac mini has and the Linux runner does not. The runner names and the `m3d-linux-kvm` and `m3d-mac-vz` labels date from the CAD runtime jobs, which are gone. They stay so that no runner has to be registered again.
+The `Landing site` job runs on the Mac mini because its tests launch the installed Google Chrome, which the Mac mini has and the Linux runner does not. The runner names and the `m3d-linux-kvm` and `m3d-mac-vz` labels date from the CAD runtime jobs, which are gone. They stay so that no runner has to be registered again.
 
 ## Keeping fork pull requests off these machines
 
