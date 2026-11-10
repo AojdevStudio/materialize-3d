@@ -46,41 +46,36 @@ function Since({ startedMs, before }: { startedMs: number | undefined; before: s
   return startedMs === undefined ? null : `${before}${clock(now - startedMs)}`
 }
 
+/** The ring and how long the turn has worked, as a running turn's head says it. */
+const Busy = ({ startedMs }: { startedMs: number | undefined }) => (
+  <>
+    <Ring />
+    <span>
+      Working<Since startedMs={startedMs} before=" for " />
+    </span>
+  </>
+)
+
 /** The line a running turn shows before its first step. */
 export function Working({ startedMs }: { startedMs: number | undefined }) {
   return (
     <p className="trace-head" data-testid="working">
-      <Ring />
-      <span>
-        Working<Since startedMs={startedMs} before=" for " />
-      </span>
+      <Busy startedMs={startedMs} />
     </p>
   )
 }
 
-type StepState = 'running' | 'done' | 'failed' | 'stopped'
-
-function stateOf(step: ToolItem): StepState {
-  if (step.result === undefined) return 'running'
-  if (step.stopped) return 'stopped'
-  return step.failed ? 'failed' : 'done'
-}
-
 /** A step's action in the past tense once it ended, and in the present while it runs or when it stopped part way. */
-function actionOf(step: ToolItem): string {
-  const state = stateOf(step)
-  return state === 'done' || state === 'failed' ? step.label : step.doing
-}
+const actionOf = (step: ToolItem) => (step.state === 'done' || step.state === 'failed' ? step.label : step.doing)
 
 /** Says a step that ended badly failed or stopped. Nothing for one that runs or is done. */
 function Flag({ step }: { step: ToolItem }) {
-  const state = stateOf(step)
-  return state === 'failed' || state === 'stopped' ? <span className={`step-flag flag-${state}`}>{state}</span> : null
+  return step.state === 'failed' || step.state === 'stopped' ? <span className={`step-flag flag-${step.state}`}>{step.state}</span> : null
 }
 
 function StepLine({ step }: { step: ToolItem }) {
   return (
-    <li className={`trace-step step-${stateOf(step)}`}>
+    <li className={`trace-step step-${step.state}`}>
       <details>
         <summary>
           <Icon svg={ICONS[step.action]} />
@@ -97,29 +92,29 @@ function StepLine({ step }: { step: ToolItem }) {
 
 /**
  * A turn's steps, open at first. Its head folds them to one summary line and opens them again. While the turn runs the
- * head shows how long it has worked, counted from `startedMs`.
+ * head shows how long it has worked, counted from `startedMs`. Once it ended, the head says only what the steps hold:
+ * it worked, or it stopped part way through a step. The entries cannot tell a finished turn from one that failed or
+ * waits, so the head never says done.
  */
 export default function Trace({ trace, startedMs, onError }: { trace: TraceItem; startedMs: number | undefined; onError: (message: string) => void }) {
   const [open, setOpen] = useState(true)
-  const running = trace.state === 'running'
+  const { running } = trace
   const steps = trace.lines.filter((line) => line.kind === 'tool')
   const count = `${steps.length} ${steps.length === 1 ? 'step' : 'steps'}`
+  const stopped = steps.some((step) => step.state === 'stopped')
   // Folded while it runs, a step that still runs stands for the rest, or else the latest. A trace starts with its first
   // step, so it always has one.
-  const shown = [...steps].reverse().find((step) => step.result === undefined) ?? steps[steps.length - 1]
+  const shown = [...steps].reverse().find((step) => step.state === 'running') ?? steps[steps.length - 1]
 
   const head = !running ? (
     <>
-      <Icon svg={trace.state === 'done' ? circleCheck : circleX} />
-      <span>{trace.state === 'done' ? 'Done' : 'Stopped'}</span>
+      <Icon svg={stopped ? circleX : circleCheck} />
+      <span>{stopped ? 'Stopped' : 'Worked'}</span>
       <span className="trace-count">{count}</span>
     </>
   ) : open ? (
     <>
-      <Ring />
-      <span>
-        Working<Since startedMs={startedMs} before=" for " />
-      </span>
+      <Busy startedMs={startedMs} />
       <span className="trace-count">{count}</span>
     </>
   ) : (

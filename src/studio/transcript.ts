@@ -4,10 +4,12 @@ import { autoOpens, is3mf } from './api'
 /** What a step does, which picks its icon. */
 export type Action = 'read' | 'write' | 'run' | 'slice' | 'helper' | 'other'
 
+/** Where a step stands. A `stopped` step's turn ended before the step did. */
+export type StepState = 'running' | 'done' | 'failed' | 'stopped'
+
 /**
- * One tool step. `label` says what it did once it finished, and `doing` says it in the present tense while it runs.
- * `summary` is the file or command it worked on. A step with no result yet still runs. `stopped` marks one whose turn
- * ended before it did.
+ * One tool step. `label` says what it did once it ended, and `doing` says it in the present tense while it runs.
+ * `summary` is the file or command it worked on. `result` is what it gave back, once it ended.
  */
 export type ToolItem = {
   kind: 'tool'
@@ -17,19 +19,18 @@ export type ToolItem = {
   doing: string
   summary: string
   detail: string
+  state: StepState
   result?: string
-  failed?: boolean
-  stopped?: boolean
 }
 
 /** What the agent said while it worked, kept in its place among the steps. */
 export type NoteItem = { kind: 'note'; text: string }
 
 /**
- * A turn's run of steps, from its first step on. It is `running` while its turn runs, `done` once an answer followed
- * it, and `stopped` when its turn ended or waits without one. The first step's id names it.
+ * A turn's run of steps, from its first step on. `running` is set on the open turn's trace while its turn runs. The
+ * first step's id names it.
  */
-export type TraceItem = { kind: 'trace'; id: string; lines: (ToolItem | NoteItem)[]; state: 'running' | 'done' | 'stopped' }
+export type TraceItem = { kind: 'trace'; id: string; lines: (ToolItem | NoteItem)[]; running: boolean }
 
 export type ChatItem =
   | { kind: 'user'; text: string; images: string[]; files: string[] }
@@ -43,7 +44,7 @@ export const STOPPED = 'It stopped before it finished.'
 const str = (value: unknown) => (typeof value === 'string' ? value : '')
 
 /** One line for a tool step: what it did, and the file or command it did it with. */
-function describe(name: string, args: Record<string, unknown>): Omit<ToolItem, 'kind' | 'id'> {
+function describe(name: string, args: Record<string, unknown>): Omit<ToolItem, 'kind' | 'id' | 'state'> {
   const path = str(args.path)
   switch (name) {
     case 'read':
@@ -97,14 +98,9 @@ export function buildChat(entries: ChatEntry[], running = true): ChatItem[] {
   let files: string[] = []
   /** The trace the next step joins. A message or an answer without steps closes it. */
   let trace: TraceItem | undefined
-  /** An answer ends the open trace's turn, so the trace is done. */
-  const answer = () => {
-    if (trace !== undefined) trace.state = 'done'
-    trace = undefined
-  }
   const step = (item: ToolItem) => {
     if (trace === undefined) {
-      trace = { kind: 'trace', id: item.id, lines: [], state: 'stopped' }
+      trace = { kind: 'trace', id: item.id, lines: [], running: false }
       items.push(trace)
     }
     trace.lines.push(item)
@@ -113,10 +109,9 @@ export function buildChat(entries: ChatEntry[], running = true): ChatItem[] {
   // leaves it. It cannot run again.
   const stopUnfinished = () => {
     for (const { item } of tools.values()) {
-      if (item.result !== undefined) continue
+      if (item.state !== 'running') continue
+      item.state = 'stopped'
       item.result = STOPPED
-      item.failed = true
-      item.stopped = true
     }
   }
   const endTurn = () => {
@@ -135,7 +130,7 @@ export function buildChat(entries: ChatEntry[], running = true): ChatItem[] {
       case 'assistant':
         if (entry.calls.length === 0) {
           if (entry.text.trim() !== '') items.push({ kind: 'text', text: entry.text })
-          answer()
+          trace = undefined
           break
         }
         if (entry.text.trim() !== '') {
@@ -144,7 +139,7 @@ export function buildChat(entries: ChatEntry[], running = true): ChatItem[] {
         }
         for (const call of entry.calls) {
           const args = (call.args ?? {}) as Record<string, unknown>
-          const item: ToolItem = { kind: 'tool', id: call.id, ...describe(call.name, args) }
+          const item: ToolItem = { kind: 'tool', id: call.id, ...describe(call.name, args), state: 'running' }
           tools.set(call.id, { item, writes: written(call.name, args) })
           step(item)
         }
@@ -152,8 +147,8 @@ export function buildChat(entries: ChatEntry[], running = true): ChatItem[] {
       case 'tool': {
         const call = tools.get(entry.callId)
         if (call === undefined) break
+        call.item.state = entry.failed ? 'failed' : 'done'
         call.item.result = entry.text
-        call.item.failed = entry.failed
         if (!entry.failed && call.writes !== undefined) files.push(call.writes)
         break
       }
@@ -164,10 +159,10 @@ export function buildChat(entries: ChatEntry[], running = true): ChatItem[] {
           items.push({ kind: 'user', text: entry.text, images: entry.images, files: [] })
         } else if (entry.role === 'assistant') {
           items.push({ kind: 'text', text: entry.text })
-          answer()
+          trace = undefined
         } else {
           const { action, label } = OLD_STEPS[entry.name] ?? { action: 'other', label: entry.name }
-          step({ kind: 'tool', id: `imported-${entry.id}`, action, label, doing: label, summary: entry.text, detail: entry.text, result: entry.result, failed: entry.failed })
+          step({ kind: 'tool', id: `imported-${entry.id}`, action, label, doing: label, summary: entry.text, detail: entry.text, state: entry.failed ? 'failed' : 'done', result: entry.result })
         }
         break
     }
@@ -175,7 +170,7 @@ export function buildChat(entries: ChatEntry[], running = true): ChatItem[] {
   // The last turn's trace runs while its turn does.
   const open: TraceItem | undefined = trace
   endTurn()
-  if (open !== undefined && running) open.state = 'running'
+  if (open !== undefined) open.running = running
   if (!running) stopUnfinished()
   return items
 }
