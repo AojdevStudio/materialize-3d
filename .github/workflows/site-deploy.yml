@@ -31,7 +31,10 @@ jobs:
       run:
         working-directory: site
     steps:
+      # No later step uses git, so the job's token stays out of the git config while dependency scripts run.
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       # A job-local bun, for the same reason as the macos job's setup-bun in ci.yml.
       - uses: oven-sh/setup-bun@v2
         env:
