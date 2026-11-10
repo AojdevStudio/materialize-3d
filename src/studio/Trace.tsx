@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react'
 import Markdown from './Markdown'
 import type { Action, ToolItem, TraceItem } from './transcript'
-import circleCheck from '../assets/icons/circle-check.svg?raw'
 import circleX from '../assets/icons/circle-x.svg?raw'
 import filePen from '../assets/icons/file-pen-line.svg?raw'
 import fileText from '../assets/icons/file-text.svg?raw'
@@ -19,6 +18,13 @@ const Ring = () => (
   <svg className="trace-icon trace-ring" viewBox="0 0 16 16" aria-hidden="true">
     <circle cx={8} cy={8} r={6} fill="none" stroke="currentColor" strokeOpacity={0.25} strokeWidth={2} />
     <path d="M8 2a6 6 0 0 1 6 6" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" />
+  </svg>
+)
+
+/** The mark of a trace that ended: a plain circle, as the sidebar marks a draft, since the entries cannot say it succeeded. */
+const Ended = () => (
+  <svg className="trace-icon" viewBox="0 0 16 16" aria-hidden="true">
+    <circle cx={8} cy={8} r={6} fill="none" stroke="currentColor" strokeWidth={1.5} />
   </svg>
 )
 
@@ -108,7 +114,7 @@ export default function Trace({ trace, startedMs, onError }: { trace: TraceItem;
 
   const head = !running ? (
     <>
-      <Icon svg={stopped ? circleX : circleCheck} />
+      {stopped ? <Icon svg={circleX} /> : <Ended />}
       <span>{stopped ? 'Stopped' : 'Worked'}</span>
       <span className="trace-count">{count}</span>
     </>

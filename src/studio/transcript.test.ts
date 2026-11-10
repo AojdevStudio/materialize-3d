@@ -79,6 +79,18 @@ describe('buildChat', () => {
     ])
   })
 
+  it('keeps finished steps done when their turn ends without an answer', () => {
+    const items = buildChat(
+      [
+        { id: 1, kind: 'user', text: 'A clip', images: [], files: [] },
+        { id: 2, kind: 'assistant', text: '', calls: [{ id: 'c1', name: 'write', args: { path: 'params.json' } }] },
+        { id: 3, kind: 'tool', callId: 'c1', name: 'write', text: 'ok', failed: false },
+      ],
+      false,
+    )
+    expect(items[1]).toMatchObject({ kind: 'trace', running: false, lines: [{ id: 'c1', state: 'done', result: 'ok' }] })
+  })
+
   it('shows a step left without a result as stopped once its turn no longer runs', () => {
     const entries = [
       { id: 1, kind: 'user' as const, text: 'Thicker', images: [], files: [] },

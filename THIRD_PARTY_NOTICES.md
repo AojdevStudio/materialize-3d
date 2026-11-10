@@ -35,7 +35,6 @@ The run trace icons in `src/assets/icons/` are by Lucide (https://lucide.dev), f
 | Terminal | `src/assets/icons/terminal.svg` |
 | Layers | `src/assets/icons/layers.svg` |
 | Message square | `src/assets/icons/message-square.svg` |
-| Circle check | `src/assets/icons/circle-check.svg` |
 | Circle x | `src/assets/icons/circle-x.svg` |
 
 ## Model marks
