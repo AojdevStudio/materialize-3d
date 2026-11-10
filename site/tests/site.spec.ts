@@ -247,24 +247,28 @@ const textOverlaps = (page: Page) =>
           range.selectNodeContents(node);
           rects.push(...range.getClientRects());
         }
+        // Fixed text that runs past the side of the screen can never be scrolled into view.
+        const width = document.documentElement.clientWidth;
+        const clipped = rects.some((r) => r.width > 1 && r.bottom > top && r.top < bottom && (r.left < -1 || r.right > width + 1));
         const boxes = rects
           .map((r) => ({ left: Math.max(r.left, 0), right: Math.min(r.right, innerWidth), top: Math.max(r.top, inHeader ? 0 : top), bottom: Math.min(r.bottom, bottom) }))
           .filter((b) => b.right - b.left > 1 && b.bottom - b.top > 1);
-        return { name: block.getAttribute("data-stage") ?? block.className.split(" ")[0] ?? "", boxes };
+        return { name: block.getAttribute("data-stage") ?? block.className.split(" ")[0] ?? "", boxes, clipped };
       });
-    return blocks.flatMap((a, i) =>
+    const offScreen = blocks.filter((b) => b.clipped).map((b) => `${b.name} runs past the screen edge`);
+    return offScreen.concat(blocks.flatMap((a, i) =>
       blocks
         .slice(i + 1)
         .filter((b) => a.boxes.some((p) => b.boxes.some((q) => p.left < q.right - 1 && q.left < p.right - 1 && p.top < q.bottom - 1 && q.top < p.bottom - 1)))
         .map((b) => `${a.name} covers ${b.name}`),
-    );
+    ));
   });
 
-test("no text covers other text on short, landscape, and tablet screens, in any stage or at the end", async ({ page }) => {
-  test.slow(); // three sizes, twelve stops each, and the 3D view may draw in software
+test("no text covers other text or runs off screen on short, landscape, and tablet screens, in any stage or at the end", async ({ page }) => {
+  test.slow(); // four sizes, twelve stops each, and the 3D view may draw in software
   await page.emulateMedia({ reducedMotion: "reduce" });
   const found: string[] = [];
-  for (const size of [{ width: 1440, height: 600 }, { width: 844, height: 390 }, { width: 768, height: 1024 }]) {
+  for (const size of [{ width: 1440, height: 600 }, { width: 844, height: 390 }, { width: 568, height: 320 }, { width: 768, height: 1024 }]) {
     await page.setViewportSize(size);
     await open(page);
     await storyReady(page);

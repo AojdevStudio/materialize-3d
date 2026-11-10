@@ -437,7 +437,12 @@
   .readout {
     display: none;
   }
+  /* A small phone on its side: a narrower copy column leaves params.json room inside the screen. */
+  .stage-copy:not([data-stage="hero"], [data-stage="request"]) {
+    width: min(360px, 45vw);
+  }
   .story-params {
+    left: calc(var(--pad) + min(360px, 45vw) + 16px);
     line-height: 1.5;
   }
 }
