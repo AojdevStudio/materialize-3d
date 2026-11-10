@@ -71,8 +71,11 @@ export default function StudioApp() {
   const [view, setView] = useState<View | null>(null)
   const [files, setFiles] = useState<ProjectFile[]>([])
   const [selected, setSelected] = useState<string | null>(null)
-  /** Guide until the open project's files are first listed, so the panel shows its neutral note meanwhile. */
-  const [panelView, setPanelView] = useState<PanelView>('guide')
+  /**
+   * The right panel's view. Null until the person picks one or the open project's files are first listed, and the panel
+   * shows Guide's neutral note meanwhile. A pick made first stays.
+   */
+  const [panelView, setPanelView] = useState<PanelView | null>(null)
   const [error, setError] = useState<string | null>(null)
   /** A failed send's error, kept with the project it was sent to and shown only there. */
   const [sendErrors, setSendErrors] = useState<Record<string, string>>({})
@@ -418,7 +421,7 @@ export default function StudioApp() {
     const latest = shown.latest?.modifiedMs ?? 0
     if (lastSeen.current === null) {
       lastSeen.current = latest
-      setPanelView(firstView(shown))
+      setPanelView((picked) => picked ?? firstView(shown))
     } else if (shown.latest && latest > lastSeen.current) {
       lastSeen.current = latest
       setSelected(null)
@@ -452,7 +455,7 @@ export default function StudioApp() {
     setView(null)
     setFiles([])
     setSelected(null)
-    setPanelView('guide')
+    setPanelView(null)
     setError(null)
     checkReady()
   }
@@ -670,7 +673,7 @@ export default function StudioApp() {
       </main>
 
       {current && (
-        <RightPanel project={current.id} files={files} view={panelView} selected={selected} onView={setPanelView} onOpen={openFile} onError={setError} />
+        <RightPanel project={current.id} files={files} view={panelView ?? 'guide'} selected={selected} onView={setPanelView} onOpen={openFile} onError={setError} />
       )}
     </div>
   )

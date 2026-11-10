@@ -268,6 +268,21 @@ describe('StudioApp', () => {
     await waitFor(() => expect(screen.getByRole('tab', { name: label }).getAttribute('aria-selected')).toBe('true'))
   })
 
+  it('keeps a view the person picks before the files are first listed', async () => {
+    mockSidecar({}, [projectB], {}, { [projectB.id]: [{ rel: 'guide.html', size: 10, modifiedMs: 1 }] })
+    const real = invokeMock.getMockImplementation()!
+    let list = () => {}
+    invokeMock.mockImplementation((command: string, args: { project?: string }) =>
+      command === 'studio_files' ? new Promise((resolve) => (list = () => resolve(real(command, args)))) : real(command, args),
+    )
+    render(<StudioApp />)
+    fireEvent.click(await projectList().findByText('Project B'))
+    fireEvent.click(await screen.findByTestId('files-tab'))
+    await act(async () => list())
+    expect(screen.getByTestId('files-list').textContent).toContain('guide.html')
+    expect(screen.getByTestId('files-tab').getAttribute('aria-selected')).toBe('true')
+  })
+
   it('switches to a newer guide, model, or drawing the agent writes, but not to a new print file', async () => {
     const listed = { [projectB.id]: [{ rel: 'guide.html', size: 10, modifiedMs: 1 }] }
     const write = (rel: string, modifiedMs: number) => (listed[projectB.id] = [...listed[projectB.id], { rel, size: 10, modifiedMs }])
