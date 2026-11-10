@@ -44,7 +44,7 @@ The sidebar icons in the hero (`src/assets/landing/line-*.svg`) are the app's ou
 magick docs/images/studio-light.png -resize 1152x582 -background '#CFD0CF' -gravity center -extent 1200x630 -strip site/public/og-image.png
 ```
 
-The tags and files go live at the next manual deploy.
+The tags and files go live with the next production deployment.
 
 ## Tests
 
@@ -65,23 +65,16 @@ The layout tests also save full-page screenshots to `test-results/screens/`, whi
 
 ## Deploy
 
-The site is the Cloudflare Pages project `materialize-3d`, served at https://materialize-3d.pages.dev. It deploys on its own when a merge to `main` touches `site/`. The workflow is `.github/workflows/site-deploy.yml`, and its job is `Deploy the landing site`. It runs on the Mac mini runner.
+The site is the Cloudflare Pages project `materialize-3d`, served at https://materialize-3d.pages.dev. Cloudflare's Git connection builds and deploys it: every push to `main` deploys production, and every other branch gets a preview deployment. GitHub holds no Cloudflare credential.
 
-The job runs these steps in order:
+The project's build settings in the Cloudflare dashboard:
 
-1. It checks that the two repository secrets are set, and fails at once with an error that names a missing one.
-2. It runs the site tests (`bunx playwright test`). A build that fails them never deploys.
-3. It builds `dist/` again with `SITE_BASE` unset, because Pages serves the site from `/`.
-4. It deploys `dist/` to production with `bunx wrangler pages deploy`.
+| Setting | Value |
+|---|---|
+| Production branch | `main` |
+| Root directory | `site` |
+| Build command | `bun install --frozen-lockfile && bun run build` |
+| Build output directory | `dist` |
+| Environment variable | `BUN_VERSION` = `1.4.4`, the version CI pins |
 
-The job reads two repository secrets, set in Settings > Secrets and variables > Actions:
-
-- `CLOUDFLARE_API_TOKEN`
-- `CLOUDFLARE_ACCOUNT_ID`
-
-A running deploy always finishes. When more merges land while one runs, only the newest waits. It deploys a `main` that holds all of them. To deploy by hand as a fallback, for example when the runner is down, run this from `main`:
-
-```sh
-cd site && bun install --frozen-lockfile && bun run build
-CLOUDFLARE_ACCOUNT_ID=... CLOUDFLARE_API_TOKEN=... bunx wrangler@4.153.0 pages deploy dist --project-name materialize-3d --branch main
-```
+Leave `SITE_BASE` unset, because Pages serves the site from `/`. Cloudflare runs no tests. The `Landing site` CI job runs the site tests on pull requests from this repository. It skips forks and Dependabot, and the merge rules do not require it.
