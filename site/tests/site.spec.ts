@@ -140,16 +140,23 @@ for (const theme of ["light", "dark"] as const) {
 
 test("how it works tells the chat studio story in order, and the page says no release has it yet", async ({ page }) => {
   await open(page);
-  await expect(page.locator("#how .step h3")).toHaveText([
-    "Talk to it",
-    "Preview",
-    "Assembly guide",
-    "3MF to Bambu Studio",
-  ]);
+  await expect(page.locator("#how .tile-title")).toHaveText(["Describe", "Make", "Look", "Print"]);
   const text = await page.locator("body").innerText();
   expect(text).toContain("The chat studio is not in a release yet.");
   expect(text).toContain(`This download is ${release.version}, the earlier sign app.`);
   expect(text).not.toMatch(/\bMCP\b/);
+});
+
+test("with reduced motion the hero shows the finished part and holds still", async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await open(page);
+  await page.evaluate(() => document.fonts.ready);
+  const hero = page.locator(".hero-stage");
+  const payoff = hero.getByText("2 print files ready").last();
+  expect(await payoff.evaluate((el) => el.checkVisibility({ opacityProperty: true })), "print files card shown").toBe(true);
+  const before = await hero.screenshot();
+  await page.waitForTimeout(2000);
+  expect(await hero.screenshot(), "the hero frame after two seconds").toEqual(before);
 });
 
 test("release claims match the release flags", async ({ page }) => {
