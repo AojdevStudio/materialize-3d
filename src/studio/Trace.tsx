@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import Markdown from './Markdown'
-import { type Action, STOPPED, type ToolItem, type TraceItem } from './transcript'
+import type { Action, ToolItem, TraceItem } from './transcript'
 import circleCheck from '../assets/icons/circle-check.svg?raw'
 import circleX from '../assets/icons/circle-x.svg?raw'
 import filePen from '../assets/icons/file-pen-line.svg?raw'
@@ -31,8 +31,11 @@ export function clock(ms: number): string {
   return hours > 0 ? `${hours}:${String(minutes).padStart(2, '0')}:${ss}` : `${minutes}:${ss}`
 }
 
-/** The time since `startedMs`, read again each second. None without a start. */
-function useElapsed(startedMs: number | undefined): string | undefined {
+/**
+ * The time since `startedMs` after `before`, read again each second. It keeps the clock to itself, so a tick redraws
+ * this text and not the lines around it. Nothing without a start.
+ */
+function Since({ startedMs, before }: { startedMs: number | undefined; before: string }) {
   const [now, setNow] = useState(Date.now)
   useEffect(() => {
     if (startedMs === undefined) return
@@ -40,16 +43,17 @@ function useElapsed(startedMs: number | undefined): string | undefined {
     const timer = window.setInterval(() => setNow(Date.now()), 1000)
     return () => window.clearInterval(timer)
   }, [startedMs])
-  return startedMs === undefined ? undefined : clock(now - startedMs)
+  return startedMs === undefined ? null : `${before}${clock(now - startedMs)}`
 }
 
 /** The line a running turn shows before its first step. */
 export function Working({ startedMs }: { startedMs: number | undefined }) {
-  const time = useElapsed(startedMs)
   return (
     <p className="trace-head" data-testid="working">
       <Ring />
-      <span>Working{time !== undefined && ` for ${time}`}</span>
+      <span>
+        Working<Since startedMs={startedMs} before=" for " />
+      </span>
     </p>
   )
 }
@@ -58,7 +62,7 @@ type StepState = 'running' | 'done' | 'failed' | 'stopped'
 
 function stateOf(step: ToolItem): StepState {
   if (step.result === undefined) return 'running'
-  if (step.result === STOPPED) return 'stopped'
+  if (step.stopped) return 'stopped'
   return step.failed ? 'failed' : 'done'
 }
 
@@ -97,43 +101,47 @@ function StepLine({ step }: { step: ToolItem }) {
  */
 export default function Trace({ trace, startedMs, onError }: { trace: TraceItem; startedMs: number | undefined; onError: (message: string) => void }) {
   const [open, setOpen] = useState(true)
-  const time = useElapsed(trace.running ? startedMs : undefined)
+  const running = trace.state === 'running'
   const steps = trace.lines.filter((line) => line.kind === 'tool')
   const count = `${steps.length} ${steps.length === 1 ? 'step' : 'steps'}`
-  // A trace starts with its first step, so it always has one.
-  const last = steps[steps.length - 1]
-  const stopped = steps.some((step) => step.result === STOPPED)
+  // Folded while it runs, a step that still runs stands for the rest, or else the latest. A trace starts with its first
+  // step, so it always has one.
+  const shown = [...steps].reverse().find((step) => step.result === undefined) ?? steps[steps.length - 1]
 
-  const head = !trace.running ? (
+  const head = !running ? (
     <>
-      <Icon svg={stopped ? circleX : circleCheck} />
-      <span>{stopped ? 'Stopped' : 'Done'}</span>
+      <Icon svg={trace.state === 'done' ? circleCheck : circleX} />
+      <span>{trace.state === 'done' ? 'Done' : 'Stopped'}</span>
       <span className="trace-count">{count}</span>
     </>
   ) : open ? (
     <>
       <Ring />
-      <span>Working{time !== undefined && ` for ${time}`}</span>
+      <span>
+        Working<Since startedMs={startedMs} before=" for " />
+      </span>
       <span className="trace-count">{count}</span>
     </>
   ) : (
-    // Folded while it runs: the latest step stands for the rest.
     <>
-      <Icon svg={ICONS[last.action]} />
-      <span>{actionOf(last)}</span>
-      <Flag step={last} />
-      <span className="trace-count">{time === undefined ? count : `${count}, ${time}`}</span>
+      <Icon svg={ICONS[shown.action]} />
+      <span>{actionOf(shown)}</span>
+      <Flag step={shown} />
+      <span className="trace-count">
+        {count}
+        <Since startedMs={startedMs} before=", " />
+      </span>
     </>
   )
 
   return (
-    <div className={`trace${trace.running ? ' trace-running' : ''}`} data-testid="trace">
+    <div className={`trace${running ? ' trace-running' : ''}`} data-testid="trace">
       <button
         type="button"
         className="trace-head"
         aria-expanded={open}
         onClick={() => setOpen(!open)}
-        data-testid={trace.running ? 'working' : undefined}
+        data-testid={running ? 'working' : undefined}
       >
         {head}
         <svg className="trace-chevron" viewBox="0 0 16 16" aria-hidden="true">

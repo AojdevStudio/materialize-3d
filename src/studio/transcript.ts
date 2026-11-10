@@ -6,7 +6,8 @@ export type Action = 'read' | 'write' | 'run' | 'slice' | 'helper' | 'other'
 
 /**
  * One tool step. `label` says what it did once it finished, and `doing` says it in the present tense while it runs.
- * `summary` is the file or command it worked on. A step with no result yet still runs.
+ * `summary` is the file or command it worked on. A step with no result yet still runs. `stopped` marks one whose turn
+ * ended before it did.
  */
 export type ToolItem = {
   kind: 'tool'
@@ -18,16 +19,17 @@ export type ToolItem = {
   detail: string
   result?: string
   failed?: boolean
+  stopped?: boolean
 }
 
 /** What the agent said while it worked, kept in its place among the steps. */
 export type NoteItem = { kind: 'note'; text: string }
 
 /**
- * A turn's run of steps, from its first step on. `running` is set on the open turn's trace while its turn runs. The
- * first step's id names it.
+ * A turn's run of steps, from its first step on. It is `running` while its turn runs, `done` once an answer followed
+ * it, and `stopped` when its turn ended or waits without one. The first step's id names it.
  */
-export type TraceItem = { kind: 'trace'; id: string; lines: (ToolItem | NoteItem)[]; running: boolean }
+export type TraceItem = { kind: 'trace'; id: string; lines: (ToolItem | NoteItem)[]; state: 'running' | 'done' | 'stopped' }
 
 export type ChatItem =
   | { kind: 'user'; text: string; images: string[]; files: string[] }
@@ -95,9 +97,14 @@ export function buildChat(entries: ChatEntry[], running = true): ChatItem[] {
   let files: string[] = []
   /** The trace the next step joins. A message or an answer without steps closes it. */
   let trace: TraceItem | undefined
+  /** An answer ends the open trace's turn, so the trace is done. */
+  const answer = () => {
+    if (trace !== undefined) trace.state = 'done'
+    trace = undefined
+  }
   const step = (item: ToolItem) => {
     if (trace === undefined) {
-      trace = { kind: 'trace', id: item.id, lines: [], running: false }
+      trace = { kind: 'trace', id: item.id, lines: [], state: 'stopped' }
       items.push(trace)
     }
     trace.lines.push(item)
@@ -109,6 +116,7 @@ export function buildChat(entries: ChatEntry[], running = true): ChatItem[] {
       if (item.result !== undefined) continue
       item.result = STOPPED
       item.failed = true
+      item.stopped = true
     }
   }
   const endTurn = () => {
@@ -127,7 +135,7 @@ export function buildChat(entries: ChatEntry[], running = true): ChatItem[] {
       case 'assistant':
         if (entry.calls.length === 0) {
           if (entry.text.trim() !== '') items.push({ kind: 'text', text: entry.text })
-          trace = undefined
+          answer()
           break
         }
         if (entry.text.trim() !== '') {
@@ -156,7 +164,7 @@ export function buildChat(entries: ChatEntry[], running = true): ChatItem[] {
           items.push({ kind: 'user', text: entry.text, images: entry.images, files: [] })
         } else if (entry.role === 'assistant') {
           items.push({ kind: 'text', text: entry.text })
-          trace = undefined
+          answer()
         } else {
           const { action, label } = OLD_STEPS[entry.name] ?? { action: 'other', label: entry.name }
           step({ kind: 'tool', id: `imported-${entry.id}`, action, label, doing: label, summary: entry.text, detail: entry.text, result: entry.result, failed: entry.failed })
@@ -167,7 +175,7 @@ export function buildChat(entries: ChatEntry[], running = true): ChatItem[] {
   // The last turn's trace runs while its turn does.
   const open: TraceItem | undefined = trace
   endTurn()
-  if (open !== undefined) open.running = running
+  if (open !== undefined && running) open.state = 'running'
   if (!running) stopUnfinished()
   return items
 }

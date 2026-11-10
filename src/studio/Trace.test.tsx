@@ -10,7 +10,7 @@ const write = (id: string, more: Partial<ToolItem> = {}): ToolItem => ({
 })
 const slice: ToolItem = { kind: 'tool', id: 's1', action: 'slice', label: 'Sliced', doing: 'Slicing', summary: 'print/grid.3mf', detail: '{}' }
 
-const trace = (lines: TraceItem['lines'], running: boolean): TraceItem => ({ kind: 'trace', id: lines[0].kind === 'tool' ? lines[0].id : 'x', lines, running })
+const trace = (lines: TraceItem['lines'], state: TraceItem['state']): TraceItem => ({ kind: 'trace', id: lines[0].kind === 'tool' ? lines[0].id : 'x', lines, state })
 const head = () => screen.getByTestId('trace').querySelector('button') as HTMLButtonElement
 /** What a reader sees, without the white space in the icons' markup. */
 const text = (element: Element | null) => element?.textContent?.replace(/\s+/g, ' ').trim()
@@ -27,7 +27,7 @@ afterEach(() => {
 
 describe('Trace', () => {
   it('starts open, folds to one summary line, and opens again', () => {
-    render(<Trace trace={trace([write('grid', { result: 'ok', failed: false }), slice], true)} startedMs={NOW - 39_000} onError={() => {}} />)
+    render(<Trace trace={trace([write('grid', { result: 'ok', failed: false }), slice], 'running')} startedMs={NOW - 39_000} onError={() => {}} />)
     expect(text(head())).toBe('Working for 0:392 steps')
     expect(head().getAttribute('aria-expanded')).toBe('true')
     expect(screen.getByText('Wrote')).toBeTruthy()
@@ -50,15 +50,22 @@ describe('Trace', () => {
   })
 
   it('keeps the latest step flagged on the summary line when it failed', () => {
-    render(<Trace trace={trace([write('grid', { result: 'ok', failed: false }), { ...slice, result: 'no Bambu Studio', failed: true }], true)} startedMs={NOW - 23_000} onError={() => {}} />)
+    render(<Trace trace={trace([write('grid', { result: 'ok', failed: false }), { ...slice, result: 'no Bambu Studio', failed: true }], 'running')} startedMs={NOW - 23_000} onError={() => {}} />)
     fireEvent.click(head())
     expect(text(head())).toBe('Slicedfailed2 steps, 0:23')
+  })
+
+  it('stands for the folded trace with the step that still runs, not one that finished after it started', () => {
+    const run: ToolItem = { kind: 'tool', id: 'r1', action: 'run', label: 'Ran', doing: 'Running', summary: 'uv run python build/model.py', detail: '' }
+    render(<Trace trace={trace([run, write('grid', { result: 'ok', failed: false })], 'running')} startedMs={undefined} onError={() => {}} />)
+    fireEvent.click(head())
+    expect(text(head())).toBe('Running2 steps')
   })
 
   it('says each step in the past tense once done and in the present while it runs', () => {
     render(
       <Trace
-        trace={trace([write('done', { result: 'ok', failed: false }), write('failed', { result: 'disk full', failed: true }), write('running')], true)}
+        trace={trace([write('done', { result: 'ok', failed: false }), write('failed', { result: 'disk full', failed: true }), write('running')], 'running')}
         startedMs={undefined}
         onError={() => {}}
       />,
@@ -71,16 +78,16 @@ describe('Trace', () => {
   })
 
   it('says a finished turn is done, and one stopped part way is stopped, with its step in the present', () => {
-    const { unmount } = render(<Trace trace={trace([write('a', { result: 'ok', failed: false })], false)} startedMs={NOW - 5000} onError={() => {}} />)
+    const { unmount } = render(<Trace trace={trace([write('a', { result: 'ok', failed: false })], 'done')} startedMs={NOW - 5000} onError={() => {}} />)
     expect(text(head())).toBe('Done1 step')
     unmount()
-    render(<Trace trace={trace([write('a', { result: 'ok', failed: false }), write('b', { result: STOPPED, failed: true })], false)} startedMs={undefined} onError={() => {}} />)
+    render(<Trace trace={trace([write('a', { result: 'ok', failed: false }), write('b', { result: STOPPED, failed: true, stopped: true })], 'stopped')} startedMs={undefined} onError={() => {}} />)
     expect(text(head())).toBe('Stopped2 steps')
     expect(text(screen.getByText('b.py', { selector: '.step-target' }).closest('summary'))).toBe('Writingb.pystopped')
   })
 
   it('keeps what the agent said between steps in its place', () => {
-    render(<Trace trace={trace([write('a', { result: 'ok', failed: false }), { kind: 'note', text: 'Now the **print** file.' }, slice], true)} startedMs={undefined} onError={() => {}} />)
+    render(<Trace trace={trace([write('a', { result: 'ok', failed: false }), { kind: 'note', text: 'Now the **print** file.' }, slice], 'running')} startedMs={undefined} onError={() => {}} />)
     const lines = screen.getAllByRole('listitem').map((li) => text(li.querySelector('summary') ?? li))
     expect(lines).toEqual(['Wrotea.py', 'Now the print file.', 'Slicingprint/grid.3mf'])
     expect(screen.getByText('print').tagName).toBe('STRONG')

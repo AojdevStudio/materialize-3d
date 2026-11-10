@@ -37,7 +37,8 @@ describe('buildChat', () => {
       {
         kind: 'trace',
         id: 'c1',
-        running: false,
+        // The answer after the last step ends the turn, so its trace is done.
+        state: 'done',
         lines: [
           { kind: 'tool', id: 'c1', action: 'write', label: 'Wrote', doing: 'Writing', summary: 'params.json', detail: 'params.json', result: 'ok', failed: false },
           { kind: 'tool', id: 'c2', action: 'helper', label: 'Asked Astra (GPT)', doing: 'Asking Astra (GPT)', summary: 'Draw it', detail: 'Draw it\nas an HTML page', result: 'drew it', failed: false },
@@ -65,7 +66,7 @@ describe('buildChat', () => {
       {
         kind: 'trace',
         id: 'imported-2',
-        running: false,
+        state: 'done',
         lines: [{ kind: 'tool', id: 'imported-2', action: 'run', label: 'Ran', doing: 'Ran', summary: 'Build the clip', detail: 'Build the clip', result: 'clip.stl written', failed: false }],
       },
       { kind: 'text', text: 'Here it is.' },
@@ -73,7 +74,7 @@ describe('buildChat', () => {
       {
         kind: 'trace',
         id: 'c1',
-        running: true,
+        state: 'running',
         lines: [{ kind: 'tool', id: 'c1', action: 'run', label: 'Ran', doing: 'Running', summary: 'uv run python build/model.py', detail: 'uv run python build/model.py' }],
       },
     ])
@@ -84,10 +85,24 @@ describe('buildChat', () => {
       { id: 1, kind: 'user' as const, text: 'Thicker', images: [], files: [] },
       { id: 2, kind: 'assistant' as const, text: '', calls: [{ id: 'c1', name: 'run', args: { args: ['run', 'python', 'build/model.py'] } }] },
     ]
-    expect(buildChat(entries, false)[1]).toMatchObject({ kind: 'trace', running: false, lines: [{ id: 'c1', result: STOPPED, failed: true }] })
-    expect(buildChat(entries, true)[1]).toMatchObject({ kind: 'trace', running: true, lines: [expect.not.objectContaining({ result: expect.anything() })] })
+    const stopped = { id: 'c1', result: STOPPED, failed: true, stopped: true }
+    expect(buildChat(entries, false)[1]).toMatchObject({ kind: 'trace', state: 'stopped', lines: [stopped] })
+    expect(buildChat(entries, true)[1]).toMatchObject({ kind: 'trace', state: 'running', lines: [expect.not.objectContaining({ result: expect.anything() })] })
     // A later message starts a new turn, which cannot run the earlier step again.
     const later = [...entries, { id: 3, kind: 'user' as const, text: 'Thinner', images: [], files: [] }]
-    expect(buildChat(later, true)[1]).toMatchObject({ kind: 'trace', running: false, lines: [{ id: 'c1', result: STOPPED, failed: true }] })
+    expect(buildChat(later, true)[1]).toMatchObject({ kind: 'trace', state: 'stopped', lines: [stopped] })
+  })
+
+  it('says a turn that waits after its steps finished stopped, not done, since it has no answer yet', () => {
+    const items = buildChat(
+      [
+        { id: 1, kind: 'user', text: 'A clip', images: [], files: [] },
+        { id: 2, kind: 'assistant', text: '', calls: [{ id: 'c1', name: 'write', args: { path: 'params.json' } }] },
+        { id: 3, kind: 'tool', callId: 'c1', name: 'write', text: 'ok', failed: false },
+      ],
+      false,
+    )
+    expect(items[1]).toMatchObject({ kind: 'trace', state: 'stopped', lines: [{ id: 'c1', result: 'ok', failed: false }] })
+    expect(items[1]).not.toHaveProperty('lines.0.stopped')
   })
 })

@@ -442,7 +442,7 @@ pre {
   margin-top: 1em;
 }
 
-.msg-agent :is(h1, h2, h3, h4, h5, h6) {
+:is(.msg-agent, .trace-note) :is(h1, h2, h3, h4, h5, h6) {
   font-weight: 600;
   line-height: 1.4;
 }
@@ -459,36 +459,41 @@ pre {
   font-size: 14px;
 }
 
-.msg-agent :is(ul, ol) {
+/* What the agent said between steps keeps the trace's size, headings too. */
+.trace-note :is(h1, h2, h3, h4, h5, h6) {
+  font-size: inherit;
+}
+
+:is(.msg-agent, .trace-note) :is(ul, ol) {
   padding-left: 1.5em;
 }
 
-.msg-agent li + li,
-.msg-agent li > :is(ul, ol) {
+:is(.msg-agent, .trace-note) li + li,
+:is(.msg-agent, .trace-note) li > :is(ul, ol) {
   margin-top: 0.25em;
 }
 
-.msg-agent li > p {
+:is(.msg-agent, .trace-note) li > p {
   margin: 0;
 }
 
-.msg-agent li::marker {
+:is(.msg-agent, .trace-note) li::marker {
   color: var(--s-muted);
 }
 
-.msg-agent table {
+:is(.msg-agent, .trace-note) table {
   width: 100%;
   border-collapse: collapse;
 }
 
-.msg-agent :is(th, td) {
+:is(.msg-agent, .trace-note) :is(th, td) {
   padding: 8px 12px 8px 0;
   border-bottom: 1px solid var(--s-line);
   text-align: left;
   vertical-align: top;
 }
 
-.msg-agent th {
+:is(.msg-agent, .trace-note) th {
   font-weight: 500;
 }
 
@@ -517,18 +522,18 @@ pre {
   padding: 0;
 }
 
-.msg-agent blockquote {
+:is(.msg-agent, .trace-note) blockquote {
   padding-left: 12px;
   border-left: 2px solid var(--s-line);
   color: var(--s-muted);
 }
 
-.msg-agent hr {
+:is(.msg-agent, .trace-note) hr {
   border: 0;
   border-top: 1px solid var(--s-line);
 }
 
-.msg-agent a {
+:is(.msg-agent, .trace-note) a {
   color: inherit;
   text-underline-offset: 2px;
 }

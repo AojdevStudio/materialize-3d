@@ -60,7 +60,7 @@ export function ChatView({ project, items, running, startedMs, onPreview, onErro
             )
         }
       })}
-      {running && !items.some((item) => item.kind === 'trace' && item.running) && <Working startedMs={startedMs} />}
+      {running && !items.some((item) => item.kind === 'trace' && item.state === 'running') && <Working startedMs={startedMs} />}
       <div ref={end} />
     </div>
   )

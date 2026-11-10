@@ -40,6 +40,12 @@ describe('Markdown', () => {
     expect(block.textContent).toBe('SIZE = 20\nFILLET = 1\n')
   })
 
+  it('keeps a single newline as a line break, as the agent typed it', () => {
+    const page = show('Size: 20 mm\nFillet: 1 mm')
+    expect(page.querySelectorAll('p')).toHaveLength(1)
+    expect(page.querySelector('p')?.innerHTML).toBe('Size: 20 mm<br>\nFillet: 1 mm')
+  })
+
   it('shows raw HTML in a reply as its text, never as HTML', () => {
     const page = show('<img src="x" onerror="alert(1)">\n\nHello <b>there</b> <script>alert(2)</script>')
     expect(page.querySelector('img, b, script')).toBeNull()
