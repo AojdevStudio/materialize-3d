@@ -18,7 +18,7 @@ The tests launch the installed Google Chrome with its sandbox on, not Playwright
 
 ## Release facts
 
-Every release fact lives in `src/release.ts`: version, repository, releases, docs, and DMG URLs, the DMG SHA-256, the `signed` and `notarized` flags, the tested macOS text, the architecture, and the `studio` flag. Edit only that file after a release is verified.
+Every release fact lives in `src/release.ts`: version, repository, releases, docs, and DMG URLs, the DMG SHA-256, the `signed` and `notarized` flags, the tested macOS text, the architecture, and the `studio` flag. Edit only that file after a release is verified. A merge to `main` deploys the site, so an edit to `src/release.ts` goes live as soon as it merges. Merge it only after the release is verified.
 
 The page renders the honest state of those values. While `studio` is false, the hero says the chat studio is not in a release yet and names the version the download is. The SHA-256 row reads "Not published yet" while the value is `pending`. The phrase "Signed and notarized by Apple" appears only when both flags are true. While `notarized` is false, the install steps tell people to use Open Anyway in System Settings, Privacy & Security. The page never tells anyone to disable Gatekeeper.
 
@@ -54,9 +54,23 @@ The layout tests also save full-page screenshots to `test-results/screens/`, whi
 
 ## Deploy
 
-The site is a Cloudflare Pages project named `materialize-3d`, deployed by hand from `main` after a release is published and `src/release.ts` carries its checksum. No deploy credential is stored in GitHub.
+The site is the Cloudflare Pages project `materialize-3d`, served at https://materialize-3d.pages.dev. It deploys on its own when a merge to `main` touches `site/`. The workflow is `.github/workflows/site-deploy.yml`, and its job is `Deploy the landing site`. It runs on the Mac mini runner.
+
+The job runs these steps in order:
+
+1. It checks that the two repository secrets are set, and fails at once with an error that names a missing one.
+2. It runs the site tests (`bunx playwright test`). A build that fails them never deploys.
+3. It builds `dist/` again with `SITE_BASE` unset, because Pages serves the site from `/`.
+4. It deploys `dist/` to production with `bunx wrangler pages deploy`.
+
+The job reads two repository secrets, set in Settings > Secrets and variables > Actions:
+
+- `CLOUDFLARE_API_TOKEN`
+- `CLOUDFLARE_ACCOUNT_ID`
+
+Deploys queue in order and never cancel each other. To deploy by hand as a fallback, for example when the runner is down, run this from `main`:
 
 ```sh
 cd site && bun install --frozen-lockfile && bun run build
-CLOUDFLARE_ACCOUNT_ID=... CLOUDFLARE_API_TOKEN=... bunx wrangler pages deploy dist --project-name materialize-3d --branch main
+CLOUDFLARE_ACCOUNT_ID=... CLOUDFLARE_API_TOKEN=... bunx wrangler@4.153.0 pages deploy dist --project-name materialize-3d --branch main
 ```
