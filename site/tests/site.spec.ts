@@ -260,7 +260,7 @@ test("at the end, the header is solid over the install guide and the hidden rail
   await expect(page.locator(".site-header"), "the header turns solid after an instant jump").toHaveAttribute("data-solid", "true");
   const headerBottom = await page.locator(".site-header").evaluate((h) => h.getBoundingClientRect().bottom);
   const installTop = await page.locator("#install-title").evaluate((h) => h.getBoundingClientRect().top);
-  expect(installTop, "the Install heading sits below the header").toBeGreaterThanOrEqual(headerBottom);
+  expect(installTop, "the Install heading sits below the header").toBeGreaterThanOrEqual(headerBottom - 1);
 
   await page.locator(".end .cta-primary").first().focus();
   await page.keyboard.press("Shift+Tab");

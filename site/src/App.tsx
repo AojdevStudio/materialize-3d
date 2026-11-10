@@ -5,7 +5,6 @@ import { ReleaseFacts } from "./components/ReleaseFacts";
 import { ThemeToggle } from "./components/ThemeToggle";
 import markSmall from "./assets/brand/mark-small-32.svg";
 import oflUrl from "./assets/fonts/OFL.txt?url";
-import threeLicenseUrl from "./assets/licenses/three-LICENSE.txt?url";
 import { checksumPublished, dmgFileName, release } from "./release";
 import { ScrollStory } from "./story/ScrollStory";
 
@@ -183,7 +182,7 @@ export function App() {
           <a href={release.releasesUrl}>Releases</a>
           <a href={release.docsUrl}>Docs</a>
           <a href={oflUrl}>Font license (SIL OFL 1.1)</a>
-          <a href={threeLicenseUrl}>three.js license (MIT)</a>
+          <a href={`${import.meta.env.BASE_URL}licenses/three-LICENSE.txt`}>three.js license (MIT)</a>
         </nav>
       </footer>
     </>
