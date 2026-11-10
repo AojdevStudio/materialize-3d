@@ -425,58 +425,235 @@ pre {
   font-size: 12px;
 }
 
-.msg-agent p {
-  margin: 0 0 6px;
-  white-space: pre-wrap;
+/* Agent replies: the Typeset chat preset. 14 px type, 1.6 leading, and 1em between blocks. */
+.msg-agent {
+  font-size: 14px;
+  line-height: 1.6;
+  overflow-wrap: break-word;
 }
 
-.msg-agent pre,
-.tool pre {
-  background: var(--s-code);
-  padding: 8px 10px;
-  border-radius: 6px;
-  overflow-x: auto;
-  margin: 4px 0;
-  white-space: pre-wrap;
-  word-break: break-word;
+.msg-agent > *,
+.trace-note > * {
+  margin: 0;
 }
 
-.msg-agent code {
-  background: var(--s-code);
-  padding: 0 4px;
-  border-radius: 4px;
+.msg-agent > * + *,
+.trace-note > * + * {
+  margin-top: 1em;
 }
 
-.tool summary {
-  cursor: pointer;
+:is(.msg-agent, .trace-note) :is(h1, h2, h3, h4, h5, h6) {
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.msg-agent h1 {
+  font-size: 18px;
+}
+
+.msg-agent h2 {
+  font-size: 16px;
+}
+
+.msg-agent :is(h3, h4, h5, h6) {
+  font-size: 14px;
+}
+
+/* What the agent said between steps keeps the trace's size, headings too. */
+.trace-note :is(h1, h2, h3, h4, h5, h6) {
+  font-size: inherit;
+}
+
+:is(.msg-agent, .trace-note) :is(ul, ol) {
+  padding-left: 1.5em;
+}
+
+:is(.msg-agent, .trace-note) li + li,
+:is(.msg-agent, .trace-note) li > :is(ul, ol) {
+  margin-top: 0.25em;
+}
+
+:is(.msg-agent, .trace-note) li > p {
+  margin: 0;
+}
+
+:is(.msg-agent, .trace-note) li::marker {
   color: var(--s-muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  list-style-position: inside;
 }
 
-.tool-label {
-  color: var(--s-text);
+:is(.msg-agent, .trace-note) table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+:is(.msg-agent, .trace-note) :is(th, td) {
+  padding: 8px 12px 8px 0;
+  border-bottom: 1px solid var(--s-line);
+  text-align: left;
+  vertical-align: top;
+}
+
+:is(.msg-agent, .trace-note) th {
   font-weight: 500;
 }
 
-.tool-running .tool-label::after {
-  content: ' …';
+.msg-agent code,
+.trace-note code {
+  background: var(--s-code);
+  padding: 1px 4px;
+  border-radius: 4px;
 }
 
-.tool-flag,
+.msg-agent pre,
+.trace pre {
+  background: var(--s-code);
+  padding: 10px 12px;
+  border-radius: 6px;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.5;
+  color: var(--s-text);
+}
+
+.msg-agent pre code,
+.trace-note pre code {
+  background: none;
+  padding: 0;
+}
+
+:is(.msg-agent, .trace-note) blockquote {
+  padding-left: 12px;
+  border-left: 2px solid var(--s-line);
+  color: var(--s-muted);
+}
+
+:is(.msg-agent, .trace-note) hr {
+  border: 0;
+  border-top: 1px solid var(--s-line);
+}
+
+:is(.msg-agent, .trace-note) a {
+  color: inherit;
+  text-underline-offset: 2px;
+}
+
 .msg-error {
   color: var(--s-error);
 }
 
-.tool-flag {
-  margin-left: 6px;
+/* The run trace: one plain line per step with an action icon. The tense of each line shows its status. */
+.trace {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--s-muted);
 }
 
-.tool-result {
+.trace-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  margin: 0;
+  padding: 3px 0;
+  border: 0;
+  background: none;
+  color: var(--s-text);
+  font-size: 13px;
+  line-height: 1.5;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.trace-count {
+  color: var(--s-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.trace-chevron {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  color: var(--s-muted);
+}
+
+.trace-head[aria-expanded='false'] .trace-chevron {
+  transform: rotate(-90deg);
+}
+
+.trace-icon {
+  display: inline-flex;
+  flex: none;
+  width: 14px;
+  height: 14px;
+  color: var(--s-muted);
+}
+
+.trace-icon svg {
+  width: 100%;
+  height: 100%;
+  stroke-width: 1.75;
+}
+
+.trace-ring,
+.trace-running .trace-head .trace-icon,
+.step-running .trace-icon {
+  color: var(--s-accent);
+}
+
+.trace-lines {
+  list-style: none;
+  margin: 2px 0 0 6px;
+  padding: 0 0 0 14px;
+  border-left: 1px solid var(--s-line);
+}
+
+.trace-step summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 0;
+  cursor: pointer;
+  list-style: none;
+  white-space: nowrap;
+}
+
+.trace-step summary::-webkit-details-marker {
+  display: none;
+}
+
+.step-action,
+.step-flag {
+  flex: none;
+}
+
+.step-target {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  opacity: 0.8;
+}
+
+.step-running .step-action {
+  color: var(--s-text);
+}
+
+.flag-failed {
+  color: var(--s-error);
+}
+
+.trace-step pre {
+  margin: 4px 0;
+}
+
+.step-result {
   max-height: 240px;
   overflow-y: auto;
+}
+
+.trace-note {
+  padding: 3px 0 3px 22px;
 }
 
 .file-cards {
@@ -506,11 +683,6 @@ pre {
   white-space: nowrap;
   font-family: 'JetBrains Mono', ui-monospace, monospace;
   font-size: 12px;
-}
-
-.working {
-  color: var(--s-muted);
-  margin: 4px 0;
 }
 
 .error-bar {

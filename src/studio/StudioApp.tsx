@@ -640,6 +640,7 @@ export default function StudioApp() {
               project={current.id}
               items={items}
               running={running}
+              startedMs={view?.turn?.startedMs}
               onPreview={(rel) => {
                 setSelected(rel)
                 setTab('preview')

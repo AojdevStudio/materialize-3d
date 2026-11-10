@@ -314,6 +314,25 @@ describe('StudioApp', () => {
     expect(screen.getByText('The clip is ready.')).toBeTruthy()
   })
 
+  it("gathers a running turn's steps in one trace that counts from the turn's start, and ends it with the reply", async () => {
+    const turn = { requestId: 'r1', model: settings.model, thinking: 'high', tools: [], instructions: '', app: '0.2.2', startedMs: Date.now() - 39_000 }
+    const asked = { id: 1, kind: 'user', text: 'A 2x2 grid', images: [], files: [] }
+    const started = { id: 2, kind: 'assistant', text: 'On it.', calls: [{ id: 'c1', name: 'write', args: { path: 'grid.py' } }] }
+    mockSidecar({ 'chat.open': (params) => Promise.resolve(view(String(params.project), { entries: [asked, started], running: true, turn })) })
+    render(<StudioApp />)
+    fireEvent.click(await projectList().findByText('Project B'))
+    expect((await screen.findByTestId('working')).textContent).toMatch(/^Working for 0:(39|40)1 step$/)
+    expect(screen.getByText('On it.')).toBeTruthy()
+    expect(screen.getByText('Writing')).toBeTruthy()
+    const done = { id: 3, kind: 'tool', callId: 'c1', name: 'write', text: 'ok', failed: false }
+    const reply = { id: 4, kind: 'assistant', text: '## Ready\n\n- One body', calls: [] }
+    await emit({ type: 'chat', ...view(projectB.id, { entries: [done, reply], running: false, turn, seq: 2 }) })
+    expect(screen.queryByTestId('working')).toBeNull()
+    expect(screen.getByText('Wrote')).toBeTruthy()
+    expect(screen.getByRole('heading', { level: 2, name: 'Ready' })).toBeTruthy()
+    expect(screen.getByText('One body').tagName).toBe('LI')
+  })
+
   it('shows the small mark and the app name at the top of the sidebar', async () => {
     mockSidecar()
     render(<StudioApp />)
