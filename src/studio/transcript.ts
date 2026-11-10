@@ -120,7 +120,17 @@ export function buildChat(entries: ChatEntry[], running = true): ChatItem[] {
     files = []
     trace = undefined
   }
-  for (const entry of entries) {
+  // An old chat came in one entry per block, so its narration between two steps is its own entry, like its answer. Text
+  // with another imported step after it, before the next message, is narration. The last text in a turn is the answer.
+  const stepAhead: boolean[] = []
+  let ahead = false
+  for (let i = entries.length - 1; i >= 0; i--) {
+    stepAhead[i] = ahead
+    const entry = entries[i]
+    if (entry.kind === 'user' || (entry.kind === 'imported' && entry.role === 'user')) ahead = false
+    else if (entry.kind === 'imported' && entry.role === 'tool') ahead = true
+  }
+  for (const [i, entry] of entries.entries()) {
     switch (entry.kind) {
       case 'user':
         endTurn()
@@ -158,8 +168,11 @@ export function buildChat(entries: ChatEntry[], running = true): ChatItem[] {
           stopUnfinished()
           items.push({ kind: 'user', text: entry.text, images: entry.images, files: [] })
         } else if (entry.role === 'assistant') {
-          items.push({ kind: 'text', text: entry.text })
-          trace = undefined
+          if (trace !== undefined && stepAhead[i]) trace.lines.push({ kind: 'note', text: entry.text })
+          else {
+            items.push({ kind: 'text', text: entry.text })
+            trace = undefined
+          }
         } else {
           const { action, label } = OLD_STEPS[entry.name] ?? { action: 'other', label: entry.name }
           step({ kind: 'tool', id: `imported-${entry.id}`, action, label, doing: label, summary: entry.text, detail: entry.text, state: entry.failed ? 'failed' : 'done', result: entry.result })
