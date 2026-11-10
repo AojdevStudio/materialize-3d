@@ -10,7 +10,7 @@ The landing site in `site/` is a static page that explains Materialize 3D and of
 - `site-a11y` covers keyboard focus on every link and button, and axe in both themes on the reduced-motion story.
 - `site-release` covers the release claims that follow the flags in `site/src/release.ts`.
 - `site-story` covers How it works in order (Describe, Make, Look, Print), the readout that follows the scroll, and teardown labels that never overlap at 1440 and 390 px.
-- `site-motion` covers reduced motion at 1440 and 390 px: each stage is one still, shown in story order, and each rewind still shows the trace card with one fewer line per step back. The card covers no pixel of the 3D view.
+- `site-motion` covers reduced motion at 1440 and 390 px: each stage is one still, shown in story order, and each rewind still shows the trace card with one fewer line per step back. The card covers no pixel of the 3D view at eight sizes, from 320x568 to 1440x900, upright and wide.
 
 ## How to get to it (user POV)
 

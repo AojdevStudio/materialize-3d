@@ -11,7 +11,7 @@
 import type { Vector3 } from "three";
 import { loadModels } from "./assets";
 import { PRINT } from "./facts";
-import { StoryScene, type Palette, type Point, type PrinterPart } from "./scene";
+import { StoryScene, type Palette, type Point, type PrinterPart, type Rect } from "./scene";
 import {
   COPY_STAGES,
   RAIL,
@@ -115,6 +115,8 @@ export function startStory(root: HTMLElement, motion: Motion, onStatus: (status:
   let top = 0;
   /** Where the readout sits, and whether params.json or the full trace card reaches into it. */
   let readoutBox = new DOMRect();
+  /** The screen the full trace card leaves to the 3D view's subject. */
+  let traceRoom: Rect = { left: -Infinity, right: Infinity, top: -Infinity, bottom: Infinity };
   let paramsCrowd = false;
   let traceCrowd = false;
   let P = 0;
@@ -155,7 +157,16 @@ export function startStory(root: HTMLElement, motion: Motion, onStatus: (status:
       block.crowds = crowds(block.box);
     }
     paramsCrowd = crowds(params.getBoundingClientRect());
-    traceCrowd = crowds(traceBox.getBoundingClientRect());
+    const card = traceBox.getBoundingClientRect();
+    traceCrowd = crowds(card);
+    // The subject goes below the card on an upright screen, and stays above the readout when the readout
+    // shows with the card. On a wide screen it goes right of the card. It keeps 16 px from each edge.
+    const gap = 16;
+    const floor = traceCrowd || !readoutBox.height ? window.innerHeight : readoutBox.top;
+    traceRoom =
+      window.innerHeight >= window.innerWidth
+        ? { left: -Infinity, right: Infinity, top: card.bottom + gap, bottom: floor - gap }
+        : { left: card.right + gap, right: window.innerWidth - gap, top: -Infinity, bottom: Infinity };
   }
 
   function measure(force: boolean) {
@@ -276,7 +287,7 @@ export function startStory(root: HTMLElement, motion: Motion, onStatus: (status:
     if (readoutShown) shown.push(readoutBox);
 
     if (scene) {
-      scene.pose(P);
+      scene.pose(P, traceRoom);
       scene.render();
       placeLabels(scene, readoutShown ? readoutBox : null);
       placeDimensions(scene, overlays.dimensions, shown);

@@ -217,10 +217,22 @@ for (const layout of layouts.slice(0, 2)) {
   });
 }
 
-for (const layout of layouts.slice(0, 2)) {
-  test(`${layout.name} ${layout.width}: the trace card covers no part of the 3D view in any rewind still`, async ({ page }) => {
+/** Every screen the suite lays out: small and large phones upright and on their side, a tablet, and desktops tall and short. */
+const screens = [
+  { width: 320, height: 568 },
+  { width: 320, height: 640 },
+  { width: 390, height: 844 },
+  { width: 568, height: 320 },
+  { width: 844, height: 390 },
+  { width: 768, height: 1024 },
+  { width: 1440, height: 600 },
+  { width: 1440, height: 900 },
+] as const;
+
+for (const size of screens) {
+  test(`${size.width}x${size.height}: the trace card covers no part of the 3D view in any rewind still`, async ({ page }) => {
     test.slow(); // six stills, and the 3D view may draw in software
-    await page.setViewportSize({ width: layout.width, height: layout.height });
+    await page.setViewportSize(size);
     await page.emulateMedia({ reducedMotion: "reduce" });
     await open(page);
     await storyReady(page);
@@ -254,9 +266,9 @@ for (const layout of layouts.slice(0, 2)) {
         },
         { png: under.toString("base64"), paper },
       );
-      expect(model, `${stage.id}: pixels of the 3D view under the trace card`).toBe(0);
+      expect.soft(model, `${stage.id}: pixels of the 3D view under the trace card`).toBe(0);
     }
-    await page.screenshot({ path: path.join(shotsDir, `${layout.name}-${layout.width}-trace.png`) });
+    await page.screenshot({ path: path.join(shotsDir, `trace-${size.width}x${size.height}.png`) });
   });
 }
 

@@ -409,6 +409,9 @@ export function traceAt(P: number): TraceView {
     head: done ? `Worked for ${Math.round(newest / 60)} min` : `Working for ${minutes(elapsedAt(P))}`,
     count: done ? `${TRACE.length} steps` : `step ${shown} of ${TRACE.length}`,
     lines,
-    alpha: ramp("slices", 0.02, 0.14, P) * (1 - ramp("request", 0, 0.16, P)),
+    alpha: traceAlpha(P),
   };
 }
+
+/** How much the trace card shows at P. The 3D view keeps its subject clear of the card by the same amount. */
+export const traceAlpha = (P: number) => ramp("slices", 0.02, 0.14, P) * (1 - ramp("request", 0, 0.16, P));

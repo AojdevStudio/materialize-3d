@@ -30,7 +30,7 @@ The page is a scroll story Ossie picked: one 3D printer is the spine, and the sc
 2. The teardown: twelve parts lift off top down, each with a numbered leader label. The words say what the app is.
 3. The dive onto the build plate, where the agent's work ends.
 4. The print: the right shelf of a dock mount prints layer by layer, and the readout counts Z height. The words say one chat made it.
-5. The rewind, 13:58 back to 0:00. The studio's own trace card stands in for the words: the six steps of the agent's turn, a line leaving from the bottom at each step back (the slices, the assembly guide, the revision C adapter, the five parts, the drawing, params.json). It ends on the studio's start screen with the request typed.
+5. The rewind, 13:58 back to 0:00. The studio's own trace card stands in for the words: the six steps of the agent's turn, a line leaving from the bottom at each step back (the slices, the assembly guide, the revision C adapter, the five parts, the drawing, params.json). The 3D view keeps the model clear of the card: below it on an upright screen, above the readout, and right of it on a wide screen. The model shrinks only when that space is too small. It ends on the studio's start screen with the request typed.
 6. The end section: download, release facts, how it works, requirements, and install.
 
 The footer ends with a legal line: the copyright, the blog, the privacy page, and the MIT license.
@@ -97,7 +97,7 @@ The tags and files go live with the next production deployment.
 - axe finds no violations in either theme
 - How it works shows Describe, Make, Look, and Print in order, and the page says no release has the studio yet
 - with reduced motion, each stage shows only its own copy, in order, and nothing moves while scrolling through it. Each rewind still shows the trace card with its own kick, head, and lines, one fewer at each step back
-- the trace card covers no pixel of the 3D view in any rewind still, at 1440 and 390
+- the trace card covers no pixel of the 3D view in any rewind still, at 320x568, 320x640, 390x844, 568x320, 844x390, 768x1024, 1440x600, and 1440x900
 - the teardown labels never overlap and stay on screen, at 1440 and 390
 - no visible text covers other text at 390 x 844, 1440 x 900, 1440 x 600, 844 x 390, 568 x 320, and 768 x 1024, in any stage or as the end section comes up
 - the readout follows the scroll: parts lifted, then Z height, then the rewind clock
