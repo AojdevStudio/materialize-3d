@@ -38,6 +38,7 @@
 
 /* Text over the 3D view keeps a soft paper halo, so it reads over the model. */
 .stage-copy,
+.story-trace > .kick,
 .story-labels li,
 .story-dimensions li,
 .readout .kick,
@@ -51,8 +52,9 @@
     0 0 6px var(--halo);
 }
 
-/* Stage copy */
-.stage-copy {
+/* Stage copy, and the trace card that tells the rewind in the same place */
+.stage-copy,
+.story-trace {
   position: absolute;
   left: var(--pad);
   top: 19vh;
@@ -138,13 +140,14 @@
   stroke-width: 1;
 }
 
-/* The request sits in the middle of the screen, at the start of everything. */
+/* The request sits in the middle of the screen, at the start of everything: the studio's start
+   screen with the request typed. */
 .stage-copy[data-stage="request"] {
   left: 50%;
   top: 47%;
   translate: -50% -50%;
   /* Clear of the rail's labels on both sides */
-  width: min(880px, 100vw - 300px);
+  width: min(640px, 100vw - 300px);
 }
 .stage-copy[data-stage="request"] .kick {
   display: flex;
@@ -152,24 +155,161 @@
   margin-bottom: 22px;
 }
 .stage-copy[data-stage="request"] .kick span:last-child,
-.story-log .kick span:last-child,
 .readout .kick span:last-child {
   color: var(--muted);
 }
-.stage-copy .say {
-  font-weight: 200;
-  font-size: clamp(25px, min(4.1vw, 7vh), 56px);
-  line-height: 1.18;
-  letter-spacing: -0.012em;
+.stage-copy .ask {
+  font-size: clamp(19px, 1.8vw, 26px);
+  font-weight: 500;
+  letter-spacing: -0.01em;
   text-transform: none;
 }
-.say i {
+.composer {
+  margin-top: 14px;
+  padding: 12px;
+  border: 1px solid var(--surface-line);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: var(--surface-shadow);
+  text-shadow: none;
+}
+.composer-text {
+  min-height: 2.9em;
+  font-size: clamp(14px, 1.25vw, 18px);
+  font-weight: 400;
+  line-height: 1.45;
+}
+.composer-text i {
   display: inline-block;
   width: 1px;
-  height: 0.95em;
-  margin-left: 0.12em;
-  vertical-align: -0.12em;
+  height: 1.1em;
+  margin-left: 2px;
+  vertical-align: -0.2em;
   background: var(--accent-ink);
+}
+.composer-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+.composer-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 9px;
+  border: 1px solid var(--surface-line);
+  border-radius: 7px;
+  font-size: 12px;
+  font-weight: 500;
+}
+.composer-model {
+  margin-left: auto;
+  border-color: transparent;
+  color: var(--muted);
+}
+.composer-start {
+  border-color: var(--ink);
+  background: var(--ink);
+  color: var(--paper);
+}
+.composer-button .icon {
+  width: 12px;
+  height: 12px;
+}
+
+/* Lucide line icons, drawn in the text color at the studio's weight */
+.icon {
+  display: inline-flex;
+  flex: none;
+}
+.icon svg {
+  width: 100%;
+  height: 100%;
+  stroke-width: 1.75;
+}
+
+/* The agent's trace card: the studio's finished turn, its lines leaving from the bottom on the rewind */
+.story-trace > .kick {
+  margin-bottom: 12px;
+}
+.trace-card {
+  padding: 4px 12px 8px;
+  border: 1px solid var(--surface-line);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: var(--surface-shadow);
+  font-size: 13px;
+  font-weight: 400;
+}
+.trace-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 36px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--surface-line);
+  font-weight: 500;
+}
+.trace-count {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 400;
+}
+.trace-mark {
+  display: grid;
+  width: 15px;
+  height: 15px;
+}
+.trace-mark > * {
+  grid-area: 1 / 1;
+  width: 100%;
+  height: 100%;
+}
+.trace-mark .icon {
+  color: var(--done);
+}
+.trace-ring {
+  fill: none;
+  stroke: var(--accent-ink);
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+.trace-ring circle {
+  stroke-opacity: 0.25;
+}
+.trace-card[data-done] .trace-ring,
+.trace-card:not([data-done]) .trace-mark .icon {
+  visibility: hidden;
+}
+.trace-lines {
+  padding: 0;
+  list-style: none;
+}
+.trace-lines li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: calc(var(--in, 1) * 25px);
+  overflow: hidden;
+  opacity: var(--in, 1);
+  white-space: nowrap;
+}
+.trace-lines .icon {
+  width: 14px;
+  height: 14px;
+  color: var(--muted);
+}
+.trace-did {
+  flex: none;
+}
+.trace-detail {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--muted);
 }
 .stage-copy p.request-note {
   max-width: none;
@@ -295,46 +435,6 @@
   color: var(--muted);
 }
 
-/* The agent log, on the right while the story rewinds */
-.story-log {
-  position: absolute;
-  right: 132px;
-  top: 17vh;
-  width: 250px;
-  opacity: 0;
-  font-family: var(--mono);
-}
-.story-log .kick {
-  display: flex;
-  justify-content: space-between;
-  margin-bottom: 8px;
-}
-.story-log ol {
-  padding: 0;
-  list-style: none;
-  font-size: 10px;
-  line-height: 1.45;
-  border-bottom: 1px solid var(--rule);
-}
-.story-log li {
-  display: grid;
-  grid-template-columns: 38px 1fr;
-  gap: 8px;
-  padding: 6px 0;
-  border-top: 1px solid var(--rule);
-  color: var(--muted);
-}
-.story-log li[data-on] {
-  color: var(--ink);
-}
-.story-log b {
-  font-weight: 400;
-  font-variant-numeric: tabular-nums;
-}
-.story-log li[data-on] b {
-  color: var(--accent-ink);
-}
-
 /* The rail: where you are in the story, and a jump to each stop */
 .story-rail {
   position: absolute;
@@ -409,12 +509,8 @@
   }
 }
 
-/* Tablets, small windows, and short screens: the readout already carries the log's line and
-   clock, so the log goes, and params.json sits right of the copy column instead of under it. */
+/* Tablets, small windows, and short screens: params.json sits right of the copy column instead of under it. */
 @media (max-width: 1023px), (max-height: 540px) {
-  .story-log {
-    display: none;
-  }
   .story-params {
     left: calc(var(--pad) + 376px);
     right: 138px;
@@ -424,10 +520,11 @@
   }
 }
 
-/* Short desktop screens: the copy starts under the header. The director fades the readout
-   out while a copy block it would cover is showing. */
+/* Short desktop screens: the copy and the trace start under the header. The director fades the
+   readout out while a copy block or the trace card it would cover is showing. */
 @media (min-width: 761px) and (max-height: 860px) {
-  .stage-copy:not([data-stage="request"]) {
+  .stage-copy:not([data-stage="request"]),
+  .story-trace {
     top: calc(var(--header) + 12px);
   }
 }
@@ -438,7 +535,8 @@
     display: none;
   }
   /* A small phone on its side: a narrower copy column leaves params.json room inside the screen. */
-  .stage-copy:not([data-stage="hero"], [data-stage="request"]) {
+  .stage-copy:not([data-stage="hero"], [data-stage="request"]),
+  .story-trace {
     width: min(360px, 45vw);
   }
   .story-params {
@@ -449,7 +547,8 @@
 
 /* Phones, and screens too short for the desktop type: compact copy, and the rail as marks only. */
 @media (max-width: 760px), (max-height: 540px) {
-  .stage-copy {
+  .stage-copy,
+  .story-trace {
     top: calc(var(--header) + 10px);
   }
   .stage-copy h1 {
@@ -465,7 +564,8 @@
     margin-top: 8px;
     font-size: 14px;
   }
-  .stage-copy .kick {
+  .stage-copy .kick,
+  .story-trace > .kick {
     margin-bottom: 8px;
     font-size: 9px;
   }
@@ -487,9 +587,6 @@
     font-size: 9px;
     letter-spacing: 0.12em;
   }
-  .stage-copy .say {
-    font-size: 27px;
-  }
   .stage-copy[data-stage="request"] {
     width: calc(100vw - 2 * var(--pad));
   }
@@ -504,10 +601,23 @@
   .story-params {
     right: 32px;
   }
+  .trace-card {
+    font-size: 12.5px;
+  }
+  .trace-head {
+    height: 34px;
+  }
+  .trace-lines li {
+    height: calc(var(--in, 1) * 24px);
+  }
 }
 
 /* Phones held upright. A phone on its side keeps the desktop arrangement with the compact type. */
 @media (max-width: 760px) and (orientation: portrait) {
+  /* The hero starts under the header like every stage, so its last line clears the printer. */
+  .stage-copy[data-stage="hero"] {
+    top: calc(var(--header) + 10px);
+  }
   .stage-copy p:not(.kick),
   .stage-copy p.lead {
     max-width: none;

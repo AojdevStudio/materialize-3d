@@ -1,19 +1,21 @@
 /**
  * Drives the story from the scroll. It maps the scroll offset to the story position P,
  * eases toward it, and on each frame poses the 3D scene and writes the copy, the part
- * labels, the readout, the agent log, and the rail. It draws only while P is still
- * moving, so nothing repaints while the reader is still.
+ * labels, the readout, the agent's trace card, and the rail. It draws only while P is
+ * still moving, so nothing repaints while the reader is still.
  *
  * React renders every element once. This module only sets their opacity, position,
- * and the readout's text, through the data attributes ScrollStory puts on them.
+ * and the text of the readout and the trace card, through the data attributes
+ * ScrollStory puts on them.
  */
 import type { Vector3 } from "three";
 import { loadModels } from "./assets";
 import { PRINT } from "./facts";
 import { StoryScene, type Palette, type Point, type PrinterPart } from "./scene";
 import {
+  COPY_STAGES,
   RAIL,
-  STAGES,
+  TRACE,
   clamp,
   copyAt,
   labelAlpha,
@@ -24,6 +26,7 @@ import {
   smoothstep,
   stageAt,
   storyFraction,
+  traceAt,
   trackLength,
   type Motion,
   type ReadoutView,
@@ -49,6 +52,12 @@ function text(element: HTMLElement, value: string) {
   if (element.textContent !== value) element.textContent = value;
 }
 
+/** How far a trace line is in. Its height and opacity follow it in CSS. */
+function lineIn(element: HTMLElement, amount: number) {
+  const value = amount < 0.004 ? "0" : Math.min(1, amount).toFixed(3);
+  if (element.style.getPropertyValue("--in") !== value) element.style.setProperty("--in", value);
+}
+
 type Label = { target: PrinterPart; element: HTMLElement; line: SVGPathElement; dot: SVGCircleElement; width: number; height: number };
 type Placed = { label: Label; alpha: number; anchor: Point; y: number };
 
@@ -71,7 +80,7 @@ function stack(placed: Placed[], gap: number, top: number, bottom: number) {
 export function startStory(root: HTMLElement, motion: Motion, onStatus: (status: string | null) => void): () => void {
   const canvas = pick(root, ".story-canvas", HTMLCanvasElement);
   const track = pick(root, ".story-track", HTMLElement);
-  const blocks = STAGES.map((stage) => ({ stage, element: pick(root, `[data-stage="${stage.id}"]`, HTMLElement), box: new DOMRect(), crowds: false }));
+  const blocks = COPY_STAGES.map((stage) => ({ stage, element: pick(root, `[data-stage="${stage.id}"]`, HTMLElement), box: new DOMRect(), crowds: false }));
   const readout = {
     box: pick(root, ".readout", HTMLElement),
     kick: pick(root, '[data-readout="kick"]', HTMLElement),
@@ -82,8 +91,14 @@ export function startStory(root: HTMLElement, motion: Motion, onStatus: (status:
     line: pick(root, '[data-readout="line"]', HTMLElement),
     note: pick(root, '[data-readout="note"]', HTMLElement),
   } satisfies Record<keyof ReadoutView | "box", HTMLElement>;
-  const log = pick(root, ".story-log", HTMLElement);
-  const logLines = STAGES.flatMap((stage) => (stage.log ? [{ id: stage.id, element: pick(log, `[data-log="${stage.id}"]`, HTMLElement) }] : []));
+  const traceBox = pick(root, ".story-trace", HTMLElement);
+  const trace = {
+    card: pick(traceBox, ".trace-card", HTMLElement),
+    kick: pick(traceBox, '[data-trace="kick"]', HTMLElement),
+    head: pick(traceBox, '[data-trace="head"]', HTMLElement),
+    count: pick(traceBox, '[data-trace="count"]', HTMLElement),
+    lines: TRACE.map((stage) => pick(traceBox, `[data-step="${stage.id}"]`, HTMLElement)),
+  };
   const params = pick(root, ".story-params", HTMLElement);
   const rail = pick(root, ".story-rail", HTMLElement);
   const railMark = pick(rail, ".rail-mark", HTMLElement);
@@ -98,9 +113,10 @@ export function startStory(root: HTMLElement, motion: Motion, onStatus: (status:
   /** px per vh, read from the track so it matches CSS even while a phone's toolbar slides. */
   let vh = 1;
   let top = 0;
-  /** Where the readout sits, and whether params.json reaches into it. */
+  /** Where the readout sits, and whether params.json or the full trace card reaches into it. */
   let readoutBox = new DOMRect();
   let paramsCrowd = false;
+  let traceCrowd = false;
   let P = 0;
   let target = 0;
   let raf = 0;
@@ -125,10 +141,12 @@ export function startStory(root: HTMLElement, motion: Motion, onStatus: (status:
 
   /**
    * A short screen has no room for every copy block above the readout. The readout steps aside
-   * while any copy, or params.json, that reaches into it is showing. Read with no lift on the copy.
+   * while any copy, params.json, or the trace card that reaches into it is showing. Read with no
+   * lift on the copy and every trace line in. The next frame puts them back.
    */
   function measureCrowding() {
     for (const { element } of blocks) element.style.transform = "";
+    for (const line of trace.lines) line.style.removeProperty("--in");
     readoutBox = readout.box.getBoundingClientRect();
     const crowds = (box: DOMRect) =>
       box.bottom + 16 > readoutBox.top && box.top < readoutBox.bottom && box.left < readoutBox.right && box.right > readoutBox.left;
@@ -137,6 +155,7 @@ export function startStory(root: HTMLElement, motion: Motion, onStatus: (status:
       block.crowds = crowds(block.box);
     }
     paramsCrowd = crowds(params.getBoundingClientRect());
+    traceCrowd = crowds(traceBox.getBoundingClientRect());
   }
 
   function measure(force: boolean) {
@@ -223,16 +242,25 @@ export function startStory(root: HTMLElement, motion: Motion, onStatus: (status:
 
   function frame() {
     const scrolled = window.scrollY - top;
-    // The end section slides up over the last stage. The readout, log, and rail leave as it comes.
+    // The end section slides up over the last stage. The readout and rail leave as it comes.
     const over = clamp((scrolled - (trackLength(motion) - 100) * vh) / (60 * vh));
     const hud = 1 - smoothstep(0, 0.5, over);
     const stage = stageAt(P);
     const overlays = overlaysAt(P);
+    const traceView = traceAt(P);
 
-    // The copy and the readout on screen, which the labels and sizes keep clear of, and how much
-    // of what the readout must not cover is showing.
+    // Write the trace first: the sizes below read where the card ends.
+    fade(traceBox, traceView.alpha * hud);
+    text(trace.kick, traceView.kick);
+    text(trace.head, traceView.head);
+    text(trace.count, traceView.count);
+    trace.card.toggleAttribute("data-done", traceView.done);
+    for (const [i, line] of trace.lines.entries()) lineIn(line, traceView.lines[i] ?? 0);
+
+    // The copy, the trace, and the readout on screen, which the labels and sizes keep clear of, and
+    // how much of what the readout must not cover is showing.
     const shown: DOMRect[] = [];
-    let cover = paramsCrowd ? overlays.params : 0;
+    let cover = Math.max(paramsCrowd ? overlays.params : 0, traceCrowd ? traceView.alpha : 0);
     for (const block of blocks) {
       const { alpha, y } = copyAt(block.stage, P, motion);
       fade(block.element, alpha * hud, y);
@@ -240,6 +268,8 @@ export function startStory(root: HTMLElement, motion: Motion, onStatus: (status:
       if (alpha * hud > 0.004) shown.push(block.box);
       if (block.crowds) cover = Math.max(cover, alpha);
     }
+    // The card shrinks as lines leave, so its box is read only while the sizes need it.
+    if (traceView.alpha > 0.004 && overlays.dimensions > 0.004) shown.push(traceBox.getBoundingClientRect());
     // The readout is gone before what it steps aside for is a third of the way in.
     const readoutAlpha = hud * (1 - smoothstep(0, 0.35, cover));
     const readoutShown = readoutAlpha > 0.004 && readoutBox.height > 0;
@@ -255,8 +285,6 @@ export function startStory(root: HTMLElement, motion: Motion, onStatus: (status:
     const view = readoutAt(P, PRINT);
     for (const key of ["kick", "kickNote", "value", "of", "unit", "line", "note"] as const) text(readout[key], view[key]);
     fade(readout.box, readoutAlpha);
-    fade(log, overlays.log * hud);
-    for (const line of logLines) line.element.toggleAttribute("data-on", line.id === stage.id);
     fade(params, overlays.params);
 
     fade(rail, hud);

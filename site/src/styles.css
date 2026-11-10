@@ -18,6 +18,11 @@
   --on-accent: #fff;
   --halo: rgba(248, 248, 246, 0.92);
   --focus: #89272c;
+  /* The studio's own surfaces: the trace card and the composer on the story */
+  --surface: #fff;
+  --surface-line: #dcdad5;
+  --surface-shadow: 0 1px 0 rgba(0, 0, 0, 0.04), 0 10px 24px -14px rgba(0, 0, 0, 0.25);
+  --done: #2e7d4f;
   --sans: "Inter", "Helvetica Neue", Helvetica, Arial, sans-serif;
   --mono: ui-monospace, "SF Mono", Menlo, Consolas, "DejaVu Sans Mono", "Liberation Mono", monospace;
   --pad: 48px;
@@ -33,6 +38,10 @@
   --accent-ink: #c4565b;
   --halo: rgba(0, 0, 0, 0.9);
   --focus: #fff;
+  --surface: #111;
+  --surface-line: rgba(255, 255, 255, 0.16);
+  --surface-shadow: none;
+  --done: #5cb985;
   color-scheme: dark;
 }
 
