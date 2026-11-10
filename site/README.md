@@ -68,7 +68,7 @@ The job reads two repository secrets, set in Settings > Secrets and variables > 
 - `CLOUDFLARE_API_TOKEN`
 - `CLOUDFLARE_ACCOUNT_ID`
 
-Deploys queue in order and never cancel each other. To deploy by hand as a fallback, for example when the runner is down, run this from `main`:
+A running deploy always finishes. When more merges land while one runs, only the newest waits. It deploys a `main` that holds all of them. To deploy by hand as a fallback, for example when the runner is down, run this from `main`:
 
 ```sh
 cd site && bun install --frozen-lockfile && bun run build
