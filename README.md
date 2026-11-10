@@ -6,7 +6,7 @@ Materialize 3D is a Mac app that makes 3D prints from a chat. You describe an ob
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/studio-dark.png">
-  <img src="docs/images/studio-light.png" alt="The Materialize 3D studio window. A sidebar on the left lists projects. The chat in the middle explains how the agent made a two-part desk phone stand and lists the checks that passed. The right panel shows the Guide tab with a 3D view of the stand and step 2 of 3 of its assembly guide." width="1440" height="900">
+  <img src="docs/images/studio-light.png" alt="The Materialize 3D studio window. A sidebar on the left lists projects. The chat in the middle explains how the agent made a two-part desk phone stand and lists the checks that passed. The right panel shows the Guide tab with a 3D view of the stand and step 2 of 3 of its assembly guide.">
 </picture>
 
 The picture and this README show the chat studio in version 0.3.0. That version is not released yet. The latest release is 0.2.2, the earlier sign app.
