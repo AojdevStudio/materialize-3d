@@ -18,6 +18,8 @@ export type Release = {
   /** Shown verbatim in the download label, e.g. "Apple Silicon". */
   architecture: string;
   bambuStudio: { version: string; releaseUrl: string };
+  /** Whether this download is the chat studio. While false, the hero says the studio is not in a release yet. */
+  studio: boolean;
 };
 
 export const release: Release = {
@@ -36,6 +38,7 @@ export const release: Release = {
     version: "02.08.02.61",
     releaseUrl: "https://github.com/bambulab/BambuStudio/releases/tag/v02.08.02.61",
   },
+  studio: false,
 };
 
 /** The page may say "signed and notarized by Apple" only when this is true. */

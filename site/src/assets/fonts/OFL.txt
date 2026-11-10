@@ -1,13 +1,11 @@
-Copyright 2014 The DM Sans Project Authors (https://github.com/googlefonts/dm-fonts)
-Copyright 2022 The Instrument Serif Project Authors (https://github.com/Instrument/instrument-serif)
-Copyright 2020 The JetBrains Mono Project Authors (https://github.com/JetBrains/JetBrainsMono)
+Copyright 2016 The Inter Project Authors (https://github.com/rsms/inter)
 
-Font files in this directory: DMSans-Regular.ttf, DMSans-Medium.ttf, DMSans-Bold.ttf,
-InstrumentSerif-Italic.ttf, JetBrainsMono-Regular.ttf
+Font file in this directory: Inter-Latin-Variable.woff2
 
 This Font Software is licensed under the SIL Open Font License, Version 1.1.
 This license is copied below, and is also available with a FAQ at:
 http://scripts.sil.org/OFL
+
 
 -----------------------------------------------------------
 SIL OPEN FONT LICENSE Version 1.1 - 26 February 2007

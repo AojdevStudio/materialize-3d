@@ -23,9 +23,72 @@ async function loadAllImages(page: Page) {
   });
 }
 
+/**
+ * Watches the hero for `ms` and returns what moved. Runs in the page on every frame, so it sees every change
+ * rather than samples: any DOM mutation on or inside the hero, any CSS animation or transition that starts or
+ * runs on it, inside it, or on an element around it, any shift in where the hero and its parts render, and the
+ * hero leaving the page.
+ */
+function watchHero(hero: Element, ms: number) {
+  const inside = (node: Node | null) => node !== null && (node === hero || hero.contains(node));
+  const around = (node: Node | null) => inside(node) || (node !== null && node.contains(hero));
+  const moved: string[] = [];
+  const note = (what: string) => {
+    if (moved.length < 5 && !moved.includes(what)) moved.push(what);
+  };
+  const parts = [hero, ...hero.querySelectorAll("img, svg, .ss-window, [class*='m3h-']")];
+  const where = (part: Element) => {
+    const box = part.getBoundingClientRect();
+    return `${box.x},${box.y},${box.width},${box.height}`;
+  };
+  const start = new Map(parts.map((part) => [part, where(part)]));
+  const runningNow = () =>
+    document.getAnimations().filter((animation) => {
+      const target = animation.effect instanceof KeyframeEffect ? animation.effect.target : null;
+      return animation.playState === "running" && around(target);
+    });
+  for (const animation of runningNow()) note(`running at the start: ${animation.constructor.name}`);
+  const observer = new MutationObserver((records) => {
+    for (const record of records) if (inside(record.target)) note(`${record.type} on ${record.target.nodeName}`);
+  });
+  observer.observe(hero, { subtree: true, attributes: true, childList: true, characterData: true });
+  const onStart = (event: Event) => {
+    if (around(event.target as Node)) note(`${event.type} on ${(event.target as Element).nodeName}`);
+  };
+  const starts = ["animationstart", "animationiteration", "transitionrun"] as const;
+  for (const type of starts) document.addEventListener(type, onStart, true);
+  return new Promise<string[]>((done) => {
+    const end = performance.now() + ms;
+    const frame = () => {
+      if (!hero.isConnected) note("the hero left the page");
+      for (const animation of runningNow()) note(`running: ${animation.constructor.name}`);
+      for (const part of parts) {
+        if (where(part) !== start.get(part)) note(`moved: ${part.nodeName}.${part.getAttribute("class") ?? ""}`);
+      }
+      if (performance.now() < end) return requestAnimationFrame(frame);
+      observer.disconnect();
+      for (const type of starts) document.removeEventListener(type, onStart, true);
+      done(moved);
+    };
+    requestAnimationFrame(frame);
+  });
+}
+
+/**
+ * The hero holds still: once Inter has loaded and the stage has mounted again for it (ProductHero), nothing in it
+ * changes, animates, or shifts for 6 s, longer than the loop's longest hold (4 s on the payoff).
+ */
+async function expectHeroHoldsStill(page: Page) {
+  await page.evaluate(() => document.fonts.ready.then(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)))));
+  const hero = page.locator(".hero-stage");
+  await expect.poll(() => hero.evaluate(watchHero, 1000), { message: "the hero settles", timeout: 15_000 }).toEqual([]);
+  expect(await hero.evaluate(watchHero, 6000), "what moved on, in, or around the hero in 6 s").toEqual([]);
+}
+
 const layouts = [
   { name: "desktop", width: 1440, height: 900 },
   { name: "mobile", width: 390, height: 844 },
+  { name: "small", width: 320, height: 640 },
 ] as const;
 
 for (const layout of layouts) {
@@ -119,7 +182,8 @@ test("keyboard reaches every link and the theme toggle with a visible focus ring
 });
 
 for (const theme of ["light", "dark"] as const) {
-  test(`axe reports no violations in ${theme} theme`, async ({ page }) => {
+  test(`axe reports no violations in ${theme} theme, with the hero on its finished frame`, async ({ page }) => {
+    await page.emulateMedia({ reducedMotion: "reduce" });
     await open(page);
     if (theme === "dark") {
       // Use the toggle, then reload: dark must be remembered and be pure black with white text.
@@ -140,16 +204,43 @@ for (const theme of ["light", "dark"] as const) {
 
 test("how it works tells the chat studio story in order, and the page says no release has it yet", async ({ page }) => {
   await open(page);
-  await expect(page.locator("#how .step h3")).toHaveText([
-    "Talk to it",
-    "Preview",
-    "Assembly guide",
-    "3MF to Bambu Studio",
-  ]);
+  await expect(page.locator("#how .tile-title")).toHaveText(["Describe", "Make", "Look", "Print"]);
   const text = await page.locator("body").innerText();
   expect(text).toContain("The chat studio is not in a release yet.");
   expect(text).toContain(`This download is ${release.version}, the earlier sign app.`);
   expect(text).not.toMatch(/\bMCP\b/);
+});
+
+for (const layout of layouts) {
+  test(`${layout.name} ${layout.width}: with reduced motion the hero shows the finished part and holds still`, async ({ page }) => {
+    await page.setViewportSize({ width: layout.width, height: layout.height });
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await open(page);
+    await page.evaluate(() => document.fonts.ready);
+    const hero = page.locator(".hero-stage");
+    const payoff = hero.getByText("2 print files ready").last();
+    expect(await payoff.evaluate((el) => el.checkVisibility({ opacityProperty: true })), "print files card shown").toBe(true);
+
+    const part = hero.locator('img[src*="dock-mount-model"]');
+    expect(await part.evaluate((el) => el.checkVisibility({ opacityProperty: true })), "model render shown").toBe(true);
+    const [partBox, heroBox] = await Promise.all([part.boundingBox(), hero.boundingBox()]);
+    if (!partBox || !heroBox) throw new Error("the model render or the hero has no layout box");
+    expect(partBox.x, "render starts inside the hero").toBeGreaterThanOrEqual(heroBox.x);
+    expect(partBox.x + partBox.width, "render ends inside the hero").toBeLessThanOrEqual(heroBox.x + heroBox.width);
+    expect(partBox.y + partBox.height, "render ends above the hero's foot").toBeLessThanOrEqual(heroBox.y + heroBox.height);
+
+    await expectHeroHoldsStill(page);
+  });
+}
+
+test("the pause control stops the hero on its finished frame", async ({ page }) => {
+  await open(page);
+  await page.getByRole("button", { name: "Pause animation" }).click();
+  await expect(page.getByRole("button", { name: "Play animation" })).toBeVisible();
+  const hero = page.locator(".hero-stage");
+  const payoff = hero.getByText("2 print files ready").last();
+  expect(await payoff.evaluate((el) => el.checkVisibility({ opacityProperty: true })), "print files card shown").toBe(true);
+  await expectHeroHoldsStill(page);
 });
 
 test("release claims match the release flags", async ({ page }) => {

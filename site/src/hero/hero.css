@@ -1,0 +1,660 @@
+/* The product hero: a faux Materialize 3D window built on the stageshow kit.
+   The product stays light in both page themes, the way the app opens. */
+
+.m3h .ss-stage {
+  overflow: hidden;
+  --ss-text-strong: #1b1b1b;
+  --ss-text: #6b6b6b;
+  --ss-text-faint: #737373;
+  --ss-success: #2e7d4f;
+  --ss-shadow-hero: 0 1px 0 rgba(0, 0, 0, 0.04), 0 0 0 1px #b9bab9, 0 24px 60px -24px rgba(0, 0, 0, 0.28);
+}
+
+/* The window fades out at its foot over the product's own filler. The mask
+   sits on a wrapper so the window keeps its shadow on the top and sides. */
+.m3h-fade {
+  position: absolute;
+  inset: 0;
+  padding: 24px 120px 0;
+  mask-image: linear-gradient(to bottom, #000 62%, transparent 99%);
+}
+
+/* Taller than the stage: the cut falls in the empty band above the
+   composer and the print files bar, which sit below the crop. */
+.m3h-window {
+  width: 100%;
+  height: 830px;
+  box-shadow: var(--ss-shadow-hero);
+}
+
+.m3h-window .ss-window__bar {
+  background: #f5f4f1;
+  border-bottom: 0;
+}
+
+.m3h-app {
+  display: grid;
+  grid-template-columns: 216px minmax(0, 1fr);
+  height: 100%;
+  color: var(--ss-text-strong);
+  font-size: 13px;
+}
+
+.m3h-glyph {
+  flex: none;
+  display: block;
+}
+
+.m3h-spacer {
+  flex: 1;
+}
+
+.m3h-placeholder {
+  color: var(--ss-text-faint);
+}
+
+/* Sidebar */
+.m3h-side {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  padding: 12px 8px 0;
+  background: #f5f4f1;
+  border-right: 1px solid #eceae5;
+}
+
+.m3h-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 4px 12px;
+  font-weight: 600;
+}
+
+.m3h-brand .m3h-glyph {
+  margin-left: auto;
+}
+
+.m3h-actions {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.m3h-search {
+  width: 28px;
+  margin-left: auto;
+  padding: 0;
+}
+
+.m3h-group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 4px;
+  font-weight: 500;
+}
+
+.m3h-count {
+  margin-left: auto;
+  color: var(--ss-text);
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.m3h-group {
+  margin-top: 4px;
+}
+
+.m3h-row {
+  --ss-row-title: 12.5px;
+  --ss-row-subtitle: 11px;
+  --ss-row-meta: 11px;
+}
+
+.m3h-row .ss-row__title {
+  color: var(--ss-text-strong);
+  font-weight: 500;
+}
+
+.m3h-row .ss-row__subtitle,
+.m3h-row .ss-row__meta {
+  color: #5c5c5c;
+}
+
+.m3h-side-foot {
+  display: flex;
+  gap: 12px;
+  margin-top: auto;
+  padding: 12px 4px 14px;
+  border-top: 1px solid #e6e4df;
+}
+
+/* Status marks: a still blue arc while working (nothing turns between beats),
+   a green check when ready, a gray check once printed */
+.m3h .ss-check__arc {
+  animation: none;
+  rotate: -90deg;
+}
+
+.m3h-status[data-status="working"] .ss-check__ring {
+  stroke: #c9d7f8;
+}
+
+.m3h-status[data-status="working"] .ss-check__arc {
+  stroke: #2563eb;
+}
+
+.m3h-status[data-status="printed"] .ss-check__fill {
+  fill: #6b6b6b;
+}
+
+.m3h-trace-mark .m3h-status {
+  transition: rotate 0.5s cubic-bezier(0.25, 0.8, 0.25, 1);
+}
+
+/* Main: the start screen and the chat share one place and crossfade */
+.m3h-main {
+  position: relative;
+  background: #fff;
+}
+
+.m3h-start,
+.m3h-chatview {
+  position: absolute;
+  inset: 0;
+  will-change: transform;
+  opacity: 0;
+  translate: 0 8px;
+  transition:
+    opacity 0.16s ease,
+    translate 0.4s cubic-bezier(0.25, 0.8, 0.25, 1);
+}
+
+/* The arriving screen waits for the leaving one to clear, so no text overlaps */
+.m3h-start[data-on],
+.m3h-chatview[data-on] {
+  opacity: 1;
+  translate: 0 0;
+  transition:
+    opacity 0.3s ease 0.14s,
+    translate 0.45s cubic-bezier(0.25, 0.8, 0.25, 1) 0.14s;
+}
+
+.m3h-start {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding-top: 170px;
+  background: #fafaf8;
+}
+
+.m3h-ask {
+  margin-bottom: 18px;
+  font-size: 24px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+
+.m3h-prompt {
+  width: 600px;
+  padding: 12px 10px 10px;
+  background: #fff;
+  border: 1px solid #e6e4df;
+  border-radius: 12px;
+  box-shadow: 0 2px 8px -4px rgba(0, 0, 0, 0.08);
+}
+
+.m3h-prompt-text {
+  min-height: 18px;
+  padding: 0 4px 12px;
+  font-size: 13px;
+  line-height: 18px;
+}
+
+.m3h-prompt-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.m3h-hint {
+  color: var(--ss-text);
+  font-size: 11.5px;
+}
+
+.m3h-chips {
+  display: flex;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.m3h-chip {
+  border-radius: 999px;
+}
+
+.m3h-chatview {
+  display: grid;
+  grid-template-columns: 408px minmax(0, 1fr);
+}
+
+/* Chat */
+.m3h-chat {
+  position: relative;
+  padding: 16px 20px 0;
+  border-right: 1px solid #eceae5;
+}
+
+.m3h-thread {
+  display: flex;
+  flex-direction: column;
+}
+
+.m3h-bubble {
+  align-self: flex-end;
+  max-width: 300px;
+  padding: 8px 12px;
+  background: #f0efeb;
+  border-radius: 12px;
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+
+.m3h-model {
+  margin: 14px 0 8px;
+  color: var(--ss-text);
+  font-size: 11.5px;
+}
+
+.m3h-trace-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 6px;
+  font-size: 12.5px;
+}
+
+.m3h-trace-mark {
+  color: var(--ss-text);
+}
+
+.m3h-trace-steps {
+  color: var(--ss-text);
+}
+
+.m3h-trace {
+  margin-left: 6px;
+  padding-left: 14px;
+  border-left: 1px solid #e6e4df;
+}
+
+.m3h-trace-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  color: var(--ss-text);
+  font-size: 12px;
+  line-height: 16px;
+  white-space: nowrap;
+}
+
+.m3h-trace-line svg {
+  flex: none;
+}
+
+.m3h-trace-title {
+  color: #3a3a3a;
+}
+
+.m3h-answer {
+  display: grid;
+  gap: 8px;
+  padding-top: 16px;
+}
+
+.m3h-answer-gap {
+  margin-top: 12px;
+}
+
+.m3h-answer-title {
+  margin-bottom: 4px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.m3h-composer {
+  position: absolute;
+  right: 20px;
+  bottom: 18px;
+  left: 20px;
+  display: grid;
+  gap: 12px;
+  padding: 12px 10px 10px 14px;
+  border: 1px solid #e6e4df;
+  border-radius: 12px;
+  font-size: 12.5px;
+}
+
+/* Right panel */
+.m3h-panel {
+  position: relative;
+  background: #fafaf8;
+}
+
+.m3h-empty,
+.m3h-guide {
+  position: absolute;
+  inset: 0;
+  transition: opacity 0.45s ease;
+}
+
+.m3h-empty {
+  padding: 14px 16px;
+  color: var(--ss-text);
+  font-size: 12.5px;
+}
+
+.m3h-empty:not([data-on]),
+.m3h-guide:not([data-on]) {
+  opacity: 0;
+}
+
+.m3h-guide {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.m3h-views {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 20px 0 16px;
+  font-size: 12px;
+}
+
+.m3h-popout {
+  color: var(--ss-text);
+}
+
+.m3h-guide-card {
+  flex: 1;
+  margin: 12px 16px 0;
+  background: #fff;
+  border: 1px solid #e6e4df;
+  border-radius: 10px;
+}
+
+.m3h-guide-head {
+  padding: 12px 14px;
+  border-bottom: 1px solid #eceae5;
+  font-weight: 600;
+}
+
+.m3h-render {
+  display: grid;
+  place-items: center;
+  height: 250px;
+  border-bottom: 1px solid #eceae5;
+}
+
+.m3h-render img {
+  width: auto;
+  height: 220px;
+}
+
+.m3h-guide-step {
+  display: grid;
+  gap: 8px;
+  padding: 14px 14px 18px;
+}
+
+.m3h-step-count {
+  color: #c2410c;
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.m3h-step-title {
+  margin-bottom: 4px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.m3h-printbar {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px;
+  background: #f4f8f4;
+  border-top: 1px solid #e6e4df;
+  translate: 0 100%;
+  will-change: transform;
+  transition: translate 0.6s cubic-bezier(0.25, 0.8, 0.25, 1);
+}
+
+.m3h-printbar[data-on] {
+  translate: 0 0;
+}
+
+.m3h-printbar-copy {
+  margin-right: auto;
+}
+
+.m3h-printbar-title {
+  font-weight: 500;
+}
+
+.m3h-printbar-sub {
+  margin-top: 3px;
+  color: var(--ss-text);
+  font-size: 11.5px;
+}
+
+/* The satellite: the print files card, arriving whole with the payoff */
+.m3h-card {
+  position: absolute;
+  top: 478px;
+  left: 24px;
+  width: 280px;
+  box-shadow: var(--ss-shadow-satellite);
+  opacity: 0;
+  translate: 0 -12px;
+  will-change: transform;
+  transition:
+    opacity 0.25s ease,
+    translate 0.3s ease;
+}
+
+.m3h-card[data-on] {
+  opacity: 1;
+  translate: 0 0;
+  transition:
+    opacity 0.5s ease 0.35s,
+    translate 0.9s cubic-bezier(0.25, 0.8, 0.25, 1) 0.35s;
+}
+
+.m3h-card-title {
+  font-weight: 600;
+}
+
+.m3h-card-sub,
+.m3h-file-contents {
+  margin-top: 3px;
+  color: var(--ss-text);
+  font-size: 11.5px;
+}
+
+.m3h-file-name {
+  font-size: 12.5px;
+}
+
+.m3h-card-actions {
+  display: grid;
+  gap: 8px;
+}
+
+/* Compact: one column in a window that runs off the right edge, which the
+   page puts on the screen's edge. The start screen and the chat, then the
+   guide slides in over the chat the way the app's right panel opens, and the
+   print files card straddles the window's foot. The views sit in the
+   visible 374px, so only empty window runs off. */
+.m3h .ss-stage[data-layout="compact"] .m3h-fade {
+  padding: 16px 0 0 16px;
+  mask-image: none;
+}
+
+/* A 16px inset has no room for the wide window's long shadow */
+.m3h .ss-stage[data-layout="compact"] .m3h-window {
+  width: 440px;
+  height: 360px;
+  box-shadow: 0 0 0 1px #b9bab9, 0 6px 14px -8px rgba(0, 0, 0, 0.22);
+}
+
+.m3h .ss-stage[data-layout="compact"] .m3h-app {
+  grid-template-columns: 374px;
+}
+
+.m3h .ss-stage[data-layout="compact"] .m3h-side,
+.m3h .ss-stage[data-layout="compact"] .m3h-composer .ss-button:not([data-variant="primary"]),
+.m3h .ss-stage[data-layout="compact"] .m3h-hint,
+.m3h .ss-stage[data-layout="compact"] .m3h-trace-detail,
+.m3h .ss-stage[data-layout="compact"] .m3h-answer-slot,
+.m3h .ss-stage[data-layout="compact"] .m3h-empty,
+.m3h .ss-stage[data-layout="compact"] .m3h-views,
+.m3h .ss-stage[data-layout="compact"] .m3h-printbar,
+.m3h .ss-stage[data-layout="compact"] .m3h-guide-step .ss-bar:nth-of-type(n + 4),
+.m3h .ss-stage[data-layout="compact"] .m3h-file {
+  display: none;
+}
+
+.m3h .ss-stage[data-layout="compact"] .m3h-main {
+  overflow: hidden;
+}
+
+.m3h .ss-stage[data-layout="compact"] .m3h-chatview {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+/* With no sidebar beside them, the screens overlap their fades so the window
+   never shows empty. Their words sit in different rows, so none overlap. */
+.m3h .ss-stage[data-layout="compact"] .m3h-start[data-on],
+.m3h .ss-stage[data-layout="compact"] .m3h-chatview[data-on] {
+  transition-delay: 0.04s;
+}
+
+.m3h .ss-stage[data-layout="compact"] .m3h-chat {
+  padding: 16px 16px 0;
+  border-right: 0;
+}
+
+.m3h .ss-stage[data-layout="compact"] .m3h-bubble {
+  max-width: 270px;
+  font-size: 12px;
+}
+
+.m3h .ss-stage[data-layout="compact"] .m3h-model {
+  margin: 10px 0 6px;
+}
+
+/* One row: the request and Send, so the trace has room above it */
+.m3h .ss-stage[data-layout="compact"] .m3h-composer {
+  right: 16px;
+  bottom: 16px;
+  left: 16px;
+  display: flex;
+  align-items: center;
+  padding: 10px 10px 10px 14px;
+}
+
+.m3h .ss-stage[data-layout="compact"] .m3h-composer .m3h-prompt-row {
+  flex: 1;
+}
+
+.m3h .ss-stage[data-layout="compact"] .m3h-trace-line {
+  padding: 3px 0;
+}
+
+.m3h .ss-stage[data-layout="compact"] .m3h-start {
+  justify-content: center;
+  padding: 0 16px;
+}
+
+.m3h .ss-stage[data-layout="compact"] .m3h-ask {
+  font-size: 18px;
+}
+
+.m3h .ss-stage[data-layout="compact"] .m3h-chips {
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.m3h .ss-stage[data-layout="compact"] .m3h-prompt {
+  width: 100%;
+}
+
+/* Two lines, so the placeholder and the typed request share one height */
+.m3h .ss-stage[data-layout="compact"] .m3h-prompt-text {
+  min-height: 48px;
+}
+
+.m3h .ss-stage[data-layout="compact"] .m3h-panel {
+  position: absolute;
+  inset: 0;
+  translate: 100% 0;
+  box-shadow: -1px 0 0 #e6e4df;
+  will-change: transform;
+  transition: translate 0.6s cubic-bezier(0.25, 0.8, 0.25, 1);
+}
+
+.m3h .ss-stage[data-layout="compact"] .m3h-panel[data-open] {
+  translate: 0 0;
+}
+
+.m3h .ss-stage[data-layout="compact"] .m3h-guide-card {
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+}
+
+.m3h .ss-stage[data-layout="compact"] .m3h-guide-head {
+  padding: 12px 16px;
+}
+
+.m3h .ss-stage[data-layout="compact"] .m3h-render {
+  height: 162px;
+}
+
+.m3h .ss-stage[data-layout="compact"] .m3h-render img {
+  height: 150px;
+}
+
+.m3h .ss-stage[data-layout="compact"] .m3h-guide-step {
+  gap: 6px;
+  padding: 12px 16px;
+}
+
+/* The step text starts under the print files card's top edge */
+.m3h .ss-stage[data-layout="compact"] .m3h-step-title {
+  margin-bottom: 10px;
+  font-size: 14px;
+}
+
+/* Its center sits just inside the window, and the window's foot crosses it
+   in the gap above the buttons */
+.m3h .ss-stage[data-layout="compact"] .m3h-card {
+  top: 317px;
+  left: 32px;
+  width: 342px;
+}
+
+.m3h .ss-stage[data-layout="compact"] .m3h-card-actions {
+  display: flex;
+  margin-top: 10px;
+}

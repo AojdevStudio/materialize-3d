@@ -24,6 +24,8 @@ The sidebar icons in `src/assets/icons/` are by Streamline (https://www.streamli
 | Rating star | `src/assets/icons/rating-star.svg` |
 | Module three | `src/assets/icons/module-three.svg` |
 
+The landing site in `site/` draws the app's outline icons from Streamline (https://www.streamlinehq.com) in its hero, in `site/src/assets/landing/line-*.svg`. They are licensed under the Creative Commons Attribution 4.0 International License (CC BY 4.0, https://creativecommons.org/licenses/by/4.0/).
+
 The Attach icon, `src/assets/icons/attach.svg`, is Streamline's Form Edition Image Attach icon from its Freehand Color set, under the same CC BY 4.0 license. Its black parts were changed to draw in the current text color, so it shows in dark mode. Its blue stays as Streamline drew it.
 
 The run trace icons in `src/assets/icons/` are by Lucide (https://lucide.dev), from lucide-static 1.70.0, under the ISC License. The terminal icon comes from Feather by Cole Bemis, under the MIT License. Both licenses are reproduced at the end of this file. The files are as Lucide ships them.

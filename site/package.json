@@ -5,11 +5,12 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build",
+    "build": "tsc -b && vite build",
     "preview": "vite preview",
     "test": "playwright test"
   },
   "dependencies": {
+    "lucide-react": "0.468.0",
     "react": "^19.3.0",
     "react-dom": "^19.3.0"
   },
