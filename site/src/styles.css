@@ -421,9 +421,44 @@ ul {
   color: var(--muted);
   text-decoration: none;
 }
-.site-footer nav a:hover {
+.site-footer nav a:hover,
+.site-legal a:hover {
   color: var(--ink);
   text-decoration: underline;
+}
+/* Under a rule, the legal line: the copyright, then the blog, privacy, and license links */
+.site-legal {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 24px;
+  width: 100%;
+  margin-top: 12px;
+  padding-top: 16px;
+  border-top: 1px solid var(--rule);
+}
+.site-legal a {
+  color: var(--muted);
+  text-decoration: none;
+}
+.site-legal a[aria-current] {
+  color: var(--ink);
+}
+
+/* The privacy page: the header, one statement, and the footer */
+.privacy {
+  min-height: 70vh;
+  padding: calc(var(--header) + 72px) var(--pad) 96px;
+}
+.privacy h1 {
+  font-size: clamp(20px, 2.4vw, 34px);
+  font-weight: 300;
+  letter-spacing: 0.36em;
+  text-transform: uppercase;
+}
+.privacy p {
+  max-width: 560px;
+  margin-top: 20px;
+  font-size: 16px;
 }
 
 @media (max-width: 1024px) {

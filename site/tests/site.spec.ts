@@ -1,7 +1,7 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
 import path from "node:path";
-import { appleTrusted, checksumPublished, externalLinks, release } from "../src/release";
+import { appleTrusted, blogUrl, checksumPublished, externalLinks, licenseUrl, release } from "../src/release";
 import { STAGES, at, type StageId } from "../src/story/timeline";
 
 type Theme = "light" | "dark";
@@ -431,6 +431,41 @@ test("search and share tags point at the live site, and robots, sitemap, and sha
     expect(response.headers()["content-type"], file).toContain(type);
   }
 });
+
+const legalLine = (page: Page) =>
+  page.locator(".site-legal > *").evaluateAll((items) => items.map((item) => [item.textContent, item.getAttribute("href")]));
+
+test("the footer's legal line links the blog, the privacy page, and the license", async ({ page }) => {
+  await open(page);
+  expect(await legalLine(page)).toEqual([
+    ["© 2026 AOJDevStudios", null],
+    ["Blog", blogUrl],
+    ["Privacy", "/materialize-3d/privacy"],
+    ["MIT license", licenseUrl],
+  ]);
+});
+
+for (const theme of ["light", "dark"] as const) {
+  test(`the privacy page is served at /privacy with the site's header and footer, in ${theme} theme`, async ({ page, request }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    if (theme === "dark") await page.addInitScript(() => localStorage.setItem("m3d-theme", "dark"));
+    await page.goto("./privacy");
+    await expect(page).toHaveTitle("Materialize 3D: privacy");
+    await expect(page.locator("main h1")).toHaveText("Privacy");
+    await expect(page.locator("main p")).toHaveText(
+      "This page sets no cookies and runs no analytics. It saves your light or dark choice in your browser. Cloudflare hosts the page. Downloads come from GitHub.",
+    );
+    await expect(page.locator(".site-header a.lockup")).toHaveAttribute("href", "/materialize-3d/");
+    await expect(page.getByRole("button", { name: "Dark mode" })).toHaveAttribute("aria-pressed", String(theme === "dark"));
+    await expect(page.locator(".site-legal a[aria-current='page']")).toHaveText("Privacy");
+    const size = await page.evaluate(() => ({ scrollWidth: document.documentElement.scrollWidth, clientWidth: document.documentElement.clientWidth }));
+    expect(size.scrollWidth).toBeLessThanOrEqual(size.clientWidth);
+    const results = await new AxeBuilder({ page }).analyze();
+    expect(results.violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.target).join(", ")}`)).toEqual([]);
+    await page.screenshot({ path: path.join(shotsDir, `privacy-390-${theme}.png`), fullPage: true });
+    expect(await (await request.get("sitemap.xml")).text(), "the sitemap lists the privacy page").toContain("<loc>https://materialize-3d.pages.dev/privacy</loc>");
+  });
+}
 
 test("release claims match the release flags", async ({ page }) => {
   await open(page);

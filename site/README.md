@@ -33,6 +33,8 @@ The page is a scroll story Ossie picked: one 3D printer is the spine, and the sc
 5. The rewind, 13:58 back to 0:00. The studio's own trace card stands in for the words: the six steps of the agent's turn, a line leaving from the bottom at each step back (the slices, the assembly guide, the revision C adapter, the five parts, the drawing, params.json). It ends on the studio's start screen with the request typed.
 6. The end section: download, release facts, how it works, requirements, and install.
 
+The footer ends with a legal line: the copyright, the blog, the privacy page, and the MIT license.
+
 Light is the default, a paper-white page with oxblood as the one accent. The dark mode toggle is remembered in `localStorage` and uses true black with white text. All text is DOM text, and axe checks it in both themes.
 
 The story lives in `src/story/`:
@@ -69,13 +71,17 @@ The trace card and the composer use Lucide line icons (ISC) from lucide-static 1
 
 ## Search and sharing
 
-`index.html` carries the description, the canonical URL, and the Open Graph and Twitter card tags. Every URL in them is absolute and points at `https://materialize-3d.pages.dev/`. Vite copies `public/` into the root of `dist/` as is: `robots.txt` allows all crawlers and names the sitemap, `sitemap.xml` lists the one page, and `og-image.png` is the 1200 by 630 share image. Remake the image from the repository root with this command:
+`index.html` carries the description, the canonical URL, and the Open Graph and Twitter card tags. Every URL in them is absolute and points at `https://materialize-3d.pages.dev/`. Vite copies `public/` into the root of `dist/` as is: `robots.txt` allows all crawlers and names the sitemap, `sitemap.xml` lists the page and the privacy page, and `og-image.png` is the 1200 by 630 share image. Remake the image from the repository root with this command:
 
 ```sh
 magick docs/images/studio-light.png -resize 1152x582 -background '#CFD0CF' -gravity center -extent 1200x630 -strip site/public/og-image.png
 ```
 
 The tags and files go live with the next production deployment.
+
+## Privacy page
+
+`privacy.html` is the second page the build makes, with `src/privacy.tsx` as its entry. It shares the header and footer components with the landing page. The build writes `dist/privacy.html`, which Cloudflare Pages and `vite preview` both serve at `/privacy`. Each claim on it holds in the code: the site sets no cookies and loads no analytics, the theme toggle is the one thing it stores in the browser (`localStorage`), Cloudflare Pages hosts it, and the download links point at GitHub releases. Check them again before you add a script, a font host, or a form.
 
 ## Tests
 
@@ -84,7 +90,9 @@ The tags and files go live with the next production deployment.
 - no horizontal overflow at 1440, 390, and 320 px in both themes, at the top and at the end section
 - the download link is the first action and points at the configured DMG
 - every in-page anchor and internal link resolves under the base path
-- off-site links are exactly the configured set
+- off-site links are exactly the configured set, the blog and license links included
+- the footer's legal line reads © 2026 AOJDevStudios, then Blog, Privacy, and MIT license
+- the privacy page is served at `/privacy` with its text, the shared header and footer, and no axe violations, in both themes, and the sitemap lists it
 - keyboard focus reaches every link and button, with a visible focus ring
 - axe finds no violations in either theme
 - How it works shows Describe, Make, Look, and Print in order, and the page says no release has the studio yet
