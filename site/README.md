@@ -42,6 +42,8 @@ The story lives in `src/story/`:
 - `facts.ts` reads the dock mount's sizes from `dock-data.json` once. `assets.ts` loads the GLBs and the slice outlines once.
 - `scene.ts` is the three.js scene. `director.ts` maps the scroll to the story position and writes the copy, labels, readout, log, and rail. `ScrollStory.tsx` renders all of it as DOM.
 
+Short and narrow screens keep every line readable. Below 1024 px wide the agent log hides, since the readout carries its line and clock, and params.json moves beside the copy. On a short screen the readout steps aside while a copy block it would cover is showing, and below 540 px tall it hides. A phone held sideways keeps the desktop arrangement with the phone type.
+
 three.js, the models, and the slice outlines load in their own chunk after the page shows. The page draws only while the story position moves, so nothing repaints while the reader is still. Under reduced motion each stage is one still: the scroll steps from stage to stage, and nothing moves in between.
 
 ## The 3D models
@@ -86,6 +88,7 @@ The tags and files go live at the next manual deploy.
 - How it works shows Describe, Make, Look, and Print in order, and the page says no release has the studio yet
 - with reduced motion, each stage shows only its own copy, in order, and nothing moves while scrolling through it
 - the teardown labels never overlap and stay on screen, at 1440 and 390
+- no text covers other text at 1440 x 600, 844 x 390, and 768 x 1024, in any stage or as the end section comes up
 - the readout follows the scroll: parts lifted, then Z height, then the rewind clock
 - no signing or notarization claim appears while the flags are false
 - the head carries the canonical URL and an absolute share image, and the preview serves `robots.txt`, `sitemap.xml`, and `og-image.png` as real files

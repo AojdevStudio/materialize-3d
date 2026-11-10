@@ -30,7 +30,7 @@ import {
   type StageId,
 } from "./timeline";
 
-/** Below this width the story uses its phone framing. Matches the stylesheet's breakpoint. */
+/** Below this width, held upright, the story uses its phone framing. Matches the stylesheet's phone layout. */
 const PHONE = 760;
 
 function pick<T extends Element>(root: ParentNode, selector: string, kind: new () => T): T {
@@ -71,7 +71,7 @@ function stack(placed: Placed[], gap: number, top: number, bottom: number) {
 export function startStory(root: HTMLElement, motion: Motion, onStatus: (status: string | null) => void): () => void {
   const canvas = pick(root, ".story-canvas", HTMLCanvasElement);
   const track = pick(root, ".story-track", HTMLElement);
-  const blocks = STAGES.map((stage) => ({ stage, element: pick(root, `[data-stage="${stage.id}"]`, HTMLElement) }));
+  const blocks = STAGES.map((stage) => ({ stage, element: pick(root, `[data-stage="${stage.id}"]`, HTMLElement), box: new DOMRect(), crowds: false }));
   const readout = {
     box: pick(root, ".readout", HTMLElement),
     kick: pick(root, '[data-readout="kick"]', HTMLElement),
@@ -91,13 +91,16 @@ export function startStory(root: HTMLElement, motion: Motion, onStatus: (status:
 
   let scene: StoryScene | null = null;
   let labels: Label[] = [];
-  let dimensions: { point: Vector3; vertical: boolean; element: HTMLElement; width: number }[] = [];
+  let dimensions: { point: Vector3; vertical: boolean; element: HTMLElement; width: number; height: number }[] = [];
   let width = 0;
   let height = 0;
   let phone = false;
   /** px per vh, read from the track so it matches CSS even while a phone's toolbar slides. */
   let vh = 1;
   let top = 0;
+  /** Where the readout sits, and whether params.json reaches into it. */
+  let readoutBox = new DOMRect();
+  let paramsCrowd = false;
   let P = 0;
   let target = 0;
   let raf = 0;
@@ -117,24 +120,42 @@ export function startStory(root: HTMLElement, motion: Motion, onStatus: (status:
 
   function forgetSizes() {
     for (const label of labels) label.width = label.height = 0;
-    for (const dimension of dimensions) dimension.width = 0;
+    for (const dimension of dimensions) dimension.width = dimension.height = 0;
+  }
+
+  /**
+   * A short screen has no room for every copy block above the readout. The readout steps aside
+   * while any copy, or params.json, that reaches into it is showing. Read with no lift on the copy.
+   */
+  function measureCrowding() {
+    for (const { element } of blocks) element.style.transform = "";
+    readoutBox = readout.box.getBoundingClientRect();
+    const crowds = (box: DOMRect) =>
+      box.bottom + 16 > readoutBox.top && box.top < readoutBox.bottom && box.left < readoutBox.right && box.right > readoutBox.left;
+    for (const block of blocks) {
+      block.box = block.element.getBoundingClientRect();
+      block.crowds = crowds(block.box);
+    }
+    paramsCrowd = crowds(params.getBoundingClientRect());
   }
 
   function measure(force: boolean) {
     vh = track.offsetHeight / trackLength(motion);
     top = root.getBoundingClientRect().top + window.scrollY;
+    measureCrowding();
     const w = window.innerWidth;
     const h = window.innerHeight;
     // A phone's toolbar sliding in and out changes only the height a little. Keep the frame steady then.
     if (!force && phone && w === width && Math.abs(h - height) < 120) return;
     width = w;
     height = h;
-    phone = w < PHONE;
+    phone = w < PHONE && h >= w;
     scene?.resize(width, height, phone);
     forgetSizes();
   }
 
-  function placeLabels(scene: StoryScene) {
+  /** Lays out the teardown labels. A column that would run into the readout, `avoid`, stops above it. */
+  function placeLabels(scene: StoryScene, avoid: DOMRect | null) {
     const bounds = scene.explodedBounds();
     const columns: Record<"left" | "right", Placed[]> = { left: [], right: [] };
     const widest = { left: 0, right: 0 };
@@ -159,7 +180,9 @@ export function startStory(root: HTMLElement, motion: Motion, onStatus: (status:
     const gap = phone ? 17 : 24;
     for (const side of ["left", "right"] as const) {
       const column = columns[side].sort((a, b) => a.anchor.y - b.anchor.y);
-      stack(column, gap, phone ? 64 : 84, height - (phone ? 16 : 24));
+      const [from, to] = side === "right" ? [right, right + widest.right] : [left - widest.left, left];
+      const floor = height - (phone ? 16 : 24);
+      stack(column, gap, phone ? 64 : 84, avoid && from < avoid.right && to > avoid.left ? Math.min(floor, avoid.top - 16) : floor);
       for (const { label, alpha, anchor, y } of column) {
         const x = side === "right" ? right : left - label.width;
         const end = side === "right" ? right - 8 : left + 8;
@@ -178,15 +201,23 @@ export function startStory(root: HTMLElement, motion: Motion, onStatus: (status:
     }
   }
 
-  function placeDimensions(scene: StoryScene, alpha: number) {
+  /** Places the drawing's sizes. On a small screen a size that would cover `text` on screen steps aside. */
+  function placeDimensions(scene: StoryScene, alpha: number, text: readonly DOMRect[]) {
     for (const dimension of dimensions) {
-      fade(dimension.element, alpha);
-      if (alpha <= 0.004) continue;
-      if (!dimension.width) dimension.width = dimension.element.offsetWidth;
+      if (alpha <= 0.004) {
+        fade(dimension.element, 0);
+        continue;
+      }
+      if (!dimension.width) {
+        dimension.width = dimension.element.offsetWidth;
+        dimension.height = dimension.element.offsetHeight;
+      }
       const at = scene.dimensionAnchor(dimension.point, { x: 0, y: 0 });
-      const x = dimension.vertical ? at.x + 10 : at.x - dimension.width / 2;
+      const x = clamp(dimension.vertical ? at.x + 10 : at.x - dimension.width / 2, 6, width - dimension.width - 6);
       const y = dimension.vertical ? at.y - 7 : at.y + (dimension.point.y > 0 ? -21 : 7);
-      dimension.element.style.transform = `translate3d(${clamp(x, 6, width - dimension.width - 6).toFixed(1)}px, ${y.toFixed(1)}px, 0)`;
+      dimension.element.style.transform = `translate3d(${x.toFixed(1)}px, ${y.toFixed(1)}px, 0)`;
+      const covers = text.some((box) => x < box.right && x + dimension.width > box.left && y < box.bottom && y + dimension.height > box.top);
+      fade(dimension.element, covers ? 0 : alpha);
     }
   }
 
@@ -198,21 +229,32 @@ export function startStory(root: HTMLElement, motion: Motion, onStatus: (status:
     const stage = stageAt(P);
     const overlays = overlaysAt(P);
 
+    // The copy and the readout on screen, which the labels and sizes keep clear of, and how much
+    // of what the readout must not cover is showing.
+    const shown: DOMRect[] = [];
+    let cover = paramsCrowd ? overlays.params : 0;
+    for (const block of blocks) {
+      const { alpha, y } = copyAt(block.stage, P, motion);
+      fade(block.element, alpha * hud, y);
+      block.element.style.pointerEvents = alpha * hud > 0.5 ? "auto" : "none";
+      if (alpha * hud > 0.004) shown.push(block.box);
+      if (block.crowds) cover = Math.max(cover, alpha);
+    }
+    // The readout is gone before what it steps aside for is a third of the way in.
+    const readoutAlpha = hud * (1 - smoothstep(0, 0.35, cover));
+    const readoutShown = readoutAlpha > 0.004 && readoutBox.height > 0;
+    if (readoutShown) shown.push(readoutBox);
+
     if (scene) {
       scene.pose(P);
       scene.render();
-      placeLabels(scene);
-      placeDimensions(scene, overlays.dimensions);
-    }
-    for (const { stage: blockStage, element } of blocks) {
-      const { alpha, y } = copyAt(blockStage, P, motion);
-      fade(element, alpha * hud, y);
-      element.style.pointerEvents = alpha * hud > 0.5 ? "auto" : "none";
+      placeLabels(scene, readoutShown ? readoutBox : null);
+      placeDimensions(scene, overlays.dimensions, shown);
     }
 
     const view = readoutAt(P, PRINT);
     for (const key of ["kick", "kickNote", "value", "of", "unit", "line", "note"] as const) text(readout[key], view[key]);
-    fade(readout.box, hud);
+    fade(readout.box, readoutAlpha);
     fade(log, overlays.log * hud);
     for (const line of logLines) line.element.toggleAttribute("data-on", line.id === stage.id);
     fade(params, overlays.params);
@@ -276,6 +318,7 @@ export function startStory(root: HTMLElement, motion: Motion, onStatus: (status:
   root.addEventListener("focusin", onFocus);
   void document.fonts.ready.then(() => {
     forgetSizes();
+    measureCrowding();
     invalidate();
   });
 
@@ -302,6 +345,7 @@ export function startStory(root: HTMLElement, motion: Motion, onStatus: (status:
         vertical: dimension.offset[0] !== 0,
         element: pick(root, `[data-dimension="${i}"]`, HTMLElement),
         width: 0,
+        height: 0,
       }));
       scene = loaded;
       onStatus(null);

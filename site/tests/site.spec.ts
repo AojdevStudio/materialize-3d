@@ -221,6 +221,62 @@ for (const layout of layouts.slice(0, 2)) {
   });
 }
 
+/**
+ * Every pair of text blocks on screen whose text boxes overlap. A block is the header's lockup or toggle, a stage's
+ * copy, the readout, the log, params.json, the rail, the part labels, the drawing's sizes, or the end section.
+ */
+const textOverlaps = (page: Page) =>
+  page.evaluate(() => {
+    const opacity = (el: Element | null): number => (el ? Number(getComputedStyle(el).opacity) * opacity(el.parentElement) : 1);
+    const header = document.querySelector(".site-header");
+    const end = document.querySelector(".end");
+    if (!header || !end) throw new Error("the page has no header or end section");
+    // A solid header covers what scrolls under it. The end section is opaque and slides over the story.
+    const top = header.hasAttribute("data-solid") ? header.getBoundingClientRect().bottom : 0;
+    const storyBottom = Math.min(innerHeight, end.getBoundingClientRect().top);
+    const range = document.createRange();
+    const blocks = [...document.querySelectorAll(".site-header > *, .stage-copy, .readout, .story-log, .story-params, .story-rail, .story-labels, .story-dimensions, .end")]
+      .filter((block) => opacity(block) > 0.05)
+      .map((block) => {
+        const inHeader = header.contains(block);
+        const bottom = block.closest(".story-view") ? storyBottom : innerHeight;
+        const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
+        const rects: DOMRect[] = [...block.querySelectorAll(".cta-primary")].map((cta) => cta.getBoundingClientRect());
+        for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+          if (!node.textContent?.trim() || opacity(node.parentElement) <= 0.05) continue;
+          range.selectNodeContents(node);
+          rects.push(...range.getClientRects());
+        }
+        const boxes = rects
+          .map((r) => ({ left: Math.max(r.left, 0), right: Math.min(r.right, innerWidth), top: Math.max(r.top, inHeader ? 0 : top), bottom: Math.min(r.bottom, bottom) }))
+          .filter((b) => b.right - b.left > 1 && b.bottom - b.top > 1);
+        return { name: block.getAttribute("data-stage") ?? block.className.split(" ")[0] ?? "", boxes };
+      });
+    return blocks.flatMap((a, i) =>
+      blocks
+        .slice(i + 1)
+        .filter((b) => a.boxes.some((p) => b.boxes.some((q) => p.left < q.right - 1 && q.left < p.right - 1 && p.top < q.bottom - 1 && q.top < p.bottom - 1)))
+        .map((b) => `${a.name} covers ${b.name}`),
+    );
+  });
+
+test("no text covers other text on short, landscape, and tablet screens, in any stage or at the end", async ({ page }) => {
+  test.slow(); // three sizes, twelve stops each, and the 3D view may draw in software
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  const found: string[] = [];
+  for (const size of [{ width: 1440, height: 600 }, { width: 844, height: 390 }, { width: 768, height: 1024 }]) {
+    await page.setViewportSize(size);
+    await open(page);
+    await storyReady(page);
+    // One stop per stage still, then the end section coming up over the last stage.
+    for (const [i, stop] of [...STAGES.map((stage) => stage.id), "end"].entries()) {
+      await scrollStory(page, i * 100 + (stop === "end" ? 15 : 30));
+      for (const pair of await textOverlaps(page)) found.push(`${size.width}x${size.height} ${stop}: ${pair}`);
+    }
+  }
+  expect(found).toEqual([]);
+});
+
 test("the readout follows the scroll: parts lifted, then Z height, then the rewind clock", async ({ page }) => {
   test.slow(); // the eased scroll settles over many frames when the 3D view draws in software
   await open(page);

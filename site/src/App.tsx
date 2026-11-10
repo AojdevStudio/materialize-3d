@@ -62,21 +62,21 @@ const installSteps = [
   </>,
 ];
 
-/** Height of the fixed header. */
-const HEADER = 64;
-
 /**
  * The header is clear over the story and turns solid once the end section slides under it.
- * It checks a one-pixel mark at the top of the end section on every scroll and resize, because
- * an instant jump can carry the mark past the viewport without an intersection change.
+ * It checks a one-pixel mark at the top of the end section against the header's own bottom edge
+ * on every scroll and resize, because an instant jump can carry the mark past the viewport
+ * without an intersection change, and the header is shorter on phones.
  */
 function useSolidHeader() {
+  const header = useRef<HTMLElement>(null);
   const mark = useRef<HTMLSpanElement>(null);
   const [solid, setSolid] = useState(false);
   useEffect(() => {
+    const bar = header.current;
     const element = mark.current;
-    if (!element) return;
-    const update = () => setSolid(element.getBoundingClientRect().top < HEADER);
+    if (!bar || !element) return;
+    const update = () => setSolid(element.getBoundingClientRect().top < bar.getBoundingClientRect().bottom);
     update();
     window.addEventListener("scroll", update, { passive: true });
     window.addEventListener("resize", update);
@@ -85,17 +85,17 @@ function useSolidHeader() {
       window.removeEventListener("resize", update);
     };
   }, []);
-  return [mark, solid] as const;
+  return [header, mark, solid] as const;
 }
 
 export function App() {
-  const [endMark, solid] = useSolidHeader();
+  const [header, endMark, solid] = useSolidHeader();
   return (
     <>
       <a className="skip-link" href="#download">
         Skip to the download
       </a>
-      <header className="site-header" data-solid={solid || undefined}>
+      <header ref={header} className="site-header" data-solid={solid || undefined}>
         <a className="lockup" href="#top" aria-label="Materialize 3D, back to top">
           <svg viewBox="0 0 18 18" aria-hidden="true">
             <path d="M9 1.5 16 5.2v7.6L9 16.5 2 12.8V5.2z" />

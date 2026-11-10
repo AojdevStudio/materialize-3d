@@ -275,9 +275,12 @@ export function labelAlpha(part: Part, P: number): number {
 /** The mount fades away as the story rewinds past the drawing into params.json. */
 export const mountAlpha = (P: number) => 1 - ramp("params", 0.05, 0.55, P);
 
-/** The overlays that are not a stage's own copy: the drawing's dimensions, the agent log, and params.json. */
+/**
+ * The overlays that are not a stage's own copy: the drawing's dimensions, the agent log, and params.json.
+ * The dimensions are gone before params.json fades in over the same spot.
+ */
 export const overlaysAt = (P: number) => ({
-  dimensions: ramp("drawing", 0.5, 0.78, P) * mountAlpha(P),
+  dimensions: ramp("drawing", 0.5, 0.78, P) * (1 - ramp("params", 0.05, 0.3, P)),
   log: ramp("guide", 0.3, 0.5, P) * (1 - ramp("request", 0.02, 0.2, P)),
   params: ramp("params", 0.3, 0.6, P) * (1 - ramp("request", 0, 0.16, P)),
 });
