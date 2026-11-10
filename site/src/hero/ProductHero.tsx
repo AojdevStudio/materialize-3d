@@ -85,7 +85,8 @@ async function script(a: Act<Scene>) {
   await a.wait(300);
 }
 
-export function ProductHero() {
+/** Paused, the stage drops its script and shows the poster, the way reduced motion does. */
+export function ProductHero({ paused }: { paused: boolean }) {
   // The kit measures its labels when it mounts, so it mounts again once Inter has loaded.
   const [fontsReady, setFontsReady] = useState(false);
   useEffect(() => {
@@ -93,13 +94,13 @@ export function ProductHero() {
   }, []);
   return (
     <Stage<Scene>
-      key={fontsReady ? "fonts-ready" : "fonts-loading"}
+      key={`${fontsReady ? "fonts-ready" : "fonts-loading"}-${paused ? "still" : "playing"}`}
       width={1360}
       height={740}
       compact={{ below: 900, width: 390, height: 446 }}
       initial={initial}
       poster={poster}
-      script={script}
+      {...(paused ? {} : { script })}
       cursor={{ at: REST }}
       fill
       accent="#1b1b1b"

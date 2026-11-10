@@ -26,6 +26,7 @@ async function loadAllImages(page: Page) {
 const layouts = [
   { name: "desktop", width: 1440, height: 900 },
   { name: "mobile", width: 390, height: 844 },
+  { name: "small", width: 320, height: 640 },
 ] as const;
 
 for (const layout of layouts) {
@@ -119,7 +120,8 @@ test("keyboard reaches every link and the theme toggle with a visible focus ring
 });
 
 for (const theme of ["light", "dark"] as const) {
-  test(`axe reports no violations in ${theme} theme`, async ({ page }) => {
+  test(`axe reports no violations in ${theme} theme, with the hero on its finished frame`, async ({ page }) => {
+    await page.emulateMedia({ reducedMotion: "reduce" });
     await open(page);
     if (theme === "dark") {
       // Use the toggle, then reload: dark must be remembered and be pure black with white text.
@@ -170,6 +172,18 @@ for (const layout of layouts) {
     expect(await hero.screenshot(), "the hero frame after two seconds").toEqual(before);
   });
 }
+
+test("the pause control stops the hero on its finished frame", async ({ page }) => {
+  await open(page);
+  await page.getByRole("button", { name: "Pause animation" }).click();
+  await expect(page.getByRole("button", { name: "Play animation" })).toBeVisible();
+  const hero = page.locator(".hero-stage");
+  const payoff = hero.getByText("2 print files ready").last();
+  expect(await payoff.evaluate((el) => el.checkVisibility({ opacityProperty: true })), "print files card shown").toBe(true);
+  const before = await hero.screenshot();
+  await page.waitForTimeout(2000);
+  expect(await hero.screenshot(), "the hero frame after two seconds").toEqual(before);
+});
 
 test("release claims match the release flags", async ({ page }) => {
   await open(page);

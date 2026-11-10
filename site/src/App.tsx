@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { HowItWorks } from "./components/HowItWorks";
 import { ReleaseFacts } from "./components/ReleaseFacts";
 import { ThemeToggle } from "./components/ThemeToggle";
@@ -87,6 +88,7 @@ function DownloadActions() {
 }
 
 export function App() {
+  const [heroPaused, setHeroPaused] = useState(false);
   return (
     <>
       <a className="skip-link" href="#main">
@@ -126,8 +128,11 @@ export function App() {
             </p>
           )}
           <div className="hero-stage" aria-hidden="true">
-            <ProductHero />
+            <ProductHero paused={heroPaused} />
           </div>
+          <button type="button" className="hero-pause" onClick={() => setHeroPaused((paused) => !paused)}>
+            {heroPaused ? "Play animation" : "Pause animation"}
+          </button>
         </section>
 
         <HowItWorks />

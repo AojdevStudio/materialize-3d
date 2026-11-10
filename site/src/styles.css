@@ -757,3 +757,32 @@ p {
     width: 100%;
   }
 }
+
+.hero-pause {
+  margin-top: 16px;
+  padding: 6px 10px;
+  color: var(--band-small);
+  background: none;
+  border: 0;
+  border-radius: 6px;
+  font: inherit;
+  font-size: 14px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+@media (prefers-reduced-motion: reduce) {
+  .hero-pause {
+    display: none;
+  }
+}
+@media (max-width: 359px) {
+  .button-primary {
+    height: auto;
+    min-height: 48px;
+    padding: 10px 14px;
+    font-size: 16px;
+    white-space: normal;
+    text-align: center;
+  }
+}
