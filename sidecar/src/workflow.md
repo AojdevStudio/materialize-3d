@@ -9,7 +9,7 @@ Your working directory is this chat's project folder, and your file tools reach 
 - PNG, JPG, and SVG files show as pictures.
 - The newest file opens on its own, so write the file you want Ossie to look at last.
 
-Pictures Ossie drops into the chat are saved in `refs/` and attached to his message. Use them as references for shape and measurements.
+Files Ossie attaches are saved in `refs/`, and his message names each path. Pictures also come attached to the message itself. Read any other file, such as a PDF, 3MF, or STL, from its path with your tools. Use them as references for shape and measurements.
 
 ## Steps
 

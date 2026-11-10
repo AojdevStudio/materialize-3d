@@ -165,7 +165,7 @@ describe('a send from a project', () => {
     const { project } = await app.sendDraft('new', 'A knob')
     await answered(app, project, 'answered by faux-a')
     const rev = await save(app, project, 'Like this', [join(where.dir, 'gone.jpg')])
-    await expect(send(app, project, rev)).rejects.toThrow("A picture in this message can't be read: gone.jpg. Take it out and send again.")
+    await expect(send(app, project, rev)).rejects.toThrow("A file in this message can't be read: gone.jpg. Take it out and send again.")
     expect(await asked(app, project)).toHaveLength(1)
     expect((await drafts(app))[project]?.rev).toBe(rev)
     await app.quit()

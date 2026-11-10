@@ -4,8 +4,9 @@ The studio is the whole app. Each chat is a project folder in `~/Documents/Mater
 
 ## Sub-features
 
-- `start-screen` holds "What are we making?", the `prompt` box, `Add picture`, `send`, and three suggestion chips that fill the box.
-- `prompt` takes text, pasted pictures, and links. The text is saved as the project's draft a moment after typing stops, and comes back when the project opens. A picture dropped on the window or chosen with `Add picture` shows in `attachments` and is copied to the project's `refs/` on send. It reaches the model as an image block.
+- `start-screen` holds "What are we making?", the `prompt` box, `attach`, `model-picker`, `send` (labeled Start), four suggestion chips that fill the box, and `recent` with the newest projects (`recent-<id>`).
+- `prompt` takes text, pasted pictures, and links. The text is saved as the project's draft a moment after typing stops, and comes back when the project opens. A file dropped on the window or chosen with `attach` (labeled Attach) shows in `attachments` and is copied to the project's `refs/` on send. A picture reaches the model as an image block. Any other file, such as a PDF, 3MF, or STL, reaches it as its path in the message.
+- `model-picker` lists the models of each signed-in provider. On the start screen a pick is the default the next project starts with. In a project it is saved for that project.
 - `messages` shows committed chat lines only: each tool step on one line (`.tool`, with `.tool-running` until its result is committed), agent text, and `file-cards` after a turn that wrote previewable files or a 3MF. `working` shows while a turn runs, and `stop` replaces `send`.
 - `chat-model` names the model the current turn runs with.
 - `readiness` shows on the start screen while the agent lacks something, with the fix for each need: a sign-in, uv, a Python uv can run, or a model from a provider the app offers (the fix names the offered providers). A missing sign-in shows the same sign-in controls as `waiting`. `Check again` reruns the check. `send` stays disabled until nothing is missing.
@@ -17,12 +18,12 @@ The studio is the whole app. Each chat is a project folder in `~/Documents/Mater
 
 ## How to get to it (user POV)
 
-- Open the app. The start screen shows. Type a request, optionally add a picture, and press Enter or Send.
+- Open the app. The start screen shows. Type a request, optionally attach a file, and press Enter or Start.
 - Earlier projects are in the left sidebar (`nav[aria-label=Projects]`). `new-project` returns to the start screen.
 
 ## Driving it with wd.ts
 
-On macOS, drive it with `mac.ts` from an `e2e` build. Answer `Add picture` with `mac.ts dialog <png>` before the click. A fresh data folder has no login, so `readiness` asks for one before `send` turns on. That order is from the code (`notReady` in `src/studio/StudioApp.tsx`). `ANTHROPIC_TOKEN` and `ANTHROPIC_PROXY` are the host's proxy token and URL.
+On macOS, drive it with `mac.ts` from an `e2e` build. Answer `Attach` with `mac.ts dialog <png>` before the click. A fresh data folder has no login, so `readiness` asks for one before `send` turns on. That order is from the code (`notReady` in `src/studio/StudioApp.tsx`). `ANTHROPIC_TOKEN` and `ANTHROPIC_PROXY` are the host's proxy token and URL.
 
 ```bash
 bun $S/mac.ts wait '[data-testid=start-screen]' 30000
@@ -32,7 +33,7 @@ bun $S/mac.ts type '[aria-label="Proxy URL"]' "$ANTHROPIC_PROXY"
 bun $S/mac.ts click 'text=Save'
 # If readiness still names uv or Python, install it, click 'text=Check again', and wait for the banner to clear.
 bun $S/mac.ts dialog "$HOME/fixtures/sketch.png"
-bun $S/mac.ts click 'text=Add picture'
+bun $S/mac.ts click 'text=Attach'
 bun $S/mac.ts type '[data-testid=prompt]' 'Make a cable clip like in this sketch, then slice it to a 3MF'
 bun $S/mac.ts wait '[data-testid=send]:not([disabled])' 20000
 bun $S/mac.ts click '[data-testid=send]'

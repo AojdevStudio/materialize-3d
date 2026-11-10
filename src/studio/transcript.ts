@@ -2,7 +2,7 @@ import type { ChatEntry } from '../../sidecar/src/protocol'
 import { autoOpens, is3mf } from './api'
 
 export type ChatItem =
-  | { kind: 'user'; text: string; images: string[] }
+  | { kind: 'user'; text: string; images: string[]; files: string[] }
   | { kind: 'text'; text: string }
   | { kind: 'tool'; id: string; label: string; summary: string; detail: string; result?: string; failed?: boolean }
   | { kind: 'files'; files: string[] }
@@ -72,7 +72,7 @@ export function buildChat(entries: ChatEntry[], running = true): ChatItem[] {
       case 'user':
         endTurn()
         stopUnfinished()
-        items.push({ kind: 'user', text: entry.text, images: entry.images })
+        items.push({ kind: 'user', text: entry.text, images: entry.images, files: entry.files })
         break
       case 'assistant':
         if (entry.text.trim() !== '') items.push({ kind: 'text', text: entry.text })
@@ -95,7 +95,7 @@ export function buildChat(entries: ChatEntry[], running = true): ChatItem[] {
         if (entry.role === 'user') {
           endTurn()
           stopUnfinished()
-          items.push({ kind: 'user', text: entry.text, images: entry.images })
+          items.push({ kind: 'user', text: entry.text, images: entry.images, files: [] })
         } else if (entry.role === 'assistant') {
           items.push({ kind: 'text', text: entry.text })
         } else {

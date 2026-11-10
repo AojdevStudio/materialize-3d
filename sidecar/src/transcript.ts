@@ -21,8 +21,9 @@ export function chatEntry(entry: EntryRecord): ChatEntry | undefined {
     case 'm3d.imported':
       return { id: entry.id, kind: 'imported', ...(entry.data as ImportedEntry) }
     case 'm3d.user': {
-      const data = entry.data as { text: string; images: string[] }
-      return { id: entry.id, kind: 'user', text: data.text, images: data.images }
+      // A message from before files could be attached holds pictures only.
+      const data = entry.data as { text: string; images: string[]; files?: string[] }
+      return { id: entry.id, kind: 'user', text: data.text, images: data.images, files: data.files ?? [] }
     }
     case 'pi.assistant': {
       if (message?.role !== 'assistant') return undefined

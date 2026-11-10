@@ -1,15 +1,17 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
+import type { Models } from '@earendil-works/pi-ai'
 import { arr, bool, compile, int, lit, obj, opt, str, union } from '@earendil-works/pi-schema'
 import { toolchainNeeds } from './agent'
 import type { Chats } from './chat'
 import type { Handlers } from './host'
 import type { Logins } from './inference'
-import type { AppState, Need } from './protocol'
+import type { AppState, ModelOption, Need } from './protocol'
 import type { Store } from './store'
 
 export interface Services {
   store: Store
+  models: Models
   logins: Logins
   chats: Chats
   version: string
@@ -26,7 +28,7 @@ const printer = obj({ machine: str(), process: str(), filament: str() })
 const provider = union([lit('anthropic'), lit('openai-codex'), lit('opencode-go')])
 
 /** Every method the window can call, each parsed at the pipe before it runs. */
-export function handlers({ store, logins, chats, version, legacy, pictures }: Services): Handlers {
+export function handlers({ store, models, logins, chats, version, legacy, pictures }: Services): Handlers {
   const state = async (): Promise<AppState> => ({ ...(await store.state()), importBlocked: legacy.blocked() })
   return {
     'app.ping': { params: compile(obj({})), run: async () => ({ version }) },
@@ -46,16 +48,17 @@ export function handlers({ store, logins, chats, version, legacy, pictures }: Se
       },
     },
     'setup.check': {
-      params: compile(obj({})),
-      run: async () => {
-        // The chosen model must be one the app offers, and its provider must have a login. A refused or expired login
-        // still waits in the turn, with its fix.
+      params: compile(obj({ project: opt(str()) })),
+      run: async ({ project }) => {
+        // The model the next turn runs on must be one the app offers, and its provider must have a login: the project's
+        // own model, or the default on the start screen. A refused or expired login still waits in the turn, with its fix.
         const { settings } = await store.state()
+        const model = (project === undefined ? undefined : (await store.project(project)).model) ?? settings.model
         const offered = await logins.status()
-        const login = offered.find((l) => l.provider === settings.model.provider)
+        const login = offered.find((l) => l.provider === model.provider)
         const needs: Need[] =
           login === undefined
-            ? [{ kind: 'model', fix: `Choose a model from ${offered.map((l) => l.name).join(', ')}. The app does not offer ${settings.model.provider}.` }]
+            ? [{ kind: 'model', fix: `Choose a model from ${offered.map((l) => l.name).join(', ')}. The app does not offer ${model.provider}.` }]
             : login.login === null
               ? [{ kind: 'login', provider: login.provider, name: login.name, fix: `Sign in to ${login.name} before you send.` }]
               : []
@@ -124,6 +127,21 @@ export function handlers({ store, logins, chats, version, legacy, pictures }: Se
       params: compile(obj({ project: str() })),
       run: async ({ project }) => {
         await chats.retry(project)
+        return null
+      },
+    },
+    'models.list': {
+      params: compile(obj({})),
+      run: async () =>
+        (await logins.status())
+          .filter((login) => login.login !== null)
+          .flatMap(({ provider }) => models.getModels(provider).map((m): ModelOption => ({ provider, modelId: m.id, name: m.name }))),
+    },
+    'projects.setModel': {
+      params: compile(obj({ project: str(), model })),
+      run: async ({ project, model }) => {
+        if (models.getModel(model.provider, model.modelId) === undefined) throw new Error(`${model.provider} has no model ${model.modelId}`)
+        await store.setModel(project, model)
         return null
       },
     },

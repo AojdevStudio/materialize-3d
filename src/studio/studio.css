@@ -19,6 +19,7 @@
   --s-working: #2563eb;
   --s-ready: #2f7d4f;
   --s-code: var(--s-soft);
+  --s-shadow: 0 6px 24px rgb(0 0 0 / 8%);
   /* The shared tokens the update banner reads, in light values. */
   --bg-deep: var(--s-bg);
   --bg-surface: var(--s-panel);
@@ -47,6 +48,7 @@
   --s-error: #f97066;
   --s-working: #60a5fa;
   --s-ready: #4ade80;
+  --s-shadow: none;
   --accent-blue: #60a5fa;
   --accent-blue-dim: #60a5fa26;
 }
@@ -406,6 +408,23 @@ pre {
   border: 1px solid var(--s-line);
 }
 
+.msg-files {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+}
+
+.msg-files li {
+  border: 1px solid var(--s-line);
+  border-radius: 6px;
+  padding: 2px 8px;
+  font-size: 12px;
+}
+
 .msg-agent p {
   margin: 0 0 6px;
   white-space: pre-wrap;
@@ -535,6 +554,86 @@ pre {
   align-items: center;
 }
 
+.composer-bar .primary {
+  font-weight: 500;
+}
+
+.attach {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.attach-icon {
+  display: inline-grid;
+  width: 16px;
+  height: 16px;
+}
+
+.composer-hint {
+  color: var(--s-muted);
+  font-size: 12px;
+}
+
+/* Model picker. The menu opens above its button. */
+.model-picker {
+  position: relative;
+}
+
+.model-button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.model-mark {
+  display: inline-grid;
+  width: 14px;
+  height: 14px;
+  flex: none;
+}
+
+.model-mark svg {
+  width: 100%;
+  height: 100%;
+}
+
+.model-menu {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 6px);
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  width: 240px;
+  max-height: min(320px, 50vh);
+  overflow-y: auto;
+  padding: 4px;
+  border: 1px solid var(--s-line);
+  border-radius: 10px;
+  background: var(--s-raised);
+  box-shadow: var(--s-shadow);
+}
+
+.model-menu button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: none;
+  background: none;
+  text-align: left;
+}
+
+.model-menu button:hover {
+  background: var(--s-soft);
+}
+
+.model-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .spacer {
   flex: 1;
 }
@@ -576,13 +675,25 @@ pre {
 }
 
 .start h1 {
-  font: italic 400 40px/1.2 'Instrument Serif', Georgia, serif;
+  font-size: 28px;
+  font-weight: 500;
+  line-height: 1.2;
   text-align: center;
   margin: 0 0 20px;
 }
 
 .start .composer {
   margin: 0;
+  padding: 12px;
+  box-shadow: var(--s-shadow);
+}
+
+.start .model-button {
+  border-color: transparent;
+}
+
+.start .model-button:hover {
+  border-color: var(--s-line);
 }
 
 .chips {
@@ -595,6 +706,61 @@ pre {
 
 .chips button {
   border-radius: 999px;
+  font-size: 13px;
+}
+
+.recent {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 48px;
+}
+
+.recent-label {
+  color: var(--s-muted);
+  font-size: 13px;
+}
+
+.recent-chip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: 220px;
+  padding: 4px 12px 4px 4px;
+  border-radius: 8px;
+  text-align: left;
+}
+
+.recent-chip img {
+  width: 48px;
+  height: 32px;
+  object-fit: contain;
+  border-radius: 4px;
+}
+
+.recent-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding-left: 4px;
+  line-height: 1.3;
+}
+
+.recent-title,
+.recent-detail {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.recent-title {
+  font-size: 13px;
+}
+
+.recent-detail {
+  color: var(--s-muted);
+  font-size: 12px;
 }
 
 /* Preview and files */

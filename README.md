@@ -67,4 +67,4 @@ Issues and pull requests are welcome. Open an issue before large changes. CI use
 
 MIT. See [LICENSE](LICENSE). Bundled fonts keep their own licenses, listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
-The sidebar icons are by [Streamline](https://www.streamlinehq.com), licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
+The sidebar icons and the Attach icon are by [Streamline](https://www.streamlinehq.com), licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). The Claude and OpenAI marks in the model picker are trademarks of Anthropic and OpenAI, from [Simple Icons](https://simpleicons.org).

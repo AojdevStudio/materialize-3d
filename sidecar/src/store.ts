@@ -13,7 +13,7 @@ import { type Conversation, defineDoc, type HarnessOptions, Harness, type Regist
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node'
 import type { LoginIndex } from './inference'
 import type { LegacyProject } from './legacy'
-import { type Draft, type LoginKind, type Project, type SavedDraft, type Settings, type Setup, START, type StoredState, type Turn, type Waiting } from './protocol'
+import { type Draft, type LoginKind, type ModelChoice, type Project, type SavedDraft, type Settings, type Setup, START, type StoredState, type Turn, type Waiting } from './protocol'
 
 const context = BACKGROUND_CONTEXT
 
@@ -52,7 +52,7 @@ export const SettingsDoc = defineDoc<Settings>({
  * a send of that revision again makes no other project and still sends what went out, even after the project's draft
  * changed.
  */
-const ProjectsDoc = defineDoc<{ projects: Project[]; madeFor?: Record<string, { project: string; draft: SavedDraft }> }>({
+export const ProjectsDoc = defineDoc<{ projects: Project[]; madeFor?: Record<string, { project: string; draft: SavedDraft }> }>({
   kind: 'm3d.projects',
   version: 1,
   scope: 'conversation',
@@ -273,7 +273,9 @@ export class Store implements LoginIndex {
       for (let n = 2; taken.has(id) || existsSync(join(this.projectsDir, id)); n++) id = `${base}-${n}`
       this.projectFolder(id)
       const conversation = await tx.createConversation({ ownership: { kind: 'ownerless' } })
-      const created: Project = { id, conversation: conversation.id, title, createdMs: now.getTime() }
+      // The project keeps the model picked on the start screen, so a later pick there leaves it alone.
+      const { model } = await tx.doc(SettingsDoc, this.root.id)
+      const created: Project = { id, conversation: conversation.id, title, createdMs: now.getTime(), model: { provider: model.provider, modelId: model.modelId } }
       index.projects.push(created)
       const moved: SavedDraft = { text: draft.text, attachments: [...draft.attachments], rev }
       index.madeFor = { ...index.madeFor, [rev]: { project: id, draft: moved } }
@@ -349,6 +351,15 @@ export class Store implements LoginIndex {
       if (done) imported.push(old.id)
     }
     return imported
+  }
+
+  /** Saves the model the project's next turn runs on. */
+  async setModel(id: string, model: ModelChoice): Promise<void> {
+    await this.harness.commit(async (tx) => {
+      const project = (await tx.doc(ProjectsDoc, this.root.id)).projects.find((p) => p.id === id)
+      if (project === undefined) throw new Error(`no project ${id}`)
+      project.model = model
+    }, context)
   }
 
   /** Marks a project printed. */

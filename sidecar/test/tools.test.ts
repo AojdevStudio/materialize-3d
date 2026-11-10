@@ -286,7 +286,7 @@ describe('a picture sent with a message', () => {
     const project = await newProject(app)
     const pipe = join(where.dir, 'pipe.png')
     expect(Bun.spawnSync(['mkfifo', pipe]).exitCode).toBe(0)
-    await expect(app.sendDraft(project, 'like this', [pipe])).rejects.toThrow("A picture in this message can't be read: pipe.png. Take it out and send again.")
+    await expect(app.sendDraft(project, 'like this', [pipe])).rejects.toThrow("A file in this message can't be read: pipe.png. Take it out and send again.")
     await app.quit()
   })
 })

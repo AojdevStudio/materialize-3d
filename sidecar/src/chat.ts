@@ -3,7 +3,8 @@
  * removal of the draft that holds the message together. A turn that stops before its answer waits with the fix named,
  * and continues once it is fixed. The window sees committed entries only.
  */
-import { constants, copyFileSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync } from 'node:fs'
+import { constants, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs'
+import { copyFile, rename } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, extname, join, relative } from 'node:path'
 import type { Context } from '@earendil-works/chord'
@@ -26,12 +27,14 @@ import { leaves, WORKFLOW, WORKFLOW_VERSION } from './agent'
 import type { Busy } from './busy'
 import { type ChatEntry, type ChatView, type Project, type ProjectStatus, type SidecarEvent, START, type Turn, type Waiting } from './protocol'
 import { isLoginFailure } from './inference'
-import { DRAFT_CHANGED, DraftsDoc, LoginSavesDoc, SettingsDoc, type Store, TurnDoc, WaitingDoc } from './store'
+import { DRAFT_CHANGED, DraftsDoc, LoginSavesDoc, ProjectsDoc, SettingsDoc, type Store, TurnDoc, WaitingDoc } from './store'
 import { chatEntry } from './transcript'
 
 const context: Context = BACKGROUND_CONTEXT
 
 const IMAGE_TYPES: Record<string, string> = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp' }
+/** Attachments that go to the model as pictures. Every other file goes as its path in the message. */
+const PICTURE = /\.(png|jpe?g|gif|webp|heic|heif)$/i
 /** Models read pictures up to about 5 MB. Larger ones, and HEIC photos, go as a smaller JPEG on macOS. */
 const MAX_IMAGE_BYTES = 3_500_000
 
@@ -76,51 +79,71 @@ function picture(folder: string, rel: string): ImageContent | undefined {
   }
 }
 
-function userContent(folder: string, text: string, attachments: string[]): string | (TextContent | ImageContent)[] {
-  if (attachments.length === 0) return text
-  const images = attachments.flatMap((rel) => picture(folder, rel) ?? [])
-  const note = `\n\n(Pictures attached, saved in this folder as: ${attachments.join(', ')})`
-  return [{ type: 'text', text: `${text}${note}` }, ...images]
+/**
+ * The message the model reads: the text, a note naming where each attachment is saved, and each picture as a picture.
+ * A file that is not a picture, such as a PDF, 3MF, or STL, goes by its path only, for the agent to open itself. So does
+ * a picture the model cannot read, such as a HEIC photo that could not be made a JPEG.
+ */
+function userContent(
+  folder: string,
+  text: string,
+  attachments: string[],
+): { content: string | (TextContent | ImageContent)[]; shown: string[]; named: string[] } {
+  const read = attachments.filter((rel) => PICTURE.test(rel)).map((rel) => ({ rel, image: picture(folder, rel) }))
+  const shown = read.flatMap(({ rel, image }) => (image === undefined ? [] : [rel]))
+  const named = [
+    ...attachments.filter((rel) => !PICTURE.test(rel)),
+    ...read.flatMap(({ rel, image }) => (image === undefined ? [rel] : [])),
+  ]
+  let note = ''
+  if (shown.length > 0) note += `\n\n(Pictures attached, saved in this folder as: ${shown.join(', ')})`
+  if (named.length > 0) note += `\n\n(Files attached, saved in this folder as: ${named.join(', ')})`
+  const content = note === '' ? text : [{ type: 'text' as const, text: `${text}${note}` }, ...read.flatMap(({ image }) => image ?? [])]
+  return { content, shown, named }
 }
 
 /**
- * Copies a draft's pictures into the project, as `refs/draft-<rev>/<name>`, and answers those paths. Each copy is
+ * Copies a draft's files into the project, as `refs/draft-<rev>/<name>`, and answers those paths. Each copy is
  * written beside its place and then renamed into it, so a send of the same revision again, as after a crash or a
  * refused send, finds every finished copy and makes no second one.
  */
-function copyPictures(folder: string, rev: number, sources: string[]): string[] {
+async function copyAttachments(folder: string, rev: number, sources: string[]): Promise<string[]> {
   if (sources.length === 0) return []
   const rel = join('refs', `draft-${rev}`)
   const dir = join(folder, rel)
-  // The agent could have made either folder a link. Pictures land inside the project or nowhere, so each folder is
+  // The agent could have made either folder a link. Files land inside the project or nowhere, so each folder is
   // checked before anything is made in it.
   for (const path of [join(folder, 'refs'), dir]) {
     mkdirSync(path, { recursive: true })
     if (leaves(relative(realpathSync.native(folder), realpathSync.native(path)))) throw new Error('refs/ leads outside the project folder')
   }
   const names = new Set<string>()
-  return sources.map((source) => {
+  const copied: string[] = []
+  // One at a time, so each name is taken before the next is chosen. A copy runs off the event loop, as a model file
+  // can be large.
+  for (const source of sources) {
     const clean = basename(source).replace(/[^A-Za-z0-9._-]/g, '-')
     const file = clean.replace(/\./g, '') === '' ? 'picture.png' : clean
     const dot = file.lastIndexOf('.')
     const [stem, ext] = dot > 0 ? [file.slice(0, dot), file.slice(dot)] : [file, '']
-    // A Mac volume ignores case in names, so two pictures whose names differ only in case get two names.
+    // A Mac volume ignores case in names, so two files whose names differ only in case get two names.
     let name = file
     for (let n = 2; names.has(name.toLowerCase()); n++) name = `${stem}-${n}${ext}`
     names.add(name.toLowerCase())
     const target = join(dir, name)
     if (lstatSync(target, { throwIfNoEntry: false }) === undefined) {
-      // A picture that is gone can't be sent. Nor can a file that is not regular, such as a pipe, which would hold the copy.
+      // A file that is gone can't be sent. Nor can one that is not regular, such as a pipe, which would hold the copy.
       if (statSync(source, { throwIfNoEntry: false })?.isFile() !== true) {
-        throw new Error(`A picture in this message can't be read: ${basename(source)}. Take it out and send again.`)
+        throw new Error(`A file in this message can't be read: ${basename(source)}. Take it out and send again.`)
       }
       const part = join(dir, `.${name}.part`)
       rmSync(part, { force: true })
-      copyFileSync(source, part, constants.COPYFILE_EXCL)
-      renameSync(part, target)
+      await copyFile(source, part, constants.COPYFILE_EXCL)
+      await rename(part, target)
     }
-    return join(rel, name)
-  })
+    copied.push(join(rel, name))
+  }
+  return copied
 }
 
 export class Chats {
@@ -248,7 +271,7 @@ export class Chats {
   /**
    * Sends the draft saved as revision `rev` under `key`, a project id or `START`, and answers the project it went to.
    * Each step is safe to run again after a crash or a lost answer: the project a start screen revision made is found,
-   * not made again, a message already committed as `draft-<rev>` is not sent again, and the pictures are copied once.
+   * not made again, a message already committed as `draft-<rev>` is not sent again, and the files are copied once.
    * The message, the settings its turn runs with, and the removal of the draft commit together. Only that revision's
    * content goes out. A draft saved after it is the next message and stays, even one that reads the same.
    */
@@ -267,20 +290,23 @@ export class Chats {
     const draft = started?.draft ?? (await store.draft(project.id))
     if (draft?.rev !== rev) throw new Error(DRAFT_CHANGED)
     const folder = store.projectFolder(project.id)
-    const attachments = copyPictures(folder, rev, draft.attachments)
-    const content = userContent(folder, draft.text, attachments)
+    const attachments = await copyAttachments(folder, rev, draft.attachments)
+    // The chat entry keeps the split the model got: a picture it could not read is shown as a file, by its path.
+    const { content, shown, named } = userContent(folder, draft.text, attachments)
     try {
       await busy.during(() => store.harness.commit(async (tx) => {
         if ((await tx.submissionByRequest(conversation.id, requestId)) !== undefined) return
         const settings = await tx.doc(SettingsDoc, store.root.id)
-        const model = { provider: settings.model.provider, modelId: settings.model.modelId }
+        // The project's own model, or the app's default for a project from before the picker.
+        const chosen = (await tx.doc(ProjectsDoc, store.root.id)).projects.find((p) => p.id === project.id)?.model ?? settings.model
+        const model = { provider: chosen.provider, modelId: chosen.modelId }
         const thinking = settings.thinking
         await conversation.submit(tx, {
           type: 'input',
           content,
           requestId,
           whenBusy: 'reject',
-          entry: { kind: 'm3d.user', data: { text: draft.text, images: attachments } },
+          entry: { kind: 'm3d.user', data: { text: draft.text, images: shown, files: named } },
         })
         await configure(tx, conversation.id, { model, thinkingLevel: thinking, extensions: [extension], tools, instructions: WORKFLOW, cwd: folder })
         const turn: Turn = { requestId, model, thinking, tools: tools.map((t) => t.name), instructions: WORKFLOW_VERSION, app: version, startedMs: Date.now() }

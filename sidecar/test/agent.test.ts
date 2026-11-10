@@ -135,14 +135,14 @@ describe('a crash mid-turn', () => {
   }, 20_000)
 })
 
-describe('settings', () => {
+describe("a project's model", () => {
   test('a change mid-turn leaves the running turn alone, and the next turn uses it', async () => {
     const where = scratch()
     const app = start(where, 'models')
     await app.next()
     const project = await firstSend(app, 'please wait')
     await waitForFile(join(where.projects, project, 'started'))
-    await app.call('settings.set', { model: { provider: 'faux', modelId: 'faux-b' } })
+    await app.call('projects.setModel', { project, model: { provider: 'faux', modelId: 'faux-b' } })
     writeFileSync(join(where.projects, project, 'go'), '')
     await answered(app, project, 'answered by faux-a')
     expect(((await app.call('chat.open', { project })) as ChatView).turn?.model.modelId).toBe('faux-a')

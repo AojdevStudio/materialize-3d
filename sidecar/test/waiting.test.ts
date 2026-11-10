@@ -58,7 +58,7 @@ describe('a turn whose provider is not signed in', () => {
     await second.next()
     const reopened = (await second.call('chat.open', { project })) as ChatView
     expect(reopened.waiting?.kind).toBe('login')
-    expect(reopened.entries).toEqual([{ id: expect.any(Number), kind: 'user', text: 'A 20 mm cube', images: [] }])
+    expect(reopened.entries).toEqual([{ id: expect.any(Number), kind: 'user', text: 'A 20 mm cube', images: [], files: [] }])
 
     await second.call('auth.setKey', { provider: 'anthropic', key: 'proxy-token', baseUrl: proxy.url })
     const answered = await second.until(

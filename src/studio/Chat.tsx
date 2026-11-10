@@ -1,26 +1,7 @@
 import { useEffect, useRef, type ReactNode } from 'react'
-import { pickFile } from '../lib/fileDialog'
 import { fileUrl, is3mf } from './api'
 import { FileActions } from './RightPanel'
 import type { ChatItem } from './transcript'
-
-/** A picture waiting to be sent: a dropped file on disk, or pasted bytes. */
-/**
- * A picture waiting to go with the next message: a file on disk, so a draft can keep it. A pasted picture is first kept
- * in a file of the sidecar's, and shows its preview while the window has it.
- */
-export type Attachment = { name: string; path: string; previewUrl?: string }
-
-/** The picture a draft keeps at `path`. */
-export const savedAttachment = (path: string): Attachment => ({ name: path.split(/[\\/]/).pop() ?? path, path })
-
-/** Frees a pasted picture's preview once it is sent, removed, or left. */
-/** A picture pasted into the composer, before it is kept in a file. */
-export type PastedPicture = { name: string; file: File }
-
-export function releaseAttachment(attachment: Attachment): void {
-  if (attachment.previewUrl !== undefined) URL.revokeObjectURL(attachment.previewUrl)
-}
 
 function inline(text: string): ReactNode[] {
   return text.split(/(`[^`\n]+`|\*\*[^*\n]+\*\*)/g).map((part, i) => {
@@ -80,6 +61,11 @@ export function ChatView({ project, items, running, onPreview, onError }: ChatVi
                     {item.images.map((rel) => <img key={rel} src={fileUrl(project, rel)} alt={rel} />)}
                   </div>
                 )}
+                {item.files.length > 0 && (
+                  <ul className="msg-files">
+                    {item.files.map((rel) => <li key={rel}>{rel.split('/').pop()}</li>)}
+                  </ul>
+                )}
                 {item.text && <div className="bubble">{item.text}</div>}
               </div>
             )
@@ -103,87 +89,6 @@ export function ChatView({ project, items, running, onPreview, onError }: ChatVi
       })}
       {running && <p className="working" data-testid="working">Working…</p>}
       <div ref={end} />
-    </div>
-  )
-}
-
-interface ComposerProps {
-  text: string
-  onText: (text: string) => void
-  attachments: Attachment[]
-  onAttach: (files: Attachment[]) => void
-  /** Pictures pasted into the composer, with their previews, for the screen they were pasted on to keep. */
-  onPaste: (pictures: PastedPicture[]) => void
-  onRemove: (index: number) => void
-  /** Sends the text and pictures. The owner clears them only once the send succeeds. */
-  onSend: () => void
-  onStop?: () => void
-  /** A turn runs or a send is still being set up, so Send waits. */
-  busy: boolean
-  running: boolean
-  placeholder: string
-  autoFocus?: boolean
-}
-
-export function Composer({ text, onText, attachments, onAttach, onPaste, onRemove, onSend, onStop, busy, running, placeholder, autoFocus }: ComposerProps) {
-  const empty = !text.trim() && attachments.length === 0
-
-  const paste = (event: React.ClipboardEvent) => {
-    const pictures = [...event.clipboardData.files].filter((f) => f.type.startsWith('image/'))
-    if (pictures.length === 0) return
-    event.preventDefault()
-    // Handed over at once, before any wait, so the pictures stay with the screen they were pasted on.
-    onPaste(
-      pictures.map((file, i) => ({
-        name: file.name && file.name !== 'image.png' ? file.name : `pasted-${Date.now()}-${i}.${file.type.split('/')[1] ?? 'png'}`,
-        file,
-      })),
-    )
-  }
-
-  const pick = async () => {
-    const path = await pickFile({ filters: [{ name: 'Pictures', extensions: ['png', 'jpg', 'jpeg', 'heic', 'webp', 'gif'] }] })
-    if (path) onAttach([savedAttachment(path)])
-  }
-
-  return (
-    <div className="composer">
-      {attachments.length > 0 && (
-        <ul className="attachments" data-testid="attachments">
-          {attachments.map((a, i) => (
-            <li key={`${a.name}-${i}`}>
-              {a.previewUrl !== undefined ? <img src={a.previewUrl} alt={a.name} /> : <span>{a.name}</span>}
-              <button type="button" aria-label={`Remove ${a.name}`} onClick={() => onRemove(i)}>×</button>
-            </li>
-          ))}
-        </ul>
-      )}
-      <textarea
-        value={text}
-        rows={3}
-        placeholder={placeholder}
-        autoFocus={autoFocus}
-        data-testid="prompt"
-        onChange={(e) => onText(e.target.value)}
-        onPaste={paste}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
-            e.preventDefault()
-            if (!empty && !busy) onSend()
-          }
-        }}
-      />
-      <div className="composer-bar">
-        <button type="button" onClick={pick}>Add picture</button>
-        <span className="spacer" />
-        {running && onStop ? (
-          <button type="button" onClick={onStop} data-testid="stop">Stop</button>
-        ) : (
-          <button type="button" className="primary" onClick={onSend} data-testid="send" disabled={empty || busy}>
-            Send
-          </button>
-        )}
-      </div>
     </div>
   )
 }
