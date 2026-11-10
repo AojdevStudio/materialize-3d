@@ -24,35 +24,47 @@ async function loadAllImages(page: Page) {
 }
 
 /**
- * Watches the hero for `ms` and returns what moved: any DOM mutation on it, inside it, or on an element that
- * contains it, any CSS animation or transition that starts there, and any animation running there on any frame.
- * Runs in the page, so it sees every change rather than samples.
+ * Watches the hero for `ms` and returns what moved. Runs in the page on every frame, so it sees every change
+ * rather than samples: any DOM mutation on or inside the hero, any CSS animation or transition that starts or
+ * runs on it, inside it, or on an element around it, any shift in where the hero and its parts render, and the
+ * hero leaving the page.
  */
 function watchHero(hero: Element, ms: number) {
-  const related = (node: Node | null) => node !== null && (node === hero || hero.contains(node) || node.contains(hero));
+  const inside = (node: Node | null) => node !== null && (node === hero || hero.contains(node));
+  const around = (node: Node | null) => inside(node) || (node !== null && node.contains(hero));
   const moved: string[] = [];
   const note = (what: string) => {
     if (moved.length < 5 && !moved.includes(what)) moved.push(what);
   };
+  const parts = [hero, ...hero.querySelectorAll("img, svg, .ss-window, [class*='m3h-']")];
+  const where = (part: Element) => {
+    const box = part.getBoundingClientRect();
+    return `${box.x},${box.y},${box.width},${box.height}`;
+  };
+  const start = new Map(parts.map((part) => [part, where(part)]));
   const runningNow = () =>
     document.getAnimations().filter((animation) => {
       const target = animation.effect instanceof KeyframeEffect ? animation.effect.target : null;
-      return animation.playState === "running" && related(target);
+      return animation.playState === "running" && around(target);
     });
   for (const animation of runningNow()) note(`running at the start: ${animation.constructor.name}`);
   const observer = new MutationObserver((records) => {
-    for (const record of records) if (related(record.target)) note(`${record.type} on ${record.target.nodeName}`);
+    for (const record of records) if (inside(record.target)) note(`${record.type} on ${record.target.nodeName}`);
   });
-  observer.observe(document.documentElement, { subtree: true, attributes: true, childList: true, characterData: true });
+  observer.observe(hero, { subtree: true, attributes: true, childList: true, characterData: true });
   const onStart = (event: Event) => {
-    if (related(event.target as Node)) note(`${event.type} on ${(event.target as Element).nodeName}`);
+    if (around(event.target as Node)) note(`${event.type} on ${(event.target as Element).nodeName}`);
   };
   const starts = ["animationstart", "animationiteration", "transitionrun"] as const;
   for (const type of starts) document.addEventListener(type, onStart, true);
   return new Promise<string[]>((done) => {
     const end = performance.now() + ms;
     const frame = () => {
+      if (!hero.isConnected) note("the hero left the page");
       for (const animation of runningNow()) note(`running: ${animation.constructor.name}`);
+      for (const part of parts) {
+        if (where(part) !== start.get(part)) note(`moved: ${part.nodeName}.${part.getAttribute("class") ?? ""}`);
+      }
       if (performance.now() < end) return requestAnimationFrame(frame);
       observer.disconnect();
       for (const type of starts) document.removeEventListener(type, onStart, true);
@@ -63,8 +75,8 @@ function watchHero(hero: Element, ms: number) {
 }
 
 /**
- * The hero holds still: once Inter has loaded and the stage has mounted again for it (ProductHero), nothing on,
- * in, or around the hero changes or animates for 6 s, longer than the loop's longest hold (4 s on the payoff).
+ * The hero holds still: once Inter has loaded and the stage has mounted again for it (ProductHero), nothing in it
+ * changes, animates, or shifts for 6 s, longer than the loop's longest hold (4 s on the payoff).
  */
 async function expectHeroHoldsStill(page: Page) {
   await page.evaluate(() => document.fonts.ready.then(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)))));
