@@ -20,13 +20,13 @@ const requirements: readonly Requirement[] = [
     text: "One inference provider: Claude, ChatGPT, or OpenCode Go, by subscription or by API key. Your provider's plan or API charges apply. The app is free.",
   },
   {
-    label: "Slicer",
-    text: "Bambu Studio or the slicer you already use, installed separately. The app never installs or bundles one.",
+    label: "Bambu Studio",
+    text: "Bambu Studio 02.08.02.61, installed separately. The agent slices with it. The app never installs or bundles it.",
   },
   { label: "uv", text: "uv and a Python it can run." },
   {
     label: "Printer",
-    text: "Any 3D printer your slicer supports. Materialize 3D does not send jobs to the printer.",
+    text: "To print, a Bambu Lab P2S with a 0.4 mm nozzle. The agent slices for its presets. Materialize 3D does not send jobs to the printer.",
   },
 ];
 
