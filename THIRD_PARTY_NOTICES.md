@@ -26,6 +26,18 @@ The sidebar icons in `src/assets/icons/` are by Streamline (https://www.streamli
 
 The Attach icon, `src/assets/icons/attach.svg`, is Streamline's Form Edition Image Attach icon from its Freehand Color set, under the same CC BY 4.0 license. Its black parts were changed to draw in the current text color, so it shows in dark mode. Its blue stays as Streamline drew it.
 
+The run trace icons in `src/assets/icons/` are by Lucide (https://lucide.dev), from lucide-static 1.70.0, under the ISC License. The terminal icon comes from Feather by Cole Bemis, under the MIT License. Both licenses are reproduced at the end of this file. The files are as Lucide ships them.
+
+| Icon | File |
+|---|---|
+| File text | `src/assets/icons/file-text.svg` |
+| File pen line | `src/assets/icons/file-pen-line.svg` |
+| Terminal | `src/assets/icons/terminal.svg` |
+| Layers | `src/assets/icons/layers.svg` |
+| Message square | `src/assets/icons/message-square.svg` |
+| Circle check | `src/assets/icons/circle-check.svg` |
+| Circle x | `src/assets/icons/circle-x.svg` |
+
 ## Model marks
 
 The model picker shows each maker's official mark beside its models. The marks are the makers' trademarks. They are used only to name the maker of a model, not to suggest that the maker endorses Materialize 3D. The SVG paths come from Simple Icons 15.22.0 (https://simpleicons.org, CC0 1.0), which collects each mark from its maker's own site.
@@ -132,4 +144,52 @@ INCLUDING ANY GENERAL, SPECIAL, INDIRECT, INCIDENTAL, OR CONSEQUENTIAL
 DAMAGES, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
 FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM
 OTHER DEALINGS IN THE FONT SOFTWARE.
+```
+
+## Lucide ISC License
+
+```text
+ISC License
+
+Copyright (c) 2026 Lucide Icons and Contributors
+
+Permission to use, copy, modify, and/or distribute this software for any
+purpose with or without fee is hereby granted, provided that the above
+copyright notice and this permission notice appear in all copies.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+```
+
+## Feather MIT License
+
+This covers the terminal icon, which Lucide took from Feather.
+
+```text
+The MIT License (MIT)
+
+Copyright (c) 2013-present Cole Bemis
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 ```
