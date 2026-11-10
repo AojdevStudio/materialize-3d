@@ -308,16 +308,16 @@ document.getElementById('prev').addEventListener('click', () => setStep(cur-1));
 document.getElementById('next').addEventListener('click', () => setStep(cur+1));
 document.getElementById('replay').addEventListener('click', () => setStep(cur));
 document.getElementById('reset').addEventListener('click', () => flyCamera(D.steps[cur].cam));
-// The arrow keys step the guide from anywhere but a field that uses them, a check box included. A step rebuilds the
-// panel, so focus that was in it moves to the panel instead of falling back to the top of the page.
+// The arrow keys step the guide from anywhere, a check box too, but not from a field that uses them. A step rebuilds
+// the panel, so focus that was in it moves to the panel instead of falling back to the top of the page.
 panel.tabIndex = -1;
 document.addEventListener('keydown', e => {
   if (e.target.closest('textarea,select,[contenteditable],input:not([type=checkbox])')) return;
-  const step = e.key === 'ArrowRight' ? cur+1 : e.key === 'ArrowLeft' ? cur-1 : cur;
-  if (step === cur || step < 0 || step >= D.steps.length) return;
+  const by = {ArrowRight: 1, ArrowLeft: -1}[e.key];
+  if (!by || !D.steps[cur+by]) return;
   const inPanel = panel.contains(e.target);
-  setStep(step);
-  if (inPanel) panel.focus();
+  setStep(cur+by);
+  if (inPanel) panel.focus({preventScroll: true});
 });
 // The theme script at the top sets data-theme. The scene repaints in place, so the step, the view, and the scroll stay.
 new MutationObserver(() => { paint(); render(); }).observe(document.documentElement, {attributeFilter:['data-theme']});
