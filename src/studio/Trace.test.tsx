@@ -49,6 +49,12 @@ describe('Trace', () => {
     expect(screen.getByText('grid.py', { selector: '.step-target' })).toBeTruthy()
   })
 
+  it('keeps the latest step flagged on the summary line when it failed', () => {
+    render(<Trace trace={trace([write('grid', { result: 'ok', failed: false }), { ...slice, result: 'no Bambu Studio', failed: true }], true)} startedMs={NOW - 23_000} onError={() => {}} />)
+    fireEvent.click(head())
+    expect(text(head())).toBe('Slicedfailed2 steps, 0:23')
+  })
+
   it('says each step in the past tense once done and in the present while it runs', () => {
     render(
       <Trace

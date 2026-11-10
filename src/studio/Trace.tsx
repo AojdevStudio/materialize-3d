@@ -68,16 +68,21 @@ function actionOf(step: ToolItem): string {
   return state === 'done' || state === 'failed' ? step.label : step.doing
 }
 
-function StepLine({ step }: { step: ToolItem }) {
+/** Says a step that ended badly failed or stopped. Nothing for one that runs or is done. */
+function Flag({ step }: { step: ToolItem }) {
   const state = stateOf(step)
+  return state === 'failed' || state === 'stopped' ? <span className={`step-flag flag-${state}`}>{state}</span> : null
+}
+
+function StepLine({ step }: { step: ToolItem }) {
   return (
-    <li className={`trace-step step-${state}`}>
+    <li className={`trace-step step-${stateOf(step)}`}>
       <details>
         <summary>
           <Icon svg={ICONS[step.action]} />
           <span className="step-action">{actionOf(step)}</span>
           {step.summary !== '' && <span className="step-target">{step.summary}</span>}
-          {(state === 'failed' || state === 'stopped') && <span className={`step-flag flag-${state}`}>{state}</span>}
+          <Flag step={step} />
         </summary>
         <pre>{step.detail}</pre>
         {step.result !== undefined && <pre className="step-result">{step.result.slice(0, 4000)}</pre>}
@@ -116,6 +121,7 @@ export default function Trace({ trace, startedMs, onError }: { trace: TraceItem;
     <>
       <Icon svg={ICONS[last.action]} />
       <span>{actionOf(last)}</span>
+      <Flag step={last} />
       <span className="trace-count">{time === undefined ? count : `${count}, ${time}`}</span>
     </>
   )
