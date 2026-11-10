@@ -132,4 +132,11 @@ mod acl_tests {
             .collect();
         assert_eq!(allowed, registered, "capabilities/default.json allow- entries");
     }
+
+    #[test]
+    fn a_pop_out_window_may_only_read_its_file_version() {
+        let pop_out: serde_json::Value = serde_json::from_str(include_str!("../capabilities/pop-out.json")).expect("json");
+        assert_eq!(pop_out["webviews"], serde_json::json!(["pop-out-*"]));
+        assert_eq!(pop_out["permissions"], serde_json::json!(["allow-studio-file-version"]));
+    }
 }

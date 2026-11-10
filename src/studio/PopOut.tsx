@@ -33,7 +33,7 @@ export default function PopOut({ project, rel, version: opened }: Shown) {
         setError(null)
         setVersion(now)
       } catch (err) {
-        if (live) setError(`This window cannot read ${rel}. ${String(err)}`)
+        if (live) setError(`This window cannot read its file. ${String(err)}`)
       }
       if (live) timer = window.setTimeout(check, CHECK_MS)
     }

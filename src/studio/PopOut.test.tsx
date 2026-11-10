@@ -5,8 +5,8 @@ import { act, cleanup, render, screen } from '@testing-library/react'
 /** The file on disk as `studio_file_version` reads it: its version, or gone. */
 const { disk } = vi.hoisted(() => ({ disk: { version: 5 as number | 'gone' } }))
 vi.mock('@tauri-apps/api/core', () => ({
-  invoke: (command: string) =>
-    command !== 'studio_file_version' ? Promise.reject(command)
+  invoke: (command: string, args: { project: string; rel: string }) =>
+    command !== 'studio_file_version' || args.project !== '2026-11-06-dock' || args.rel !== 'guide.html' ? Promise.reject(`${command} ${JSON.stringify(args)}`)
     : disk.version === 'gone' ? Promise.reject('guide.html: No such file or directory')
     : Promise.resolve(disk.version),
 }))
@@ -41,7 +41,7 @@ describe('PopOut', () => {
 
     disk.version = 'gone'
     await later()
-    expect(screen.getByText(/This window cannot read guide.html/)).toBeTruthy()
+    expect(screen.getByText(/This window cannot read its file\. guide\.html: No such file/)).toBeTruthy()
 
     disk.version = 12
     await later()
