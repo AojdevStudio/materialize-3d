@@ -410,9 +410,8 @@ export class Store implements LoginIndex {
   }
 
   /**
-   * The project's folder, made if it is missing. A send that gives a turn this app's instructions comes here first, a
-   * new project's first send through `startProject`, so the folder then holds this app's guide template in its hidden
-   * folder, which those instructions describe.
+   * The project's folder, made if it is missing. A send calls this before it gives a turn this app's instructions, so
+   * the folder then holds this app's guide template in its hidden folder, which those instructions describe.
    */
   projectFolder(id: string): string {
     const dir = join(this.projectsDir, id)
