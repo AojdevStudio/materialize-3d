@@ -307,8 +307,8 @@ document.getElementById('prev').addEventListener('click', () => setStep(cur-1));
 document.getElementById('next').addEventListener('click', () => setStep(cur+1));
 document.getElementById('replay').addEventListener('click', () => setStep(cur));
 document.getElementById('reset').addEventListener('click', () => flyCamera(D.steps[cur].cam));
-// The page's only inputs are the check boxes, which leave the arrow keys free, so a tick does not stop the keys.
 document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT') return;
   if (e.key === 'ArrowRight' && cur < D.steps.length-1) setStep(cur+1); else if (e.key === 'ArrowLeft' && cur > 0) setStep(cur-1);
 });
 // The theme script at the top sets data-theme. The scene repaints in place, so the step, the view, and the scroll stay.
