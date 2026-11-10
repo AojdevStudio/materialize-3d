@@ -1,0 +1,497 @@
+/* The scroll story. One fixed view holds the canvas and every overlay. The track under
+   it only sets the scroll length. The director sets opacity and position per frame. */
+.story {
+  position: relative;
+}
+.story-view {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+}
+.story-canvas,
+.story-lines {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.story-lines {
+  overflow: visible;
+}
+.story-lines path {
+  fill: none;
+  stroke: var(--ink);
+  stroke-width: 0.8;
+  stroke-opacity: 0.72;
+}
+.story-lines circle {
+  fill: var(--paper);
+  stroke: var(--accent-ink);
+  stroke-width: 1;
+}
+.story-lines path,
+.story-lines circle {
+  display: none;
+}
+
+/* Text over the 3D view keeps a soft paper halo, so it reads over the model. */
+.stage-copy,
+.story-labels li,
+.story-dimensions li,
+.readout .kick,
+.readout-line,
+.readout-note,
+.readout .unit,
+.story-rail button {
+  text-shadow:
+    0 0 3px var(--halo),
+    0 0 3px var(--halo),
+    0 0 6px var(--halo);
+}
+
+/* Stage copy */
+.stage-copy {
+  position: absolute;
+  left: var(--pad);
+  top: 19vh;
+  width: min(360px, 100vw - 2 * var(--pad));
+  opacity: 0;
+  pointer-events: none;
+  will-change: opacity, transform;
+}
+/* The hero shows and takes clicks before the story script loads, and if it never does. */
+.stage-copy[data-stage="hero"] {
+  top: 16vh;
+  opacity: 1;
+  pointer-events: auto;
+  width: min(500px, 100vw - 2 * var(--pad));
+}
+.stage-copy .cta-primary {
+  text-shadow: none;
+}
+.stage-copy h1,
+.stage-copy h2 {
+  font-weight: 300;
+  line-height: 1.25;
+  text-transform: uppercase;
+}
+.stage-copy h1 {
+  font-size: clamp(20px, 2.35vw, 34px);
+  letter-spacing: 0.4em;
+  white-space: nowrap;
+}
+.stage-copy h2 {
+  font-size: clamp(15px, 1.5vw, 21px);
+  letter-spacing: 0.34em;
+}
+.stage-copy p:not(.kick) {
+  max-width: 330px;
+  margin-top: 14px;
+}
+.stage-copy p.lead {
+  margin-top: 16px;
+  font-size: 17px;
+}
+.sheet {
+  max-width: 330px;
+  margin-top: 26px;
+  font: 400 10px/1.5 var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--rule);
+}
+.sheet div {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 6px 0;
+  border-top: 1px solid var(--rule);
+}
+.sheet dt {
+  color: var(--muted);
+  white-space: nowrap;
+}
+.sheet dd {
+  text-align: right;
+}
+.sheet .file {
+  text-transform: none;
+  letter-spacing: 0;
+}
+.stage-copy p.hint {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 26px;
+  font: 400 10px/1.5 var(--mono);
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+}
+.hint svg {
+  flex: none;
+  width: 9px;
+  height: 22px;
+  fill: none;
+  stroke: var(--accent-ink);
+  stroke-width: 1;
+}
+
+/* The request sits in the middle of the screen, at the start of everything. */
+.stage-copy[data-stage="request"] {
+  left: 50%;
+  top: 47%;
+  translate: -50% -50%;
+  width: min(880px, 100vw - 2 * var(--pad));
+}
+.stage-copy[data-stage="request"] .kick {
+  display: flex;
+  gap: 18px;
+  margin-bottom: 22px;
+}
+.stage-copy[data-stage="request"] .kick span:last-child,
+.story-log .kick span:last-child,
+.readout .kick span:last-child {
+  color: var(--muted);
+}
+.stage-copy .say {
+  font-weight: 200;
+  font-size: clamp(25px, 4.1vw, 56px);
+  line-height: 1.18;
+  letter-spacing: -0.012em;
+  text-transform: none;
+}
+.say i {
+  display: inline-block;
+  width: 1px;
+  height: 0.95em;
+  margin-left: 0.12em;
+  vertical-align: -0.12em;
+  background: var(--accent-ink);
+}
+.stage-copy p.request-note {
+  max-width: none;
+  margin-top: 26px;
+  padding-top: 12px;
+  border-top: 1px solid var(--rule);
+  font: 400 10px/1.5 var(--mono);
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+/* Leader labels on the teardown, and the drawing's sizes */
+.story-labels,
+.story-dimensions {
+  position: absolute;
+  inset: 0;
+  padding: 0;
+  list-style: none;
+}
+.story-labels li,
+.story-dimensions li {
+  position: absolute;
+  left: 0;
+  top: 0;
+  opacity: 0;
+  font: 400 10px/1.5 var(--mono);
+  white-space: nowrap;
+  will-change: transform, opacity;
+}
+.story-labels li {
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.part-index {
+  margin-right: 8px;
+  color: var(--muted);
+}
+.part-short {
+  display: none;
+}
+.story-dimensions li {
+  letter-spacing: 0.04em;
+}
+.story-dimensions b {
+  font-weight: 400;
+  color: var(--accent-ink);
+}
+
+/* params.json, in the middle of the screen */
+.story-params {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  translate: -50% -50%;
+  margin: 0;
+  opacity: 0;
+  font: 400 clamp(11px, 1.15vw, 15px) / 1.75 var(--mono);
+  white-space: pre;
+}
+.story-params .k {
+  color: var(--muted);
+}
+.story-params .t {
+  color: var(--accent-ink);
+}
+.story-params .c {
+  color: var(--muted);
+}
+
+/* The readout: one huge hairline number that the scroll drives */
+.readout {
+  position: absolute;
+  left: var(--pad);
+  bottom: 40px;
+  width: min(420px, 100vw - 2 * var(--pad));
+}
+.readout .kick {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--accent);
+}
+.readout-value {
+  margin-left: -0.04em;
+  font-weight: 100;
+  font-size: clamp(84px, 11.5vw, 168px);
+  line-height: 0.98;
+  letter-spacing: -0.035em;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.readout .of {
+  color: var(--muted);
+}
+.readout .unit {
+  margin-left: 0.5em;
+  font: 300 0.2em var(--mono);
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+.readout .unit:empty {
+  display: none;
+}
+.readout-line {
+  min-height: 1.5em;
+  margin-top: 8px;
+  overflow: hidden;
+  font: 400 12.5px/1.5 var(--mono);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.readout-note {
+  margin-top: 4px;
+  overflow: hidden;
+  font: 400 9.5px/1.5 var(--mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--muted);
+}
+
+/* The agent log, on the right while the story rewinds */
+.story-log {
+  position: absolute;
+  right: 132px;
+  top: 17vh;
+  width: 250px;
+  opacity: 0;
+  font-family: var(--mono);
+}
+.story-log .kick {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.story-log ol {
+  padding: 0;
+  list-style: none;
+  font-size: 10px;
+  line-height: 1.45;
+  border-bottom: 1px solid var(--rule);
+}
+.story-log li {
+  display: grid;
+  grid-template-columns: 38px 1fr;
+  gap: 8px;
+  padding: 6px 0;
+  border-top: 1px solid var(--rule);
+  color: var(--muted);
+}
+.story-log li[data-on] {
+  color: var(--ink);
+}
+.story-log b {
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+.story-log li[data-on] b {
+  color: var(--accent-ink);
+}
+
+/* The rail: where you are in the story, and a jump to each stop */
+.story-rail {
+  position: absolute;
+  right: 18px;
+  top: 18vh;
+  bottom: 18vh;
+  width: 120px;
+}
+.story-rail::before {
+  content: "";
+  position: absolute;
+  right: 5px;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--rule);
+}
+.story-rail button {
+  position: absolute;
+  right: 0;
+  translate: 0 -50%;
+  padding: 4px 18px 4px 6px;
+  font: 400 8.5px var(--mono);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: var(--muted);
+  pointer-events: auto;
+}
+.story-rail button::after {
+  content: "";
+  position: absolute;
+  right: 2px;
+  top: 50%;
+  width: 7px;
+  height: 1px;
+  background: var(--muted);
+}
+.story-rail button[aria-current] {
+  color: var(--ink);
+}
+.rail-mark {
+  position: absolute;
+  right: 2px;
+  top: 0;
+  width: 7px;
+  height: 7px;
+  margin-top: -3.5px;
+  border: 1px solid var(--accent-ink);
+  background: var(--paper);
+  rotate: 45deg;
+}
+
+.story-status {
+  position: absolute;
+  right: var(--pad);
+  bottom: 44px;
+  max-width: calc(100vw - 2 * var(--pad));
+  font: 400 10px var(--mono);
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+/* Narrower desktops use the short labels so the columns clear the model. */
+@media (max-width: 1279px) {
+  .part-long {
+    display: none;
+  }
+  .part-short {
+    display: inline;
+  }
+}
+
+@media (max-width: 760px) {
+  .stage-copy {
+    top: calc(var(--header) + 10px);
+  }
+  .stage-copy h1 {
+    font-size: 19px;
+    letter-spacing: 0.32em;
+  }
+  .stage-copy h2 {
+    font-size: 14px;
+    letter-spacing: 0.3em;
+  }
+  .stage-copy p:not(.kick),
+  .stage-copy p.lead {
+    max-width: none;
+    margin-top: 8px;
+    font-size: 14px;
+  }
+  .stage-copy .kick {
+    margin-bottom: 8px;
+    font-size: 9px;
+  }
+  .stage-copy .cta {
+    margin-top: 14px;
+  }
+  .stage-copy p.release-note {
+    font-size: 12px;
+  }
+  .stage-copy p.request-note {
+    margin-top: 18px;
+    font-size: 9px;
+  }
+  .sheet {
+    display: none;
+  }
+  .stage-copy p.hint {
+    margin-top: 10px;
+    font-size: 9px;
+    letter-spacing: 0.12em;
+  }
+  .stage-copy .say {
+    font-size: 27px;
+  }
+  .readout {
+    bottom: 16px;
+  }
+  .readout-value {
+    font-size: 76px;
+  }
+  .readout-line {
+    margin-top: 4px;
+    font-size: 11px;
+  }
+  .readout-note {
+    font-size: 8px;
+    letter-spacing: 0.1em;
+  }
+  .story-log {
+    display: none;
+  }
+  .story-rail {
+    right: 6px;
+    top: 26vh;
+    bottom: 30vh;
+    width: 14px;
+  }
+  .story-rail button {
+    padding: 6px 14px 6px 0;
+    font-size: 0;
+  }
+  .story-labels li {
+    font-size: 8.5px;
+    letter-spacing: 0.06em;
+  }
+  .part-index {
+    display: none;
+  }
+  .story-params {
+    top: 46%;
+    font-size: 10.5px;
+    line-height: 1.7;
+  }
+  .story-status {
+    top: calc(var(--header) + 6px);
+    bottom: auto;
+  }
+}

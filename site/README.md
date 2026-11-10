@@ -20,21 +20,48 @@ The tests launch the installed Google Chrome with its sandbox on, not Playwright
 
 Every release fact lives in `src/release.ts`: version, repository, releases, docs, and DMG URLs, the DMG SHA-256, the `signed` and `notarized` flags, the tested macOS text, the architecture, and the `studio` flag. Edit only that file after a release is verified. A merge to `main` deploys the site, so an edit to `src/release.ts` goes live as soon as it merges. Merge it only after the release is verified.
 
-The page renders the honest state of those values. While `studio` is false, the hero says the chat studio is not in a release yet and names the version the download is. The SHA-256 row reads "Not published yet" while the value is `pending`. The phrase "Signed and notarized by Apple" appears only when both flags are true. While `notarized` is false, the install steps tell people to use Open Anyway in System Settings, Privacy & Security. The page never tells anyone to disable Gatekeeper.
+The page renders the honest state of those values. While `studio` is false, the page says next to each download that the chat studio is not in a release yet and names the version the download is. The SHA-256 row reads "Not published yet" while the value is `pending`. The phrase "Signed and notarized by Apple" appears only when both flags are true. While `notarized` is false, the install steps tell people to use Open Anyway in System Settings, Privacy & Security. The page never tells anyone to disable Gatekeeper.
 
 ## Design direction
 
-The page is the "Landing D2" frame Ossie picked in the app's design file: a concrete-gray band (`#CFD0CF`) under the header and hero, a centered headline with "Print the 3MF." in oxblood, a bento for How it works, then requirements, install, and a closing call to action. Light is the default. The dark mode toggle is remembered in `localStorage` and uses true black with white text. The product pictures, the hero window and the bento UI, stay light in both themes, the way the app opens. Every text pair passes WCAG AA, and axe checks it in both themes.
+The page is a scroll story Ossie picked: one 3D printer is the spine, and the scroll position drives everything. In order, the stages are:
 
-The hero is an animated faux Materialize 3D window built with the stageshow kit, in `src/hero/`. One loop of about 14 seconds tells one job: a request is typed, the agent works through six steps, the assembly guide opens, and the dock mount lands in Ready to print with its print files. It plays only while on screen. Under reduced motion it shows that last frame and does not move. `src/hero/REHEARSAL.md` records how it was filmed and checked.
+1. The printer, assembled, with the title, the download, and its outer size.
+2. The teardown: twelve parts lift off top down, each with a numbered leader label.
+3. The dive onto the build plate.
+4. The print: the right shelf of a dock mount prints layer by layer, and the readout counts Z height.
+5. The rewind through the agent log, 13:58 back to 0:00: the slices, the assembly guide, the revision C adapter, the five parts, the drawing, params.json, and the request.
+6. The end section: download, release facts, how it works, requirements, and install.
+
+Light is the default, a paper-white page with oxblood as the one accent. The dark mode toggle is remembered in `localStorage` and uses true black with white text. All text is DOM text, and axe checks it in both themes.
+
+The story lives in `src/story/`:
+
+- `timeline.ts` is the stage table. Each row sets a stage's scroll length, its reduced-motion still, its rail stop, its readout, its copy fades, and its agent log line. The camera keys and the readout hang off the same stage ids. Everything is plain math on one number, the story position.
+- `parts.ts` is the teardown table: each part's label, leader anchor, label side, and lift turn.
+- `facts.ts` reads the dock mount's sizes from `dock-data.json` once. `assets.ts` loads the GLBs and the slice outlines once.
+- `scene.ts` is the three.js scene. `director.ts` maps the scroll to the story position and writes the copy, labels, readout, log, and rail. `ScrollStory.tsx` renders all of it as DOM.
+
+three.js, the models, and the slice outlines load in their own chunk after the page shows. The page draws only while the story position moves, so nothing repaints while the reader is still. Under reduced motion each stage is one still: the scroll steps from stage to stage, and nothing moves in between.
+
+## The 3D models
+
+`src/assets/story/` holds the models and their data. The scripts in `models/` make them, and rebuilding gives the same bytes. Run these from `site/models`, with Blender 5.2 and uv:
+
+```sh
+uv run --with manifold3d --with numpy python dock/dock_mesh.py   # dock-data.json, dock-slices.json, dock/meshes.json
+blender -b --python blender/build_dock.py                         # dock.glb
+blender -b --python blender/build_printer.py                      # printer.glb, printer-parts.json
+blender -b --python blender/build_printer.py -- --render          # also Cycles stills in models/renders/
+```
+
+The printer has P2S proportions (392 x 406 x 478 mm, a 256 mm plate) and no logo or wordmark. The dock mount comes from the agent's own build scripts and params.json, copied into `models/dock/`. `dock/meshes.json` and `renders/` are build output and stay out of git.
 
 ## Fonts and third-party material
 
 The page uses Inter, copied from the app. It is licensed under the SIL Open Font License 1.1. The license text with its copyright line is in `src/assets/fonts/OFL.txt`, which the build ships and the page footer links to.
 
-The stageshow kit in `src/stageshow/kit/` is MIT licensed, and its license is in `src/stageshow/LICENSE`. TypeScript checks it under its own settings (`tsconfig.stageshow.json`), so the page's stricter settings do not apply to vendored code.
-
-The sidebar icons in the hero (`src/assets/landing/line-*.svg`) are the app's outline icons from Streamline, licensed under CC BY 4.0. The repository's `THIRD_PARTY_NOTICES.md` credits them.
+The 3D view uses three.js (MIT), installed as a package and bundled into the story chunk.
 
 ## Search and sharing
 
@@ -50,18 +77,20 @@ The tags and files go live at the next manual deploy.
 
 `tests/site.spec.ts` covers:
 
-- no horizontal overflow at 1440 and 390 px in both themes
+- no horizontal overflow at 1440, 390, and 320 px in both themes, at the top and at the end section
 - the download link is the first action and points at the configured DMG
 - every in-page anchor and internal link resolves under the base path
 - off-site links are exactly the configured set
-- keyboard focus reaches every link and the theme toggle, with a visible focus ring
+- keyboard focus reaches every link and button, with a visible focus ring
 - axe finds no violations in either theme
-- How it works shows the Describe, Make, Look, and Print tiles in order, and the page says no release has the studio yet
-- with reduced motion, the hero shows the finished part and holds still
+- How it works shows Describe, Make, Look, and Print in order, and the page says no release has the studio yet
+- with reduced motion, each stage shows only its own copy, in order, and nothing moves while scrolling through it
+- the teardown labels never overlap and stay on screen, at 1440 and 390
+- the readout follows the scroll: parts lifted, then Z height, then the rewind clock
 - no signing or notarization claim appears while the flags are false
 - the head carries the canonical URL and an absolute share image, and the preview serves `robots.txt`, `sitemap.xml`, and `og-image.png` as real files
 
-The layout tests also save full-page screenshots to `test-results/screens/`, which is gitignored. The tests never fetch GitHub. CI runs them in the `Landing site` job.
+The layout and label tests also save screenshots to `test-results/screens/`, which is gitignored. The tests never fetch GitHub. CI runs them in the `Landing site` job.
 
 ## Deploy
 

@@ -1,15 +1,15 @@
 # Site
 
-The landing site in `site/` is one static page that explains Materialize 3D and offers the Mac download. Its hero is an animated product demo built on the vendored stageshow kit (`site/src/hero/`, kit in `site/src/stageshow/kit/`). It loops through typing the request, the agent working, the guide opening, and the print files arriving. Its Playwright tests build it under the `/materialize-3d/` subpath, serve the preview, and check layout, links, keyboard focus, accessibility, and the release claims. Since PR 120 they run on the installed Google Chrome with its sandbox on, not on Playwright's bundled Chromium.
+The landing site in `site/` is one static page that explains Materialize 3D and offers the Mac download. It is a scroll story built with three.js (`site/src/story/`): a 3D printer comes apart top down, the right shelf of a dock mount prints on its plate, and the story rewinds through the agent log to the request, then ends on the download. Its Playwright tests build it under the `/materialize-3d/` subpath, serve the preview, and check layout, links, keyboard focus, accessibility, and the release claims. Since PR 120 they run on the installed Google Chrome with its sandbox on, not on Playwright's bundled Chromium.
 
 ## Sub-features
 
 - `site-layout` covers no horizontal overflow at 1440, 390, and 320 px wide, in light and dark.
 - `site-links` covers the download as the first prominent action, every in-page anchor and internal link, and the exact set of external links.
-- `site-a11y` covers keyboard focus on every link and button, and axe in both themes with the hero on its finished frame.
+- `site-a11y` covers keyboard focus on every link and button, and axe in both themes on the reduced-motion story.
 - `site-release` covers the release claims that follow the flags in `site/src/release.ts`.
-- `site-story` covers the How it works tiles in order: Describe, Make, Look, Print.
-- `site-hero` covers the hero's still frame under reduced motion at 1440, 390, and 320 px, and the Pause animation button, which holds that frame.
+- `site-story` covers How it works in order (Describe, Make, Look, Print), the readout that follows the scroll, and teardown labels that never overlap at 1440 and 390 px.
+- `site-motion` covers reduced motion at 1440 and 390 px: each stage is one still, shown in story order.
 
 ## How to get to it (user POV)
 
@@ -39,4 +39,4 @@ Preconditions:
 - The tests run `bun run build` themselves through Playwright's `webServer`, so a stale `dist/` does not matter.
 - `test-results/` and `node_modules/` are ignored, so a run leaves the tree clean.
 - The page describes the chat studio, but `site/src/release.ts` still points the download at 0.1.0. Until a release carries the studio, the hero says so.
-- To film the hero with stageshow's `film.mjs --gate`, point it at the Vite dev server, not the production build. The film knows kit CSS only by its `/kit/` source path, so a bundled build reports every kit part as an override.
+- The 3D view renders with WebGL. Headless Chrome draws it in software (SwiftShader), so the eased scroll takes a few seconds to settle. The tests wait until the story stops writing to the page before they measure.

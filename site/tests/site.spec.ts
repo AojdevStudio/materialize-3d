@@ -2,6 +2,7 @@ import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
 import path from "node:path";
 import { appleTrusted, checksumPublished, externalLinks, release } from "../src/release";
+import { STAGES, at } from "../src/story/timeline";
 
 type Theme = "light" | "dark";
 
@@ -13,77 +14,37 @@ async function open(page: Page, theme: Theme = "light") {
   await page.goto("./");
 }
 
-async function loadAllImages(page: Page) {
-  return page.evaluate(async () => {
-    const imgs = [...document.images];
-    for (const img of imgs) img.loading = "eager";
-    // A failed decode surfaces as naturalWidth 0, which the caller asserts on.
-    await Promise.all(imgs.map((img) => img.decode().catch(() => undefined)));
-    return imgs.filter((img) => img.naturalWidth === 0).map((img) => img.src);
-  });
+/** Waits for the 3D view to load, so the labels and the scene are live. */
+async function storyReady(page: Page) {
+  await expect(page.locator(".story-status"), "the 3D view loaded").toHaveText("", { timeout: 30_000 });
 }
 
-/**
- * Watches the hero for `ms` and returns what moved. Runs in the page on every frame, so it sees every change
- * rather than samples: any DOM mutation on or inside the hero, any CSS animation or transition that starts or
- * runs on it, inside it, or on an element around it, any shift in where the hero and its parts render, and the
- * hero leaving the page.
- */
-function watchHero(hero: Element, ms: number) {
-  const inside = (node: Node | null) => node !== null && (node === hero || hero.contains(node));
-  const around = (node: Node | null) => inside(node) || (node !== null && node.contains(hero));
-  const moved: string[] = [];
-  const note = (what: string) => {
-    if (moved.length < 5 && !moved.includes(what)) moved.push(what);
-  };
-  const parts = [hero, ...hero.querySelectorAll("img, svg, .ss-window, [class*='m3h-']")];
-  const where = (part: Element) => {
-    const box = part.getBoundingClientRect();
-    return `${box.x},${box.y},${box.width},${box.height}`;
-  };
-  const start = new Map(parts.map((part) => [part, where(part)]));
-  const runningNow = () =>
-    document.getAnimations().filter((animation) => {
-      const target = animation.effect instanceof KeyframeEffect ? animation.effect.target : null;
-      return animation.playState === "running" && around(target);
-    });
-  for (const animation of runningNow()) note(`running at the start: ${animation.constructor.name}`);
-  const observer = new MutationObserver((records) => {
-    for (const record of records) if (inside(record.target)) note(`${record.type} on ${record.target.nodeName}`);
-  });
-  observer.observe(hero, { subtree: true, attributes: true, childList: true, characterData: true });
-  const onStart = (event: Event) => {
-    if (around(event.target as Node)) note(`${event.type} on ${(event.target as Element).nodeName}`);
-  };
-  const starts = ["animationstart", "animationiteration", "transitionrun"] as const;
-  for (const type of starts) document.addEventListener(type, onStart, true);
-  return new Promise<string[]>((done) => {
-    const end = performance.now() + ms;
-    const frame = () => {
-      if (!hero.isConnected) note("the hero left the page");
-      for (const animation of runningNow()) note(`running: ${animation.constructor.name}`);
-      for (const part of parts) {
-        if (where(part) !== start.get(part)) note(`moved: ${part.nodeName}.${part.getAttribute("class") ?? ""}`);
-      }
-      if (performance.now() < end) return requestAnimationFrame(frame);
-      observer.disconnect();
-      for (const type of starts) document.removeEventListener(type, onStart, true);
-      done(moved);
-    };
-    requestAnimationFrame(frame);
-  });
+/** Scrolls the story to a position in vh and waits until it stops writing to the view, so eased motion has settled. */
+async function scrollStory(page: Page, vh: number) {
+  await page.evaluate((top) => window.scrollTo({ top: (top * innerHeight) / 100, behavior: "instant" }), vh);
+  await page.evaluate(
+    () =>
+      new Promise<void>((done) => {
+        const view = document.querySelector(".story-view") ?? document.body;
+        let last = performance.now();
+        const observer = new MutationObserver(() => (last = performance.now()));
+        observer.observe(view, { subtree: true, attributes: true, characterData: true, childList: true });
+        const check = () => {
+          if (performance.now() - last < 800) return void setTimeout(check, 100);
+          observer.disconnect();
+          done();
+        };
+        setTimeout(check, 100);
+      }),
+  );
 }
 
-/**
- * The hero holds still: once Inter has loaded and the stage has mounted again for it (ProductHero), nothing in it
- * changes, animates, or shifts for 6 s, longer than the loop's longest hold (4 s on the payoff).
- */
-async function expectHeroHoldsStill(page: Page) {
-  await page.evaluate(() => document.fonts.ready.then(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)))));
-  const hero = page.locator(".hero-stage");
-  await expect.poll(() => hero.evaluate(watchHero, 1000), { message: "the hero settles", timeout: 15_000 }).toEqual([]);
-  expect(await hero.evaluate(watchHero, 6000), "what moved on, in, or around the hero in 6 s").toEqual([]);
-}
+const readout = (page: Page) =>
+  page.locator(".readout").evaluate((box) => ({
+    kick: box.querySelector('[data-readout="kick"]')?.textContent,
+    value: box.querySelector(".readout-value")?.textContent,
+    line: box.querySelector('[data-readout="line"]')?.textContent,
+  }));
 
 const layouts = [
   { name: "desktop", width: 1440, height: 900 },
@@ -96,18 +57,17 @@ for (const layout of layouts) {
     test(`${layout.name} ${layout.width} ${theme}: renders without horizontal overflow`, async ({ page }) => {
       await page.setViewportSize({ width: layout.width, height: layout.height });
       await open(page, theme);
-      expect(await loadAllImages(page), "images that failed to load").toEqual([]);
+      await storyReady(page);
+      const overflow = () =>
+        page.evaluate(() => ({ scrollWidth: document.documentElement.scrollWidth, clientWidth: document.documentElement.clientWidth }));
+      const top = await overflow();
+      expect(top.scrollWidth).toBeLessThanOrEqual(top.clientWidth);
+      await page.screenshot({ path: path.join(shotsDir, `${layout.name}-${layout.width}-${theme}-top.png`) });
 
-      const { scrollWidth, clientWidth } = await page.evaluate(() => ({
-        scrollWidth: document.documentElement.scrollWidth,
-        clientWidth: document.documentElement.clientWidth,
-      }));
-      expect(scrollWidth).toBeLessThanOrEqual(clientWidth);
-
-      await page.screenshot({
-        path: path.join(shotsDir, `${layout.name}-${layout.width}-${theme}.png`),
-        fullPage: true,
-      });
+      await page.locator("#download").scrollIntoViewIfNeeded();
+      const end = await overflow();
+      expect(end.scrollWidth).toBeLessThanOrEqual(end.clientWidth);
+      await page.screenshot({ path: path.join(shotsDir, `${layout.name}-${layout.width}-${theme}-end.png`) });
     });
   }
 }
@@ -178,11 +138,11 @@ test("keyboard reaches every link and the theme toggle with a visible focus ring
   }
 
   expect(reached.size).toBe(total);
-  await expect(page.locator('button[aria-pressed][data-kb]')).toHaveCount(1);
+  await expect(page.locator("button[aria-pressed][data-kb]")).toHaveCount(1);
 });
 
 for (const theme of ["light", "dark"] as const) {
-  test(`axe reports no violations in ${theme} theme, with the hero on its finished frame`, async ({ page }) => {
+  test(`axe reports no violations in ${theme} theme, on the still story`, async ({ page }) => {
     await page.emulateMedia({ reducedMotion: "reduce" });
     await open(page);
     if (theme === "dark") {
@@ -197,6 +157,7 @@ for (const theme of ["light", "dark"] as const) {
       });
       expect(colors).toEqual({ bg: "rgb(0, 0, 0)", fg: "rgb(255, 255, 255)" });
     }
+    await storyReady(page);
     const results = await new AxeBuilder({ page }).analyze();
     expect(results.violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.target).join(", ")}`)).toEqual([]);
   });
@@ -204,43 +165,79 @@ for (const theme of ["light", "dark"] as const) {
 
 test("how it works tells the chat studio story in order, and the page says no release has it yet", async ({ page }) => {
   await open(page);
-  await expect(page.locator("#how .tile-title")).toHaveText(["Describe", "Make", "Look", "Print"]);
+  await expect(page.locator("#how h3")).toHaveText(["Describe", "Make", "Look", "Print"]);
   const text = await page.locator("body").innerText();
   expect(text).toContain("The chat studio is not in a release yet.");
   expect(text).toContain(`This download is ${release.version}, the earlier sign app.`);
   expect(text).not.toMatch(/\bMCP\b/);
 });
 
-for (const layout of layouts) {
-  test(`${layout.name} ${layout.width}: with reduced motion the hero shows the finished part and holds still`, async ({ page }) => {
+for (const layout of layouts.slice(0, 2)) {
+  test(`${layout.name} ${layout.width}: with reduced motion each stage is one still, in story order`, async ({ page }) => {
+    test.slow(); // 22 screenshots, and the 3D view may draw in software
     await page.setViewportSize({ width: layout.width, height: layout.height });
     await page.emulateMedia({ reducedMotion: "reduce" });
     await open(page);
-    await page.evaluate(() => document.fonts.ready);
-    const hero = page.locator(".hero-stage");
-    const payoff = hero.getByText("2 print files ready").last();
-    expect(await payoff.evaluate((el) => el.checkVisibility({ opacityProperty: true })), "print files card shown").toBe(true);
+    await storyReady(page);
+    const shownCopy = () =>
+      page.locator(".stage-copy").evaluateAll((blocks) => blocks.filter((b) => getComputedStyle(b).opacity === "1").map((b) => b.getAttribute("data-stage")));
 
-    const part = hero.locator('img[src*="dock-mount-model"]');
-    expect(await part.evaluate((el) => el.checkVisibility({ opacityProperty: true })), "model render shown").toBe(true);
-    const [partBox, heroBox] = await Promise.all([part.boundingBox(), hero.boundingBox()]);
-    if (!partBox || !heroBox) throw new Error("the model render or the hero has no layout box");
-    expect(partBox.x, "render starts inside the hero").toBeGreaterThanOrEqual(heroBox.x);
-    expect(partBox.x + partBox.width, "render ends inside the hero").toBeLessThanOrEqual(heroBox.x + heroBox.width);
-    expect(partBox.y + partBox.height, "render ends above the hero's foot").toBeLessThanOrEqual(heroBox.y + heroBox.height);
-
-    await expectHeroHoldsStill(page);
+    for (const [i, stage] of STAGES.entries()) {
+      await scrollStory(page, i * 100 + 30);
+      expect(await shownCopy(), `stage ${i + 1} shows only its own copy`).toEqual([stage.id]);
+      const early = await page.screenshot();
+      await scrollStory(page, i * 100 + 70);
+      expect(early.equals(await page.screenshot()), `nothing moves while scrolling through ${stage.id}`).toBe(true);
+    }
   });
 }
 
-test("the pause control stops the hero on its finished frame", async ({ page }) => {
+for (const layout of layouts.slice(0, 2)) {
+  test(`${layout.name} ${layout.width}: the teardown labels do not overlap and stay on screen`, async ({ page }) => {
+    test.slow(); // the eased scroll settles over many frames when the 3D view draws in software
+    await page.setViewportSize({ width: layout.width, height: layout.height });
+    await open(page);
+    await storyReady(page);
+    for (const t of [0.5, 0.97]) {
+      await scrollStory(page, at("explode", t));
+      const labels = await page.locator(".story-labels li").evaluateAll((items) =>
+        items
+          .filter((li) => Number(getComputedStyle(li).opacity) > 0.05)
+          .map((li) => {
+            const { left, right, top, bottom } = li.getBoundingClientRect();
+            return { part: li.getAttribute("data-part"), left, right, top, bottom };
+          }),
+      );
+      if (t === 0.97) expect(labels, "every part is labelled at the end of the teardown").toHaveLength(13);
+      for (const [i, a] of labels.entries()) {
+        expect(a.left >= 0 && a.right <= layout.width && a.top >= 0 && a.bottom <= layout.height, `${a.part} on screen`).toBe(true);
+        for (const b of labels.slice(i + 1)) {
+          const overlap = a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+          expect(overlap, `${a.part} and ${b.part} at teardown ${t}`).toBe(false);
+        }
+      }
+    }
+    await page.screenshot({ path: path.join(shotsDir, `${layout.name}-${layout.width}-teardown.png`) });
+  });
+}
+
+test("the readout follows the scroll: parts lifted, then Z height, then the rewind clock", async ({ page }) => {
+  test.slow(); // the eased scroll settles over many frames when the 3D view draws in software
   await open(page);
-  await page.getByRole("button", { name: "Pause animation" }).click();
-  await expect(page.getByRole("button", { name: "Play animation" })).toBeVisible();
-  const hero = page.locator(".hero-stage");
-  const payoff = hero.getByText("2 print files ready").last();
-  expect(await payoff.evaluate((el) => el.checkVisibility({ opacityProperty: true })), "print files card shown").toBe(true);
-  await expectHeroHoldsStill(page);
+  await storyReady(page);
+  expect(await readout(page)).toEqual({ kick: "Parts lifted", value: "00/12", line: "Assembled" });
+
+  await scrollStory(page, at("explode", 0.97));
+  expect(await readout(page)).toEqual({ kick: "Parts lifted", value: "12/12", line: "Build plate, textured PEI" });
+
+  await scrollStory(page, at("print", 0.6));
+  const printing = await readout(page);
+  expect(printing.kick).toBe("Z height");
+  expect(printing.value).toMatch(/^\d{1,2}\.\d{2}mm$/);
+  expect(printing.line).toMatch(/^Layer \d{3} \/ 150$/);
+
+  await scrollStory(page, at("guide", 0.75));
+  expect(await readout(page)).toEqual({ kick: "Elapsed", value: "9:47", line: "Wrote assembly-guide.html, 13 steps." });
 });
 
 test("search and share tags point at the live site, and robots, sitemap, and share image are served", async ({ page, request }) => {
