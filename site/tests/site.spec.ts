@@ -23,6 +23,48 @@ async function loadAllImages(page: Page) {
   });
 }
 
+/** Pixels that differ between two PNG screenshots of the same box, counted in the page. */
+async function changedPixels(page: Page, a: Buffer, b: Buffer) {
+  return page.evaluate(async ([pngA, pngB]) => {
+    const pixels = async (png: string) => {
+      const bitmap = await createImageBitmap(await (await fetch(`data:image/png;base64,${png}`)).blob());
+      const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+      const context = canvas.getContext("2d");
+      if (!context) throw new Error("no 2d context");
+      context.drawImage(bitmap, 0, 0);
+      return context.getImageData(0, 0, bitmap.width, bitmap.height).data;
+    };
+    const [x, y] = await Promise.all([pixels(pngA), pixels(pngB)]);
+    if (x.length !== y.length) throw new Error("the two frames differ in size");
+    let changed = 0;
+    for (let i = 0; i < x.length; i += 4) {
+      if (x[i] !== y[i] || x[i + 1] !== y[i + 1] || x[i + 2] !== y[i + 2]) changed++;
+    }
+    return changed;
+  }, [a.toString("base64"), b.toString("base64")] as const);
+}
+
+/**
+ * The hero holds still: once its images have decoded and its frame has settled, at most 100 pixels change in
+ * two seconds. Chrome on the macOS runner redraws a scaled image at higher quality about a second after the page
+ * goes idle, and its anti-aliasing flickers single pixels, so settling waits 1.5 s between frames and the bound
+ * allows that noise. The running loop changes over 100,000 pixels in the same two seconds.
+ */
+async function expectHeroHoldsStill(page: Page) {
+  const hero = page.locator(".hero-stage");
+  // The stage mounts again once Inter loads (ProductHero), so wait for that render before decoding its images.
+  await page.evaluate(() => document.fonts.ready.then(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)))));
+  await hero.locator("img").evaluateAll((imgs) => Promise.all(imgs.map((img) => (img as HTMLImageElement).decode())));
+  await expect(async () => {
+    const first = await hero.screenshot();
+    await page.waitForTimeout(1500);
+    expect(await changedPixels(page, first, await hero.screenshot()), "pixels still changing while the hero settles").toBeLessThanOrEqual(100);
+  }).toPass({ timeout: 20_000 });
+  const before = await hero.screenshot();
+  await page.waitForTimeout(2000);
+  expect(await changedPixels(page, before, await hero.screenshot()), "pixels that changed in two seconds").toBeLessThanOrEqual(100);
+}
+
 const layouts = [
   { name: "desktop", width: 1440, height: 900 },
   { name: "mobile", width: 390, height: 844 },
@@ -167,9 +209,7 @@ for (const layout of layouts) {
     expect(partBox.x + partBox.width, "render ends inside the hero").toBeLessThanOrEqual(heroBox.x + heroBox.width);
     expect(partBox.y + partBox.height, "render ends above the hero's foot").toBeLessThanOrEqual(heroBox.y + heroBox.height);
 
-    const before = await hero.screenshot();
-    await page.waitForTimeout(2000);
-    expect(await hero.screenshot(), "the hero frame after two seconds").toEqual(before);
+    await expectHeroHoldsStill(page);
   });
 }
 
@@ -180,9 +220,7 @@ test("the pause control stops the hero on its finished frame", async ({ page }) 
   const hero = page.locator(".hero-stage");
   const payoff = hero.getByText("2 print files ready").last();
   expect(await payoff.evaluate((el) => el.checkVisibility({ opacityProperty: true })), "print files card shown").toBe(true);
-  const before = await hero.screenshot();
-  await page.waitForTimeout(2000);
-  expect(await hero.screenshot(), "the hero frame after two seconds").toEqual(before);
+  await expectHeroHoldsStill(page);
 });
 
 test("release claims match the release flags", async ({ page }) => {
