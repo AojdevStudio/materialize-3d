@@ -1,6 +1,18 @@
 import { useEffect, useState } from "react";
 import { ChevronDown, CircleCheck, FilePen, Layers, Paperclip, Plus, Terminal } from "lucide-react";
-import { Bar, Button, Card, Check, Collapse, Count, Roll, Row, Stage, States, Tabs, Text, Window, type Act } from "../stageshow/kit";
+// Each part comes from its own module: the kit's index also exports the brand-logo registry, which would ship in the bundle.
+import type { Act } from "../stageshow/kit/act";
+import { Button } from "../stageshow/kit/controls/Button";
+import { Tabs } from "../stageshow/kit/controls/Tabs";
+import { Collapse } from "../stageshow/kit/motion/Collapse";
+import { Count } from "../stageshow/kit/motion/Count";
+import { Roll } from "../stageshow/kit/motion/Roll";
+import { States } from "../stageshow/kit/motion/States";
+import { Card } from "../stageshow/kit/parts/Card";
+import { Check } from "../stageshow/kit/parts/Check";
+import { Row } from "../stageshow/kit/parts/Row";
+import { Stage } from "../stageshow/kit/stage";
+import { Bar, Text, Window } from "../stageshow/kit/window";
 import markSmall from "../assets/brand/mark-small-32.svg";
 import modelRender from "../assets/landing/dock-mount-model.png";
 import iconCog from "../assets/landing/line-cog.svg";
