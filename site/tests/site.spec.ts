@@ -24,28 +24,53 @@ async function loadAllImages(page: Page) {
 }
 
 /**
- * The hero holds still: no CSS animation or transition runs in it, and its DOM does not change for 6 s, longer
- * than the loop's longest hold (4 s on the payoff). A playing loop changes the DOM inside that window, and a
- * spinner or caret left running shows up as a running animation.
+ * Watches the hero for `ms` and returns what moved: any DOM mutation on it, inside it, or on an element that
+ * contains it, any CSS animation or transition that starts there, and any animation running there on any frame.
+ * Runs in the page, so it sees every change rather than samples.
+ */
+function watchHero(hero: Element, ms: number) {
+  const related = (node: Node | null) => node !== null && (node === hero || hero.contains(node) || node.contains(hero));
+  const moved: string[] = [];
+  const note = (what: string) => {
+    if (moved.length < 5 && !moved.includes(what)) moved.push(what);
+  };
+  const runningNow = () =>
+    document.getAnimations().filter((animation) => {
+      const target = animation.effect instanceof KeyframeEffect ? animation.effect.target : null;
+      return animation.playState === "running" && related(target);
+    });
+  for (const animation of runningNow()) note(`running at the start: ${animation.constructor.name}`);
+  const observer = new MutationObserver((records) => {
+    for (const record of records) if (related(record.target)) note(`${record.type} on ${record.target.nodeName}`);
+  });
+  observer.observe(document.documentElement, { subtree: true, attributes: true, childList: true, characterData: true });
+  const onStart = (event: Event) => {
+    if (related(event.target as Node)) note(`${event.type} on ${(event.target as Element).nodeName}`);
+  };
+  const starts = ["animationstart", "animationiteration", "transitionrun"] as const;
+  for (const type of starts) document.addEventListener(type, onStart, true);
+  return new Promise<string[]>((done) => {
+    const end = performance.now() + ms;
+    const frame = () => {
+      for (const animation of runningNow()) note(`running: ${animation.constructor.name}`);
+      if (performance.now() < end) return requestAnimationFrame(frame);
+      observer.disconnect();
+      for (const type of starts) document.removeEventListener(type, onStart, true);
+      done(moved);
+    };
+    requestAnimationFrame(frame);
+  });
+}
+
+/**
+ * The hero holds still: once Inter has loaded and the stage has mounted again for it (ProductHero), nothing on,
+ * in, or around the hero changes or animates for 6 s, longer than the loop's longest hold (4 s on the payoff).
  */
 async function expectHeroHoldsStill(page: Page) {
+  await page.evaluate(() => document.fonts.ready.then(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)))));
   const hero = page.locator(".hero-stage");
-  const running = () =>
-    hero.evaluate((el) => el.getAnimations({ subtree: true }).filter((animation) => animation.playState === "running").length);
-  const dom = () => hero.evaluate((el) => el.innerHTML);
-  // The stage mounts again once Inter loads, so wait for one quiet second before the strict window.
-  await expect(async () => {
-    const before = await dom();
-    await page.waitForTimeout(1000);
-    expect(await running(), "animations still running as the hero settles").toBe(0);
-    expect((await dom()) === before, "the hero's DOM settles").toBe(true);
-  }).toPass({ timeout: 15_000 });
-  const start = await dom();
-  for (let second = 1; second <= 6; second++) {
-    await page.waitForTimeout(1000);
-    expect(await running(), `animations running after ${second} s`).toBe(0);
-    expect((await dom()) === start, `the hero's DOM is unchanged after ${second} s`).toBe(true);
-  }
+  await expect.poll(() => hero.evaluate(watchHero, 1000), { message: "the hero settles", timeout: 15_000 }).toEqual([]);
+  expect(await hero.evaluate(watchHero, 6000), "what moved on, in, or around the hero in 6 s").toEqual([]);
 }
 
 const layouts = [
