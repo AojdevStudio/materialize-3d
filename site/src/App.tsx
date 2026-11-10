@@ -5,6 +5,7 @@ import { ReleaseFacts } from "./components/ReleaseFacts";
 import { ThemeToggle } from "./components/ThemeToggle";
 import markSmall from "./assets/brand/mark-small-32.svg";
 import oflUrl from "./assets/fonts/OFL.txt?url";
+import threeLicenseUrl from "./assets/licenses/three-LICENSE.txt?url";
 import { checksumPublished, dmgFileName, release } from "./release";
 import { ScrollStory } from "./story/ScrollStory";
 
@@ -67,7 +68,8 @@ const HEADER = 64;
 
 /**
  * The header is clear over the story and turns solid once the end section slides under it.
- * A one-pixel mark at the top of the end section crosses the header's foot at that moment.
+ * It checks a one-pixel mark at the top of the end section on every scroll and resize, because
+ * an instant jump can carry the mark past the viewport without an intersection change.
  */
 function useSolidHeader() {
   const mark = useRef<HTMLSpanElement>(null);
@@ -75,14 +77,14 @@ function useSolidHeader() {
   useEffect(() => {
     const element = mark.current;
     if (!element) return;
-    const observer = new IntersectionObserver(
-      (entries) => {
-        for (const entry of entries) setSolid(entry.boundingClientRect.top < HEADER);
-      },
-      { rootMargin: `-${HEADER}px 0px 0px 0px` },
-    );
-    observer.observe(element);
-    return () => observer.disconnect();
+    const update = () => setSolid(element.getBoundingClientRect().top < HEADER);
+    update();
+    window.addEventListener("scroll", update, { passive: true });
+    window.addEventListener("resize", update);
+    return () => {
+      window.removeEventListener("scroll", update);
+      window.removeEventListener("resize", update);
+    };
   }, []);
   return [mark, solid] as const;
 }
@@ -181,6 +183,7 @@ export function App() {
           <a href={release.releasesUrl}>Releases</a>
           <a href={release.docsUrl}>Docs</a>
           <a href={oflUrl}>Font license (SIL OFL 1.1)</a>
+          <a href={threeLicenseUrl}>three.js license (MIT)</a>
         </nav>
       </footer>
     </>

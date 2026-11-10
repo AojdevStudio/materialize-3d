@@ -218,6 +218,7 @@ export function startStory(root: HTMLElement, motion: Motion, onStatus: (status:
     fade(params, overlays.params);
 
     fade(rail, hud);
+    rail.inert = hud < 0.5;
     railMark.style.top = `${(storyFraction(P, motion) * 100).toFixed(2)}%`;
     for (const { stop, button } of stops) {
       if (stop.label === stage.rail) button.setAttribute("aria-current", "step");

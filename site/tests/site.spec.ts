@@ -240,6 +240,33 @@ test("the readout follows the scroll: parts lifted, then Z height, then the rewi
   expect(await readout(page)).toEqual({ kick: "Elapsed", value: "9:47", line: "Wrote assembly-guide.html, 13 steps." });
 });
 
+test("the 3D view survives a reduced-motion change while the page is open", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await open(page);
+  await storyReady(page);
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await storyReady(page);
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await storyReady(page);
+  expect(errors).toEqual([]);
+});
+
+test("at the end, the header is solid over the install guide and the hidden rail is out of the tab order", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 600 });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await open(page);
+  await page.locator('a[href="#install"]').first().evaluate((link: HTMLAnchorElement) => link.click());
+  await expect(page.locator(".site-header"), "the header turns solid after an instant jump").toHaveAttribute("data-solid", "true");
+  const headerBottom = await page.locator(".site-header").evaluate((h) => h.getBoundingClientRect().bottom);
+  const installTop = await page.locator("#install-title").evaluate((h) => h.getBoundingClientRect().top);
+  expect(installTop, "the Install heading sits below the header").toBeGreaterThanOrEqual(headerBottom);
+
+  await page.locator(".end .cta-primary").first().focus();
+  await page.keyboard.press("Shift+Tab");
+  expect(await page.evaluate(() => Boolean(document.activeElement?.closest(".story-rail"))), "Shift+Tab skips the hidden rail").toBe(false);
+});
+
 test("search and share tags point at the live site, and robots, sitemap, and share image are served", async ({ page, request }) => {
   await open(page);
   await expect(page.locator('link[rel="canonical"]')).toHaveAttribute("href", "https://materialize-3d.pages.dev/");

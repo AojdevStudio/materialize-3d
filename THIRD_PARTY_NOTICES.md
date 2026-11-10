@@ -54,7 +54,7 @@ Materialize 3D does not include or redistribute Bambu Studio. It runs a copy tha
 
 The app is built from open source Rust crates and JavaScript packages, each under its own license. `src-tauri/Cargo.lock` and `bun.lock` pin the exact versions.
 
-The landing site in `site/` bundles three.js (https://threejs.org, MIT License) for its 3D scroll story. `site/bun.lock` pins its version. The site's printer and dock mount models are made for this project by the scripts in `site/models/`.
+The landing site in `site/` bundles three.js (https://threejs.org, MIT License) for its 3D scroll story. `site/bun.lock` pins its version. The site ships the license text with its copyright line as `site/src/assets/licenses/three-LICENSE.txt`, and the page footer links to it. The site's printer and dock mount models are made for this project by the scripts in `site/models/`.
 
 ## SIL Open Font License, Version 1.1
 

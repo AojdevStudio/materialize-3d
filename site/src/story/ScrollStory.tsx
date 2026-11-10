@@ -209,6 +209,7 @@ export function ScrollStory() {
   useEffect(() => {
     const element = root.current;
     if (!element) return;
+    setStatus("Loading the 3D model");
     let stop: (() => void) | null = null;
     let cancelled = false;
     import("./director").then(
@@ -229,6 +230,7 @@ export function ScrollStory() {
     <section ref={root} className="story" id="top" aria-label="Scroll story" data-motion={motion}>
       <div className="story-view">
         <canvas
+          key={motion}
           className="story-canvas"
           role="img"
           aria-label="A 3D printer built in Blender for this page. As you scroll it comes apart from the top down to the build plate, the right shelf of a dock mount prints on the plate, and the story rewinds through how the agent made it."

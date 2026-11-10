@@ -123,6 +123,9 @@ ul {
 .site-header > * {
   pointer-events: auto;
 }
+.end section[id] {
+  scroll-margin-top: var(--header);
+}
 .site-header[data-solid] {
   background: var(--paper);
   border-bottom: 1px solid var(--rule);
