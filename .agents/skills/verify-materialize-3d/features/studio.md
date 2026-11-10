@@ -1,6 +1,6 @@
 # Studio
 
-The studio is the whole app. Each chat is a project folder in `~/Documents/Materialize 3D/<date>-<slug>/` (an `e2e` build uses `<M3D_E2E_DATA_DIR>/projects/`), and a conversation in the sidecar's store, `<app data>/state/store.sqlite` (an `e2e` build: `<M3D_E2E_DATA_DIR>/state/`). The sidecar, `Contents/MacOS/materialize-sidecar`, runs the agent through Pi Durable on the person's own inference login, with the app's own tools: `read`, `write`, and `edit` inside the project folder, `run` (uv), `slice` (the validated Bambu Studio, through Rust), and `astra` (GPT 6 Astra as a child task). The right panel shows whatever the agent writes: HTML in a sandboxed frame, STL, 3MF, and GLB in an orbit viewer, and pictures. The newest such file opens on its own. The Files tab lists every file, with Reveal in Finder and, for a 3MF, Open in Bambu Studio.
+The studio is the whole app. Each chat is a project folder in `~/Documents/Materialize 3D/<date>-<slug>/` (an `e2e` build uses `<M3D_E2E_DATA_DIR>/projects/`), and a conversation in the sidecar's store, `<app data>/state/store.sqlite` (an `e2e` build: `<M3D_E2E_DATA_DIR>/state/`). The sidecar, `Contents/MacOS/materialize-sidecar`, runs the agent through Pi Durable on the person's own inference login, with the app's own tools: `read`, `write`, and `edit` inside the project folder, `run` (uv), `slice` (the validated Bambu Studio, through Rust), and `astra` (GPT 6 Astra as a child task). The right panel has four views: Guide, Model, Drawing, and Files. HTML shows in a sandboxed frame, and STL, 3MF, and GLB in an orbit viewer. The newest guide, drawing, or model opens on its own. The Files tab lists every file, with Reveal in Finder and, for a 3MF, Open in Bambu Studio. The print files bar under the views opens the 3MF files in Bambu Studio.
 
 ## Sub-features
 
@@ -13,7 +13,10 @@ The studio is the whole app. Each chat is a project folder in `~/Documents/Mater
 - `waiting` shows when a turn stopped before its answer: the fix, and the control for it. A provider with no login shows `Sign in with Claude` or `Sign in with ChatGPT`, and for Anthropic and OpenCode Go a key form (`API key or token`, and for Anthropic `Proxy URL`). Once the login is saved, the turn goes on by itself. Any other failure shows its error and `Try again`.
 - A turn cut off by quitting or a crash goes on from its last committed step when the app opens again.
 - `engine` in the sidebar shows the sidecar's version, or why it stopped.
-- `files-tab` opens `files-list`, with "Print files" (3MF) above "All files".
+- `guide-tab`, `model-tab`, `drawing-tab`, and `files-tab` switch the right panel's view. Guide shows the newest `guide*.html` at the top of the project folder, Drawing the newest `drawing*.html`, and Model the newest STL, GLB, or glTF, or the newest 3MF when there is none. Files in `refs/` never count. A view with nothing to show has its tab disabled. A project opens on Guide when it has a guide, or else on the first view with something to show.
+- `files-tab` opens `files-list`, with "Print files" (3MF) above "All files". A file that belongs to no view opens inside Files, with `All files` to go back to the list.
+- `pop-out` opens the shown file in a new window, whose page is `pop-out-window`. The file list has no `pop-out`.
+- `print-files` counts the 3MF files outside `refs/`. `Reveal in Finder` (`Show in folder` on Linux) and `open-in-bambu` act on the newest. With two or more, `print-pick` opens a menu of them all.
 - `html-preview` is the iframe. `model-view` holds the orbit canvas.
 
 ## How to get to it (user POV)

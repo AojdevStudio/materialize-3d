@@ -945,29 +945,47 @@ pre {
   background: var(--s-panel);
 }
 
+/* Tabs are pills. A view with nothing to show keeps its tab, in the muted color, so the row never shifts. */
 .tabs {
   display: flex;
+  align-items: center;
   gap: 4px;
-  padding: 8px 12px 0;
+  padding: 8px 12px;
   border-bottom: 1px solid var(--s-line);
 }
 
 .tabs button {
-  border: none;
-  border-bottom: 2px solid transparent;
-  border-radius: 0;
+  border-color: transparent;
   background: none;
-  padding: 6px 10px;
+  padding: 3px 10px;
 }
 
 .tabs button[aria-selected='true'] {
-  border-bottom-color: var(--s-accent);
+  border-color: var(--s-line);
+  background: var(--s-raised);
   font-weight: 500;
 }
 
-.count {
+.tabs button:disabled {
+  opacity: 1;
   color: var(--s-muted);
-  margin-left: 2px;
+}
+
+.tabs button:disabled:hover {
+  border-color: transparent;
+}
+
+.tabs .pop-out {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  color: var(--s-muted);
+}
+
+.tabs .pop-out:hover {
+  border-color: transparent;
+  color: var(--s-text);
 }
 
 .preview {
@@ -1005,7 +1023,11 @@ pre {
 .preview-body iframe {
   flex: 1;
   border: none;
-  background: #ffffff;
+  background: var(--s-raised);
+}
+
+.pop-out-window {
+  height: 100%;
 }
 
 .model-view {
@@ -1044,6 +1066,8 @@ pre {
 }
 
 .files {
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding: 8px 12px;
 }
@@ -1084,6 +1108,78 @@ pre {
 .file-size {
   color: var(--s-muted);
   font-size: 12px;
+}
+
+/* The print files bar, pinned under every view. Its menu opens above it. */
+.print-files {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--s-line);
+  background: var(--s-side);
+}
+
+.print-count {
+  flex: 1;
+  font-weight: 500;
+}
+
+.print-open {
+  position: relative;
+  display: flex;
+}
+
+.print-open > .primary {
+  padding: 6px 12px;
+}
+
+.print-open > .primary:has(+ .print-pick) {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.print-open > .print-pick {
+  display: flex;
+  align-items: center;
+  margin-left: 1px;
+  padding: 6px 8px;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+}
+
+.print-files > button {
+  padding: 6px 12px;
+}
+
+.print-menu {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 6px);
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  min-width: 260px;
+  max-height: min(320px, 50vh);
+  overflow-y: auto;
+  padding: 4px;
+  border: 1px solid var(--s-line);
+  border-radius: 10px;
+  background: var(--s-raised);
+  box-shadow: var(--s-shadow);
+}
+
+.print-menu button {
+  padding: 6px 8px;
+  border: none;
+  background: none;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.print-menu button:hover {
+  background: var(--s-soft);
 }
 
 .chat-model {

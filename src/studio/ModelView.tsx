@@ -4,6 +4,13 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js'
 import { ThreeMFLoader } from 'three/examples/jsm/loaders/3MFLoader.js'
+import { useTheme, type Theme } from './theme'
+
+/** The scene's background and grid lines in each theme. Dark is true black, as the rest of the app. */
+const SCENE: Record<Theme, { background: number; axis: number; line: number }> = {
+  light: { background: 0xf6f6f4, axis: 0xc9c6bf, line: 0xe2e0db },
+  dark: { background: 0x000000, axis: 0x3d3d3d, line: 0x1f1f1f },
+}
 
 async function loadModel(url: string, ext: string): Promise<THREE.Object3D> {
   const response = await fetch(url)
@@ -39,7 +46,7 @@ function zUp(object: THREE.Object3D): THREE.Object3D {
 }
 
 /**
- * A simple orbit viewer. It draws only when the view changes, so an idle
+ * A simple orbit viewer. It draws only when the view or the theme changes, so an idle
  * preview costs nothing.
  */
 export default function ModelView({ url, ext }: { url: string; ext: string }) {
@@ -60,7 +67,6 @@ export default function ModelView({ url, ext }: { url: string; ext: string }) {
     renderer.setPixelRatio(window.devicePixelRatio)
     element.appendChild(renderer.domElement)
     const scene = new THREE.Scene()
-    scene.background = new THREE.Color(0xf6f6f4)
     scene.add(new THREE.HemisphereLight(0xffffff, 0xb8b4ac, 2.2))
     const sun = new THREE.DirectionalLight(0xffffff, 1.6)
     scene.add(sun)
@@ -82,6 +88,23 @@ export default function ModelView({ url, ext }: { url: string; ext: string }) {
     const observer = new ResizeObserver(resize)
     observer.observe(element)
 
+    // The grid is sized to the model, so it comes once the model loads.
+    let gridSize = 0
+    let grid: THREE.GridHelper | undefined
+    const paint = (theme: Theme) => {
+      const colors = SCENE[theme]
+      scene.background = new THREE.Color(colors.background)
+      if (grid) {
+        scene.remove(grid)
+        grid.dispose()
+      }
+      grid = gridSize > 0 ? new THREE.GridHelper(gridSize, 20, colors.axis, colors.line) : undefined
+      if (grid) scene.add(grid)
+      render()
+    }
+    paint(useTheme.getState().theme)
+    const unsubscribe = useTheme.subscribe(({ theme }) => paint(theme))
+
     let disposed = false
     loadModel(url, ext)
       .then((object) => {
@@ -92,8 +115,8 @@ export default function ModelView({ url, ext }: { url: string; ext: string }) {
         object.position.sub(new THREE.Vector3(center.x, box.min.y, center.z))
         scene.add(object)
         const radius = Math.max(size.x, size.y, size.z)
-        const grid = new THREE.GridHelper(Math.ceil((radius * 2.5) / 10) * 10, 20, 0xc9c6bf, 0xe2e0db)
-        scene.add(grid)
+        gridSize = Math.ceil((radius * 2.5) / 10) * 10
+        paint(useTheme.getState().theme)
         controls.target.set(0, size.y / 2, 0)
         camera.position.set(radius * 1.2, radius * 0.9 + size.y / 2, radius * 1.6)
         camera.near = radius / 100
@@ -108,7 +131,9 @@ export default function ModelView({ url, ext }: { url: string; ext: string }) {
 
     return () => {
       disposed = true
+      unsubscribe()
       observer.disconnect()
+      grid?.dispose()
       controls.dispose()
       scene.traverse((node) => {
         if (node instanceof THREE.Mesh) {

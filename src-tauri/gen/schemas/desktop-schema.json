@@ -351,6 +351,12 @@
           "markdownDescription": "Enables the sidecar command without any pre-configured scope."
         },
         {
+          "description": "Enables the studio_file_version command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-studio-file-version",
+          "markdownDescription": "Enables the studio_file_version command without any pre-configured scope."
+        },
+        {
           "description": "Enables the studio_files command without any pre-configured scope.",
           "type": "string",
           "const": "allow-studio-files",
@@ -393,6 +399,12 @@
           "markdownDescription": "Enables the studio_open_in_bambu command without any pre-configured scope."
         },
         {
+          "description": "Enables the studio_pop_out command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-studio-pop-out",
+          "markdownDescription": "Enables the studio_pop_out command without any pre-configured scope."
+        },
+        {
           "description": "Enables the studio_reveal command without any pre-configured scope.",
           "type": "string",
           "const": "allow-studio-reveal",
@@ -421,6 +433,12 @@
           "type": "string",
           "const": "deny-sidecar",
           "markdownDescription": "Denies the sidecar command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the studio_file_version command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-studio-file-version",
+          "markdownDescription": "Denies the studio_file_version command without any pre-configured scope."
         },
         {
           "description": "Denies the studio_files command without any pre-configured scope.",
@@ -463,6 +481,12 @@
           "type": "string",
           "const": "deny-studio-open-in-bambu",
           "markdownDescription": "Denies the studio_open_in_bambu command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the studio_pop_out command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-studio-pop-out",
+          "markdownDescription": "Denies the studio_pop_out command without any pre-configured scope."
         },
         {
           "description": "Denies the studio_reveal command without any pre-configured scope.",

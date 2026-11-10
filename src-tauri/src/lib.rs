@@ -36,6 +36,8 @@ pub fn run() {
             studio::files::studio_save_bytes,
             studio::files::studio_reveal,
             studio::files::studio_open_in_bambu,
+            studio::files::studio_pop_out,
+            studio::files::studio_file_version,
             studio::quit::studio_flush_started,
             studio::quit::studio_flush_failed,
             studio::quit::studio_flushed,
@@ -80,6 +82,17 @@ pub fn run() {
                     api.prevent_close();
                 }
             }
+            // A pop out shows a file of the main window's project, so it closes with the main window, and the app quits as
+            // before.
+            tauri::RunEvent::WindowEvent { label, event: tauri::WindowEvent::Destroyed, .. } if label == "main" => {
+                for (other, window) in app.webview_windows() {
+                    // A pop out that will not close stays until the person closes it, and the app quits with its last
+                    // window, as Tauri does by default. The log records why it stayed.
+                    if let Err(err) = window.destroy() {
+                        log::warn!("studio: the {other} window did not close with the main one: {err}");
+                    }
+                }
+            }
             // The sidecar finishes its commits and exits before the app does.
             tauri::RunEvent::Exit => app.state::<sidecar::Sidecar>().shutdown(),
             _ => {}
@@ -118,5 +131,12 @@ mod acl_tests {
             .filter_map(|p| p.as_str()?.strip_prefix("allow-").map(|c| c.replace('-', "_")))
             .collect();
         assert_eq!(allowed, registered, "capabilities/default.json allow- entries");
+    }
+
+    #[test]
+    fn pop_out_windows_may_only_read_file_versions() {
+        let pop_out: serde_json::Value = serde_json::from_str(include_str!("../capabilities/pop-out.json")).expect("json");
+        assert_eq!(pop_out["webviews"], serde_json::json!(["pop-out-*"]));
+        assert_eq!(pop_out["permissions"], serde_json::json!(["allow-studio-file-version"]));
     }
 }

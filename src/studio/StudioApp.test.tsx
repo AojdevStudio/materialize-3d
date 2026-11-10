@@ -184,7 +184,7 @@ const saves = (key?: string) => sidecarCalls('drafts.set').filter((save) => key 
 const last = <T,>(items: T[]) => items[items.length - 1]
 
 describe('StudioApp', () => {
-  it.each(['send', 'sidebar'])('keeps files, preview, tab, draft, and chat when reopening the project from %s', async (source) => {
+  it.each(['send', 'sidebar'])('keeps files, the opened guide, view, draft, and chat when reopening the project from %s', async (source) => {
     const title = source === 'send' ? 'A clip' : projectA.title
     const id = source === 'send' ? '2026-11-06-a-clip' : projectA.id
     mockSidecar({
@@ -192,8 +192,8 @@ describe('StudioApp', () => {
         entries: [{ id: 1, kind: 'assistant', text: 'The clip is ready.', calls: [] }],
       })),
     }, [projectA, projectB], {}, { [id]: [
-      { rel: 'hello.html', size: 334, modifiedMs: 1 },
-      { rel: 'newer.html', size: 100, modifiedMs: 2 },
+      { rel: 'guide.html', size: 334, modifiedMs: 1 },
+      { rel: 'guide-v2.html', size: 100, modifiedMs: 2 },
     ] })
     render(<StudioApp />)
     const sidebar = within(screen.getByRole('navigation', { name: 'Projects' }))
@@ -205,30 +205,31 @@ describe('StudioApp', () => {
     } else {
       fireEvent.click(sidebar.getByText(title))
     }
-    await screen.findByTestId('html-preview')
+    expect((await screen.findByTestId('html-preview')).getAttribute('src')).toContain('/guide-v2.html?')
     fireEvent.click(screen.getByTestId('files-tab'))
-    fireEvent.click(within(screen.getByTestId('files-list')).getByText('hello.html'))
+    fireEvent.click(within(screen.getByTestId('files-list')).getByText('guide.html'))
     type('Make it blue')
 
     fireEvent.click(sidebar.getByText(title))
-    expect(screen.getByTestId('html-preview').getAttribute('src')).toContain('/hello.html?')
+    expect(screen.getByTestId('guide-tab').getAttribute('aria-selected')).toBe('true')
+    expect(screen.getByTestId('html-preview').getAttribute('src')).toContain('/guide.html?')
     expect(prompt().value).toBe('Make it blue')
     expect(screen.getByText('The clip is ready.')).toBeTruthy()
     fireEvent.click(screen.getByTestId('files-tab'))
     fireEvent.click(sidebar.getByText(title))
     expect(screen.getByTestId('files-tab').getAttribute('aria-selected')).toBe('true')
-    expect(screen.getByTestId('files-list').textContent).toContain('hello.html')
+    expect(screen.getByTestId('files-list').textContent).toContain('guide.html')
 
     fireEvent.click(sidebar.getByText('Project B'))
     await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project B'))
     fireEvent.click(sidebar.getByText(title))
-    expect((await screen.findByTestId('html-preview')).getAttribute('src')).toContain('/newer.html?')
+    expect((await screen.findByTestId('html-preview')).getAttribute('src')).toContain('/guide-v2.html?')
     expect(prompt().value).toBe('Make it blue')
     fireEvent.click(screen.getByTestId('files-tab'))
-    expect(screen.getByTestId('files-list').textContent).toContain('hello.html')
+    expect(screen.getByTestId('files-list').textContent).toContain('guide.html')
   })
 
-  it('retries a failed chat load when reopening the same project without losing files or preview', async () => {
+  it('retries a failed chat load when reopening the same project without losing files or the guide', async () => {
     let opens = 0
     mockSidecar({
       'chat.open': (params) => ++opens === 1
@@ -236,22 +237,72 @@ describe('StudioApp', () => {
         : Promise.resolve(view(String(params.project), {
           entries: [{ id: 1, kind: 'assistant', text: 'The clip is ready.', calls: [] }],
         })),
-    }, [projectB], {}, { [projectB.id]: [{ rel: 'hello.html', size: 334, modifiedMs: 1 }] })
+    }, [projectB], {}, { [projectB.id]: [{ rel: 'guide.html', size: 334, modifiedMs: 1 }] })
     render(<StudioApp />)
     const sidebar = within(screen.getByRole('navigation', { name: 'Projects' }))
     fireEvent.click(await sidebar.findByText('Project B'))
     expect((await screen.findByRole('alert')).textContent).toContain('The chat could not be loaded.')
-    expect((await screen.findByTestId('html-preview')).getAttribute('src')).toContain('/hello.html?')
+    expect((await screen.findByTestId('html-preview')).getAttribute('src')).toContain('/guide.html?')
     fireEvent.click(screen.getByTestId('files-tab'))
-    expect(screen.getByTestId('files-list').textContent).toContain('hello.html')
+    expect(screen.getByTestId('files-list').textContent).toContain('guide.html')
 
     fireEvent.click(sidebar.getByText('Project B'))
     expect(await screen.findByText('The clip is ready.')).toBeTruthy()
     expect(screen.queryByRole('alert')).toBeNull()
     expect(screen.getByTestId('files-tab').getAttribute('aria-selected')).toBe('true')
-    expect(screen.getByTestId('files-list').textContent).toContain('hello.html')
-    fireEvent.click(screen.getByRole('tab', { name: 'Preview' }))
-    expect(screen.getByTestId('html-preview').getAttribute('src')).toContain('/hello.html?')
+    expect(screen.getByTestId('files-list').textContent).toContain('guide.html')
+    fireEvent.click(screen.getByRole('tab', { name: 'Guide' }))
+    expect(screen.getByTestId('html-preview').getAttribute('src')).toContain('/guide.html?')
+  })
+
+  it.each([
+    ['guide', 'Guide', ['guide.html', 'part.stl', 'drawing.html']],
+    ['model', 'Model', ['part.stl', 'drawing.html']],
+    ['drawing', 'Drawing', ['drawing.html', 'params.json']],
+    ['files', 'Files', ['params.json', 'notes.html']],
+  ])('opens a project on the %s view when that is the first view with something to show', async (_, label, rels) => {
+    mockSidecar({}, [projectB], {}, { [projectB.id]: rels.map((rel, i) => ({ rel, size: 10, modifiedMs: 10 - i })) })
+    render(<StudioApp />)
+    fireEvent.click(await projectList().findByText('Project B'))
+    await waitFor(() => expect(screen.getByRole('tab', { name: label }).getAttribute('aria-selected')).toBe('true'))
+  })
+
+  it('keeps a view the person picks before the files are first listed', async () => {
+    mockSidecar({}, [projectB], {}, { [projectB.id]: [{ rel: 'guide.html', size: 10, modifiedMs: 1 }] })
+    const real = invokeMock.getMockImplementation()!
+    let list = () => {}
+    invokeMock.mockImplementation((command: string, args: { project?: string }) =>
+      command === 'studio_files' ? new Promise((resolve) => (list = () => resolve(real(command, args)))) : real(command, args),
+    )
+    render(<StudioApp />)
+    fireEvent.click(await projectList().findByText('Project B'))
+    fireEvent.click(await screen.findByTestId('files-tab'))
+    await act(async () => list())
+    expect(screen.getByTestId('files-list').textContent).toContain('guide.html')
+    expect(screen.getByTestId('files-tab').getAttribute('aria-selected')).toBe('true')
+  })
+
+  it('switches to a newer guide, model, or drawing the agent writes, but not to a new print file', async () => {
+    const listed = { [projectB.id]: [{ rel: 'guide.html', size: 10, modifiedMs: 1 }] }
+    const write = (rel: string, modifiedMs: number) => (listed[projectB.id] = [...listed[projectB.id], { rel, size: 10, modifiedMs }])
+    mockSidecar({}, [projectB], {}, listed)
+    render(<StudioApp />)
+    fireEvent.click(await projectList().findByText('Project B'))
+    await waitFor(() => expect(screen.getByTestId('guide-tab').getAttribute('aria-selected')).toBe('true'))
+
+    // Each turn's end lists the files again.
+    const turn = async (seq: number) => {
+      await emit({ type: 'chat', ...view(projectB.id, { running: true, seq }) })
+      await emit({ type: 'chat', ...view(projectB.id, { running: false, seq: seq + 1 }) })
+    }
+    write('print/part.3mf', 2)
+    await turn(2)
+    await waitFor(() => expect(screen.getByTestId('print-files').textContent).toContain('1 print file ready'))
+    expect(screen.getByTestId('guide-tab').getAttribute('aria-selected')).toBe('true')
+
+    write('part.stl', 3)
+    await turn(4)
+    await waitFor(() => expect(screen.getByTestId('model-tab').getAttribute('aria-selected')).toBe('true'))
   })
 
   it('keeps a pending chat load and its buffered changes when reopening the same project', async () => {

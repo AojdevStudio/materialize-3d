@@ -24,6 +24,8 @@ const APP_COMMANDS: &[&str] = &[
     "studio_save_bytes",
     "studio_reveal",
     "studio_open_in_bambu",
+    "studio_pop_out",
+    "studio_file_version",
     "studio_flush_started",
     "studio_flush_failed",
     "studio_flushed",

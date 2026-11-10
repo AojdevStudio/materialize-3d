@@ -39,6 +39,8 @@ export const studio = {
     invoke<string>('studio_save_bytes', bytes, { headers: { 'm3d-project': project, 'm3d-name': encodeURIComponent(name) } }),
   reveal: (project: string, rel: string) => invoke<void>('studio_reveal', { project, rel }),
   openInBambu: (project: string, rel: string) => invoke<void>('studio_open_in_bambu', { project, rel }),
+  popOut: (project: string, rel: string, version: number) => invoke<void>('studio_pop_out', { project, rel, version }),
+  fileVersion: (project: string, rel: string) => invoke<number>('studio_file_version', { project, rel }),
 }
 
 /**
@@ -63,13 +65,50 @@ export function fileKind(rel: string): FileKind {
   return 'other'
 }
 
-/** Files that open in the preview on their own when the agent writes them. Ossie's own pictures in refs/ do not. */
+/** Files a turn's file cards offer to preview: the pages, models, and pictures the agent wrote. Ossie's own files in refs/ are not. */
 export function autoOpens(rel: string): boolean {
   const kind = fileKind(rel)
   return !rel.startsWith('refs/') && (kind === 'html' || kind === 'model' || kind === 'image')
 }
 
 export const is3mf = (rel: string) => rel.toLowerCase().endsWith('.3mf')
+
+/** The right panel's views, in the order its tabs show them. */
+export const VIEWS = ['guide', 'model', 'drawing', 'files'] as const
+export type PanelView = (typeof VIEWS)[number]
+
+/**
+ * The view a file opens in. The agent names assembly guides `guide*.html` and drawings `drawing*.html`, at the top of
+ * the project folder. Every other file opens from Files.
+ */
+export function viewOf(rel: string): PanelView {
+  const name = rel.toLowerCase()
+  if (!name.includes('/') && fileKind(rel) === 'html') {
+    if (name.startsWith('guide')) return 'guide'
+    if (name.startsWith('drawing')) return 'drawing'
+  }
+  return fileKind(rel) === 'model' ? 'model' : 'files'
+}
+
+/**
+ * What the panel shows by default: the newest guide, model, and drawing the agent wrote, and its print files, newest
+ * first. Files in `refs/` are the person's own, so none of these come from there. A model is the newest STL, GLB, or
+ * glTF, and the newest 3MF only when there is none, as a 3MF is a print file. `latest` is the newest guide, drawing,
+ * or model that is not a print file: a newer one than the panel has seen takes the panel over.
+ */
+export function panelFiles(files: ProjectFile[]) {
+  const agents = files.filter((f) => !f.rel.startsWith('refs/')).sort((a, b) => b.modifiedMs - a.modifiedMs)
+  const shows = agents.filter((f) => viewOf(f.rel) !== 'files' && !is3mf(f.rel))
+  const newest = (view: PanelView) => shows.find((f) => viewOf(f.rel) === view)
+  const prints = agents.filter((f) => is3mf(f.rel))
+  return { guide: newest('guide'), model: newest('model') ?? prints[0], drawing: newest('drawing'), prints, latest: shows[0] }
+}
+export type PanelFiles = ReturnType<typeof panelFiles>
+
+/** The view a project opens on: Guide when it has a guide, or else the first view with something to show. */
+export function firstView(shown: PanelFiles): PanelView {
+  return (['guide', 'model', 'drawing'] as const).find((view) => shown[view] !== undefined) ?? 'files'
+}
 
 export function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
