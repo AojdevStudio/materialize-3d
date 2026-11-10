@@ -1,7 +1,10 @@
 import { useEffect, useState } from 'react'
-import { onFiles } from './api'
+import { studio } from './api'
 import { FileBody } from './RightPanel'
 import './studio.css'
+
+/** How long a pop out waits between checks of its file. */
+const CHECK_MS = 2000
 
 type Shown = { project: string; rel: string; version: number }
 
@@ -13,18 +16,31 @@ export function popOutFile(search: string): Shown | null {
   return project === null || rel === null ? null : { project, rel, version: Number(params.get('v')) }
 }
 
-/** A pop out window: one project file, filling the window. It shows the file's newest version the main window lists. */
+/**
+ * A pop out window: one project file, filling the window. It lists the project itself, whatever the main window shows,
+ * and reloads the file when it changes. One check runs at a time, so an older answer never replaces a newer one.
+ */
 export default function PopOut({ project, rel, version: opened }: Shown) {
   const [version, setVersion] = useState(opened)
   const [error, setError] = useState<string | null>(null)
   useEffect(() => {
-    const unlisten = onFiles((listing) => {
-      const file = listing.project === project ? listing.files.find((f) => f.rel === rel) : undefined
-      if (file) setVersion(file.modifiedMs)
-    })
-    unlisten.catch((err: unknown) => setError(`This window cannot follow changes to ${rel}. ${String(err)}`))
+    let live = true
+    let timer = 0
+    const check = async () => {
+      try {
+        const file = (await studio.files(project)).find((f) => f.rel === rel)
+        if (!live) return
+        setError(null)
+        if (file) setVersion(file.modifiedMs)
+      } catch (err) {
+        if (live) setError(`This window cannot check ${rel} for changes. ${String(err)}`)
+      }
+      if (live) timer = window.setTimeout(check, CHECK_MS)
+    }
+    timer = window.setTimeout(check, CHECK_MS)
     return () => {
-      void unlisten.then((stop) => stop())
+      live = false
+      window.clearTimeout(timer)
     }
   }, [project, rel])
   return (

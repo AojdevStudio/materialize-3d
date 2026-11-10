@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
-import { emit, listen } from '@tauri-apps/api/event'
+import { listen } from '@tauri-apps/api/event'
 import type { Method, Methods, SidecarEvent } from '../../sidecar/src/protocol'
 
 /** The window's one call into the sidecar. A call made while it starts waits for it. */
@@ -42,10 +42,6 @@ export const studio = {
   popOut: (project: string, rel: string, version: number) => invoke<void>('studio_pop_out', { project, rel, version }),
 }
 
-/** A listing of a project's files, as the main window tells its pop outs, so each shows its file's newest version. */
-type Listing = { project: string; files: ProjectFile[] }
-export const announceFiles = (listing: Listing) => emit('studio://files', listing)
-export const onFiles = (handler: (listing: Listing) => void) => listen<Listing>('studio://files', ({ payload }) => handler(payload))
 
 /**
  * A project file as served by the app's `m3dfile://` protocol. Each project is its own host, so a preview page

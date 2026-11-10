@@ -2,7 +2,7 @@ import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { type AppState, type Draft, type LoginEvent, type ModelChoice, type ModelOption, type Need, type Project, type ProjectStatus, START, type ChatView as View } from '../../sidecar/src/protocol'
-import { announceFiles, firstView, onQuitFlush, onSidecarEvent, panelFiles, sidecar, studio, viewOf, type PanelView, type ProjectFile } from './api'
+import { firstView, onQuitFlush, onSidecarEvent, panelFiles, sidecar, studio, viewOf, type PanelView, type ProjectFile } from './api'
 import { ChatView } from './Chat'
 import { Composer, releaseAttachment, savedAttachment, type PastedPicture } from './Composer'
 import ModelPicker from './ModelPicker'
@@ -416,7 +416,6 @@ export default function StudioApp() {
     const list = await studio.files(project)
     if (project !== currentId.current) return
     setFiles(list)
-    void announceFiles({ project, files: list }).catch((err: unknown) => setError(String(err)))
     const shown = panelFiles(list)
     const latest = shown.latest?.modifiedMs ?? 0
     if (lastSeen.current === null) {

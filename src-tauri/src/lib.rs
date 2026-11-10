@@ -84,10 +84,11 @@ pub fn run() {
             // A pop out shows a file of the main window's project, so it closes with the main window, and the app quits as
             // before.
             tauri::RunEvent::WindowEvent { label, event: tauri::WindowEvent::Destroyed, .. } if label == "main" => {
-                for (label, window) in app.webview_windows() {
-                    // The app is closing, so a pop out that will not go has nothing to fall back to. The log says so.
+                for (other, window) in app.webview_windows() {
+                    // A pop out that will not close stays until the person closes it, and the app quits with its last
+                    // window, as Tauri does by default. The log records why it stayed.
                     if let Err(err) = window.destroy() {
-                        log::warn!("studio: could not close the {label} window with the main one: {err}");
+                        log::warn!("studio: the {other} window did not close with the main one: {err}");
                     }
                 }
             }

@@ -7,12 +7,12 @@ const KEY = 'materialize-3d.theme'
 
 type ThemeState = { theme: Theme; toggle: () => void }
 
+const parse = (saved: string | null): Theme => (saved === 'dark' ? 'dark' : 'light')
+
 /**
  * The app's theme. Light unless the person chose dark. Read it with `useTheme((s) => s.theme)`, or follow it outside
  * React with `useTheme.subscribe`. The root element's `data-theme` always matches it.
  */
-const parse = (saved: string | null): Theme => (saved === 'dark' ? 'dark' : 'light')
-
 export const useTheme = create<ThemeState>()((set, get) => ({
   theme: parse(window.localStorage.getItem(KEY)),
   toggle: () => {

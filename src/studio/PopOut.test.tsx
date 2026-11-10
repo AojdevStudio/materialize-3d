@@ -1,29 +1,25 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, render, screen } from '@testing-library/react'
 
-type Listener = (event: { payload: unknown }) => void
-const { listeners } = vi.hoisted(() => ({ listeners: [] as Listener[] }))
-vi.mock('@tauri-apps/api/event', () => ({
-  listen: (_: string, listener: Listener) => {
-    listeners.push(listener)
-    return Promise.resolve(() => {})
-  },
-  emit: () => Promise.resolve(),
+const { listed } = vi.hoisted(() => ({ listed: { modifiedMs: 5 } }))
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: (command: string) =>
+    command === 'studio_files' ? Promise.resolve([{ rel: 'guide.html', size: 10, modifiedMs: listed.modifiedMs }]) : Promise.reject(command),
 }))
 
 import PopOut, { popOutFile } from './PopOut'
 import { useTheme } from './theme'
 
+beforeEach(() => vi.useFakeTimers())
 afterEach(() => {
   cleanup()
-  listeners.length = 0
+  vi.useRealTimers()
+  listed.modifiedMs = 5
   useTheme.setState({ theme: 'light' })
 })
 
 const project = '2026-11-06-dock'
-const listing = (forProject: string, modifiedMs: number) =>
-  act(() => listeners.forEach((listener) => listener({ payload: { project: forProject, files: [{ rel: 'guide.html', size: 10, modifiedMs }] } })))
 const src = () => screen.getByTestId('html-preview').getAttribute('src')
 
 describe('PopOut', () => {
@@ -33,11 +29,12 @@ describe('PopOut', () => {
     expect(src()).toBe(`m3dfile://${project}/guide.html?v=5`)
   })
 
-  it('reloads its file when the main window lists a newer version of it', async () => {
+  it('reloads its file when the file changes on disk', async () => {
     render(<PopOut project={project} rel="guide.html" version={5} />)
-    await listing('2026-11-06-other', 9)
+    await act(() => vi.advanceTimersByTimeAsync(2000))
     expect(src()).toContain('?v=5')
-    await listing(project, 9)
+    listed.modifiedMs = 9
+    await act(() => vi.advanceTimersByTimeAsync(2000))
     expect(src()).toContain('?v=9')
   })
 
