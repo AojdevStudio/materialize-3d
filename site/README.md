@@ -44,7 +44,7 @@ The sidebar icons in the hero (`src/assets/landing/line-*.svg`) are the app's ou
 magick docs/images/studio-light.png -resize 1152x582 -background '#CFD0CF' -gravity center -extent 1200x630 -strip site/public/og-image.png
 ```
 
-The tags and files go live at the next manual deploy.
+The tags and files go live with the next production deployment.
 
 ## Tests
 
@@ -77,4 +77,4 @@ The project's build settings in the Cloudflare dashboard:
 | Build output directory | `dist` |
 | Environment variable | `BUN_VERSION` = `1.4.4`, the version CI pins |
 
-Leave `SITE_BASE` unset, because Pages serves the site from `/`. Cloudflare runs no tests. The `Landing site` CI job tests every pull request before it merges.
+Leave `SITE_BASE` unset, because Pages serves the site from `/`. Cloudflare runs no tests. The `Landing site` CI job runs the site tests on pull requests from this repository. It skips forks and Dependabot, and the merge rules do not require it.
