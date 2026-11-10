@@ -23,46 +23,29 @@ async function loadAllImages(page: Page) {
   });
 }
 
-/** Pixels that differ between two PNG screenshots of the same box, counted in the page. */
-async function changedPixels(page: Page, a: Buffer, b: Buffer) {
-  return page.evaluate(async ([pngA, pngB]) => {
-    const pixels = async (png: string) => {
-      const bitmap = await createImageBitmap(await (await fetch(`data:image/png;base64,${png}`)).blob());
-      const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
-      const context = canvas.getContext("2d");
-      if (!context) throw new Error("no 2d context");
-      context.drawImage(bitmap, 0, 0);
-      return context.getImageData(0, 0, bitmap.width, bitmap.height).data;
-    };
-    const [x, y] = await Promise.all([pixels(pngA), pixels(pngB)]);
-    if (x.length !== y.length) throw new Error("the two frames differ in size");
-    let changed = 0;
-    for (let i = 0; i < x.length; i += 4) {
-      if (x[i] !== y[i] || x[i + 1] !== y[i + 1] || x[i + 2] !== y[i + 2]) changed++;
-    }
-    return changed;
-  }, [a.toString("base64"), b.toString("base64")] as const);
-}
-
 /**
- * The hero holds still: once its images have decoded and its frame has settled, at most 100 pixels change in
- * two seconds. Chrome on the macOS runner redraws a scaled image at higher quality about a second after the page
- * goes idle, and its anti-aliasing flickers single pixels, so settling waits 1.5 s between frames and the bound
- * allows that noise. The running loop changes over 100,000 pixels in the same two seconds.
+ * The hero holds still: no CSS animation or transition runs in it, and its DOM does not change for 6 s, longer
+ * than the loop's longest hold (4 s on the payoff). A playing loop changes the DOM inside that window, and a
+ * spinner or caret left running shows up as a running animation.
  */
 async function expectHeroHoldsStill(page: Page) {
   const hero = page.locator(".hero-stage");
-  // The stage mounts again once Inter loads (ProductHero), so wait for that render before decoding its images.
-  await page.evaluate(() => document.fonts.ready.then(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)))));
-  await hero.locator("img").evaluateAll((imgs) => Promise.all(imgs.map((img) => (img as HTMLImageElement).decode())));
+  const running = () =>
+    hero.evaluate((el) => el.getAnimations({ subtree: true }).filter((animation) => animation.playState === "running").length);
+  const dom = () => hero.evaluate((el) => el.innerHTML);
+  // The stage mounts again once Inter loads, so wait for one quiet second before the strict window.
   await expect(async () => {
-    const first = await hero.screenshot();
-    await page.waitForTimeout(1500);
-    expect(await changedPixels(page, first, await hero.screenshot()), "pixels still changing while the hero settles").toBeLessThanOrEqual(100);
-  }).toPass({ timeout: 20_000 });
-  const before = await hero.screenshot();
-  await page.waitForTimeout(2000);
-  expect(await changedPixels(page, before, await hero.screenshot()), "pixels that changed in two seconds").toBeLessThanOrEqual(100);
+    const before = await dom();
+    await page.waitForTimeout(1000);
+    expect(await running(), "animations still running as the hero settles").toBe(0);
+    expect((await dom()) === before, "the hero's DOM settles").toBe(true);
+  }).toPass({ timeout: 15_000 });
+  const start = await dom();
+  for (let second = 1; second <= 6; second++) {
+    await page.waitForTimeout(1000);
+    expect(await running(), `animations running after ${second} s`).toBe(0);
+    expect((await dom()) === start, `the hero's DOM is unchanged after ${second} s`).toBe(true);
+  }
 }
 
 const layouts = [
