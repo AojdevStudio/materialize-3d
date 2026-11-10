@@ -92,15 +92,15 @@ const D = /*__DATA__*/null;
 const {Scene,PerspectiveCamera,WebGLRenderer,Group,Mesh,MeshStandardMaterial,BufferGeometry,BufferAttribute,CylinderGeometry,
   HemisphereLight,DirectionalLight,Color,Vector3,EdgesGeometry,LineSegments,LineBasicMaterial,OrbitControls} = window.T;
 
-// A page with no storage, as in a frame with no origin of its own, keeps its ticks only while it is open.
+// Where the browser blocks storage, the ticks last only while the page is open.
 const store = {
   get(k){ try { return JSON.parse(localStorage.getItem(k)); } catch { return null; } },
   set(k,v){ try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
 };
 const KEY = 'm3d-guide-checks:' + location.pathname;
 const checks = store.get(KEY) || {};
-// A tick belongs to the words of its step and check, so a rebuilt guide keeps only the ticks whose words stayed.
-const tickKey = (s, c) => JSON.stringify([s.title, c]);
+// A tick belongs to its step and check by place and words, so a rebuilt guide keeps a tick only where both stayed.
+const tickKey = (i, j) => JSON.stringify([i, D.steps[i].title, j, D.steps[i].checks[j]]);
 const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
 
 document.title = D.title;
@@ -185,11 +185,15 @@ function placeLabels(){
 
 function render(){ renderer.render(scene, camera); placeLabels(); }
 controls.addEventListener('change', render);
+// A frame not laid out yet has no size. It is skipped, as an aspect of 0 sends the camera to infinity, and the first
+// real size frames the step again, as it was framed for a square view.
+let framed = false;
 function resize(){
   const w = view.clientWidth, h = view.clientHeight;
-  // A frame not laid out yet has no size, and an aspect of 0 would send the camera to infinity.
   if (!w || !h) return;
-  renderer.setSize(w, h, false); camera.aspect = w/h; camera.updateProjectionMatrix(); render();
+  renderer.setSize(w, h, false); camera.aspect = w/h; camera.updateProjectionMatrix();
+  if (!framed) { framed = true; flyCamera(D.steps[cur].cam, true); }
+  render();
 }
 new ResizeObserver(resize).observe(view);
 
@@ -262,7 +266,7 @@ function setStep(i, {instant=false}={}){
 // Panel.
 const panel = document.getElementById('panel');
 const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
-function stepDone(i){ const s = D.steps[i], c = s.checks || []; return c.length > 0 && c.every(t => checks[tickKey(s, t)]); }
+function stepDone(i){ const c = D.steps[i].checks || []; return c.length > 0 && c.every((_, j) => checks[tickKey(i, j)]); }
 function renderPanel(){
   const s = D.steps[cur];
   panel.textContent = '';
@@ -276,8 +280,8 @@ function renderPanel(){
   }
   if (s.checks) {
     panel.append(el('h3', null, cur === 0 ? 'Have ready' : 'Check before you go on'));
-    s.checks.forEach(c => {
-      const k = tickKey(s, c);
+    s.checks.forEach((c, j) => {
+      const k = tickKey(cur, j);
       const row = el('label', 'chk' + (checks[k] ? ' done' : ''));
       const box = el('input'); box.type = 'checkbox'; box.checked = !!checks[k];
       box.addEventListener('change', () => { checks[k] = box.checked; store.set(KEY, checks); row.classList.toggle('done', box.checked); renderDots(); });
@@ -305,7 +309,7 @@ document.getElementById('replay').addEventListener('click', () => setStep(cur));
 document.getElementById('reset').addEventListener('click', () => flyCamera(D.steps[cur].cam));
 document.addEventListener('keydown', e => {
   if (e.target.tagName === 'INPUT') return;
-  if (e.key === 'ArrowRight') setStep(cur+1); else if (e.key === 'ArrowLeft') setStep(cur-1);
+  if (e.key === 'ArrowRight' && cur < D.steps.length-1) setStep(cur+1); else if (e.key === 'ArrowLeft' && cur > 0) setStep(cur-1);
 });
 // The theme script at the top sets data-theme. The scene repaints in place, so the step, the view, and the scroll stay.
 new MutationObserver(() => { paint(); render(); }).observe(document.documentElement, {attributeFilter:['data-theme']});
