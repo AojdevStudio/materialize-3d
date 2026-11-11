@@ -343,21 +343,18 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_hung_version_probe_times_out_and_reaps_its_process() {
-        use std::os::unix::fs::PermissionsExt;
         use std::time::{Duration, Instant};
 
         let root = tempfile::tempdir().expect("tempdir");
         let exe = root.path().join("BambuStudio");
         let pid_file = root.path().join("pid");
-        std::fs::write(
+        crate::write_test_script(
             &exe,
-            format!(
+            &format!(
                 "#!/bin/sh\necho $$ > '{}'\nexec sleep 86400\n",
                 pid_file.display()
             ),
-        )
-        .expect("script");
-        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        );
         let (send, receive) = std::sync::mpsc::channel();
         let expected_exe = exe.clone();
         let start = Instant::now();
@@ -416,8 +413,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn help_output_cannot_hold_the_probe_open() {
-        use std::os::unix::fs::PermissionsExt;
-
         let root = tempfile::tempdir().expect("tempdir");
         let exe = root.path().join("BambuStudio");
         let holder_pid = root.path().join("holder-pid");
@@ -429,8 +424,7 @@ mod tests {
                 holder_pid.display()
             ),
         ] {
-            std::fs::write(&exe, format!("#!/bin/sh\n{body}")).expect("script");
-            std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+            crate::write_test_script(&exe, &format!("#!/bin/sh\n{body}"));
             let start = Instant::now();
             let result = detect_version_with_timeout(&exe, Duration::from_secs(1));
             let elapsed = start.elapsed();
@@ -527,45 +521,16 @@ mod tests {
     }
 
     /// A macOS-style bundle whose executable prints `version` the way `--help` does.
-    ///
-    /// The script is written under a temporary name, closed, and renamed into place, then run once before the
-    /// helper returns. Another test thread that forks while the script's write descriptor is open keeps that
-    /// descriptor until its child execs, and until then running the script fails with ETXTBSY. The probe waits
-    /// that out, so the code under test never sees it. Any other spawn error fails the helper.
     #[cfg(unix)]
     fn fake_app(root: &Path, name: &str, version: &str) -> PathBuf {
-        use std::os::unix::fs::PermissionsExt;
         let app = root.join(name);
         std::fs::create_dir_all(app.join("Contents/MacOS")).expect("MacOS dir");
         std::fs::create_dir_all(app.join("Contents/Resources/profiles/BBL")).expect("profiles dir");
-        let exe = app.join("Contents/MacOS/BambuStudio");
-        let staged = app.join("Contents/MacOS/.BambuStudio.writing");
-        std::fs::write(
-            &staged,
-            format!("#!/bin/sh\necho 'BambuStudio-{version}:'\n"),
-        )
-        .expect("script");
-        std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755)).expect("chmod");
-        std::fs::rename(&staged, &exe).expect("rename the script into place");
-        for _ in 0..50 {
-            match std::process::Command::new(&exe).output() {
-                Ok(output) => {
-                    assert!(
-                        output.status.success(),
-                        "{} exited {}",
-                        exe.display(),
-                        output.status
-                    );
-                    return app;
-                }
-                // ETXTBSY: an inherited write descriptor is still open in another thread's forked child.
-                Err(err) if err.kind() == std::io::ErrorKind::ExecutableFileBusy => {
-                    std::thread::sleep(std::time::Duration::from_millis(20));
-                }
-                Err(err) => panic!("running {}: {err}", exe.display()),
-            }
-        }
-        panic!("{} stayed busy (ETXTBSY) for 50 tries", exe.display());
+        crate::write_test_script(
+            &app.join("Contents/MacOS/BambuStudio"),
+            &format!("#!/bin/sh\necho 'BambuStudio-{version}:'\n"),
+        );
+        app
     }
 
     #[cfg(unix)]
@@ -641,7 +606,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn version_probe_leaves_the_callers_directory_alone() {
-        use std::os::unix::fs::PermissionsExt;
         let root = tempfile::tempdir().expect("tempdir");
         let bin = root.path().join("bin");
         let scratch_root = root.path().join("tmp");
@@ -657,15 +621,12 @@ mod tests {
             ("studio", "BambuStudio-02.08.02.61:"),
             ("garbled", "Usage: slicer"),
         ] {
-            let path = bin.join(name);
-            std::fs::write(
-                &path,
-                format!(
+            crate::write_test_script(
+                &bin.join(name),
+                &format!(
                     "#!/bin/sh\necho '{banner}'\nprintf '{{\"return_code\":0}}' > result.json\n"
                 ),
-            )
-            .expect("script");
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+            );
         }
 
         let test_name = format!(

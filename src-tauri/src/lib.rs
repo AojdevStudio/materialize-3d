@@ -99,6 +99,22 @@ pub fn run() {
         });
 }
 
+/// Writes `body` to `path` as an executable script for a test to run. A shell writes the file, not this process. A
+/// child that another test thread forks keeps a copy of every descriptor this process has open until the child execs,
+/// and running a file that such a child holds open for writing fails with ETXTBSY ("Text file busy").
+#[cfg(all(test, unix))]
+fn write_test_script(path: &std::path::Path, body: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    let status = std::process::Command::new("/bin/sh")
+        .args(["-c", r#"printf '%s' "$1" > "$0""#])
+        .arg(path)
+        .arg(body)
+        .status()
+        .expect("start the script writer");
+    assert!(status.success(), "writing {} failed: {status}", path.display());
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).expect("make the script executable");
+}
+
 #[cfg(test)]
 mod acl_tests {
     use std::collections::BTreeSet;
