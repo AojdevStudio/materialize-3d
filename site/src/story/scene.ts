@@ -49,7 +49,7 @@ import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
 import type { Models } from "./assets";
 import { DIMENSIONS, DOCK_BOX, EXPLODE, PRINT_MATRIX, PRINT_SIZE, type Dimension } from "./facts";
 import type { Part } from "./parts";
-import { CAMERA, at, clamp, ease, lerp, liftAt, mountAlpha, printedAt, progress, ramp, smoothstep, type CameraKey } from "./timeline";
+import { CAMERA, at, clamp, ease, lerp, liftAt, mountAlpha, printedAt, progress, ramp, smoothstep, traceAlpha, type CameraKey } from "./timeline";
 
 export type Palette = { paper: string; ink: string; accent: string; dark: boolean };
 export type Point = { x: number; y: number };
@@ -74,6 +74,9 @@ type DockPiece = { mesh: Mesh; material: MeshStandardMaterial; base: Color; edge
 
 type Key = CameraKey & { at: number; point: Vector3 };
 type Segment = { from: Key; to: Key };
+
+/** A mesh or line the scene draws, with its own bounding box and its materials, which carry its fade. */
+type Drawn = { box: Box3; materials: Material[] };
 
 /** A soft speckle for the textured PEI plate, drawn once into a tiling texture. */
 function grainTexture(): CanvasTexture {
@@ -145,6 +148,8 @@ export class StoryScene {
   private readonly dimensionLines: LineSegments<BufferGeometry, LineBasicMaterial>;
   private readonly edgeMaterial = new LineBasicMaterial({ color: 0x1e1e1e, transparent: true, opacity: 0 });
   private readonly models: Models;
+  /** Everything drawn but the ground, for where the subject sits on screen. */
+  private readonly drawn = new Map<Object3D, Drawn>();
 
   // Scratch values, reused every frame.
   private readonly v = new Vector3();
@@ -341,6 +346,11 @@ export class StoryScene {
     dimensionGeometry.setAttribute("position", new Float32BufferAttribute(lines, 3));
     this.dimensionLines = new LineSegments(dimensionGeometry, new LineBasicMaterial({ color: OXBLOOD, transparent: true, opacity: 0 }));
     this.inner.add(this.dimensionLines);
+
+    scene.traverse((node) => {
+      if (!(node instanceof Mesh || node instanceof Line) || node === this.ground) return;
+      this.drawn.set(node, { box: new Box3().setFromBufferAttribute(node.geometry.getAttribute("position")), materials: [node.material].flat() });
+    });
   }
 
   private setupPrinter(): PrinterPart[] {
@@ -433,7 +443,8 @@ export class StoryScene {
     this.palette.dark = palette.dark;
   }
 
-  private poseCamera(P: number) {
+  /** Frames the subject for P as the camera keys say. Returns where the camera's target sits on screen. */
+  private poseCamera(P: number): Point {
     let segment = this.firstSegment;
     for (const candidate of this.segments) if (P >= candidate.from.at) segment = candidate;
     const { from: a, to: b } = segment;
@@ -456,6 +467,7 @@ export class StoryScene {
     const { camera } = this;
     camera.fov = fov;
     camera.aspect = aspect;
+    camera.zoom = 1;
     camera.position.set(
       target.x + distance * Math.sin(yaw) * Math.cos(pitch),
       target.y + distance * Math.sin(pitch),
@@ -477,11 +489,15 @@ export class StoryScene {
     shadow.near = 0.01;
     shadow.far = extent * 12;
     shadow.updateProjectionMatrix();
+    return { x: (0.5 + sx) * this.width, y: (0.5 + sy) * this.height };
   }
 
-  /** Sets every object and the camera for story position P. */
-  pose(P: number) {
-    this.poseCamera(P);
+  /**
+   * Sets every object and the camera for story position P. While the trace card shows, the subject
+   * keeps to `room`, the part of the screen the card leaves. An open side of the room is infinite.
+   */
+  pose(P: number, room: Rect) {
+    const center = this.poseCamera(P);
     const { palette } = this;
     const dive = ease(progress("dive", P));
 
@@ -589,6 +605,58 @@ export class StoryScene {
     this.dimensionLines.material.color.copy(palette.accent);
     this.dimensionLines.visible = dimensions > 0.004;
     this.mount.visible = (others > 0.004 || ghostAlpha > 0.004) && story > 0.004;
+
+    const trace = traceAlpha(P);
+    if (trace > 0.004) this.keepTo(room, trace, center);
+  }
+
+  /**
+   * Moves the subject into `room`, by `amount` as the trace card fades. The room opens down and to the right,
+   * so the subject moves down or right, and it shrinks only when it does not fit. A side the framing already
+   * reaches past stays where it is. This zooms about `center`, where the camera's target sits on screen,
+   * and shifts the framed picture, so the subject keeps its angle.
+   */
+  private keepTo(room: Rect, amount: number, center: Point) {
+    const subject = this.subjectBounds(center);
+    const zoom = Math.min(
+      1,
+      (Math.max(room.right, subject.right) - room.left) / (subject.right - subject.left),
+      (Math.max(room.bottom, subject.bottom) - room.top) / (subject.bottom - subject.top),
+    );
+    const x = amount * Math.max(0, room.left - (center.x + (subject.left - center.x) * zoom));
+    const y = amount * Math.max(0, room.top - (center.y + (subject.top - center.y) * zoom));
+    const { width, height, camera } = this;
+    camera.zoom = 1 + (zoom - 1) * amount;
+    camera.setViewOffset(width, height, width / 2 - center.x - x, height / 2 - center.y - y, width, height);
+    camera.updateProjectionMatrix();
+  }
+
+  /**
+   * The subject's box on screen: every drawn mesh and line, each pulled toward `center` as it fades, so the
+   * box moves smoothly while parts fade in and out.
+   */
+  private subjectBounds(center: Point): Rect {
+    const rect = { left: center.x, right: center.x, top: center.y, bottom: center.y };
+    const point = { x: 0, y: 0 };
+    this.scene.updateMatrixWorld();
+    this.scene.traverseVisible((node) => {
+      const drawn = this.drawn.get(node);
+      if (!drawn) return;
+      const alpha = Math.max(...drawn.materials.map((material) => (material.transparent ? material.opacity : 1)));
+      if (alpha <= 0.004) return;
+      const { min, max } = drawn.box;
+      for (let corner = 0; corner < 8; corner++) {
+        this.w.set(corner & 1 ? max.x : min.x, corner & 2 ? max.y : min.y, corner & 4 ? max.z : min.z).applyMatrix4(node.matrixWorld);
+        this.project(this.w, point);
+        const x = center.x + (point.x - center.x) * alpha;
+        const y = center.y + (point.y - center.y) * alpha;
+        rect.left = Math.min(rect.left, x);
+        rect.right = Math.max(rect.right, x);
+        rect.top = Math.min(rect.top, y);
+        rect.bottom = Math.max(rect.bottom, y);
+      }
+    });
+    return rect;
   }
 
   /** Where the nozzle is over the outline nearest a height, a fraction u of the way round it. */

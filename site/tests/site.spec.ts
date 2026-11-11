@@ -1,8 +1,8 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
 import path from "node:path";
-import { appleTrusted, checksumPublished, externalLinks, release } from "../src/release";
-import { STAGES, at } from "../src/story/timeline";
+import { appleTrusted, blogUrl, checksumPublished, externalLinks, licenseUrl, release } from "../src/release";
+import { STAGES, at, type StageId } from "../src/story/timeline";
 
 type Theme = "light" | "dark";
 
@@ -172,6 +172,16 @@ test("how it works tells the chat studio story in order, and the page says no re
   expect(text).not.toMatch(/\bMCP\b/);
 });
 
+/** The trace card at each rewind still: its kick, its head, and the newest of the lines still in, oldest first. */
+const TRACE_STILLS: Partial<Record<StageId, { kick: string; head: string; count: string; lines: number; newest: string }>> = {
+  slices: { kick: "How it got here · 13:58", head: "Worked for 14 min", count: "6 steps", lines: 6, newest: "Sliced 2 print files" },
+  guide: { kick: "Rewind · 9:47", head: "Working for 9:47", count: "step 5 of 6", lines: 5, newest: "Wrote assembly-guide.html" },
+  adapter: { kick: "Rewind · 6:05", head: "Working for 6:05", count: "step 4 of 6", lines: 4, newest: "Added the revision C arm adapter" },
+  parts: { kick: "Rewind · 0:39", head: "Working for 0:39", count: "step 3 of 6", lines: 3, newest: "Built 5 printed parts" },
+  drawing: { kick: "Rewind · 0:26", head: "Working for 0:26", count: "step 2 of 6", lines: 2, newest: "Astra drew drawing.html" },
+  params: { kick: "Rewind · 0:12", head: "Working for 0:12", count: "step 1 of 6", lines: 1, newest: "Wrote params.json" },
+};
+
 for (const layout of layouts.slice(0, 2)) {
   test(`${layout.name} ${layout.width}: with reduced motion each stage is one still, in story order`, async ({ page }) => {
     test.slow(); // 22 screenshots, and the 3D view may draw in software
@@ -181,14 +191,84 @@ for (const layout of layouts.slice(0, 2)) {
     await storyReady(page);
     const shownCopy = () =>
       page.locator(".stage-copy").evaluateAll((blocks) => blocks.filter((b) => getComputedStyle(b).opacity === "1").map((b) => b.getAttribute("data-stage")));
+    const trace = () =>
+      page.locator(".story-trace").evaluate((box) => {
+        const lines = [...box.querySelectorAll(".trace-lines li")].filter((li) => Number(getComputedStyle(li).opacity) > 0.5 && li.getBoundingClientRect().height > 1);
+        return {
+          shown: getComputedStyle(box).opacity === "1",
+          kick: box.querySelector('[data-trace="kick"]')?.textContent,
+          head: box.querySelector('[data-trace="head"]')?.textContent,
+          count: box.querySelector('[data-trace="count"]')?.textContent,
+          lines: lines.length,
+          newest: lines.at(-1)?.querySelector(".trace-did")?.textContent,
+        };
+      });
 
     for (const [i, stage] of STAGES.entries()) {
       await scrollStory(page, i * 100 + 30);
-      expect(await shownCopy(), `stage ${i + 1} shows only its own copy`).toEqual([stage.id]);
+      const still = TRACE_STILLS[stage.id];
+      expect(await shownCopy(), `stage ${i + 1} shows only its own copy`).toEqual(still ? [] : [stage.id]);
+      if (still) expect(await trace(), `stage ${i + 1} shows the trace card, its lines leaving from the bottom`).toEqual({ shown: true, ...still });
+      else expect((await trace()).shown, `stage ${i + 1} hides the trace card`).toBe(false);
       const early = await page.screenshot();
       await scrollStory(page, i * 100 + 70);
       expect(early.equals(await page.screenshot()), `nothing moves while scrolling through ${stage.id}`).toBe(true);
     }
+  });
+}
+
+/** Every screen the suite lays out: small and large phones upright and on their side, a tablet, and desktops tall and short. */
+const screens = [
+  { width: 320, height: 568 },
+  { width: 320, height: 640 },
+  { width: 390, height: 844 },
+  { width: 568, height: 320 },
+  { width: 844, height: 390 },
+  { width: 768, height: 1024 },
+  { width: 1440, height: 600 },
+  { width: 1440, height: 900 },
+] as const;
+
+for (const size of screens) {
+  test(`${size.width}x${size.height}: the trace card covers no part of the 3D view in any rewind still`, async ({ page }) => {
+    test.slow(); // six stills, and the 3D view may draw in software
+    await page.setViewportSize(size);
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await open(page);
+    await storyReady(page);
+    // The canvas clears to transparent, so under the card every pixel that is not the page's paper is the model.
+    const paper = await page.evaluate(() => getComputedStyle(document.body).backgroundColor);
+    for (const [i, stage] of STAGES.entries()) {
+      if (!TRACE_STILLS[stage.id]) continue;
+      await scrollStory(page, i * 100 + 30);
+      const box = await page.locator(".trace-card").boundingBox();
+      if (!box) throw new Error("the trace card has no layout box");
+      await page.locator(".story-trace").evaluate((trace: HTMLElement) => (trace.style.visibility = "hidden"));
+      const under = await page.screenshot({ clip: box });
+      await page.locator(".story-trace").evaluate((trace: HTMLElement) => (trace.style.visibility = ""));
+      const model = await page.evaluate(
+        async ({ png, paper }) => {
+          const image = new Image();
+          image.src = `data:image/png;base64,${png}`;
+          await image.decode();
+          const canvas = new OffscreenCanvas(image.width, image.height);
+          const context = canvas.getContext("2d");
+          if (!context) throw new Error("no 2D context");
+          context.drawImage(image, 0, 0);
+          const { data } = context.getImageData(0, 0, image.width, image.height);
+          const [r = 0, g = 0, b = 0] = (paper.match(/\d+/g) ?? []).map(Number);
+          let count = 0;
+          for (let p = 0; p < data.length; p += 4) {
+            const [pr = 0, pg = 0, pb = 0] = data.subarray(p, p + 3);
+            if (Math.max(Math.abs(pr - r), Math.abs(pg - g), Math.abs(pb - b)) > 10) count++;
+          }
+          return count;
+        },
+        { png: under.toString("base64"), paper },
+      );
+      expect.soft(model, `${stage.id}: pixels of the 3D view under the trace card`).toBe(0);
+    }
+    await page.screenshot({ path: path.join(shotsDir, `trace-${size.width}x${size.height}.png`) });
   });
 }
 
@@ -223,7 +303,7 @@ for (const layout of layouts.slice(0, 2)) {
 
 /**
  * Every pair of text blocks on screen whose text boxes overlap. A block is the header's lockup or toggle, a stage's
- * copy, the readout, the log, params.json, the rail, the part labels, the drawing's sizes, or the end section.
+ * copy, the trace card, the readout, params.json, the rail, the part labels, the drawing's sizes, or the end section.
  */
 const textOverlaps = (page: Page) =>
   page.evaluate(() => {
@@ -235,17 +315,32 @@ const textOverlaps = (page: Page) =>
     const top = header.hasAttribute("data-solid") ? header.getBoundingClientRect().bottom : 0;
     const storyBottom = Math.min(innerHeight, end.getBoundingClientRect().top);
     const range = document.createRange();
-    const blocks = [...document.querySelectorAll(".site-header > *, .stage-copy, .readout, .story-log, .story-params, .story-rail, .story-labels, .story-dimensions, .end")]
+    const blocks = [...document.querySelectorAll(".site-header > *, .stage-copy, .story-trace, .readout, .story-params, .story-rail, .story-labels, .story-dimensions, .end")]
       .filter((block) => opacity(block) > 0.05)
       .map((block) => {
         const inHeader = header.contains(block);
         const bottom = block.closest(".story-view") ? storyBottom : innerHeight;
         const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
         const rects: DOMRect[] = [...block.querySelectorAll(".cta-primary")].map((cta) => cta.getBoundingClientRect());
+        // Text cut off by a box that hides its overflow, as an ellipsis does, shows only inside that box.
+        const clipOf = (from: Element | null) => {
+          for (let el = from; el && block.contains(el); el = el.parentElement) {
+            if (getComputedStyle(el).overflowX !== "visible") return el.getBoundingClientRect();
+          }
+          return null;
+        };
         for (let node = walker.nextNode(); node; node = walker.nextNode()) {
           if (!node.textContent?.trim() || opacity(node.parentElement) <= 0.05) continue;
           range.selectNodeContents(node);
-          rects.push(...range.getClientRects());
+          const clip = clipOf(node.parentElement);
+          for (const r of range.getClientRects()) {
+            if (!clip) rects.push(r);
+            else {
+              const left = Math.max(r.left, clip.left);
+              const top = Math.max(r.top, clip.top);
+              rects.push(new DOMRect(left, top, Math.max(0, Math.min(r.right, clip.right) - left), Math.max(0, Math.min(r.bottom, clip.bottom) - top)));
+            }
+          }
         }
         // Fixed text that runs past the side of the screen can never be scrolled into view.
         const width = document.documentElement.clientWidth;
@@ -264,11 +359,19 @@ const textOverlaps = (page: Page) =>
     ));
   });
 
-test("no text covers other text or runs off screen on short, landscape, and tablet screens, in any stage or at the end", async ({ page }) => {
-  test.slow(); // four sizes, twelve stops each, and the 3D view may draw in software
+test("no text covers other text or runs off screen on phone, desktop, short, landscape, and tablet screens, in any stage or at the end", async ({ page }) => {
+  test.setTimeout(270_000); // six sizes, twelve stops each, and the 3D view may draw in software
   await page.emulateMedia({ reducedMotion: "reduce" });
   const found: string[] = [];
-  for (const size of [{ width: 1440, height: 600 }, { width: 844, height: 390 }, { width: 568, height: 320 }, { width: 768, height: 1024 }]) {
+  const sizes = [
+    { width: 390, height: 844 },
+    { width: 1440, height: 900 },
+    { width: 1440, height: 600 },
+    { width: 844, height: 390 },
+    { width: 568, height: 320 },
+    { width: 768, height: 1024 },
+  ];
+  for (const size of sizes) {
     await page.setViewportSize(size);
     await open(page);
     await storyReady(page);
@@ -340,6 +443,41 @@ test("search and share tags point at the live site, and robots, sitemap, and sha
     expect(response.headers()["content-type"], file).toContain(type);
   }
 });
+
+const legalLine = (page: Page) =>
+  page.locator(".site-legal > *").evaluateAll((items) => items.map((item) => [item.textContent, item.getAttribute("href")]));
+
+test("the footer's legal line links the blog, the privacy page, and the license", async ({ page }) => {
+  await open(page);
+  expect(await legalLine(page)).toEqual([
+    ["© 2026 AOJDevStudios", null],
+    ["Blog", blogUrl],
+    ["Privacy", "/materialize-3d/privacy"],
+    ["MIT license", licenseUrl],
+  ]);
+});
+
+for (const theme of ["light", "dark"] as const) {
+  test(`the privacy page is served at /privacy with the site's header and footer, in ${theme} theme`, async ({ page, request }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    if (theme === "dark") await page.addInitScript(() => localStorage.setItem("m3d-theme", "dark"));
+    await page.goto("./privacy");
+    await expect(page).toHaveTitle("Materialize 3D: privacy");
+    await expect(page.locator("main h1")).toHaveText("Privacy");
+    await expect(page.locator("main p")).toHaveText(
+      "This page sets no cookies and runs no analytics. It saves your light or dark choice in your browser. Cloudflare hosts the page. Downloads come from GitHub.",
+    );
+    await expect(page.locator(".site-header a.lockup")).toHaveAttribute("href", "/materialize-3d/");
+    await expect(page.getByRole("button", { name: "Dark mode" })).toHaveAttribute("aria-pressed", String(theme === "dark"));
+    await expect(page.locator(".site-legal a[aria-current='page']")).toHaveText("Privacy");
+    const size = await page.evaluate(() => ({ scrollWidth: document.documentElement.scrollWidth, clientWidth: document.documentElement.clientWidth }));
+    expect(size.scrollWidth).toBeLessThanOrEqual(size.clientWidth);
+    const results = await new AxeBuilder({ page }).analyze();
+    expect(results.violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.target).join(", ")}`)).toEqual([]);
+    await page.screenshot({ path: path.join(shotsDir, `privacy-390-${theme}.png`), fullPage: true });
+    expect(await (await request.get("sitemap.xml")).text(), "the sitemap lists the privacy page").toContain("<loc>https://materialize-3d.pages.dev/privacy</loc>");
+  });
+}
 
 test("release claims match the release flags", async ({ page }) => {
   await open(page);

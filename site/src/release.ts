@@ -1,7 +1,8 @@
 /**
- * Every release fact the page states lives here. After a release is verified, the
- * orchestrator edits this object only; the page renders the honest state for
- * whatever these values are (pending checksum, unsigned, unnotarized).
+ * Every release fact the page states lives here, with the off-site links the page may
+ * render. After a release is verified, the orchestrator edits the release object only.
+ * The page renders the honest state for whatever these values are (pending checksum,
+ * unsigned, unnotarized).
  */
 export type Release = {
   version: string;
@@ -48,6 +49,10 @@ export const checksumPublished = release.sha256 !== "pending";
 
 export const dmgFileName = new URL(release.dmgUrl).pathname.split("/").pop() ?? "the DMG";
 
+/** The studio's blog and the repository's license, on the footer's legal line. */
+export const blogUrl = "https://aojdevstudio.me/blog";
+export const licenseUrl = `${release.repoUrl}/blob/main/LICENSE`;
+
 /** The complete set of off-site links the page may render. Tests assert against it. */
 export const externalLinks = [
   release.repoUrl,
@@ -55,4 +60,6 @@ export const externalLinks = [
   release.docsUrl,
   release.dmgUrl,
   release.bambuStudio.releaseUrl,
+  blogUrl,
+  licenseUrl,
 ] as const;

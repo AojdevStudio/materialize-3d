@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Materialize 3D: privacy</title>
+    <meta name="description" content="This page sets no cookies and runs no analytics. Cloudflare hosts the page. Downloads come from GitHub." />
+    <link rel="canonical" href="https://materialize-3d.pages.dev/privacy" />
+    <meta name="color-scheme" content="light dark" />
+    <link rel="icon" type="image/svg+xml" href="/src/assets/brand/mark-small-32.svg" />
+    <script>
+      // Apply the remembered theme before first paint. Light is the default.
+      try {
+        if (localStorage.getItem("m3d-theme") === "dark") document.documentElement.dataset.theme = "dark";
+      } catch {}
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/privacy.tsx"></script>
+  </body>
+</html>

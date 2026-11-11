@@ -18,6 +18,11 @@
   --on-accent: #fff;
   --halo: rgba(248, 248, 246, 0.92);
   --focus: #89272c;
+  /* The studio's own surfaces: the trace card and the composer on the story */
+  --surface: #fff;
+  --surface-line: #dcdad5;
+  --surface-shadow: 0 1px 0 rgba(0, 0, 0, 0.04), 0 10px 24px -14px rgba(0, 0, 0, 0.25);
+  --done: #2e7d4f;
   --sans: "Inter", "Helvetica Neue", Helvetica, Arial, sans-serif;
   --mono: ui-monospace, "SF Mono", Menlo, Consolas, "DejaVu Sans Mono", "Liberation Mono", monospace;
   --pad: 48px;
@@ -33,6 +38,10 @@
   --accent-ink: #c4565b;
   --halo: rgba(0, 0, 0, 0.9);
   --focus: #fff;
+  --surface: #111;
+  --surface-line: rgba(255, 255, 255, 0.16);
+  --surface-shadow: none;
+  --done: #5cb985;
   color-scheme: dark;
 }
 
@@ -412,9 +421,44 @@ ul {
   color: var(--muted);
   text-decoration: none;
 }
-.site-footer nav a:hover {
+.site-footer nav a:hover,
+.site-legal a:hover {
   color: var(--ink);
   text-decoration: underline;
+}
+/* Under a rule, the legal line: the copyright, then the blog, privacy, and license links */
+.site-legal {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 24px;
+  width: 100%;
+  margin-top: 12px;
+  padding-top: 16px;
+  border-top: 1px solid var(--rule);
+}
+.site-legal a {
+  color: var(--muted);
+  text-decoration: none;
+}
+.site-legal a[aria-current] {
+  color: var(--ink);
+}
+
+/* The privacy page: the header, one statement, and the footer */
+.privacy {
+  min-height: 70vh;
+  padding: calc(var(--header) + 72px) var(--pad) 96px;
+}
+.privacy h1 {
+  font-size: clamp(20px, 2.4vw, 34px);
+  font-weight: 300;
+  letter-spacing: 0.36em;
+  text-transform: uppercase;
+}
+.privacy p {
+  max-width: 560px;
+  margin-top: 20px;
+  font-size: 16px;
 }
 
 @media (max-width: 1024px) {

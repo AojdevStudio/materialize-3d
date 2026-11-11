@@ -1,10 +1,10 @@
 /**
  * The scroll story as data. One row per stage, in scroll order: how far it scrolls,
- * where its reduced-motion still sits, which rail stop and readout it uses, how its
- * copy fades, and, while rewinding, the agent log line it shows. The camera keys hang
- * off the same stage ids. Everything here is plain math on the story position P,
- * the distance in vh along the full-motion track, so the scene, the copy, and the
- * readout all read one number.
+ * where its reduced-motion still sits, which rail stop and readout it uses, what tells
+ * it (its own copy, or the agent's trace card), and, while rewinding, the agent log
+ * line it shows. The camera keys hang off the same stage ids. Everything here is plain
+ * math on the story position P, the distance in vh along the full-motion track, so the
+ * scene, the copy, the trace, and the readout all read one number.
  */
 import { LIFTED_PARTS, PARTS, type Part } from "./parts";
 
@@ -25,6 +25,15 @@ type Span = readonly [from: number, to: number];
 
 export type Readout = "teardown" | "print" | "rewind";
 
+/** The icon a trace line starts with, as the studio draws it: a file the agent wrote, a command it ran, or a slice. */
+export type TraceIcon = "write" | "run" | "slice";
+
+/** While rewinding: the agent log line, its elapsed time in seconds, and where the clock holds on it. */
+type Log = { line: string; seconds: number; hold: Span };
+
+/** A log line the trace card also shows: what the agent did, then the detail after it. */
+type TraceLog = Log & { icon: TraceIcon; did: string; detail: string };
+
 type StageRow = {
   id: string;
   /** Scroll length in vh with motion on. */
@@ -33,30 +42,40 @@ type StageRow = {
   still: number;
   rail: string;
   readout: Readout;
-  /** The copy fades in and out over these spans. null: shown from the start, or kept to the end. */
-  fadeIn: Span | null;
-  fadeOut: Span | null;
-  /** While rewinding: the agent log line, its elapsed time in seconds, and where the clock holds on it. */
-  log: { line: string; seconds: number; hold: Span } | null;
-};
+} & (
+  | {
+      /** The stage's own copy tells it. The copy fades in and out over these spans. null: shown from the start, or kept to the end. */
+      tells: "copy";
+      fadeIn: Span | null;
+      fadeOut: Span | null;
+      log: Log | null;
+    }
+  | {
+      /** The agent's trace card tells it, with this stage's step as the newest line. */
+      tells: "trace";
+      log: TraceLog;
+    }
+);
 
 const FADE_IN: Span = [0.02, 0.14];
 const FADE_OUT: Span = [0.94, 1];
 
+/** A trace step and the readout's sentence for it, so the card and the readout always say the same thing. */
+const step = (icon: TraceIcon, did: string, detail = "") => ({ icon, did, detail, line: `${did}${detail && `, ${detail}`}.` });
+
 export const STAGES = [
-  { id: "hero", length: 70, still: 0, rail: "Printer", readout: "teardown", fadeIn: null, fadeOut: [0.62, 0.95], log: null },
-  { id: "explode", length: 340, still: 0.97, rail: "Teardown", readout: "teardown", fadeIn: FADE_IN, fadeOut: FADE_OUT, log: null },
-  { id: "dive", length: 110, still: 0.95, rail: "Build plate", readout: "teardown", fadeIn: FADE_IN, fadeOut: FADE_OUT, log: null },
-  { id: "print", length: 270, still: 0.6, rail: "Print", readout: "print", fadeIn: FADE_IN, fadeOut: FADE_OUT, log: null },
+  { id: "hero", length: 70, still: 0, rail: "Printer", readout: "teardown", tells: "copy", fadeIn: null, fadeOut: [0.62, 0.95], log: null },
+  { id: "explode", length: 340, still: 0.97, rail: "Teardown", readout: "teardown", tells: "copy", fadeIn: FADE_IN, fadeOut: FADE_OUT, log: null },
+  { id: "dive", length: 110, still: 0.95, rail: "Build plate", readout: "teardown", tells: "copy", fadeIn: FADE_IN, fadeOut: FADE_OUT, log: null },
+  { id: "print", length: 270, still: 0.6, rail: "Print", readout: "print", tells: "copy", fadeIn: FADE_IN, fadeOut: FADE_OUT, log: null },
   {
     id: "slices",
     length: 120,
     still: 0.45,
     rail: "Rewind",
     readout: "rewind",
-    fadeIn: FADE_IN,
-    fadeOut: FADE_OUT,
-    log: { line: "Sliced 2 print files, PETG Basic.", seconds: 838, hold: [0, 0.75] },
+    tells: "trace",
+    log: { ...step("slice", "Sliced 2 print files", "PETG Basic"), seconds: 838, hold: [0, 0.75] },
   },
   {
     id: "guide",
@@ -64,9 +83,8 @@ export const STAGES = [
     still: 0.85,
     rail: "Rewind",
     readout: "rewind",
-    fadeIn: FADE_IN,
-    fadeOut: FADE_OUT,
-    log: { line: "Wrote assembly-guide.html, 13 steps.", seconds: 587, hold: [0.6, 0.9] },
+    tells: "trace",
+    log: { ...step("write", "Wrote assembly-guide.html", "13 steps"), seconds: 587, hold: [0.6, 0.9] },
   },
   {
     id: "adapter",
@@ -74,9 +92,8 @@ export const STAGES = [
     still: 0.55,
     rail: "Rewind",
     readout: "rewind",
-    fadeIn: FADE_IN,
-    fadeOut: FADE_OUT,
-    log: { line: "Added the revision C arm adapter.", seconds: 365, hold: [0.45, 0.8] },
+    tells: "trace",
+    log: { ...step("run", "Added the revision C arm adapter"), seconds: 365, hold: [0.45, 0.8] },
   },
   {
     id: "parts",
@@ -84,9 +101,8 @@ export const STAGES = [
     still: 0.6,
     rail: "Rewind",
     readout: "rewind",
-    fadeIn: FADE_IN,
-    fadeOut: FADE_OUT,
-    log: { line: "Built 5 printed parts, manifold3d, no overlaps.", seconds: 39, hold: [0.5, 0.85] },
+    tells: "trace",
+    log: { ...step("run", "Built 5 printed parts", "manifold3d, no overlaps"), seconds: 39, hold: [0.5, 0.85] },
   },
   {
     id: "drawing",
@@ -94,9 +110,8 @@ export const STAGES = [
     still: 0.85,
     rail: "Rewind",
     readout: "rewind",
-    fadeIn: FADE_IN,
-    fadeOut: FADE_OUT,
-    log: { line: "Astra drew drawing.html, clearances checked.", seconds: 26, hold: [0.5, 0.9] },
+    tells: "trace",
+    log: { ...step("write", "Astra drew drawing.html", "clearances checked"), seconds: 26, hold: [0.5, 0.9] },
   },
   {
     id: "params",
@@ -104,9 +119,8 @@ export const STAGES = [
     still: 0.75,
     rail: "Rewind",
     readout: "rewind",
-    fadeIn: FADE_IN,
-    fadeOut: FADE_OUT,
-    log: { line: "Wrote params.json, unknown sizes marked TBD.", seconds: 12, hold: [0.4, 0.85] },
+    tells: "trace",
+    log: { ...step("write", "Wrote params.json", "unknown sizes marked TBD"), seconds: 12, hold: [0.4, 0.85] },
   },
   {
     id: "request",
@@ -114,6 +128,7 @@ export const STAGES = [
     still: 0.6,
     rail: "Request",
     readout: "rewind",
+    tells: "copy",
     fadeIn: [0.16, 0.42],
     fadeOut: null,
     log: { line: "The request.", seconds: 0, hold: [0.3, 1] },
@@ -122,6 +137,13 @@ export const STAGES = [
 
 export type Stage = (typeof STAGES)[number];
 export type StageId = Stage["id"];
+export type CopyStage = Extract<Stage, { tells: "copy" }>;
+
+/** The stages their own copy tells, in story order. */
+export const COPY_STAGES = STAGES.filter((stage): stage is CopyStage => stage.tells === "copy");
+
+/** The agent's trace, oldest step first, as the studio lists it. The rewind reads it from the bottom up. */
+export const TRACE = STAGES.filter((stage): stage is Extract<Stage, { tells: "trace" }> => stage.tells === "trace").reverse();
 
 // Filled for every stage by the loop below.
 const timing = {} as Record<StageId, { start: number; length: number; index: number }>;
@@ -174,7 +196,7 @@ export const storyFraction = (P: number, motion: Motion) =>
   motion === "full" ? clamp(P / TOTAL) : timing[stageAt(P).id].index / STAGES.length;
 
 /** Opacity and lift of a stage's copy at P. Under reduced motion the current stage shows and the rest hide. */
-export function copyAt(stage: Stage, P: number, motion: Motion): { alpha: number; y: number } {
+export function copyAt(stage: CopyStage, P: number, motion: Motion): { alpha: number; y: number } {
   if (motion === "still") return { alpha: stageAt(P).id === stage.id ? 1 : 0, y: 0 };
   const t = (P - timing[stage.id].start) / timing[stage.id].length;
   if (t < -0.05 || t > 1.05) return { alpha: 0, y: 0 };
@@ -276,12 +298,11 @@ export function labelAlpha(part: Part, P: number): number {
 export const mountAlpha = (P: number) => 1 - ramp("params", 0.05, 0.55, P);
 
 /**
- * The overlays that are not a stage's own copy: the drawing's dimensions, the agent log, and params.json.
+ * The overlays that are not a stage's own copy or the trace: the drawing's dimensions and params.json.
  * The dimensions are gone before params.json fades in over the same spot.
  */
 export const overlaysAt = (P: number) => ({
   dimensions: ramp("drawing", 0.5, 0.78, P) * (1 - ramp("params", 0.05, 0.3, P)),
-  log: ramp("guide", 0.3, 0.5, P) * (1 - ramp("request", 0.02, 0.2, P)),
   params: ramp("params", 0.3, 0.6, P) * (1 - ramp("request", 0, 0.16, P)),
 });
 
@@ -357,3 +378,40 @@ export function readoutAt(P: number, print: PrintFacts): ReadoutView {
       };
   }
 }
+
+// ---------------------------------------------------------------- trace
+
+export type TraceView = {
+  /** Above the card: how the part got here while every step shows, then the rewind time of the newest step left. */
+  kick: string;
+  done: boolean;
+  head: string;
+  count: string;
+  /** How far each trace line is in, oldest first: 1 shown, 0 gone. */
+  lines: number[];
+  /** The whole card's opacity. */
+  alpha: number;
+};
+
+/**
+ * The trace card at P. It comes in with the rewind and leaves before the request. A step's line leaves from the
+ * bottom once the rewind clock runs back past its hold, so the card always ends on the step the clock is at.
+ * The oldest line goes with the card.
+ */
+export function traceAt(P: number): TraceView {
+  const lines = TRACE.map(({ id, log }, i) => (i === 0 ? 1 : 1 - ramp(id, log.hold[1], log.hold[1] + 0.12, P)));
+  const shown = lines.filter((alpha) => alpha >= 0.5).length;
+  const newest = TRACE[shown - 1]?.log.seconds ?? 0;
+  const done = shown === TRACE.length;
+  return {
+    kick: `${done ? "How it got here" : "Rewind"} · ${minutes(newest)}`,
+    done,
+    head: done ? `Worked for ${Math.round(newest / 60)} min` : `Working for ${minutes(elapsedAt(P))}`,
+    count: done ? `${TRACE.length} steps` : `step ${shown} of ${TRACE.length}`,
+    lines,
+    alpha: traceAlpha(P),
+  };
+}
+
+/** How much the trace card shows at P. The 3D view keeps its subject clear of the card by the same amount. */
+export const traceAlpha = (P: number) => ramp("slices", 0.02, 0.14, P) * (1 - ramp("request", 0, 0.16, P));

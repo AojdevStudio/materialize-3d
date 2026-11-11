@@ -1,8 +1,14 @@
 import { Fragment, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import chevronDown from "../assets/icons/chevron-down.svg?raw";
+import circleCheck from "../assets/icons/circle-check.svg?raw";
+import filePen from "../assets/icons/file-pen-line.svg?raw";
+import layers from "../assets/icons/layers.svg?raw";
+import paperclip from "../assets/icons/paperclip.svg?raw";
+import terminal from "../assets/icons/terminal.svg?raw";
 import { DownloadLink, ReleaseNote } from "../components/Download";
 import { DIMENSIONS, PARAM_ROWS, PRINT, TBD_ROWS } from "./facts";
 import { PARTS } from "./parts";
-import { RAIL, STAGES, minutes, railPosition, readoutAt, trackLength, type Motion, type StageId } from "./timeline";
+import { COPY_STAGES, RAIL, TRACE, railPosition, readoutAt, traceAt, trackLength, type CopyStage, type Motion, type TraceIcon } from "./timeline";
 import "./story.css";
 
 const REDUCED_MOTION = "(prefers-reduced-motion: reduce)";
@@ -18,30 +24,16 @@ function useMotion(): Motion {
   return useSyncExternalStore(subscribeToMotion, () => (window.matchMedia(REDUCED_MOTION).matches ? "still" : "full"));
 }
 
-function Sheet({ rows }: { rows: readonly (readonly [label: string, value: string, file?: "file"])[] }) {
-  return (
-    <dl className="sheet">
-      {rows.map(([label, value, file]) => (
-        <div key={label + value}>
-          <dt>{label}</dt>
-          <dd className={file ? "file" : undefined}>{value}</dd>
-        </div>
-      ))}
-    </dl>
-  );
-}
+/** A Lucide line icon from `assets/icons`, drawn in the text color, as the studio draws its trace. */
+const Icon = ({ svg }: { svg: string }) => <span className="icon" aria-hidden="true" dangerouslySetInnerHTML={{ __html: svg }} />;
 
-const ScrollHint = ({ children }: { children: ReactNode }) => (
-  <p className="hint">
-    <svg viewBox="0 0 9 22" aria-hidden="true">
-      <path d="M4.5 0v20M1 16.5l3.5 4 3.5-4" />
-    </svg>
-    {children}
-  </p>
-);
+const TRACE_ICONS: Record<TraceIcon, string> = { write: filePen, run: terminal, slice: layers };
 
-/** Each stage's copy, in story order. Every product fact here is in the agent's own log or files. */
-const COPY: Record<StageId, ReactNode> = {
+/**
+ * The words of each stage its own copy tells, in story order. They say what the app is. The printer is the show.
+ * Every fact about the dock mount is in the agent's own log or files.
+ */
+const COPY: Record<CopyStage["id"], ReactNode> = {
   hero: (
     <>
       <p className="kick">Free for macOS</p>
@@ -56,98 +48,43 @@ const COPY: Record<StageId, ReactNode> = {
         </a>
       </div>
       <ReleaseNote />
-      <Sheet
-        rows={[
-          ["Outer", "392 × 406 × 478 mm"],
-          ["Build volume", "256 × 256 × 256 mm"],
-          ["Motion", "CoreXY"],
-          ["Enclosure", "Glass lid, front door"],
-        ]}
-      />
-      <ScrollHint>Scroll. It comes apart from the top.</ScrollHint>
+      <p className="hint">
+        <svg viewBox="0 0 9 22" aria-hidden="true">
+          <path d="M4.5 0v20M1 16.5l3.5 4 3.5-4" />
+        </svg>
+        Scroll to watch a part get made.
+      </p>
     </>
   ),
   explode: (
     <>
-      <p className="kick">Teardown</p>
-      <h2>Top down</h2>
-      <p>Lid first. Then every part between you and the build plate.</p>
+      <p className="kick">What it is</p>
+      <h2>A chat app for 3D printing</h2>
+      <p>You say what you need, in your own words. An agent designs the part and makes the print file.</p>
     </>
   ),
   dive: (
     <>
-      <p className="kick">Build plate</p>
-      <h2>256 × 256 mm</h2>
-      <p>Textured PEI. Everything above it exists to put plastic here.</p>
+      <p className="kick">Where it ends</p>
+      <h2>On your build plate</h2>
+      <p>The agent's work ends with a print-ready 3MF.</p>
     </>
   ),
   print: (
     <>
-      <p className="kick">The print</p>
-      <h2>Right shelf</h2>
-      <p>One of five printed parts of a dock mount. 100 × 80 × 30 mm, tray side down.</p>
-      <Sheet
-        rows={[
-          ["File", "ugreen-dock-mount-revB.3mf", "file"],
-          ["Holds", "Back plate, 2 rails, 2 shelves"],
-        ]}
-      />
-    </>
-  ),
-  slices: (
-    <>
-      <p className="kick">Rewind · 13:58</p>
-      <h2>Sliced</h2>
-      <p>Sliced 2 print files, PETG Basic.</p>
-      <Sheet
-        rows={[
-          ["Rev B", "ugreen-dock-mount-revB.3mf", "file"],
-          ["Holds", "Back plate, 2 rails, 2 shelves"],
-          ["Rev C", "ugreen-dock-mount-revC-adapter.3mf", "file"],
-          ["Holds", "Arm adapter, 4 walls, 40% infill"],
-        ]}
-      />
-      <p className="hint">Nobody drew this part. Scroll back to where it started.</p>
-    </>
-  ),
-  guide: (
-    <>
-      <p className="kick">Rewind · 9:47</p>
-      <h2>Assembly guide</h2>
-      <p>Wrote assembly-guide.html, 13 steps.</p>
-      <p>The shelf you watched print takes its place on the mount.</p>
-    </>
-  ),
-  adapter: (
-    <>
-      <p className="kick">Rewind · 6:05</p>
-      <h2>Revision C</h2>
-      <p>Added the revision C arm adapter.</p>
-      <p>It hangs the cradle on the monitor arm.</p>
-    </>
-  ),
-  parts: (
-    <>
-      <p className="kick">Rewind · 0:39</p>
-      <h2>Five parts</h2>
-      <p>Built 5 printed parts, manifold3d, no overlaps.</p>
-      <p>Back plate, two rails, two shelves.</p>
-    </>
-  ),
-  drawing: (
-    <>
-      <p className="kick">Rewind · 0:26</p>
-      <h2>Drawing</h2>
-      <p>Astra drew drawing.html, clearances checked.</p>
-      <p>The solids flatten into lines and sizes.</p>
-    </>
-  ),
-  params: (
-    <>
-      <p className="kick">Rewind · 0:12</p>
-      <h2>Sizes</h2>
-      <p>Wrote params.json, unknown sizes marked TBD.</p>
-      <p>Under the drawing, only numbers.</p>
+      <p className="kick">A real example</p>
+      <h2>A shelf for a dock mount</h2>
+      <p>This part came out of one chat. One of five printed parts, 100 × 80 × 30 mm.</p>
+      <dl className="sheet">
+        <div>
+          <dt>File</dt>
+          <dd className="file">ugreen-dock-mount-revB.3mf</dd>
+        </div>
+        <div>
+          <dt>Holds</dt>
+          <dd>Back plate, 2 rails, 2 shelves</dd>
+        </div>
+      </dl>
     </>
   ),
   request: (
@@ -156,19 +93,71 @@ const COPY: Record<StageId, ReactNode> = {
         <span>0:00</span>
         <span>The request</span>
       </p>
-      <h2 className="say">
-        Make a mount for my UGREEN dock under the monitor arm. Photo attached.{"\u2060"}
-        <i aria-hidden="true" />
-      </h2>
+      <h2 className="ask">What are we making?</h2>
+      <div className="composer">
+        <div className="composer-text">
+          Make a mount for my UGREEN dock under the monitor arm. Photo attached.{"\u2060"}
+          <i aria-hidden="true" />
+        </div>
+        <div className="composer-bar" aria-hidden="true">
+          <span className="composer-button">
+            <Icon svg={paperclip} />
+            Attach
+          </span>
+          <span className="composer-button composer-model">
+            Opus 5.5
+            <Icon svg={chevronDown} />
+          </span>
+          <span className="composer-button composer-start">Start</span>
+        </div>
+      </div>
       <p className="request-note">That is all you type. 13:58 later, 2 print files.</p>
     </>
   ),
 };
 
-const LOG = STAGES.flatMap((stage) => (stage.log ? [{ id: stage.id, ...stage.log }] : []));
-
-/** The readout before the story starts moving. The director rewrites it as P changes. */
+/** The readout and the trace before the story starts moving. The director rewrites them as P changes. */
 const FIRST_READOUT = readoutAt(0, PRINT);
+const FIRST_TRACE = traceAt(0);
+
+/**
+ * The agent's trace, as the studio shows a finished turn. It stands in for the rewind's words. The director
+ * fades it in with the rewind, takes its lines away from the bottom as the clock runs back, and rewrites its
+ * kick and head. The ring stays still, as the studio's does.
+ */
+function Trace() {
+  return (
+    <div className="story-trace" role="group" aria-label="Agent trace">
+      <p className="kick" data-trace="kick">
+        {FIRST_TRACE.kick}
+      </p>
+      <div className="trace-card" data-done={FIRST_TRACE.done || undefined}>
+        <p className="trace-head">
+          <span className="trace-mark" aria-hidden="true">
+            <Icon svg={circleCheck} />
+            <svg className="trace-ring" viewBox="0 0 16 16">
+              <circle cx={8} cy={8} r={6} />
+              <path d="M8 2a6 6 0 0 1 6 6" />
+            </svg>
+          </span>
+          <span data-trace="head">{FIRST_TRACE.head}</span>
+          <span className="trace-count" data-trace="count">
+            {FIRST_TRACE.count}
+          </span>
+        </p>
+        <ol className="trace-lines">
+          {TRACE.map(({ id, log }) => (
+            <li key={id} data-step={id}>
+              <Icon svg={TRACE_ICONS[log.icon]} />
+              <span className="trace-did">{log.did}</span>
+              {log.detail && <span className="trace-detail">{log.detail}</span>}
+            </li>
+          ))}
+        </ol>
+      </div>
+    </div>
+  );
+}
 
 function Params() {
   return (
@@ -198,8 +187,8 @@ function Params() {
 
 /**
  * The scroll story: a printer that comes apart top down, the right shelf printing on
- * its plate, and a rewind through how the agent made it. The 3D view and the timing
- * load on demand. All text is DOM text here, in story order.
+ * its plate, and a rewind through the agent's trace back to the request. The 3D view and
+ * the timing load on demand. All text is DOM text here.
  */
 export function ScrollStory() {
   const motion = useMotion();
@@ -243,7 +232,7 @@ export function ScrollStory() {
             </g>
           ))}
         </svg>
-        {STAGES.map((stage) => (
+        {COPY_STAGES.map((stage) => (
           <section key={stage.id} className="stage-copy" data-stage={stage.id}>
             {COPY[stage.id]}
           </section>
@@ -287,20 +276,7 @@ export function ScrollStory() {
             {FIRST_READOUT.note}
           </p>
         </div>
-        <div className="story-log" role="group" aria-label="Agent log">
-          <p className="kick">
-            <span>Agent log</span>
-            <span>Elapsed</span>
-          </p>
-          <ol>
-            {LOG.map((entry) => (
-              <li key={entry.id} data-log={entry.id}>
-                <b>{minutes(entry.seconds)}</b>
-                <span>{entry.line}</span>
-              </li>
-            ))}
-          </ol>
-        </div>
+        <Trace />
         <nav className="story-rail" aria-label="Story stages">
           {RAIL.map((stop) => (
             <button

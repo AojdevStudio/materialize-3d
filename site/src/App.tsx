@@ -2,9 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { DownloadLink, ReleaseNote } from "./components/Download";
 import { HowItWorks } from "./components/HowItWorks";
 import { ReleaseFacts } from "./components/ReleaseFacts";
-import { ThemeToggle } from "./components/ThemeToggle";
-import markSmall from "./assets/brand/mark-small-32.svg";
-import oflUrl from "./assets/fonts/OFL.txt?url";
+import { SiteFooter } from "./components/SiteFooter";
+import { SiteHeader } from "./components/SiteHeader";
 import { checksumPublished, dmgFileName, release } from "./release";
 import { ScrollStory } from "./story/ScrollStory";
 
@@ -95,16 +94,7 @@ export function App() {
       <a className="skip-link" href="#download">
         Skip to the download
       </a>
-      <header ref={header} className="site-header" data-solid={solid || undefined}>
-        <a className="lockup" href="#top" aria-label="Materialize 3D, back to top">
-          <svg viewBox="0 0 18 18" aria-hidden="true">
-            <path d="M9 1.5 16 5.2v7.6L9 16.5 2 12.8V5.2z" />
-            <path className="lockup-accent" d="M2 5.2 9 9l7-3.8M9 9v7.5" />
-          </svg>
-          <span>Materialize 3D</span>
-        </a>
-        <ThemeToggle />
-      </header>
+      <SiteHeader ref={header} home="#top" label="Materialize 3D, back to top" solid={solid} />
 
       <main id="main">
         <ScrollStory />
@@ -174,17 +164,7 @@ export function App() {
         </section>
       </main>
 
-      <footer className="site-footer">
-        <img src={markSmall} alt="" width={20} height={20} />
-        <span>Materialize 3D {release.version}</span>
-        <nav aria-label="Project links">
-          <a href={release.repoUrl}>Repository</a>
-          <a href={release.releasesUrl}>Releases</a>
-          <a href={release.docsUrl}>Docs</a>
-          <a href={oflUrl}>Font license (SIL OFL 1.1)</a>
-          <a href={`${import.meta.env.BASE_URL}licenses/three-LICENSE.txt`}>three.js license (MIT)</a>
-        </nav>
-      </footer>
+      <SiteFooter page="home" />
     </>
   );
 }

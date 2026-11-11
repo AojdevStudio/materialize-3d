@@ -13,5 +13,10 @@ export function siteBase(raw = process.env.SITE_BASE): string {
 export default defineConfig({
   base: siteBase(),
   plugins: [react()],
-  build: { outDir: "dist", emptyOutDir: true },
+  build: {
+    outDir: "dist",
+    emptyOutDir: true,
+    // privacy.html builds to dist/privacy.html, which the host serves at /privacy.
+    rolldownOptions: { input: { index: "index.html", privacy: "privacy.html" } },
+  },
 });
