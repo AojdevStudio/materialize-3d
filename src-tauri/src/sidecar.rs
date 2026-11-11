@@ -634,16 +634,13 @@ mod tests {
     fn a_login_shell_that_hangs_is_ended_at_its_deadline() {
         let dir = tempfile::tempdir().unwrap();
         let shell = dir.path().join("slow-shell");
-        std::fs::write(&shell, "#!/bin/sh\nsleep 30\n").unwrap();
-        let mut perms = std::fs::metadata(&shell).unwrap().permissions();
-        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
-        std::fs::set_permissions(&shell, perms).unwrap();
+        crate::write_test_script(&shell, "#!/bin/sh\nsleep 30\n");
         let started = std::time::Instant::now();
         assert_eq!(shell_path(shell.to_str().unwrap(), std::time::Duration::from_millis(300)), None);
         assert!(started.elapsed() < std::time::Duration::from_secs(5), "took {:?}", started.elapsed());
 
         // Startup files that send stdout elsewhere and then hang end at the deadline too.
-        std::fs::write(&shell, "#!/bin/sh\nexec >/dev/null\nsleep 30\n").unwrap();
+        crate::write_test_script(&shell, "#!/bin/sh\nexec >/dev/null\nsleep 30\n");
         let started = std::time::Instant::now();
         assert_eq!(shell_path(shell.to_str().unwrap(), std::time::Duration::from_millis(300)), None);
         assert!(started.elapsed() < std::time::Duration::from_secs(5), "took {:?}", started.elapsed());
@@ -656,13 +653,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let shell = dir.path().join("agent-shell");
         // Startup files that start an agent, which keeps the shell's stdout open after the shell ends.
-        std::fs::write(&shell, "#!/bin/sh
+        crate::write_test_script(&shell, "#!/bin/sh
 sleep 30 &
 printf '__M3D_PATH__/opt/tools/bin__M3D_PATH__'
-").unwrap();
-        let mut perms = std::fs::metadata(&shell).unwrap().permissions();
-        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
-        std::fs::set_permissions(&shell, perms).unwrap();
+");
         let started = std::time::Instant::now();
         assert_eq!(shell_path(shell.to_str().unwrap(), std::time::Duration::from_secs(5)).as_deref(), Some("/opt/tools/bin"));
         assert!(started.elapsed() < std::time::Duration::from_secs(2), "took {:?}", started.elapsed());
@@ -674,10 +668,7 @@ printf '__M3D_PATH__/opt/tools/bin__M3D_PATH__'
         let dir = tempfile::tempdir().unwrap();
         let shell = dir.path().join("noisy-shell");
         let pid = dir.path().join("pid");
-        std::fs::write(&shell, format!("#!/bin/sh\nyes &\necho $! > {}\nprintf '__M3D_PATH__/opt/tools/bin__M3D_PATH__'\n", pid.display())).unwrap();
-        let mut perms = std::fs::metadata(&shell).unwrap().permissions();
-        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
-        std::fs::set_permissions(&shell, perms).unwrap();
+        crate::write_test_script(&shell, &format!("#!/bin/sh\nyes &\necho $! > {}\nprintf '__M3D_PATH__/opt/tools/bin__M3D_PATH__'\n", pid.display()));
         assert_eq!(shell_path(shell.to_str().unwrap(), std::time::Duration::from_secs(5)).as_deref(), Some("/opt/tools/bin"));
         let pid = std::fs::read_to_string(&pid).unwrap().trim().parse::<i32>().unwrap();
         // Once nothing reads the pipe, the next write ends the writer. An ended writer may wait as a zombie until the
