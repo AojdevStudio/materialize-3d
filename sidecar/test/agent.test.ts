@@ -135,6 +135,33 @@ describe('a crash mid-turn', () => {
   }, 20_000)
 })
 
+describe('a quit mid-turn', () => {
+  test('the reopened sidecar runs the command the quit cut off again, and never repeats a finished tool call', async () => {
+    const where = scratch()
+    const first = start(where, 'ops')
+    await first.next()
+    const project = await firstSend(first, 'Build it')
+    const log = join(where.projects, project, 'ops.log')
+    await waitForFile(log)
+    while (!readFileSync(log, 'utf8').includes('op2')) await Bun.sleep(25)
+    // Cmd-Q: Rust closes the sidecar's stdin, and the sidecar stops its turns and closes its store.
+    await first.quit()
+
+    const reopened = start(where, 'ops')
+    await reopened.next()
+    writeFileSync(join(where.projects, project, 'go'), '')
+    await answered(reopened, project, 'done')
+
+    // op1 finished before the quit and ran once. op2 was cut off mid-run, so it ran again from its start.
+    expect(readFileSync(log, 'utf8').trim().split('\n')).toEqual(['op1', 'op2', 'op2'])
+    const view = (await reopened.call('chat.open', { project })) as ChatView
+    const results = view.entries.flatMap((entry) => (entry.kind === 'tool' ? [entry.text.split('\n')[0]] : []))
+    expect(results).toEqual(['exit code 0', 'exit code 0'])
+    expect(view.running).toBe(false)
+    await reopened.quit()
+  }, 20_000)
+})
+
 describe("a project's model", () => {
   test('a change mid-turn leaves the running turn alone, and the next turn uses it', async () => {
     const where = scratch()
