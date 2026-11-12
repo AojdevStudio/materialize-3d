@@ -206,9 +206,14 @@ UPDATE_VERSION="$version" UPDATE_SIGNATURE="$(cat "$archive.sig")" \
   UPDATE_URL="https://github.com/AojdevStudio/materialize-3d/releases/download/v$version/$archive_name" \
   UPDATE_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)" bun -e '
     const version = process.env.UPDATE_VERSION
+    const changes = `What changed: https://github.com/AojdevStudio/materialize-3d/releases/tag/v${version}`
+    // The update banner shows these notes, and they are all a user reads before Update now.
+    const notes = {
+      "0.3.0": `Materialize 3D 0.3.0 is a new chat studio. The sign, part, printer, and MakerWorld screens, the MCP server, and the OpenAI API key path are gone. Choose Later to keep 0.2.2.\n${changes}`,
+    }[version] ?? `Materialize 3D ${version}. ${changes}`
     console.log(JSON.stringify({
       version,
-      notes: `Materialize 3D ${version}. What changed: https://github.com/AojdevStudio/materialize-3d/releases/tag/v${version}`,
+      notes,
       pub_date: process.env.UPDATE_DATE,
       platforms: { "darwin-aarch64": { signature: process.env.UPDATE_SIGNATURE, url: process.env.UPDATE_URL } },
     }, null, 2))' > "$out/latest.json"
