@@ -209,7 +209,7 @@ UPDATE_VERSION="$version" UPDATE_SIGNATURE="$(cat "$archive.sig")" \
     const changes = `What changed: https://github.com/AojdevStudio/materialize-3d/releases/tag/v${version}`
     // The update banner shows these notes, and they are all a user reads before Update now.
     const notes = {
-      "0.3.0": `Materialize 3D 0.3.0 is a new chat studio. The sign, part, printer, and MakerWorld screens, the MCP server, and the OpenAI API key path are gone. Choose Later to keep 0.2.2.\n${changes}`,
+      "0.3.0": `Materialize 3D 0.3.0 is a new chat studio. The sign, part, printer, and MakerWorld screens, the MCP server, and the OpenAI API key path are gone, and the app no longer sends jobs to a printer. Choose Later to keep 0.2.2.\n${changes}`,
     }[version] ?? `Materialize 3D ${version}. ${changes}`
     console.log(JSON.stringify({
       version,
