@@ -300,6 +300,9 @@ export function agentTools({ host, projectOf, signedIn, loginSaves }: AgentHost)
           .exec(['/bin/sh', '-c', GUARD, 'm3d-run', String(process.pid), log, exited, 'uv', ...args], { env: vars, inheritEnv: false, timeout: timeoutSeconds ?? 600 }, context)
           .finally(() => clearInterval(poll))
         show()
+        // A quit or a stop cut the command off before it finished, so it has no result to keep. Pi takes the throw as
+        // the step left unfinished, and a quit's step runs the command again after the restart.
+        if (!ran.ok && ran.error.code === 'aborted') throw ran.error
         return ran.ok ? { exitCode: ran.value.exitCode, output: tailOf(log) } : { exitCode: -1, output: `${tailOf(log)}\n${ran.error.message}` }
       })
       return { output: text(`exit code ${receipt.exitCode}\n${receipt.output}`), isError: receipt.exitCode !== 0 }
