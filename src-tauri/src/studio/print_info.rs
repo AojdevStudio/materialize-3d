@@ -99,10 +99,19 @@ struct ProjectSettings {
     filament_settings_id: Vec<String>,
 }
 
+/// The most a metadata entry may hold once decompressed. Bambu's run to tens of kilobytes, and any 3MF in the
+/// project is read on each listing, a person's own attachments too.
+const ENTRY_LIMIT: u64 = 4 * 1024 * 1024;
+
 fn entry(archive: &mut zip::ZipArchive<File>, name: &str) -> Option<String> {
+    let file = archive.by_name(name).ok()?;
+    if file.size() > ENTRY_LIMIT {
+        return None;
+    }
+    // The size a zip names can lie, so the read stops one byte past the limit too.
     let mut text = String::new();
-    archive.by_name(name).ok()?.read_to_string(&mut text).ok()?;
-    Some(text)
+    file.take(ENTRY_LIMIT + 1).read_to_string(&mut text).ok()?;
+    (text.len() as u64 <= ENTRY_LIMIT).then_some(text)
 }
 
 /// What the 3MF at `path` says about its print. A file that is not a readable 3MF holds nothing the bar can show.
@@ -184,6 +193,22 @@ mod tests {
             None,
         );
         assert_eq!(huge, PrintInfo::default());
+    }
+
+    #[test]
+    fn a_metadata_entry_past_the_size_limit_is_not_read() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let bomb = dir.path().join("bomb.3mf");
+        let mut zip = zip::ZipWriter::new(File::create(&bomb).expect("3mf"));
+        let deflate = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+        zip.start_file("Metadata/project_settings.config", deflate).expect("entry");
+        let padding = vec![b' '; ENTRY_LIMIT as usize + 1];
+        std::io::Write::write_all(&mut zip, b"{\"printer_model\": \"Bambu Lab P2S\"").expect("write");
+        std::io::Write::write_all(&mut zip, &padding).expect("write");
+        std::io::Write::write_all(&mut zip, b"}").expect("write");
+        zip.finish().expect("zip");
+        assert!(std::fs::metadata(&bomb).expect("size").len() < ENTRY_LIMIT / 100, "the file is small on disk");
+        assert_eq!(read(&bomb), PrintInfo::default());
     }
 
     #[test]

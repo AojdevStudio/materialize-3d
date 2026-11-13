@@ -12,7 +12,8 @@ type Props = {
 const fileName = (rel: string) => rel.slice(rel.lastIndexOf('/') + 1)
 
 function duration(seconds: number) {
-  const minutes = Math.max(1, Math.round(seconds / 60))
+  const minutes = Math.round(seconds / 60)
+  if (minutes === 0) return seconds === 0 ? undefined : '1 min'
   const hours = Math.floor(minutes / 60)
   const rest = minutes % 60
   if (hours === 0) return `${rest} min`
@@ -23,7 +24,8 @@ const filament = (info: PrintInfo) => (info.filaments.length === 0 ? undefined :
 
 function fileSummary({ rel, print }: ProjectFile): string[] {
   const parts = [fileName(rel)]
-  if (print?.printSeconds !== undefined) parts.push(duration(print.printSeconds))
+  const time = print?.printSeconds === undefined ? undefined : duration(print.printSeconds)
+  if (time !== undefined) parts.push(time)
   if (print?.filamentGrams !== undefined) {
     const grams = print.filamentGrams < 10 ? print.filamentGrams.toFixed(1) : Math.round(print.filamentGrams)
     parts.push([`${grams} g`, filament(print)].filter((part) => part !== undefined).join(' '))

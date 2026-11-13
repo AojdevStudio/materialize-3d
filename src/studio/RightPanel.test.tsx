@@ -105,6 +105,9 @@ describe('RightPanel', () => {
     cleanup()
     show([sliced('print/cube.3mf', 1, { filaments: [] })], 'model')
     expect(details()).toBe('cube.3mf')
+    cleanup()
+    show([sliced('print/plate.3mf', 1, { filaments: [], printSeconds: 0 })], 'model')
+    expect(details()).toBe('plate.3mf')
   })
 
   it('shows one print file without a menu, and no bar without print files', () => {
