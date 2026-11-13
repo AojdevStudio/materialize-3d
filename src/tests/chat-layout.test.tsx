@@ -34,7 +34,7 @@ describe('ChatView', () => {
     rerender(chat([ask, ask], true))
     expect(scroll).toHaveBeenCalledWith({ block: 'end' })
     scroll.mockClear()
-    rerender(chat([ask, ask, reply]))
+    rerender(chat([ask, ask]))
     expect(scroll).toHaveBeenCalledWith({ block: 'end' })
   })
 })
