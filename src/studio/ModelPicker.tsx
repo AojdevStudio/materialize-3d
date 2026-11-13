@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { modelName } from '../../sidecar/src/offered'
 import type { ModelChoice, ModelOption } from '../../sidecar/src/protocol'
 import claude from '../assets/icons/claude.svg?raw'
 import openai from '../assets/icons/openai.svg?raw'
@@ -11,7 +12,7 @@ function markOf(modelId: string): string | undefined {
 }
 
 /** A model's mark. A model with none keeps the space, so the names line up. */
-function Mark({ modelId }: { modelId: string }) {
+export function Mark({ modelId }: { modelId: string }) {
   const svg = markOf(modelId)
   return <span className="model-mark" aria-hidden="true" dangerouslySetInnerHTML={svg === undefined ? undefined : { __html: svg }} />
 }
@@ -23,16 +24,17 @@ type Props = {
   onPick: (model: ModelChoice) => void
 }
 
-/** The model picker: the chosen model's mark and name, and a menu of the signed-in providers' models with a check on it. */
+/**
+ * The model picker. The button shows the chosen model's mark and short name. The menu shows the short list for the
+ * signed-in providers, with a check on the chosen model.
+ */
 export default function ModelPicker({ models, chosen, onPick }: Props) {
   const [open, setOpen] = useState(false)
   const box = useRef<HTMLDivElement>(null)
   const isChosen = (model: ModelChoice) => model.provider === chosen?.provider && model.modelId === chosen.modelId
 
-  // The open menu shows the chosen model, and closes on a click outside it, or on Escape.
   useEffect(() => {
     if (!open) return
-    box.current?.querySelector('[aria-checked="true"]')?.scrollIntoView({ block: 'nearest' })
     const close = (event: Event) => {
       if (event instanceof KeyboardEvent ? event.key === 'Escape' : !box.current?.contains(event.target as Node)) setOpen(false)
     }
@@ -80,7 +82,7 @@ export default function ModelPicker({ models, chosen, onPick }: Props) {
         data-testid="model-picker"
       >
         {chosen !== null && <Mark modelId={chosen.modelId} />}
-        <span>{chosen === null ? 'Model' : (models.find(isChosen)?.name ?? chosen.modelId)}</span>
+        <span>{chosen === null ? 'Model' : modelName(chosen)}</span>
         <svg viewBox="0 0 16 16" width={12} height={12} aria-hidden="true">
           <path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
         </svg>

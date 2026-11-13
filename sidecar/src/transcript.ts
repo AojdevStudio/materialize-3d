@@ -33,7 +33,7 @@ export function chatEntry(entry: EntryRecord): ChatEntry | undefined {
       const text = textOf(message.content)
       // A request that failed leaves an empty answer behind. The waiting state says what happened.
       if (text === '' && calls.length === 0) return undefined
-      return { id: entry.id, kind: 'assistant', text, calls }
+      return { id: entry.id, kind: 'assistant', text, calls, model: { provider: message.provider, modelId: message.model } }
     }
     case 'pi.tool-result': {
       if (message?.role !== 'toolResult') return undefined
