@@ -26,8 +26,8 @@ $S/wd.ts click '[data-testid=check-claude] .setup-link'   # Use a key
 $S/wd.ts type-secret '[aria-label="API key or token"]' KEY --clear
 $S/wd.ts type-secret '[aria-label="Proxy URL"]' PROXY --clear
 $S/wd.ts click 'text=Save'
-$S/wd.ts wait "xpath=//h1[normalize-space()='Your Mac is ready']" 60000
-$S/wd.ts click 'text=Continue'
+$S/wd.ts wait '.setup-actions .primary:not([disabled])' 60000
+$S/wd.ts click '.setup-actions .primary'
 $S/wd.ts wait 'section[aria-label="Pick a model"] input[type=radio]:checked'
 $S/wd.ts click 'text=Continue'
 $S/wd.ts wait 'section[aria-label="Ready"]'
