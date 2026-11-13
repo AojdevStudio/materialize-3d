@@ -210,7 +210,10 @@ UPDATE_VERSION="$version" UPDATE_SIGNATURE="$(cat "$archive.sig")" \
     // The update banner shows these notes, and they are all a user reads before Update now.
     const notes = {
       "0.3.0": `Materialize 3D 0.3.0 is a new chat studio. The sign, part, printer, and MakerWorld screens, the MCP server, and the OpenAI API key path are gone, and the app no longer sends jobs to a printer. Choose Later to keep 0.2.2.\n${changes}`,
-    }[version] ?? `Materialize 3D ${version}. ${changes}`
+    }[version] ??
+      (version.startsWith("0.3.")
+        ? `Materialize 3D ${version}. Updating from 0.2.2? 0.3 is a new chat studio. The sign, part, printer, and MakerWorld screens, the MCP server, and the OpenAI API key path are gone, and the app no longer sends jobs to a printer. Choose Later to keep 0.2.2.\n${changes}`
+        : `Materialize 3D ${version}. ${changes}`)
     console.log(JSON.stringify({
       version,
       notes,
