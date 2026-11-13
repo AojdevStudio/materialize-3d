@@ -508,6 +508,7 @@ describe('StudioApp', () => {
     fireEvent.change(field, { target: { value: 'clip' } })
     fireEvent.keyDown(field, { key: 'Escape' })
     expect(projectList().queryByRole('searchbox')).toBeNull()
+    expect(document.activeElement).toBe(projectList().getByRole('button', { name: 'Search projects' }))
     expect(titles()).toEqual(['Project A', 'Project B', 'Cable clip'])
     fireEvent.click(projectList().getByRole('button', { name: 'Search projects' }))
     fireEvent.change(projectList().getByRole('searchbox'), { target: { value: 'clip' } })

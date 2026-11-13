@@ -96,6 +96,7 @@ export default function Sidebar({ projects, current, engine, printer, onOpen, on
   /** The search field's text while it is open. Null when it is closed. */
   const [search, setSearch] = useState<string | null>(null)
   const menu = useRef<HTMLLIElement>(null)
+  const searchButton = useRef<HTMLButtonElement>(null)
   /** One status read at a time. A read asked for meanwhile runs once that one ends, so the newest state always lands. */
   const reading = useRef<{ busy: boolean; again: boolean }>({ busy: false, again: false })
 
@@ -219,6 +220,7 @@ export default function Sidebar({ projects, current, engine, printer, onOpen, on
         </button>
         <button
           type="button"
+          ref={searchButton}
           className="search-button"
           aria-label="Search projects"
           aria-expanded={search !== null}
@@ -239,7 +241,11 @@ export default function Sidebar({ projects, current, engine, printer, onOpen, on
           value={search}
           autoFocus
           onChange={(event) => setSearch(event.target.value)}
-          onKeyDown={(event) => event.key === 'Escape' && setSearch(null)}
+          onKeyDown={(event) => {
+            if (event.key !== 'Escape') return
+            setSearch(null)
+            searchButton.current?.focus()
+          }}
         />
       )}
       <div className="groups">
