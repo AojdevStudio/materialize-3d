@@ -1374,13 +1374,25 @@ pre {
   margin-top: 24px;
 }
 
-.setup-group h2 {
+.setup-group h2,
+.setup-group legend {
   margin: 0 0 4px;
   font-size: 12px;
   font-weight: 400;
   letter-spacing: 0.02em;
   text-transform: uppercase;
   color: var(--s-muted);
+}
+
+fieldset.setup-group {
+  min-width: 0;
+  margin-inline: 0;
+  padding: 0;
+  border: none;
+}
+
+.setup-group legend {
+  padding: 0;
 }
 
 .setup-group ul {
@@ -1513,6 +1525,99 @@ pre {
   background: var(--s-soft);
   border-color: var(--s-soft);
   color: var(--s-muted);
+}
+
+.setup-model {
+  display: grid;
+  grid-template-columns: 16px 20px 1fr;
+  align-items: center;
+  gap: 12px;
+  margin-top: 2px;
+  padding: 10px 12px;
+  border: 1px solid var(--s-line);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.setup-model:has(input:checked) {
+  border-color: var(--s-accent);
+}
+
+.setup-model input {
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  border: 1.5px solid var(--s-muted);
+  border-radius: 50%;
+}
+
+.setup-model input:checked {
+  border-color: var(--s-accent);
+  background: var(--s-accent);
+}
+
+.setup-model .model-mark {
+  width: 20px;
+  height: 20px;
+}
+
+.setup-switch {
+  display: grid;
+  grid-template-columns: 36px 1fr;
+  align-items: center;
+  gap: 2px 12px;
+  margin-top: 20px;
+}
+
+.setup-switch input {
+  appearance: none;
+  width: 36px;
+  height: 20px;
+  margin: 0;
+  border-radius: 10px;
+  background: radial-gradient(circle, #fff 7px, transparent 7.5px) left center / 20px 20px no-repeat var(--s-line);
+  cursor: pointer;
+  transition: background-position 0.15s;
+}
+
+.setup-switch input:checked {
+  background-color: var(--s-accent);
+  background-position: right center;
+}
+
+.setup-switch input:disabled {
+  cursor: default;
+}
+
+.setup-switch .setup-detail {
+  grid-column: 2;
+}
+
+.setup-model input:focus-visible,
+.setup-switch input:focus-visible {
+  outline: 2px solid var(--s-accent);
+  outline-offset: 2px;
+}
+
+.setup-summary {
+  margin: 16px 0 0;
+}
+
+.setup-summary div {
+  display: grid;
+  grid-template-columns: 136px 1fr;
+  gap: 12px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--s-line);
+}
+
+.setup-summary dt {
+  color: var(--s-muted);
+}
+
+.setup-summary dd {
+  margin: 0;
 }
 
 .setup-needed {

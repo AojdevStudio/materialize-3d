@@ -44,7 +44,7 @@ export function handlers({ host, store, models, logins, chats, version, legacy, 
       },
     },
     'settings.set': {
-      params: compile(obj({ model: opt(model), thinking: opt(thinking) })),
+      params: compile(obj({ model: opt(model), thinking: opt(thinking), astra: opt(bool()) })),
       run: async (change) => {
         await store.setSettings(change)
         return state()

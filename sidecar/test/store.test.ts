@@ -6,8 +6,8 @@ import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
 import { createModels, InMemoryCredentialStore } from '@earendil-works/pi-ai'
 import { createRegistry, defineDoc } from '@earendil-works/pi-durable'
 import { registerStorageConformance } from '@earendil-works/pi-durable/testing'
-import { EXIT, type Setup } from '../src/protocol'
-import { DraftsDoc, openStorage, Store } from '../src/store'
+import { type AppState, EXIT, type Settings, type Setup } from '../src/protocol'
+import { DraftsDoc, openStorage, SettingsDoc, Store } from '../src/store'
 import { spawnSidecar } from './sidecar'
 
 function scratch() {
@@ -228,6 +228,28 @@ describe('app state', () => {
     const app = spawnSidecar(fresh.data, fresh.projects)
     await app.next()
     expect(((await app.call('state.get')) as { setup: Setup }).setup).toEqual({ step: 'welcome', done: false })
+    await app.quit()
+  })
+
+  test('settings saved before the Astra setting keep Astra on', async () => {
+    const { data, projects } = scratch()
+    const old = await Store.open({
+      dataDir: data,
+      projectsDir: projects,
+      models: createModels({ credentials: new InMemoryCredentialStore() }),
+      registry: createRegistry(),
+      env: () => {
+        throw new Error('no conversation runs here')
+      },
+    })
+    await old.harness.commit(async (tx) => {
+      delete (await tx.doc(SettingsDoc, old.root.id) as Partial<Settings>).astra
+    }, BACKGROUND_CONTEXT)
+    await old.close()
+
+    const app = spawnSidecar(data, projects)
+    await app.next()
+    expect(((await app.call('state.get')) as AppState).settings.astra).toBe(true)
     await app.quit()
   })
 

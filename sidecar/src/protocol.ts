@@ -8,8 +8,8 @@
 
 export type ModelChoice = { provider: string; modelId: string }
 
-/** A model the picker offers, with the short name the app shows. */
-export type ModelOption = ModelChoice & { name: string }
+/** A model the picker offers, with the short name the app shows and one line on what it suits. */
+export type ModelOption = ModelChoice & { name: string; description: string }
 export type Thinking = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 
 /** Where first-launch setup stands. Setup reopens on `step` until it is `done`. */
@@ -26,12 +26,13 @@ export type Printer = { machine: string; process: string; filament: string; plat
 
 /**
  * What the next turn starts with. A running turn keeps the model and thinking it started with. Each slice reads the
- * printer when it starts.
+ * printer when it starts. `astra` lets the main agent hand a task to Astra, the GPT helper.
  */
 export type Settings = {
   model: ModelChoice
   thinking: Thinking
   printer: Printer
+  astra: boolean
 }
 
 /**

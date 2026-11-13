@@ -28,7 +28,7 @@ The studio is the whole app. Each chat is a project folder in `~/Documents/Mater
 
 ## Driving it with wd.ts
 
-On macOS, drive it with `mac.ts` from an `e2e` build. Answer `Attach` with `mac.ts dialog <png>` before the click. A fresh data folder opens [setup](./setup.md), which asks for a login, uv, and Python before the start screen. That order is from the code (`src/studio/Setup.tsx`). `ANTHROPIC_TOKEN` and `ANTHROPIC_PROXY` are the host's proxy token and URL.
+On macOS, drive it with `mac.ts` from an `e2e` build. Answer `Attach` with `mac.ts dialog <png>` before the click. A fresh data folder opens [setup](./setup.md), which asks for a login, uv, and Python, then the default model, before the start screen. That order is from the code (`src/studio/Setup.tsx`). `ANTHROPIC_TOKEN` and `ANTHROPIC_PROXY` are the host's proxy token and URL.
 
 ```bash
 bun $S/mac.ts wait '[data-testid=setup]' 30000
@@ -41,6 +41,10 @@ bun $S/mac.ts click 'text=Save'
 # 'Continue without a slicer'.
 bun $S/mac.ts wait '.setup-actions .primary:not([disabled])' 60000
 bun $S/mac.ts click '.setup-actions .primary'
+bun $S/mac.ts wait 'section[aria-label="Pick a model"] input[type=radio]:checked' 30000
+bun $S/mac.ts click 'text=Continue'
+bun $S/mac.ts wait 'section[aria-label="Ready"]' 30000
+bun $S/mac.ts click 'text=Start a project'
 bun $S/mac.ts wait '[data-testid=start-screen]' 30000
 bun $S/mac.ts dialog "$HOME/fixtures/sketch.png"
 bun $S/mac.ts click 'text=Attach'
