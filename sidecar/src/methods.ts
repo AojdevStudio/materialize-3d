@@ -6,7 +6,8 @@ import { toolchainNeeds } from './agent'
 import type { Chats } from './chat'
 import type { Handlers } from './host'
 import type { Logins } from './inference'
-import type { AppState, ModelOption, Need } from './protocol'
+import { OFFERED } from './offered'
+import type { AppState, Need } from './protocol'
 import type { Store } from './store'
 
 export interface Services {
@@ -132,10 +133,11 @@ export function handlers({ store, models, logins, chats, version, legacy, pictur
     },
     'models.list': {
       params: compile(obj({})),
-      run: async () =>
-        (await logins.status())
-          .filter((login) => login.login !== null)
-          .flatMap(({ provider }) => models.getModels(provider).map((m): ModelOption => ({ provider, modelId: m.id, name: m.name }))),
+      run: async () => {
+        const signedIn = new Set((await logins.status()).flatMap((login) => (login.login === null ? [] : [login.provider])))
+        // A model its provider's catalog lacks cannot run, so its row waits until the catalog lists it.
+        return OFFERED.filter((m) => signedIn.has(m.provider) && models.getModel(m.provider, m.modelId) !== undefined)
+      },
     },
     'projects.setModel': {
       params: compile(obj({ project: str(), model })),

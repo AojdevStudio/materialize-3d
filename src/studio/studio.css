@@ -705,6 +705,7 @@ pre {
 
 /* Composer */
 .composer {
+  position: relative;
   margin: 0 20px 16px;
   border: 1px solid var(--s-line);
   border-radius: 12px;
@@ -747,11 +748,7 @@ pre {
   font-size: 12px;
 }
 
-/* Model picker. The menu opens above its button. */
-.model-picker {
-  position: relative;
-}
-
+/* Model picker. The menu opens above the composer, at its left edge. */
 .model-button {
   display: flex;
   align-items: center;
@@ -760,8 +757,8 @@ pre {
 
 .model-mark {
   display: inline-grid;
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
   flex: none;
 }
 
@@ -772,14 +769,12 @@ pre {
 
 .model-menu {
   position: absolute;
-  right: 0;
-  bottom: calc(100% + 6px);
+  left: 0;
+  bottom: calc(100% + 4px);
   z-index: 10;
   display: flex;
   flex-direction: column;
-  width: 240px;
-  max-height: min(320px, 50vh);
-  overflow-y: auto;
+  width: 260px;
   padding: 4px;
   border: 1px solid var(--s-line);
   border-radius: 10px;
@@ -791,7 +786,7 @@ pre {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 8px;
+  padding: 7px 10px;
   border: none;
   background: none;
   text-align: left;

@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { ChatEntry, ChatView, ModelOption, Need, ProjectStatus, StoredState } from '../src/protocol'
+import type { ChatEntry, ChatView, Need, ProjectStatus, StoredState } from '../src/protocol'
 import { spawnSidecar } from './sidecar'
 
 type App = ReturnType<typeof spawnSidecar>
@@ -146,14 +146,20 @@ describe('the model', () => {
     await app.quit()
   }, 30_000)
 
-  test('list holds the models of the providers the person signed in to, as each provider names them', async () => {
+  test("list holds the app's short list for the providers the person signed in to, by short name, and only models they run", async () => {
     const where = scratch()
     const app = await start(where, 'models')
     expect(await app.call('models.list')).toEqual([])
     await app.call('auth.setKey', { provider: 'anthropic', key: 'sk-test-dummy-0000' })
-    const listed = (await app.call('models.list')) as ModelOption[]
-    expect(listed).toContainEqual({ provider: 'anthropic', modelId: 'claude-opus-5-5', name: 'Claude Opus 5.5' })
-    expect(new Set(listed.map((m) => m.provider))).toEqual(new Set(['anthropic']))
+    // pi-ai 1.5.0 has no Fable 5.2, so its row waits until the catalog lists it.
+    const anthropic = [
+      { provider: 'anthropic', modelId: 'claude-opus-5-5', name: 'Opus 5.5' },
+      { provider: 'anthropic', modelId: 'claude-sonnet-5-5', name: 'Sonnet 5.5' },
+    ]
+    expect(await app.call('models.list')).toEqual(anthropic)
+    // This test's OpenAI provider runs only GPT-6 Astra, so GPT 6.1 Sol stays out.
+    await app.call('auth.setKey', { provider: 'openai-codex', key: 'sk-test-dummy-0000' })
+    expect(await app.call('models.list')).toEqual(anthropic)
     await app.quit()
   }, 30_000)
 })
