@@ -7,7 +7,7 @@ import { AGENTS } from './SetupCheck'
 
 type Offer = { models: ModelOption[]; chatgptSignedIn: boolean; saved: Settings }
 
-/** Astra is GPT, so it needs a ChatGPT sign-in. Without one its switch shows off and cannot change. */
+/** Astra is GPT, so it needs a ChatGPT sign-in. */
 export const astraSignedIn = (logins: Login[]) => logins.some((login) => login.provider === 'openai-codex' && login.login !== null)
 
 const same = (a: ModelChoice, b: ModelChoice) => a.provider === b.provider && a.modelId === b.modelId

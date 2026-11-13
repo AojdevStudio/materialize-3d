@@ -106,7 +106,7 @@ export default function StudioApp() {
   const [wentOnInSetup, setWentOnInSetup] = useState(false)
   /** A setup step opened again, from Fix in setup or from Settings. It ends back on the screen it was opened from. */
   const [fixing, setFixing] = useState<Setup['step'] | null>(null)
-  /** The Settings section on screen, or null when Settings is closed. Closing it shows the screen it was opened from. */
+  /** The Settings section on screen. Closing it shows the screen it was opened from. */
   const [settings, setSettings] = useState<Section | null>(null)
   /** The folder the chats from before the store could not be read from, when macOS keeps it from the app. */
   const [importBlocked, setImportBlocked] = useState<string | null>(null)

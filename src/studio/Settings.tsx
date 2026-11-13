@@ -19,7 +19,7 @@ const SECTIONS: Record<Section, { name: string; about: string }> = {
 type Props = {
   section: Section
   onSection: (section: Section) => void
-  /** The models the picker offers, which the app reads again after each sign-in. */
+  /** The app reads these again after each sign-in. */
   models: ModelOption[]
   /** The app's state after a change saves, so the composer's picker shows the new default. */
   onSaved: (state: AppState) => void
@@ -28,7 +28,7 @@ type Props = {
   onClose: () => void
   onError: (message: string) => void
   error: ReactNode
-  /** A running sign-in's question, which a setup step's Back can leave unanswered. */
+  /** A sign-in question still open. Back in a setup step can leave one, so Settings shows it too. */
   signIn: ReactNode
   /** Counts finished sign-ins, so the sign-in rows read again after each. */
   signIns: number
@@ -38,7 +38,7 @@ type Props = {
 
 const same = (a: ModelChoice, b: ModelChoice) => a.provider === b.provider && a.modelId === b.modelId
 
-/** Settings: each part setup checks, with its fix in setup, the default model, the printer, and the projects folder. */
+/** Shows what setup checked and saved. Each fix opens its setup step. */
 export default function Settings({ section, onSection, models, onSaved, onFix, onClose, onError, error, signIn, signIns, refused }: Props) {
   const [found, setFound] = useState<Found>({})
   const [saved, setSaved] = useState<Saved | null>(null)

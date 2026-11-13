@@ -1228,8 +1228,12 @@ pre {
   gap: 6px;
 }
 
-.setup {
+.setup,
+.settings {
   --setup-warn: #8a5300;
+}
+
+.setup {
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -1241,7 +1245,8 @@ pre {
   background: var(--s-side);
 }
 
-:root[data-theme='dark'] .setup {
+:root[data-theme='dark'] .setup,
+:root[data-theme='dark'] .settings {
   --setup-warn: #fbbf24;
 }
 
@@ -1620,17 +1625,12 @@ fieldset.setup-group {
   color: var(--s-text);
 }
 
-/* Settings: its own nav on the left, one section at a time on the right. Rows reuse setup's check rows. */
+/* Settings. Its rows reuse setup's check rows. */
 
 .settings {
-  --setup-warn: #8a5300;
   display: grid;
   grid-template-columns: 220px 1fr;
   height: 100%;
-}
-
-:root[data-theme='dark'] .settings {
-  --setup-warn: #fbbf24;
 }
 
 .settings-nav {

@@ -33,7 +33,7 @@ const unanswered = (row: Pick<Row, 'id' | 'name' | 'icon'>, failed: boolean, loo
     ? { ...row, status: 'failed', label: 'Not checked', detail: 'The check failed. Press Check again.' }
     : { ...row, status: 'checking', label: 'Checking', detail: `Looking for ${lookingFor}…` }
 
-/** A sign-in a waiting turn was refused with counts as signed out, so its row offers the fix. */
+/** A sign-in that a waiting turn was refused with counts as signed out, so its row offers the fix. */
 export const forgetRefused = (found: Found, refused: string | undefined): Found =>
   Array.isArray(found.logins)
     ? { ...found, logins: found.logins.map((login) => (login.provider === refused ? { ...login, login: null } : login)) }
