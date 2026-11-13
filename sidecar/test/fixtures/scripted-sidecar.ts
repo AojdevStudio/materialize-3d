@@ -106,6 +106,12 @@ const scripts: Record<string, (messages: Message[], model: Model<string>) => Ass
     if (results.length === 0) return run('touch started; while [ ! -f go ]; do sleep 0.05; done')
     return fauxAssistantMessage([], { stopReason: 'error', errorMessage: 'the model broke' })
   },
+  /** Slices one part, then repeats what the tool said. */
+  slice: (messages) => {
+    const { results } = sinceUser(messages)
+    if (results.length === 0) return call('slice', { inputs: ['cube.stl'], output: 'print/cube.3mf' })
+    return fauxAssistantMessage(fauxText(resultText(results[0])))
+  },
   /** Tries to read a file outside the project folder, then reports what the tool said. */
   escape: (messages) => {
     const { results } = sinceUser(messages)

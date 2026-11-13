@@ -1,0 +1,7 @@
+{
+  "type": "machine_model",
+  "name": "Test Printer",
+  "nozzle_diameter": "0.4;0.6",
+  "default_bed_type": "Textured PEI Plate",
+  "not_support_bed_type": "Cool Plate;Smooth PEI Plate / High Temp Plate"
+}
