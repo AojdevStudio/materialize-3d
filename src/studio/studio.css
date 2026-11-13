@@ -361,15 +361,6 @@ pre {
   min-height: 0;
 }
 
-.chat-title {
-  padding: 12px 20px;
-  border-bottom: 1px solid var(--s-line);
-  font-weight: 500;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
 .messages {
   flex: 1;
   overflow-y: auto;
@@ -377,6 +368,10 @@ pre {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+.messages > :first-child {
+  margin-top: auto;
 }
 
 .msg-user {
@@ -423,6 +418,15 @@ pre {
   border-radius: 6px;
   padding: 2px 8px;
   font-size: 12px;
+}
+
+.msg-byline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  color: var(--s-muted);
+  font-size: 13px;
 }
 
 /* Agent replies: the Typeset chat preset. 14 px type, 1.6 leading, and 1em between blocks. */
@@ -705,6 +709,7 @@ pre {
 
 /* Composer */
 .composer {
+  position: relative;
   margin: 0 20px 16px;
   border: 1px solid var(--s-line);
   border-radius: 12px;
@@ -747,11 +752,6 @@ pre {
   font-size: 12px;
 }
 
-/* Model picker. The menu opens above its button. */
-.model-picker {
-  position: relative;
-}
-
 .model-button {
   display: flex;
   align-items: center;
@@ -760,8 +760,8 @@ pre {
 
 .model-mark {
   display: inline-grid;
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
   flex: none;
 }
 
@@ -772,14 +772,12 @@ pre {
 
 .model-menu {
   position: absolute;
-  right: 0;
-  bottom: calc(100% + 6px);
+  left: 0;
+  bottom: calc(100% + 4px);
   z-index: 10;
   display: flex;
   flex-direction: column;
-  width: 240px;
-  max-height: min(320px, 50vh);
-  overflow-y: auto;
+  width: 260px;
   padding: 4px;
   border: 1px solid var(--s-line);
   border-radius: 10px;
@@ -791,7 +789,7 @@ pre {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 8px;
+  padding: 7px 10px;
   border: none;
   background: none;
   text-align: left;
@@ -883,7 +881,6 @@ pre {
 
 .recent {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
   justify-content: center;
   gap: 8px;
@@ -891,6 +888,7 @@ pre {
 }
 
 .recent-label {
+  flex: none;
   color: var(--s-muted);
   font-size: 13px;
 }
@@ -899,6 +897,7 @@ pre {
   display: flex;
   align-items: center;
   gap: 10px;
+  min-width: 0;
   max-width: 220px;
   padding: 4px 12px 4px 4px;
   border-radius: 8px;
@@ -1180,12 +1179,6 @@ pre {
 
 .print-menu button:hover {
   background: var(--s-soft);
-}
-
-.chat-model {
-  margin: 0 20px;
-  font-size: 12px;
-  color: var(--s-muted);
 }
 
 .waiting {
