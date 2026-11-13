@@ -35,7 +35,9 @@ const claudeIn = signedOut.map((login) => (login.provider === 'anthropic' ? { ..
 type Machine = { logins: Login[]; toolchain: Toolchain; slicer: SlicerCheck }
 const ready: Machine = { logins: claudeIn, toolchain: { uv: '0.9.2', python: '3.12.1' }, slicer: { found: 'ready', version: '02.08.02.61' } }
 
-function mockApp(setup: Setup, machine: Machine, hold?: 'setup.tools') {
+type Calls = Record<string, (params: Record<string, unknown>, real: () => Promise<unknown>) => Promise<unknown>>
+
+function mockApp(setup: Setup, machine: Machine, overrides: Calls = {}) {
   const store = { setup, logins: machine.logins }
   const state = () => ({ setup: store.setup, settings: { model: { provider: 'anthropic', modelId: 'claude-opus-5-5' }, thinking: 'high', printer: {} }, projects: [], drafts: {}, importBlocked: null })
   const answers: Record<string, (params: Record<string, unknown>) => unknown> = {
@@ -54,8 +56,9 @@ function mockApp(setup: Setup, machine: Machine, hold?: 'setup.tools') {
   invokeMock.mockImplementation((command: string, args: { method: string; params: Record<string, unknown> }) => {
     if (command === 'studio_slicer') return Promise.resolve(machine.slicer)
     if (command !== 'sidecar') return Promise.resolve(undefined)
-    if (args.method === hold) return new Promise(() => {})
-    return Promise.resolve(answers[args.method]?.(args.params) ?? null)
+    const real = () => Promise.resolve(answers[args.method]?.(args.params) ?? null)
+    const override = overrides[args.method]
+    return override ? override(args.params, real) : real()
   })
   return store
 }
@@ -63,6 +66,7 @@ function mockApp(setup: Setup, machine: Machine, hold?: 'setup.tools') {
 const saved = () => invokeMock.mock.calls.filter(([command, args]) => command === 'sidecar' && args.method === 'setup.set').map(([, args]) => args.params)
 const row = (name: string) => within(screen.getByTestId(`check-${name}`))
 const button = (name: string) => screen.getByRole('button', { name }) as HTMLButtonElement
+const emit = (event: object) => act(async () => listeners.forEach((listener) => listener({ payload: event })))
 
 describe('setup', () => {
   it('opens on Welcome, then Check your Mac, and Continue finishes it at the start screen', async () => {
@@ -95,7 +99,7 @@ describe('setup', () => {
   })
 
   it('shows each row as Checking until its part answers, and Continue waits', async () => {
-    mockApp({ step: 'check', done: false }, ready, 'setup.tools')
+    mockApp({ step: 'check', done: false }, ready, { 'setup.tools': () => new Promise(() => {}) })
     render(<StudioApp />)
     expect(await screen.findByRole('heading', { name: 'Checking your Mac' })).toBeTruthy()
     expect(await row('claude').findByText('Ready')).toBeTruthy()
@@ -116,7 +120,7 @@ describe('setup', () => {
     expect(invokeMock).toHaveBeenCalledWith('sidecar', { method: 'auth.login', params: { provider: 'openai-codex' } })
 
     store.logins = signedOut.map((login) => (login.provider === 'openai-codex' ? { ...login, login: 'oauth' as const } : login))
-    await act(async () => listeners.forEach((listener) => listener({ payload: { type: 'login', provider: 'openai-codex', step: 'done' } })))
+    await emit({ type: 'login', provider: 'openai-codex', step: 'done' })
     expect(await row('chatgpt').findByText('Ready')).toBeTruthy()
     expect(row('claude').getByText('Not signed in. Optional while ChatGPT works.')).toBeTruthy()
     expect(button('Continue').disabled).toBe(false)
@@ -140,5 +144,53 @@ describe('setup', () => {
     fireEvent.click(button('Continue without a slicer'))
     expect(await screen.findByTestId('start-screen')).toBeTruthy()
     expect(saved()).toEqual([{ step: 'check', done: true }])
+  })
+
+  it('lets a check that failed run again', async () => {
+    let fails = true
+    mockApp({ step: 'check', done: false }, ready, {
+      'setup.tools': (_, real) => (fails ? Promise.reject('The engine restarted before it answered.') : real()),
+    })
+    render(<StudioApp />)
+    expect(await screen.findByRole('heading', { name: 'The check did not finish' })).toBeTruthy()
+    expect(row('uv').getByText('Not checked')).toBeTruthy()
+    expect(button('Continue').disabled).toBe(true)
+    fails = false
+    fireEvent.click(button('Check again'))
+    expect(await screen.findByRole('heading', { name: 'Your Mac is ready' })).toBeTruthy()
+  })
+
+  it('saves one step at a time', async () => {
+    let release = () => {}
+    mockApp({ step: 'welcome', done: false }, ready, {
+      'setup.set': (_, real) => new Promise((resolve) => (release = () => resolve(real()))),
+    })
+    render(<StudioApp />)
+    const start = await screen.findByRole('button', { name: 'Start setup' })
+    fireEvent.click(start)
+    fireEvent.click(start)
+    await act(async () => release())
+    expect(await screen.findByRole('heading', { name: 'Your Mac is ready' })).toBeTruthy()
+    expect(saved()).toEqual([{ step: 'check', done: false }])
+  })
+
+  it('a state read from before setup finished does not open it again', async () => {
+    let reads = 0
+    let release = () => {}
+    mockApp({ step: 'welcome', done: false }, ready, {
+      'state.get': (_, real) => {
+        if (reads++ > 0) return real()
+        const before = real()
+        return new Promise((resolve) => (release = () => resolve(before)))
+      },
+    })
+    render(<StudioApp />)
+    await emit({ type: 'ready', version: '1.2.3' })
+    fireEvent.click(await screen.findByRole('button', { name: 'Start setup' }))
+    expect(await screen.findByRole('heading', { name: 'Your Mac is ready' })).toBeTruthy()
+    fireEvent.click(button('Continue'))
+    expect(await screen.findByTestId('start-screen')).toBeTruthy()
+    await act(async () => release())
+    expect(screen.queryByTestId('setup')).toBeNull()
   })
 })

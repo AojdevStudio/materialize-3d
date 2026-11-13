@@ -1,4 +1,4 @@
-import type { ComponentType, ReactNode } from 'react'
+import { type ComponentType, type ReactNode, useRef } from 'react'
 import type { AppState, Setup } from '../../sidecar/src/protocol'
 import { sidecar } from './api'
 import SetupCheck from './SetupCheck'
@@ -23,10 +23,17 @@ export default function SetupFlow({ setup, onSaved, error, ...shared }: Props) {
   const at = Math.max(0, STEPS.findIndex((entry) => entry.step === setup.step))
   const { step, name, Screen } = STEPS[at]
   const following = STEPS[at + 1]
-  const next = () =>
+  const saving = useRef(false)
+  const next = () => {
+    if (saving.current) return
+    saving.current = true
     void sidecar('setup.set', following === undefined ? { step, done: true } : { step: following.step, done: false })
       .then(onSaved)
       .catch((err: unknown) => shared.onError(String(err)))
+      .finally(() => {
+        saving.current = false
+      })
+  }
 
   return (
     <main className="setup" data-testid="setup">

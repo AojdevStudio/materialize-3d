@@ -88,6 +88,8 @@ export default function StudioApp() {
   const [signIn, setSignIn] = useState<Extract<LoginEvent, { step: 'open' | 'ask' }> | null>(null)
   const [signIns, setSignIns] = useState(0)
   const [setup, setSetup] = useState<Setup | null>(null)
+  /** Counts setup's saves, so a state read that started before the newest save never puts back the setup it replaced. */
+  const setupSaves = useRef(0)
   /** What the agent needs before a send, from the sidecar's check. Null until the check answers, and Send waits. */
   const [needs, setNeeds] = useState<Need[] | null>(null)
   /** The folder the chats from before the store could not be read from, when macOS keeps it from the app. */
@@ -216,7 +218,6 @@ export default function StudioApp() {
       }
     }
     setDefaultModel(state.settings.model)
-    setSetup(state.setup)
     takeProjects(state)
   }
 
@@ -260,13 +261,16 @@ export default function StudioApp() {
     // The first read of the saved state. If the engine stopped before it answered, it is read again once the engine is
     // back, so the projects and drafts still come.
     let stateRead = false
-    const readState = () =>
-      sidecar('state.get', {})
+    const readState = () => {
+      const saves = setupSaves.current
+      return sidecar('state.get', {})
         .then((state) => {
           stateRead = true
           takeState(state)
+          if (saves === setupSaves.current) setSetup(state.setup)
         })
         .catch((err: unknown) => setError(String(err)))
+    }
     void readState()
     checkReady()
     loadModels()
@@ -636,6 +640,7 @@ export default function StudioApp() {
       <SetupFlow
         setup={setup}
         onSaved={(state) => {
+          setupSaves.current += 1
           setSetup(state.setup)
           if (state.setup.done) {
             checkReady()

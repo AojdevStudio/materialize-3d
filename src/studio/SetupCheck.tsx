@@ -9,9 +9,10 @@ import { checkSlicer, sidecar, type SlicerCheck } from './api'
 import type { StepProps } from './Setup'
 import { KeyForm } from './Waiting'
 
-type Found = { logins?: Login[]; toolchain?: Toolchain; slicer?: SlicerCheck }
+/** Each part of the check: its answer, or `failed`. A part still being checked is missing. */
+type Found = { logins?: Login[] | 'failed'; toolchain?: Toolchain | 'failed'; slicer?: SlicerCheck | 'failed' }
 
-type Status = 'checking' | 'ready' | 'needs' | 'required-missing' | 'optional-missing'
+type Status = 'checking' | 'failed' | 'ready' | 'needs' | 'required-missing' | 'optional-missing'
 type Action = { kind: 'signIn'; provider: ProviderId; key: boolean } | { kind: 'copy'; command: string }
 type Row = { id: string; name: string; icon: string; status: Status; label: string; detail: string; action?: Action }
 
@@ -27,9 +28,15 @@ const INSTALL_HINT = 'Paste the install command in Terminal, then press Check ag
 const loginOf = (logins: Login[], provider: ProviderId) => logins.find((login) => login.provider === provider)
 const signedIn = (logins: Login[], provider: ProviderId) => (loginOf(logins, provider)?.login ?? null) !== null
 
-function agentRows(logins: Login[] | undefined): Row[] {
+/** A row whose part has not answered yet, or whose check failed. */
+const unanswered = (row: Pick<Row, 'id' | 'name' | 'icon'>, failed: boolean, lookingFor: string): Row =>
+  failed
+    ? { ...row, status: 'failed', label: 'Not checked', detail: 'The check failed. Press Check again.' }
+    : { ...row, status: 'checking', label: 'Checking', detail: `Looking for ${lookingFor}…` }
+
+function agentRows(logins: Found['logins']): Row[] {
   return AGENTS.map(({ id, provider, name, icon }) => {
-    if (logins === undefined) return { id, name, icon, status: 'checking', label: 'Checking', detail: 'Looking for your sign-in…' }
+    if (logins === undefined || logins === 'failed') return unanswered({ id, name, icon }, logins === 'failed', 'your sign-in')
     const login = loginOf(logins, provider)
     if (login?.login === 'oauth') return { id, name, icon, status: 'ready', label: 'Ready', detail: `Signed in with your ${name} plan.` }
     if (login?.login === 'api_key') return { id, name, icon, status: 'ready', label: 'Ready', detail: 'Signed in with a key or a proxy.' }
@@ -46,9 +53,9 @@ function agentRows(logins: Login[] | undefined): Row[] {
   })
 }
 
-function slicerRow(slicer: SlicerCheck | undefined): Row {
+function slicerRow(slicer: Found['slicer']): Row {
   const row = { id: 'bambu', name: 'Bambu Studio', icon: bambu }
-  if (slicer === undefined) return { ...row, status: 'checking', label: 'Checking', detail: 'Looking for Bambu Studio…' }
+  if (slicer === undefined || slicer === 'failed') return unanswered(row, slicer === 'failed', 'Bambu Studio')
   switch (slicer.found) {
     case 'ready':
       return { ...row, status: 'ready', label: 'Ready', detail: `Version ${slicer.version}.` }
@@ -59,14 +66,11 @@ function slicerRow(slicer: SlicerCheck | undefined): Row {
   }
 }
 
-function buildRows(toolchain: Toolchain | undefined): Row[] {
+function buildRows(toolchain: Found['toolchain']): Row[] {
   const uvRow = { id: 'uv', name: 'uv', icon: uv }
   const pythonRow = { id: 'python', name: 'Python', icon: python }
-  if (toolchain === undefined) {
-    return [
-      { ...uvRow, status: 'checking', label: 'Checking', detail: 'Looking for uv…' },
-      { ...pythonRow, status: 'checking', label: 'Checking', detail: 'Looking for Python…' },
-    ]
+  if (toolchain === undefined || toolchain === 'failed') {
+    return [unanswered(uvRow, toolchain === 'failed', 'uv'), unanswered(pythonRow, toolchain === 'failed', 'Python')]
   }
   if (toolchain.uv === null) {
     return [
@@ -85,6 +89,7 @@ function buildRows(toolchain: Toolchain | undefined): Row[] {
 type Verdict = { title: string; text?: string; hint?: string; go: 'wait' | 'blocked' | 'ready' | 'without-slicer' }
 
 function verdictOf({ logins, toolchain, slicer }: Found): Verdict {
+  if (logins === 'failed' || toolchain === 'failed' || slicer === 'failed') return { title: 'The check did not finish', text: 'Press Check again.', go: 'blocked' }
   if (logins === undefined || toolchain === undefined || slicer === undefined) return { title: 'Checking your Mac', go: 'wait' }
   if (!AGENTS.some(({ provider }) => signedIn(logins, provider))) {
     return { title: 'Sign in to an agent', text: 'The app needs one sign-in, Claude or ChatGPT.', go: 'blocked' }
@@ -108,16 +113,23 @@ export default function SetupCheck({ next, onError, signIn, signIns }: StepProps
   const [keyFormFor, setKeyFormFor] = useState<ProviderId | null>(null)
   const [copied, setCopied] = useState<string | null>(null)
 
+  /** Fills one part from its answer, or marks it failed, unless the check it belongs to was replaced. */
+  const fill = <K extends keyof Found>(part: K, answer: Promise<Exclude<Found[K], 'failed' | undefined>>, current: () => boolean) =>
+    void answer.then(
+      (value) => current() && setFound((now) => ({ ...now, [part]: value })),
+      (err: unknown) => {
+        if (!current()) return
+        setFound((now) => ({ ...now, [part]: 'failed' }))
+        onError(String(err))
+      },
+    )
+
   useEffect(() => {
     let current = true
     setFound({})
     setCopied(null)
-    void sidecar('setup.tools', {})
-      .then((toolchain) => current && setFound((now) => ({ ...now, toolchain })))
-      .catch((err: unknown) => current && onError(String(err)))
-    void checkSlicer()
-      .then((slicer) => current && setFound((now) => ({ ...now, slicer })))
-      .catch((err: unknown) => current && onError(String(err)))
+    fill('toolchain', sidecar('setup.tools', {}), () => current)
+    fill('slicer', checkSlicer(), () => current)
     return () => {
       current = false
     }
@@ -125,9 +137,7 @@ export default function SetupCheck({ next, onError, signIn, signIns }: StepProps
 
   useEffect(() => {
     let current = true
-    void sidecar('auth.status', {})
-      .then((logins) => current && setFound((now) => ({ ...now, logins })))
-      .catch((err: unknown) => current && onError(String(err)))
+    fill('logins', sidecar('auth.status', {}), () => current)
     return () => {
       current = false
     }
@@ -194,7 +204,7 @@ export default function SetupCheck({ next, onError, signIn, signIns }: StepProps
         'Agent that does the work (at least one)',
         agentRows(found.logins),
         <>
-          {keyFormFor !== null && found.logins !== undefined && !signedIn(found.logins, keyFormFor) && (
+          {keyFormFor !== null && Array.isArray(found.logins) && !signedIn(found.logins, keyFormFor) && (
             <div className="setup-key">
               <KeyForm provider={keyFormFor} onError={onError} />
             </div>

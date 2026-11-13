@@ -8,7 +8,8 @@
  * action run exactly once. `run` passes the id on as `M3D_OPERATION_ID`, for a script that wants to check for itself.
  */
 import { createHash } from 'node:crypto'
-import { closeSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, readSync, realpathSync, renameSync, writeFileSync } from 'node:fs'
+import { closeSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, readSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path'
 import type { Context, JsonValue } from '@earendil-works/chord'
 import {
@@ -64,13 +65,19 @@ function commandEnv(): Record<string, string> {
 /** How long one toolchain check may run. A check still running then, as one stuck on a lock, counts as failed. */
 const CHECK_MS = 5_000
 
+/**
+ * What `command` prints when it exits 0 within `CHECK_MS`, or null. It prints to a file, not a pipe, because a process
+ * it leaves behind would hold a pipe open past its exit.
+ */
 async function outputOf(command: string[]): Promise<string | null> {
+  const output = join(tmpdir(), `m3d-check-${crypto.randomUUID()}`)
   try {
-    const child = Bun.spawn(command, { env: commandEnv(), stdout: 'pipe', stderr: 'ignore', timeout: CHECK_MS })
-    const [code, output] = await Promise.all([child.exited, new Response(child.stdout).text()])
-    return code === 0 ? output.trim() : null
+    const child = Bun.spawn(command, { env: commandEnv(), stdout: Bun.file(output), stderr: 'ignore', timeout: CHECK_MS })
+    return (await child.exited) === 0 ? readFileSync(output, 'utf8').trim() : null
   } catch {
     return null
+  } finally {
+    rmSync(output, { force: true })
   }
 }
 

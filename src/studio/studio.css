@@ -1368,11 +1368,13 @@ pre {
   content: '✓';
 }
 
+[data-status='failed'] .setup-status,
 [data-status='needs'] .setup-status,
 [data-status='optional-missing'] .setup-status {
   color: var(--setup-warn);
 }
 
+[data-status='failed'] .setup-status::before,
 [data-status='needs'] .setup-status::before {
   content: '!';
 }

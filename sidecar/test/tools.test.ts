@@ -207,6 +207,19 @@ describe('the check before a send', () => {
     expect(await tools(toolchain(false))).toEqual({ uv: '0.9.0', python: null })
     expect(await tools(mkdtempSync(join(tmpdir(), 'm3d-path-')))).toEqual({ uv: null })
   })
+
+  test('a tool that leaves a process holding its output still answers at once', async () => {
+    const path = toolchain(true)
+    const dir = path.split(':')[0] ?? ''
+    writeFileSync(join(dir, 'uv'), `#!/bin/sh\n[ "$1" = --version ] && { sleep 30 & echo "uv 0.9.0"; exit 0; }\n[ "$1 $2" = "python find" ] && { echo "${dir}/python3"; exit 0; }\nexit 1\n`)
+    const state = mkdtempSync(join(tmpdir(), 'm3d-check-'))
+    const app = spawnSidecar(join(state, 'state'), join(state, 'projects'), new Map(), { env: { PATH: path, HOME: mkdtempSync(join(tmpdir(), 'm3d-home-')) } })
+    await app.next()
+    const started = Date.now()
+    expect(await app.call('setup.tools', {})).toEqual({ uv: '0.9.0', python: '3.12.1' })
+    expect(Date.now() - started).toBeLessThan(5_000)
+    await app.quit()
+  }, 30_000)
 })
 
 describe("a command's log", () => {
