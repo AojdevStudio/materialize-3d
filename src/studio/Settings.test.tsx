@@ -27,6 +27,7 @@ afterEach(() => {
   revealMock.mockReset()
   listeners.length = 0
   slicerAnswer = undefined
+  printerSaved = undefined
 })
 
 const emit = (event: object) => act(async () => listeners.forEach((listener) => listener({ payload: event })))
@@ -67,6 +68,8 @@ const ready: Machine = { toolchain: { uv: '0.9.2', python: '3.12.1' }, slicer: {
 
 /** When set, each slicer check waits for this answer instead of the machine's. */
 let slicerAnswer: (() => Promise<SlicerCheck>) | undefined
+/** When set, printer.set answers only once this settles. */
+let printerSaved: Promise<void> | undefined
 
 function mockApp(machine: Machine = ready, logins: Login[] = claudeOnly, waiting: object | null = null) {
   revealMock.mockResolvedValue(undefined)
@@ -105,6 +108,7 @@ function mockApp(machine: Machine = ready, logins: Login[] = claudeOnly, waiting
     if (command === 'bambu_last_used') return Promise.resolve(lastUsedA1Mini)
     if (command === 'studio_files') return Promise.resolve([])
     if (command !== 'sidecar') return Promise.resolve(undefined)
+    if (args.method === 'printer.set' && printerSaved) return printerSaved.then(() => answers['printer.set'](args.params))
     return Promise.resolve(answers[args.method]?.(args.params) ?? null)
   })
   return store
@@ -249,6 +253,23 @@ describe('settings', () => {
     await screen.findByRole('region', { name: 'Check your Mac' })
     await act(async () => late({ found: 'none' }))
     expect(screen.getByRole('region', { name: 'Check your Mac' })).toBeTruthy()
+  })
+
+  it('a printer save the step left by Back does not close the setup step opened after it', async () => {
+    const store = mockApp()
+    render(<StudioApp />)
+    await openSettings()
+    const slicer = await show('Slicer and printer')
+    let land = () => {}
+    printerSaved = new Promise((resolve) => (land = resolve))
+    fireEvent.click(within(await within(slicer).findByTestId('settings-printer')).getByRole('button', { name: 'Change' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Looks right' }))
+    fireEvent.click(within(screen.getByTestId('setup')).getAllByRole('button', { name: 'Back' })[0])
+    fireEvent.click(await within(await show('Agents and models')).findByRole('button', { name: 'Fix in setup' }))
+    await screen.findByRole('region', { name: 'Check your Mac' })
+    await act(async () => land())
+    expect(screen.getByRole('region', { name: 'Check your Mac' })).toBeTruthy()
+    expect(store.settings.printer.machine).toBe(A1_MINI.machine)
   })
 
   it('saves a new printer through setup\'s printer step, and Settings and the sidebar show it', async () => {

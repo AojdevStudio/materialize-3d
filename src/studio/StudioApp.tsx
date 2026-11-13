@@ -105,7 +105,13 @@ export default function StudioApp() {
   /** The person went on from setup's check, so a missing slicer gets no banner until the next launch. */
   const [wentOnInSetup, setWentOnInSetup] = useState(false)
   /** A setup step opened again, from Fix in setup or from Settings. It ends back on the screen it was opened from. */
-  const [fixing, setFixing] = useState<Setup['step'] | null>(null)
+  /** The setup step opened again, and which opening it is, so a step left earlier cannot close a later one. */
+  const [fixing, setFixing] = useState<{ step: Setup['step']; opening: number } | null>(null)
+  const openings = useRef(0)
+  const openFix = (step: Setup['step']) => {
+    openings.current += 1
+    setFixing({ step, opening: openings.current })
+  }
   /** The Settings section on screen. Closing it shows the screen it was opened from. */
   const [settings, setSettings] = useState<Section | null>(null)
   /** The folder the chats from before the store could not be read from, when macOS keeps it from the app. */
@@ -710,15 +716,18 @@ export default function StudioApp() {
   }
 
   if (fixing !== null) {
+    const { step, opening } = fixing
     return (
       <SetupStep
-        step={fixing}
+        key={opening}
+        step={step}
         refused={turnLogin?.provider}
         onDone={(wentOn) => {
-          setFixing(null)
-          afterSetup(wentOn && fixing === 'check')
+          // A save that ends after its step was left still counts, but closes only the opening it came from.
+          if (openings.current === opening) setFixing(null)
+          afterSetup(wentOn && step === 'check')
           // The printer step saved through printer.set, whose answer a reopened step does not hand on.
-          if (wentOn && fixing === 'printer') {
+          if (wentOn && step === 'printer') {
             void sidecar('state.get', {})
               .then((state) => setPrinter(state.settings.printer))
               .catch((err: unknown) => setError(String(err)))
@@ -742,7 +751,7 @@ export default function StudioApp() {
           setDefaultModel(state.settings.model)
           checkReady()
         }}
-        onFix={setFixing}
+        onFix={openFix}
         onClose={() => setSettings(null)}
         onError={setError}
         error={errorBar}
@@ -772,7 +781,7 @@ export default function StudioApp() {
         {errorBar}
         {importBlocked !== null && <ImportBlockedBanner folder={importBlocked} onRetry={retryImport} onError={setError} />}
         {signInAsk}
-        {cause !== undefined && <SetupBanner cause={cause} onFix={() => setFixing('check')} />}
+        {cause !== undefined && <SetupBanner cause={cause} onFix={() => openFix('check')} />}
         {current ? (
           <>
             {waiting?.kind === 'error' && <WaitingBanner project={current.id} waiting={waiting} onError={setError} />}
