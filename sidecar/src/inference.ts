@@ -74,7 +74,6 @@ export const isLoginFailure = (detail: string) => LOGIN_FAILURE.test(detail)
  */
 export class KeychainCredentials implements CredentialStore {
   readonly #host: Pick<Host, 'request'>
-  /** Counts a login saved for the provider, which a turn waiting on a sign-in watches for. */
   readonly #saved: (provider: string) => Promise<void>
   readonly #queues = new Map<string, Promise<unknown>>()
 
@@ -97,7 +96,6 @@ export class KeychainCredentials implements CredentialStore {
     return parsed as Credential
   }
 
-  /** Asks the Keychain itself, as the person can remove a login there while the app is closed. */
   async list(): Promise<readonly CredentialInfo[]> {
     const found = await Promise.all(PROVIDERS.map(async (providerId) => ({ providerId, credential: await this.read(providerId) })))
     return found.flatMap(({ providerId, credential }) => (credential === undefined ? [] : [{ providerId, type: credential.type }]))
@@ -117,7 +115,6 @@ export class KeychainCredentials implements CredentialStore {
       await this.#host.request('keychain.set', { account: provider, secret: JSON.stringify(next) })
       await this.#saved(provider)
       if (options?.signal?.aborted) {
-        // Cancelled while it was saved: the earlier login goes back before anything else reads this one.
         if (current === undefined) await this.#host.request('keychain.delete', { account: provider })
         else {
           await this.#host.request('keychain.set', { account: provider, secret: JSON.stringify(current) })
