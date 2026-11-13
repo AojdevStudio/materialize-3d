@@ -65,7 +65,7 @@ Inspect the recordings before attaching them. Keep credentials and unrelated des
    Make a 20 mm calibration cube and slice it to a 3MF for the P2S.
    ```
 
-3. Wait for the turn to finish. Capture each tool step, the preview, and the file cards. An error or a text-only answer is not a finished part.
+3. Wait for the turn to finish. Capture each tool step, the preview, and the print files bar. An error or a text-only answer is not a finished part.
 4. Open the Files tab. Confirm that a 3MF is listed under Print files. Record its path in the project folder, `~/Documents/Materialize 3D/<project>/`.
 5. Click **Reveal in Finder** and copy the 3MF's absolute path. For isolated-HOME GUI it is under `$M3D_GUI_HOME/Documents/Materialize 3D/`, not under the console user's `~`. Hash that path with `shasum -a 256` and record the full digest. Confirm that it holds `Metadata/plate_1.gcode` and `Metadata/slice_info.config` with `unzip -l`.
 6. Click **Open in Bambu Studio**. Confirm that Bambu Studio 02.08.02.61 opens the file with the P2S and a 0.4 mm nozzle. Do not send a print job for this software acceptance step.

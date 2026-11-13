@@ -1,13 +1,19 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import type { Project, ProjectStatus } from '../../sidecar/src/protocol'
-import { fileUrl, studio, type ProjectFile } from './api'
-import { detail, groupOf, lastActivity } from './sidebarGroups'
+import { fileUrl, panelFiles, studio, type ProjectFile } from './api'
+import { groupOf, lastActivity, type Group } from './sidebarGroups'
 
 /** The suggestions under the prompt box. A click puts one in the box. */
 const SUGGESTIONS = ['A mount or bracket', 'A replacement part', 'A desk organizer', 'Something from a photo']
 
-/** How many recent projects the start screen offers. */
-const RECENT = 3
+/** How many recent projects the start screen offers: as many as fit on one row beside the label. */
+const RECENT = 2
+
+/** A recent project's state under its title, by its sidebar group. */
+const STATE: Record<Group, string> = { working: 'working', ready: '3MF ready', printed: 'printed', drafts: 'draft' }
+
+/** What a recent chip shows once its folder is read: its newest render, and its state, none while its status has not come. */
+type Chip = { render: ProjectFile | undefined; line: string | undefined }
 
 /** The newest render in a project's folder: a PNG the agent made, not one of the person's own pictures in `refs/`. */
 function newestRender(files: ProjectFile[]): ProjectFile | undefined {
@@ -27,25 +33,43 @@ type Props = {
 
 /** The start screen: the question, the prompt box, suggestions, and the projects to pick up where the person left off. */
 export default function Start({ projects, status, composer, onSuggest, onOpen, onError }: Props) {
-  const [renders, setRenders] = useState<Record<string, ProjectFile | undefined>>({})
+  const [chips, setChips] = useState<Partial<Record<string, Chip>>>({})
 
   const recent = [...projects].sort((a, b) => lastActivity(b, status[b.id]) - lastActivity(a, status[a.id])).slice(0, RECENT)
-  const recentIds = recent.map((p) => p.id).join('\n')
-  /** When each recent project last changed, as the status read says. A file a turn writes moves it on. */
-  const recentActivity = recent.map((p) => lastActivity(p, status[p.id])).join('\n')
+  /**
+   * Each recent project's id, when it last changed, and its state as its sidebar group says it, empty while its status
+   * has not come. A file a turn writes moves the time on. A change to any of them reads the folder again.
+   */
+  const reads = recent
+    .map((p) => [p.id, lastActivity(p, status[p.id]), status[p.id] === undefined ? '' : STATE[groupOf(status[p.id])]].join('\t'))
+    .join('\n')
 
-  // Each recent project's newest render, read again when the recent projects change, or when a status read shows one
-  // changed, as when its turn ended after it wrote a render. Only the newest read lands.
+  // A chip changes only when its folder read lands, so its line never pairs a new status with an old folder, as just
+  // after a turn that wrote a guide ends. Only the newest reads land. A read that fails sets its own chip's line from the
+  // status and leaves the other chips.
   useEffect(() => {
-    const ids = recentIds === '' ? [] : recentIds.split('\n')
     let live = true
-    void Promise.all(ids.map(async (id) => [id, newestRender(await studio.files(id))] as const))
-      .then((found) => live && setRenders(Object.fromEntries(found)))
-      .catch((err: unknown) => live && onError(String(err)))
+    for (const read of reads === '' ? [] : reads.split('\n')) {
+      const [id, , state] = read.split('\t')
+      void studio.files(id).then(
+        (files) => {
+          const line = state === STATE.drafts && panelFiles(files).guide !== undefined ? 'guide ready' : state
+          if (live) setChips((chips) => ({ ...chips, [id]: { render: newestRender(files), line: line === '' ? undefined : line } }))
+        },
+        (err: unknown) => {
+          if (!live) return
+          // Only a draft needs its folder, to tell "guide ready" from "draft". Without the folder a draft shows no line,
+          // and every other state still comes from its status.
+          const line = state === '' || state === STATE.drafts ? undefined : state
+          setChips((chips) => ({ ...chips, [id]: { render: chips[id]?.render, line } }))
+          onError(String(err))
+        },
+      )
+    }
     return () => {
       live = false
     }
-  }, [recentIds, recentActivity, onError])
+  }, [reads, onError])
 
   return (
     <div className="start" data-testid="start-screen">
@@ -62,14 +86,13 @@ export default function Start({ projects, status, composer, onSuggest, onOpen, o
         <div className="recent" data-testid="recent">
           <span className="recent-label">Pick up where you left off</span>
           {recent.map((p) => {
-            const render = renders[p.id]
-            const line = detail(groupOf(status[p.id]), status[p.id])
+            const chip = chips[p.id]
             return (
               <button type="button" key={p.id} className="recent-chip" onClick={() => onOpen(p)} data-testid={`recent-${p.id}`}>
-                {render !== undefined && <img src={fileUrl(p.id, render.rel, render.modifiedMs)} alt="" />}
+                {chip?.render !== undefined && <img src={fileUrl(p.id, chip.render.rel, chip.render.modifiedMs)} alt="" />}
                 <span className="recent-text">
                   <span className="recent-title">{p.title}</span>
-                  {line !== undefined && <span className="recent-detail">{line}</span>}
+                  {chip?.line !== undefined && <span className="recent-detail">{chip.line}</span>}
                 </span>
               </button>
             )

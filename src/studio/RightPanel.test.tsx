@@ -84,6 +84,42 @@ describe('RightPanel', () => {
     ])
   })
 
+  it('shows how many files the project holds on the Files tab', () => {
+    show(project, 'guide')
+    expect(screen.getByTestId('files-tab').textContent).toBe('Files 10')
+    cleanup()
+    show([], 'files')
+    expect(screen.getByTestId('files-tab').textContent).toBe('Files')
+  })
+
+  it('reads one print file as its name, time, and grams, and several as the printer, filament, and layer height they share', () => {
+    const p2s = { printer: 'P2S', filaments: ['PETG Basic'], layerHeightMm: 0.2 }
+    const sliced = (rel: string, modifiedMs: number, print: ProjectFile['print']): ProjectFile => ({ ...file(rel, modifiedMs), print })
+    const details = () => screen.queryByTestId('print-details')?.textContent
+
+    show([sliced('print/cube.3mf', 1, { ...p2s, printSeconds: 4320, filamentGrams: 38.2 })], 'model')
+    expect(details()).toBe('cube.3mf · 1 h 12 min · 38 g PETG Basic')
+    cleanup()
+    show([sliced('print/revB.3mf', 1, p2s), sliced('print/revC.3mf', 2, { ...p2s, filaments: ['PLA Basic'] })], 'model')
+    expect(details()).toBe('P2S · 0.20 mm')
+    cleanup()
+    show([sliced('print/cube.3mf', 1, { filaments: [] })], 'model')
+    expect(details()).toBe('cube.3mf')
+    cleanup()
+    show([sliced('print/plate.3mf', 1, { filaments: [], printSeconds: 0 })], 'model')
+    expect(details()).toBe('plate.3mf')
+  })
+
+  it('shortens only a long file name, so the time and grams stay in view, and shows the whole line on hover', () => {
+    const long = 'print/a-very-long-bracket-name-that-fills-the-bar.3mf'
+    show([{ ...file(long, 1), print: { filaments: ['PETG Basic'], printSeconds: 4320, filamentGrams: 38.2 } }], 'model')
+    const details = screen.getByTestId('print-details')
+    expect(details.getAttribute('title')).toBe(details.textContent)
+    // jsdom draws no layout, so the check is that the time and grams sit outside the part that shortens.
+    expect(details.querySelector('.print-lead')?.textContent).toBe('a-very-long-bracket-name-that-fills-the-bar.3mf')
+    expect(details.querySelector('.print-rest')?.textContent).toBe(' · 1 h 12 min · 38 g PETG Basic')
+  })
+
   it('shows one print file without a menu, and no bar without print files', () => {
     show([file('print/part.3mf', 1)], 'model')
     expect(screen.getByText('1 print file ready')).toBeTruthy()

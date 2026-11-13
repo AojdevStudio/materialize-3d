@@ -7,8 +7,8 @@ The studio is the whole app. Each chat is a project folder in `~/Documents/Mater
 - `start-screen` holds "What are we making?", the `prompt` box, `attach`, `model-picker`, `send` (labeled Start), four suggestion chips that fill the box, and `recent` with the newest projects (`recent-<id>`).
 - `prompt` takes text, pasted pictures, and links. The text is saved as the project's draft a moment after typing stops, and comes back when the project opens. A file dropped on the window or chosen with `attach` (labeled Attach) shows in `attachments` and is copied to the project's `refs/` on send. A picture reaches the model as an image block. Any other file, such as a PDF, 3MF, or STL, reaches it as its path in the message.
 - `model-picker` lists the app's short list (`sidecar/src/offered.ts`) for each signed-in provider, by short name, such as Opus 5.5. A model the provider's catalog lacks stays out. The button names the chosen model even before any sign-in. A saved model the list does not name shows its id. On the start screen a pick is the default the next project starts with. In a project it is saved for that project.
-- `messages` shows committed chat lines only: agent text as Markdown (`.msg-agent`), each turn's tool steps in one `trace` (a `.trace-step` line per step, `.step-running` until its result is committed, and a `.trace-head` button that folds the lines to one summary line), and `file-cards` after a turn that wrote previewable files or a 3MF. `working` shows while a turn runs (the running trace's head once the turn has a step), and `stop` replaces `send`.
-- `chat-model` names the model the current turn runs with.
+- `messages` shows committed chat lines only: agent text as Markdown (`.msg-agent`), each turn's tool steps in one `trace` (a `.trace-step` line per step, `.step-running` until its result is committed, and a `.trace-head` button that folds the lines to one summary line). A turn's print files show in `print-files`, not in the chat. `working` shows while a turn runs (the running trace's head once the turn has a step), and `stop`, the primary button with a square icon, replaces `send`.
+- `byline` heads each turn's reply with the mark and short name of the model it ran on, such as Opus 5.5. A model the short list does not name shows its id. A reply imported from before the store has none. The chat has no title bar.
 - `readiness` shows on the start screen while the agent lacks something, with the fix for each need: a sign-in, uv, a Python uv can run, or a model from a provider the app offers (the fix names the offered providers). A missing sign-in shows the same sign-in controls as `waiting`. `Check again` reruns the check. `send` stays disabled until nothing is missing.
 - `waiting` shows when a turn stopped before its answer: the fix, and the control for it. A provider with no login shows `Sign in with Claude` or `Sign in with ChatGPT`, and for Anthropic and OpenCode Go a key form (`API key or token`, and for Anthropic `Proxy URL`). Once the login is saved, the turn goes on by itself. Any other failure shows its error and `Try again`.
 - A turn cut off by quitting or a crash goes on from its last committed step when the app opens again.
@@ -50,9 +50,9 @@ bun $S/mac.ts type '[data-testid=prompt]' 'Make a cable clip like in this sketch
 bun $S/mac.ts wait '[data-testid=send]:not([disabled])' 20000
 bun $S/mac.ts click '[data-testid=send]'
 bun $S/mac.ts wait '[data-testid=working]' 20000
-# A full job takes minutes. The file cards appear when the turn's last step is committed. One mac.ts wait is one
+# A full job takes minutes. The print files bar appears once the slice writes the 3MF. One mac.ts wait is one
 # HTTP request, which Bun ends after about five minutes, so a long wait goes in rounds.
-for _ in 1 2 3 4; do bun $S/mac.ts wait '[data-testid=file-cards]' 240000 && break; done
+for _ in 1 2 3 4; do bun $S/mac.ts wait '[data-testid=print-files]' 240000 && break; done
 bun $S/mac.ts click '[data-testid=files-tab]'
 bun $S/mac.ts click '[data-testid=files-list] button.primary'   # Open in Bambu Studio
 ```
