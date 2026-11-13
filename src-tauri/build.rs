@@ -32,5 +32,6 @@ const APP_COMMANDS: &[&str] = &[
     "studio_flush_failed",
     "studio_flushed",
     "studio_open_files_privacy",
+    "bambu_last_used",
     "sidecar",
 ];

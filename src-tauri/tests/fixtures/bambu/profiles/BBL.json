@@ -1,5 +1,8 @@
 {
   "version": "1.2.3",
+  "machine_model_list": [
+    { "name": "Test Printer", "sub_path": "machine/model.json" }
+  ],
   "machine_list": [
     { "name": "Base Machine", "sub_path": "machine/base.json" },
     { "name": "Start A", "sub_path": "machine/start-a.json" },

@@ -94,4 +94,4 @@ Keep each model action one indivisible step in the code. When the code changes o
 ## Scope
 
 - Bounds: two tasks (a slice and a Studio turn), each holding at most one pass. Two update runs. `update-wakes` limits each task to two starts, so that work stops. It also assumes that each running task ends, and that the updater's wait loop keeps getting scheduled (the `Fairness` conjuncts in `UpdateRestart.tla`). The other checks have no limit on starts.
-- Not covered: the download and its signature check, writes to the sidecar's store after the install (the store survives an exit), and the UI in `src/stores/updates.ts`.
+- Not covered: the download and its signature check, writes to the sidecar's store after the install (the store survives an exit), and the UI in `src/stores/updates.ts`. The check of a printer setting (`printer.check` in `sidecar.rs`) holds no pass. A restart may cut it off, because the setting is saved only after it answers and its preset cache is written whole or not at all.

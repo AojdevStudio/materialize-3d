@@ -15,7 +15,7 @@ use sha2::{Digest, Sha256};
 
 use super::{
     hex, io_err, parse_json_object, read_json_object, write_atomic, write_json_atomic, BambuError,
-    BambuStudio, JsonMap, PresetSelection, Result,
+    BambuStudio, JsonMap, Plate, PresetSelection, Result,
 };
 
 /// Bump when resolution semantics or the compiled-defaults probe changes; it keys the cache.
@@ -126,8 +126,31 @@ pub struct ResolvedPreset {
     pub config: JsonMap,
 }
 
-/// Flattened machine, process, and per-slot filament presets. Serializes to the wrapper's
-/// `manifest.json` shape.
+/// The plates a printer model takes: the one Bambu Studio starts it with, and the ones it cannot use.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Plates {
+    model: String,
+    default: Plate,
+    unsupported: Vec<Plate>,
+}
+
+impl Plates {
+    /// The plate to slice on: the chosen one when the printer takes it, or the printer's default when none is chosen.
+    pub fn choose(&self, chosen: Option<Plate>) -> Result<Plate> {
+        match chosen {
+            None => Ok(self.default),
+            Some(plate) if self.unsupported.contains(&plate) => Err(preset_err(format!(
+                "The {} cannot use the {}.",
+                self.model,
+                plate.setting()
+            ))),
+            Some(plate) => Ok(plate),
+        }
+    }
+}
+
+/// Flattened machine, process, and per-slot filament presets, and the plates of the machine's
+/// printer model. Serializes to the wrapper's `manifest.json` shape, which has no plates.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResolvedPresets {
@@ -135,6 +158,8 @@ pub struct ResolvedPresets {
     pub cache_dir: PathBuf,
     pub filaments: Vec<ResolvedPreset>,
     pub machine: ResolvedPreset,
+    #[serde(skip)]
+    pub plates: Plates,
     pub process: ResolvedPreset,
     pub profile_manifest: PathBuf,
     pub profile_version: String,
@@ -182,6 +207,7 @@ struct Resolver {
     manifest_path: PathBuf,
     profile_version: String,
     index: HashMap<PresetKey, String>,
+    model_sub_paths: HashMap<String, String>,
     defaults: JsonMap,
     raw: HashMap<PresetKey, Rc<JsonMap>>,
     resolved: HashMap<PresetKey, Rc<Resolved>>,
@@ -344,34 +370,25 @@ impl Resolver {
             PresetKind::Process,
             PresetKind::Filament,
         ] {
-            let list_key = kind.list_key();
-            let Some(Value::Array(items)) = manifest.get(list_key) else {
-                return Err(preset_err(format!(
-                    "BBL.json {list_key}: expected an array"
-                )));
-            };
-            for (position, item) in items.iter().enumerate() {
-                let context = format!("BBL.json {list_key}[{position}]");
-                let Value::Object(item) = item else {
-                    return Err(preset_err(format!("{context}: expected an object")));
-                };
-                let name = required_str(item.get("name"), &format!("{context}.name"))?;
-                let sub_path = required_str(item.get("sub_path"), &format!("{context}.sub_path"))?;
-                if index
-                    .insert((kind, name.to_owned()), sub_path.to_owned())
-                    .is_some()
-                {
+            for (name, sub_path) in manifest_list(&manifest, kind.list_key())? {
+                if index.insert((kind, name.to_owned()), sub_path.to_owned()).is_some() {
                     return Err(preset_err(format!(
-                        "BBL.json {list_key}: duplicate preset name {name:?}"
+                        "BBL.json {}: duplicate preset name {name:?}",
+                        kind.list_key()
                     )));
                 }
             }
         }
+        let model_sub_paths = manifest_list(&manifest, "machine_model_list")?
+            .into_iter()
+            .map(|(name, sub_path)| (name.to_owned(), sub_path.to_owned()))
+            .collect();
         Ok(Self {
             profiles_dir: root,
             manifest_path,
             profile_version,
             index,
+            model_sub_paths,
             defaults: JsonMap::new(),
             raw: HashMap::new(),
             resolved: HashMap::new(),
@@ -393,6 +410,10 @@ impl Resolver {
                 kind.as_str()
             ))
         })?;
+        self.profile_path(sub_path)
+    }
+
+    fn profile_path(&self, sub_path: &str) -> Result<PathBuf> {
         let source = lexical_absolute(&self.profiles_dir.join(sub_path))?;
         if !source.starts_with(&self.profiles_dir) {
             return Err(preset_err(format!(
@@ -401,6 +422,29 @@ impl Resolver {
             )));
         }
         Ok(source)
+    }
+
+    fn plates(&self, machine: &JsonMap, name: &str) -> Result<Plates> {
+        let model = required_str(machine.get("printer_model"), &format!("{name} printer_model"))?;
+        let sub_path = self.model_sub_paths.get(model).ok_or_else(|| {
+            preset_err(format!("machine {name:?} is a {model:?}, a printer model BBL.json does not list"))
+        })?;
+        let raw = read_json_object(&self.profile_path(sub_path)?)?;
+        let plate = |known: Option<Plate>, key: &str, value: &str| {
+            known.ok_or_else(|| preset_err(format!("printer model {model:?} {key} {value:?} is not a build plate")))
+        };
+        let default = required_str(raw.get("default_bed_type"), &format!("{model} default_bed_type"))?;
+        let unsupported = optional_str(raw.get("not_support_bed_type"), &format!("{model} not_support_bed_type"))?
+            .unwrap_or_default()
+            .split(';')
+            .filter(|label| !label.is_empty())
+            .map(|label| plate(Plate::from_label(label), "not_support_bed_type", label))
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Plates {
+            model: model.to_owned(),
+            default: plate(Plate::from_setting(default), "default_bed_type", default)?,
+            unsupported,
+        })
     }
 
     fn raw(&mut self, kind: PresetKind, name: &str) -> Result<Rc<JsonMap>> {
@@ -554,6 +598,7 @@ impl Resolver {
             .map(|name| self.resolve(PresetKind::Filament, name, &mut stack))
             .collect::<Result<Vec<_>>>()?;
         validate_machine(&machine.config, machine_name)?;
+        let plates = self.plates(&machine.config, machine_name)?;
         require_compatible(
             &process.config,
             PresetKind::Process,
@@ -582,6 +627,7 @@ impl Resolver {
             cache_dir,
             filaments,
             machine,
+            plates,
             process,
             profile_manifest: self.manifest_path,
             profile_version: self.profile_version,
@@ -590,6 +636,28 @@ impl Resolver {
         write_json_atomic(&presets.cache_dir.join("manifest.json"), &presets)?;
         Ok(presets)
     }
+}
+
+fn manifest_list<'a>(manifest: &'a JsonMap, list_key: &str) -> Result<Vec<(&'a str, &'a str)>> {
+    let Some(Value::Array(items)) = manifest.get(list_key) else {
+        return Err(preset_err(format!(
+            "BBL.json {list_key}: expected an array"
+        )));
+    };
+    items
+        .iter()
+        .enumerate()
+        .map(|(position, item)| {
+            let context = format!("BBL.json {list_key}[{position}]");
+            let Value::Object(item) = item else {
+                return Err(preset_err(format!("{context}: expected an object")));
+            };
+            Ok((
+                required_str(item.get("name"), &format!("{context}.name"))?,
+                required_str(item.get("sub_path"), &format!("{context}.sub_path"))?,
+            ))
+        })
+        .collect()
 }
 
 fn require_instantiated(raw: &JsonMap, kind: PresetKind, name: &str) -> Result<()> {
@@ -860,6 +928,28 @@ mod tests {
         let manifest = read(&presets.cache_dir.join("manifest.json"));
         assert_eq!(manifest["machine"]["name"], "Test Printer 0.6 nozzle");
         assert_eq!(manifest["resolverSchemaVersion"], 2);
+    }
+
+    #[test]
+    fn the_printer_models_plates_come_with_its_presets() {
+        let profiles = fixture_profiles();
+        let plates = resolve(profiles.path()).expect("resolves").plates;
+        assert_eq!(plates.choose(None).expect("its default"), Plate::TexturedPei);
+        for taken in [Plate::Engineering, Plate::TexturedPei, Plate::Supertack] {
+            assert_eq!(plates.choose(Some(taken)).expect("a plate it takes"), taken);
+        }
+        for refused in [Plate::Cool, Plate::HighTemp] {
+            let err = plates.choose(Some(refused)).expect_err("a plate it cannot use");
+            assert_eq!(err.to_string(), format!("The Test Printer cannot use the {}.", refused.setting()));
+        }
+
+        write(
+            profiles.path(),
+            "machine/model.json",
+            json!({ "type": "machine_model", "name": "Test Printer", "default_bed_type": "Glass Plate" }),
+        );
+        let err = resolve(profiles.path()).expect_err("a plate Bambu Studio 02.08.02.61 does not have");
+        assert!(err.to_string().contains(r#"default_bed_type "Glass Plate" is not a build plate"#), "{err}");
     }
 
     #[test]
