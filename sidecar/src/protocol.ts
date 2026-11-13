@@ -8,8 +8,8 @@
 
 export type ModelChoice = { provider: string; modelId: string }
 
-/** A model the picker offers, with the short name the app shows. */
-export type ModelOption = ModelChoice & { name: string }
+/** A model the picker offers, with the short name the app shows and one line on what it suits. */
+export type ModelOption = ModelChoice & { name: string; description: string }
 export type Thinking = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 
 /** Where first-launch setup stands. Setup reopens on `step` until it is `done`. */

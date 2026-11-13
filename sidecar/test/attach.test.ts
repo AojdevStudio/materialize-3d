@@ -146,19 +146,19 @@ describe('the model', () => {
     await app.quit()
   }, 30_000)
 
-  test("list holds the app's short list for the providers the person signed in to, by short name, and only models they run", async () => {
+  test("list holds the app's short list for the providers the person signed in to, by short name with one line each, and only models they run", async () => {
     const where = scratch()
     const app = await start(where, 'models')
     expect(await app.call('models.list')).toEqual([])
     await app.call('auth.setKey', { provider: 'anthropic', key: 'sk-test-dummy-0000' })
     // pi-ai 1.5.0 has no Fable 5.2, so its row waits until the catalog lists it.
     const anthropic = [
-      { provider: 'anthropic', modelId: 'claude-opus-5-5', name: 'Opus 5.5' },
-      { provider: 'anthropic', modelId: 'claude-sonnet-5-5', name: 'Sonnet 5.5' },
+      { provider: 'anthropic', modelId: 'claude-opus-5-5', name: 'Opus 5.5', description: 'Best for design and checks. Recommended.' },
+      { provider: 'anthropic', modelId: 'claude-sonnet-5-5', name: 'Sonnet 5.5', description: 'Faster, a little less careful.' },
     ]
     expect(await app.call('models.list')).toEqual(anthropic)
     await app.call('auth.setKey', { provider: 'openai-codex', key: 'sk-test-dummy-0000' })
-    expect(await app.call('models.list')).toEqual([...anthropic, { provider: 'openai-codex', modelId: 'gpt-6.1-sol', name: 'GPT 6.1 Sol' }])
+    expect(await app.call('models.list')).toEqual([...anthropic, { provider: 'openai-codex', modelId: 'gpt-6.1-sol', name: 'GPT 6.1 Sol', description: 'Use GPT as the main agent instead.' }])
     await app.quit()
   }, 30_000)
 
@@ -167,8 +167,8 @@ describe('the model', () => {
     const app = await start(where, 'models')
     await app.call('auth.setKey', { provider: 'opencode-go', key: 'sk-test-dummy-0000' })
     expect(await app.call('models.list')).toEqual([
-      { provider: 'opencode-go', modelId: 'glm-5.3', name: 'GLM 5.3' },
-      { provider: 'opencode-go', modelId: 'kimi-k3.1-pro', name: 'Kimi K3.1 Pro' },
+      { provider: 'opencode-go', modelId: 'glm-5.3', name: 'GLM 5.3', description: 'An open model on your OpenCode Go plan.' },
+      { provider: 'opencode-go', modelId: 'kimi-k3.1-pro', name: 'Kimi K3.1 Pro', description: 'An open model on your OpenCode Go plan.' },
     ])
     await app.quit()
   }, 30_000)
