@@ -5,8 +5,18 @@ import SetupCheck from './SetupCheck'
 import SetupModel from './SetupModel'
 import SetupReady from './SetupReady'
 
-/** What every step's screen gets. `signIn` is a running sign-in's question, and `signIns` counts finished sign-ins. */
-export type StepProps = { next: () => Promise<void>; back: () => Promise<void>; onError: (message: string) => void; signIn: ReactNode; signIns: number }
+/**
+ * What every step's screen gets. `signIn` is a running sign-in's question, and `signIns` counts finished sign-ins.
+ * `refused` is the provider a waiting turn needs a new sign-in to.
+ */
+export type StepProps = {
+  next: () => Promise<void>
+  back: () => Promise<void>
+  onError: (message: string) => void
+  signIn: ReactNode
+  signIns: number
+  refused?: string
+}
 
 const STEPS: readonly { step: Setup['step']; name: string; numbered: boolean; Screen: ComponentType<StepProps> }[] = [
   { step: 'welcome', name: 'Welcome', numbered: false, Screen: Welcome },
@@ -16,17 +26,14 @@ const STEPS: readonly { step: Setup['step']; name: string; numbered: boolean; Sc
 ]
 const NUMBERED = STEPS.filter((entry) => entry.numbered)
 
-type Props = Omit<StepProps, 'next' | 'back'> & {
-  setup: Setup
-  /** The app's state once a step change is saved. */
-  onSaved: (state: AppState) => void
-  error: ReactNode
-}
+type Shared = Omit<StepProps, 'next' | 'back'> & { error: ReactNode }
+
+const indexOf = (step: Setup['step']) => Math.max(0, STEPS.findIndex((entry) => entry.step === step))
 
 /** First-launch setup, on the step the store keeps, until it is done. A step this build lacks starts it over. */
-export default function SetupFlow({ setup, onSaved, error, ...shared }: Props) {
-  const at = Math.max(0, STEPS.findIndex((entry) => entry.step === setup.step))
-  const { step, name, numbered, Screen } = STEPS[at]
+export default function SetupFlow({ setup, onSaved, ...shared }: Shared & { setup: Setup; onSaved: (state: AppState) => void }) {
+  const at = indexOf(setup.step)
+  const { step } = STEPS[at]
   const following = STEPS[at + 1]
   const before = STEPS[at - 1]
   const saving = useRef(false)
@@ -45,9 +52,27 @@ export default function SetupFlow({ setup, onSaved, error, ...shared }: Props) {
     if (before !== undefined) await save({ step: before.step, done: false })
   }
 
+  return <SetupCard at={at} next={next} back={back} reopened={false} {...shared} />
+}
+
+/** One step of setup opened again, as Fix in setup does. Going on, or Back, ends it there. The stored setup stays done. */
+export function SetupStep({ step, onDone, ...shared }: Shared & { step: Setup['step']; onDone: (wentOn: boolean) => void }) {
+  return <SetupCard at={indexOf(step)} next={async () => onDone(true)} back={async () => onDone(false)} reopened {...shared} />
+}
+
+/** A reopened step gets a Back above the card, since the flow's own steps around it are done. */
+function SetupCard({ at, next, back, reopened, error, ...shared }: Shared & Pick<StepProps, 'next' | 'back'> & { at: number; reopened: boolean }) {
+  const { step, name, numbered, Screen } = STEPS[at]
   return (
     <main className="setup" data-testid="setup">
       {error}
+      {reopened && (
+        <div className="setup-back">
+          <button type="button" onClick={back}>
+            Back
+          </button>
+        </div>
+      )}
       <section className="setup-card" aria-label={name}>
         {numbered && (
           <ol className="setup-steps">

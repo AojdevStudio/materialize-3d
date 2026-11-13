@@ -34,6 +34,8 @@ interface ComposerProps {
   busy: boolean
   running: boolean
   placeholder: string
+  /** Why Send stays off until setup fixes something. The composer says it in place of the placeholder. */
+  locked?: string
   autoFocus?: boolean
   /** What Attach takes, beside the button. */
   hint?: string
@@ -43,8 +45,9 @@ interface ComposerProps {
   picker: ReactNode
 }
 
-export function Composer({ text, onText, attachments, onAttach, onPaste, onRemove, onSend, onStop, busy, running, placeholder, autoFocus, hint, sendLabel, picker }: ComposerProps) {
+export function Composer({ text, onText, attachments, onAttach, onPaste, onRemove, onSend, onStop, busy, running, placeholder, locked, autoFocus, hint, sendLabel, picker }: ComposerProps) {
   const empty = !text.trim() && attachments.length === 0
+  const off = empty || busy || locked !== undefined
 
   const paste = (event: React.ClipboardEvent) => {
     const pictures = [...event.clipboardData.files].filter((f) => f.type.startsWith('image/'))
@@ -66,7 +69,7 @@ export function Composer({ text, onText, attachments, onAttach, onPaste, onRemov
   }
 
   return (
-    <div className="composer">
+    <div className={locked === undefined ? 'composer' : 'composer locked'}>
       {attachments.length > 0 && (
         <ul className="attachments" data-testid="attachments">
           {attachments.map((a, i) => (
@@ -80,7 +83,7 @@ export function Composer({ text, onText, attachments, onAttach, onPaste, onRemov
       <textarea
         value={text}
         rows={2}
-        placeholder={placeholder}
+        placeholder={locked ?? placeholder}
         autoFocus={autoFocus}
         data-testid="prompt"
         onChange={(e) => onText(e.target.value)}
@@ -88,7 +91,7 @@ export function Composer({ text, onText, attachments, onAttach, onPaste, onRemov
         onKeyDown={(e) => {
           if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
             e.preventDefault()
-            if (!empty && !busy) onSend()
+            if (!off) onSend()
           }
         }}
       />
@@ -108,7 +111,7 @@ export function Composer({ text, onText, attachments, onAttach, onPaste, onRemov
             Stop
           </button>
         ) : (
-          <button type="button" className="primary" onClick={onSend} data-testid="send" disabled={empty || busy}>
+          <button type="button" className="primary" onClick={onSend} data-testid="send" disabled={off}>
             {sendLabel}
           </button>
         )}

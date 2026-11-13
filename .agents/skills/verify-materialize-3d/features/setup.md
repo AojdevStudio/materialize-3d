@@ -6,11 +6,12 @@ A fresh store opens setup instead of the studio. Welcome has `Start setup`. Chec
 
 - `setup` is the whole screen. The card's `section` has the step's name as its `aria-label`: `Welcome`, `Check your Mac`, `Pick a model`, or `Ready`. The `h1` says what the check found, such as `Your Mac is ready` or `No slicer found`.
 - `check-claude`, `check-chatgpt`, `check-bambu`, `check-uv`, and `check-python` are the rows. `.setup-status` holds the status and `.setup-detail` the version or the reason.
-- A sign-in row without a login has `Sign in`, the subscription sign-in. The Claude row also has `Use a key`, which opens the same `API key or token` and `Proxy URL` form as `waiting`.
+- A sign-in row without a login has `Sign in`, the subscription sign-in. The Claude row also has `Use a key`, which opens the `API key or token` and `Proxy URL` form. Setup is the only place with that form.
 - A missing uv or Python has `Copy install command`.
 - `Check again` runs the whole check again.
 - Pick a model has a radio for each model of a signed-in agent, grouped by agent (`fieldset` named `Claude` or `ChatGPT`). The saved default starts picked. The switch `Let the main agent ask GPT (Astra) for drawings` is off and disabled without a ChatGPT sign-in. Continue saves both as the default model and the Astra setting.
 - Ready has `ready-agent`, `ready-slicer`, and `ready-tools`. Each reads `Checking…` until its part answers.
+- `Fix in setup` on a [studio](./studio.md) `setup-needed` banner opens Check your Mac again, with `Back` above the card. Continue and `Back` both return to the screen it was opened from, and save nothing. A sign-in a waiting turn was refused with shows Needs login on its row.
 
 ## How to get to it (user POV)
 

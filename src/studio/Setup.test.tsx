@@ -89,7 +89,7 @@ describe('setup', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Start setup' }))
     expect(await screen.findByRole('heading', { name: 'Your Mac is ready' })).toBeTruthy()
     expect(screen.queryByTestId('start-screen')).toBeNull()
-    expect(screen.queryByTestId('readiness')).toBeNull()
+    expect(screen.queryByTestId('setup-needed')).toBeNull()
     expect(screen.getByRole('listitem', { current: 'step' }).textContent).toBe('1 Check your Mac')
     fireEvent.click(button('Continue'))
     expect(await screen.findByRole('heading', { name: 'Pick your default model' })).toBeTruthy()
@@ -167,7 +167,16 @@ describe('setup', () => {
     expect(row('bambu').getByText('Not found')).toBeTruthy()
     fireEvent.click(button('Continue without a slicer'))
     expect(await screen.findByRole('heading', { name: 'Pick your default model' })).toBeTruthy()
-    expect(saved()).toEqual([{ step: 'model', done: false }])
+    await screen.findByRole('radio', { name: /^Opus 5.5/ })
+    fireEvent.click(button('Continue'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Start a project' }))
+    expect(await screen.findByTestId('start-screen')).toBeTruthy()
+    expect(saved()).toEqual([
+      { step: 'model', done: false },
+      { step: 'ready', done: false },
+      { step: 'ready', done: true },
+    ])
+    expect(screen.queryByTestId('setup-needed')).toBeNull()
   })
 
   it('names a Bambu Studio that is installed but cannot slice as not usable, not as missing', async () => {
