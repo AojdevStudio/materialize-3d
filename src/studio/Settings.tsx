@@ -207,9 +207,9 @@ export default function Settings({ section, onSection, models, onSaved, onFix, o
 
   return (
     <div className="settings" data-testid="settings">
-      <nav className="settings-nav" aria-label="Settings">
+      <nav className="sessions" aria-label="Settings">
         {ORDER.map((id) => (
-          <button key={id} type="button" aria-current={id === section ? 'page' : undefined} onClick={() => onSection(id)}>
+          <button key={id} type="button" className="row-open" aria-current={id === section ? 'page' : undefined} onClick={() => onSection(id)}>
             {SECTIONS[id].name}
           </button>
         ))}

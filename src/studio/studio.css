@@ -269,7 +269,8 @@ pre {
   background: var(--s-soft);
 }
 
-.row-open[aria-current='true'] {
+.row-open[aria-current='true'],
+.row-open[aria-current='page'] {
   background: var(--s-soft);
 }
 
@@ -1745,34 +1746,12 @@ fieldset.setup-group {
   color: var(--s-text);
 }
 
-/* Settings. Its rows reuse setup's check rows. */
+/* Settings. Its nav reuses the main sidebar, and its rows reuse setup's check rows. */
 
 .settings {
   display: grid;
-  grid-template-columns: 220px 1fr;
+  grid-template-columns: auto 1fr;
   height: 100%;
-}
-
-.settings-nav {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 16px 8px;
-  border-right: 1px solid var(--s-line);
-  background: var(--s-side);
-}
-
-.settings-nav button {
-  border: none;
-  background: none;
-  padding: 6px 10px;
-  text-align: left;
-  font-size: 15px;
-}
-
-.settings-nav button:hover,
-.settings-nav [aria-current='page'] {
-  background: var(--s-line);
 }
 
 .settings-main {
