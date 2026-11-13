@@ -26,6 +26,9 @@ export const onQuitFlush = (save: () => Promise<void>) =>
 /** Opens the macOS setting that lets the app read Documents. */
 export const openFilesPrivacy = () => invoke<void>('studio_open_files_privacy')
 
+/** The folder projects live in, as Rust resolves it. */
+export const projectsFolder = () => invoke<string>('studio_projects_folder')
+
 /** The Bambu Studio the slice step would use: its version, none at all, or why the one found cannot be used. */
 export type SlicerCheck = { found: 'ready'; version: string } | { found: 'none' } | { found: 'other'; detail: string }
 

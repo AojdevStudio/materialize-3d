@@ -10,7 +10,7 @@ use serde::Serialize;
 use tauri::http::{header, Response, StatusCode};
 
 use super::print_info::{self, PrintInfo};
-use super::{project_dir, META_DIR};
+use super::{project_dir, projects_root, META_DIR};
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -167,6 +167,12 @@ pub fn studio_reveal(project: String, rel: String) -> Result<(), String> {
     } else {
         spawn_detached("xdg-open", &[path.parent().expect("file has a folder").as_os_str()])
     }
+}
+
+/// Where projects live, for Settings to show and reveal.
+#[tauri::command]
+pub fn studio_projects_folder() -> Result<String, String> {
+    Ok(projects_root()?.to_string_lossy().into_owned())
 }
 
 /// Opens a 3MF (or STL) in Bambu Studio.

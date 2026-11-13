@@ -1514,3 +1514,132 @@ pre {
 .setup-back button:hover {
   color: var(--s-text);
 }
+
+/* Settings: its own nav on the left, one section at a time on the right. Rows reuse setup's check rows. */
+
+.settings {
+  --setup-warn: #8a5300;
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  height: 100%;
+}
+
+:root[data-theme='dark'] .settings {
+  --setup-warn: #fbbf24;
+}
+
+.settings-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 16px 8px;
+  border-right: 1px solid var(--s-line);
+  background: var(--s-side);
+}
+
+.settings-nav button {
+  border: none;
+  background: none;
+  padding: 6px 10px;
+  text-align: left;
+  font-size: 15px;
+}
+
+.settings-nav button:hover,
+.settings-nav [aria-current='page'] {
+  background: var(--s-line);
+}
+
+.settings-main {
+  position: relative;
+  overflow-y: auto;
+  padding: 40px;
+  background: var(--s-raised);
+}
+
+.settings-main > .error-bar {
+  margin-bottom: 16px;
+  border: 1px solid var(--s-line);
+  border-radius: 8px;
+}
+
+.settings-close {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+}
+
+.settings-section {
+  max-width: 640px;
+}
+
+.settings-section h1 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 400;
+  line-height: 1.3;
+}
+
+.settings-section h1 + p {
+  margin: 8px 0 0;
+  color: var(--s-muted);
+}
+
+.settings-models {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 24px 0 0;
+  padding: 0;
+  border: none;
+}
+
+.settings-models legend {
+  margin-bottom: 4px;
+  padding: 0;
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--s-muted);
+}
+
+.settings-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--s-line);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.settings-option:has(:checked) {
+  border-color: var(--s-accent);
+}
+
+.settings-option input {
+  margin: 0;
+  accent-color: var(--s-accent);
+}
+
+.settings-folder {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 24px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: var(--s-soft);
+}
+
+.settings-folder code {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  background: none;
+}
+
+.sessions-footer .side-icon {
+  width: 18px;
+  height: 18px;
+}

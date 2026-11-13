@@ -8,6 +8,7 @@ import { Composer, releaseAttachment, savedAttachment, type PastedPicture } from
 import ModelPicker from './ModelPicker'
 import RightPanel from './RightPanel'
 import SetupFlow, { SetupStep } from './Setup'
+import Settings, { type Section } from './Settings'
 import Start from './Start'
 import { buildChat } from './transcript'
 import Sidebar from './Sidebar'
@@ -103,8 +104,10 @@ export default function StudioApp() {
   const slicerLooks = useRef(0)
   /** The person went on from setup's check, so a missing slicer gets no banner until the next launch. */
   const [wentOnInSetup, setWentOnInSetup] = useState(false)
-  /** Setup's check, opened again from Fix in setup. It ends back on the screen it was opened from. */
-  const [fixing, setFixing] = useState(false)
+  /** A setup step opened again, from Fix in setup or from Settings. It ends back on the screen it was opened from. */
+  const [fixing, setFixing] = useState<Setup['step'] | null>(null)
+  /** The Settings section on screen, or null when Settings is closed. Closing it shows the screen it was opened from. */
+  const [settings, setSettings] = useState<Section | null>(null)
   /** The folder the chats from before the store could not be read from, when macOS keeps it from the app. */
   const [importBlocked, setImportBlocked] = useState<string | null>(null)
   /** The models of the providers the person signed in to, for the model picker. */
@@ -699,19 +702,37 @@ export default function StudioApp() {
     )
   }
 
-  if (fixing) {
+  if (fixing !== null) {
     return (
       <SetupStep
-        step="check"
+        step={fixing}
         refused={turnLogin?.provider}
         onDone={(wentOn) => {
-          setFixing(false)
-          afterSetup(wentOn)
+          setFixing(null)
+          afterSetup(wentOn && fixing === 'check')
         }}
         onError={setError}
         error={errorBar}
         signIn={signInAsk}
         signIns={signIns}
+      />
+    )
+  }
+
+  if (settings !== null) {
+    return (
+      <Settings
+        section={settings}
+        onSection={setSettings}
+        models={models}
+        onSaved={(state) => {
+          setDefaultModel(state.settings.model)
+          checkReady()
+        }}
+        onFix={setFixing}
+        onClose={() => setSettings(null)}
+        onError={setError}
+        error={errorBar}
       />
     )
   }
@@ -724,6 +745,7 @@ export default function StudioApp() {
         engine={engine}
         onOpen={(project) => void openProject(project)}
         onNew={() => show(null)}
+        onSettings={() => setSettings('agents')}
         onError={setError}
         onStatus={setStatus}
       />
@@ -733,7 +755,7 @@ export default function StudioApp() {
         {errorBar}
         {importBlocked !== null && <ImportBlockedBanner folder={importBlocked} onRetry={retryImport} onError={setError} />}
         {signInAsk}
-        {cause !== undefined && <SetupBanner cause={cause} onFix={() => setFixing(true)} />}
+        {cause !== undefined && <SetupBanner cause={cause} onFix={() => setFixing('check')} />}
         {current ? (
           <>
             {waiting?.kind === 'error' && <WaitingBanner project={current.id} waiting={waiting} onError={setError} />}
