@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-pub use presets::resolve_presets;
+pub use presets::{resolve_presets, ResolvedPresets};
 pub use studio::{BambuStudio, FoundBuild, VALIDATED_VERSIONS};
 
 pub type Result<T, E = BambuError> = std::result::Result<T, E>;
@@ -26,6 +26,69 @@ pub struct PresetSelection {
     pub process: String,
     /// One per filament slot, in slot order; duplicates are expected.
     pub filaments: Vec<String>,
+}
+
+/// A build plate. It serializes as the name Bambu's `curr_bed_type` setting takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(into = "&'static str", try_from = "String")]
+pub enum Plate {
+    Cool,
+    Engineering,
+    HighTemp,
+    TexturedPei,
+    Supertack,
+}
+
+impl Plate {
+    /// In the order of Bambu's `BedType` (`PrintConfig.hpp`), whose numbers start at 1.
+    const ALL: [Self; 5] = [Self::Cool, Self::Engineering, Self::HighTemp, Self::TexturedPei, Self::Supertack];
+
+    /// The name `curr_bed_type` takes. A printer model names its default plate this way too.
+    pub fn setting(self) -> &'static str {
+        match self {
+            Self::Cool => "Cool Plate",
+            Self::Engineering => "Engineering Plate",
+            Self::HighTemp => "High Temp Plate",
+            Self::TexturedPei => "Textured PEI Plate",
+            Self::Supertack => "Supertack Plate",
+        }
+    }
+
+    /// The label in Bambu Studio's plate menu. A printer model names the plates it cannot use this way.
+    fn label(self) -> &'static str {
+        match self {
+            Self::HighTemp => "Smooth PEI Plate / High Temp Plate",
+            Self::Supertack => "Bambu Cool Plate SuperTack",
+            Self::Cool | Self::Engineering | Self::TexturedPei => self.setting(),
+        }
+    }
+
+    fn from_setting(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|plate| plate.setting() == name)
+    }
+
+    fn from_label(label: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|plate| plate.label() == label)
+    }
+
+    /// The plate Bambu Studio's own config holds as a `BedType` number.
+    fn from_number(number: usize) -> Option<Self> {
+        Self::ALL.get(number.checked_sub(1)?).copied()
+    }
+}
+
+impl From<Plate> for &'static str {
+    fn from(plate: Plate) -> Self {
+        plate.setting()
+    }
+}
+
+impl TryFrom<String> for Plate {
+    type Error = String;
+
+    fn try_from(name: String) -> Result<Self, String> {
+        Self::from_setting(&name).ok_or_else(|| format!("{name:?} is not a build plate"))
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
