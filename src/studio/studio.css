@@ -1140,16 +1140,18 @@ pre {
   font-weight: 500;
 }
 
-/* Only the first part, a long file name, shortens. The time and grams after it always show. */
+/* A long file name shortens first. The time and grams shorten only once the name is gone. */
 .print-details {
   display: flex;
   min-width: 0;
+  overflow: hidden;
   color: var(--s-muted);
   font-size: 13px;
   white-space: nowrap;
 }
 
-.print-lead {
+.print-lead,
+.print-rest {
   overflow: hidden;
   min-width: 0;
   text-overflow: ellipsis;
@@ -1157,6 +1159,7 @@ pre {
 
 .print-rest {
   flex-shrink: 0;
+  max-width: 100%;
   white-space: pre;
 }
 
