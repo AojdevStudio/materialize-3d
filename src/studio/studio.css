@@ -1451,3 +1451,66 @@ pre {
   border-color: var(--s-soft);
   color: var(--s-muted);
 }
+
+.setup-needed {
+  --setup-needed-bg: #fdf3e7;
+  --setup-needed-text: #7e5310;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 20px 20px 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--setup-needed-bg);
+  color: var(--setup-needed-text);
+  font-size: 13px;
+}
+
+:root[data-theme='dark'] .setup-needed {
+  --setup-needed-bg: #221806;
+  --setup-needed-text: #fbbf24;
+}
+
+.setup-needed span {
+  flex: 1;
+}
+
+.setup-needed span::before {
+  content: '! ';
+}
+
+.setup-needed button {
+  flex: none;
+  padding: 5px 12px;
+  color: var(--s-text);
+}
+
+.composer.locked {
+  background: var(--s-soft);
+}
+
+.composer.locked textarea::placeholder {
+  color: var(--s-muted);
+}
+
+.composer.locked .primary:disabled {
+  opacity: 1;
+  background: none;
+  border-color: transparent;
+  color: var(--s-muted);
+}
+
+.setup-back {
+  width: min(640px, 100%);
+}
+
+.setup-back button {
+  border: none;
+  background: none;
+  padding: 0;
+  color: var(--s-muted);
+}
+
+.setup-back button:hover {
+  color: var(--s-text);
+}
