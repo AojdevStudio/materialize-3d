@@ -64,7 +64,10 @@ describe('a turn whose provider is not signed in', () => {
     const answered = await second.until(
       (event) => event.type === 'chat' && (event.entries as ChatEntry[]).some((entry) => entry.kind === 'assistant'),
     )
-    expect((answered.entries as ChatEntry[]).find((entry) => entry.kind === 'assistant')).toMatchObject({ text: 'Hello from the proxy' })
+    expect((answered.entries as ChatEntry[]).find((entry) => entry.kind === 'assistant')).toMatchObject({
+      text: 'Hello from the proxy',
+      model: { provider: 'anthropic', modelId: 'claude-opus-5-5' },
+    })
     expect(answered.waiting).toBeNull()
     expect(proxy.seen).toEqual([{ authorization: 'Bearer proxy-token', path: '/v1/messages' }])
 

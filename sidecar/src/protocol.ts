@@ -83,12 +83,12 @@ export type ImportedEntry =
 /**
  * One committed line of a chat. Tool calls fold under their assistant line; each result is its own line. A person's
  * message holds the paths of its pictures, which went to the model as pictures, and of its other files, which the
- * message named.
+ * message named. An assistant line holds the model its turn ran on.
  */
 export type ChatEntry =
   | ({ id: number; kind: 'imported' } & ImportedEntry)
   | { id: number; kind: 'user'; text: string; images: string[]; files: string[] }
-  | { id: number; kind: 'assistant'; text: string; calls: { id: string; name: string; args: unknown }[] }
+  | { id: number; kind: 'assistant'; text: string; calls: { id: string; name: string; args: unknown }[]; model: ModelChoice }
   | { id: number; kind: 'tool'; callId: string; name: string; text: string; failed: boolean }
 
 /** Why a turn stopped before its answer, and the one thing that lets it go on. */

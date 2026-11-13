@@ -1,4 +1,4 @@
-import type { ChatEntry } from '../../sidecar/src/protocol'
+import type { ChatEntry, ModelChoice } from '../../sidecar/src/protocol'
 import { autoOpens, is3mf } from './api'
 
 /** What a step does, which picks its icon. */
@@ -34,6 +34,7 @@ export type TraceItem = { kind: 'trace'; id: string; lines: (ToolItem | NoteItem
 
 export type ChatItem =
   | { kind: 'user'; text: string; images: string[]; files: string[] }
+  | { kind: 'byline'; model: ModelChoice }
   | { kind: 'text'; text: string }
   | TraceItem
   | { kind: 'files'; files: string[] }
@@ -86,8 +87,9 @@ function written(name: string, args: Record<string, unknown>): string | undefine
 }
 
 /**
- * Committed chat entries as chat items. A turn's tool steps gather in one trace, with each result attached and what
- * the agent said between them in its place. What it said before its first step shows above the trace, and an answer
+ * Committed chat entries as chat items. A turn's reply opens with a byline that names the model it ran on. A reply
+ * from before the store has none. A turn's tool steps gather in one trace, with each result attached and what the
+ * agent said between them in its place. What it said before its first step shows above the trace, and an answer
  * without steps ends it. After each turn comes a card of the files it wrote that open in the preview, print files
  * first. A step left without a result, as a stop or a crash leaves it, shows as stopped once a later message starts a
  * new turn, or once its own turn no longer `running`.
@@ -98,6 +100,7 @@ export function buildChat(entries: ChatEntry[], running = true): ChatItem[] {
   let files: string[] = []
   /** The trace the next step joins. A message or an answer without steps closes it. */
   let trace: TraceItem | undefined
+  let bylined = false
   const step = (item: ToolItem) => {
     if (trace === undefined) {
       trace = { kind: 'trace', id: item.id, lines: [], running: false }
@@ -119,6 +122,7 @@ export function buildChat(entries: ChatEntry[], running = true): ChatItem[] {
     if (shown.length > 0) items.push({ kind: 'files', files: shown })
     files = []
     trace = undefined
+    bylined = false
   }
   // An old chat came in one entry per block, so its narration between two steps is its own entry, like its answer. Text
   // with another imported step after it, before the next message, is narration. The last text in a turn is the answer.
@@ -138,6 +142,10 @@ export function buildChat(entries: ChatEntry[], running = true): ChatItem[] {
         items.push({ kind: 'user', text: entry.text, images: entry.images, files: entry.files })
         break
       case 'assistant':
+        if (!bylined && (entry.calls.length > 0 || entry.text.trim() !== '')) {
+          items.push({ kind: 'byline', model: entry.model })
+          bylined = true
+        }
         if (entry.calls.length === 0) {
           if (entry.text.trim() !== '') items.push({ kind: 'text', text: entry.text })
           trace = undefined

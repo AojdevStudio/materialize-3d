@@ -361,15 +361,6 @@ pre {
   min-height: 0;
 }
 
-.chat-title {
-  padding: 12px 20px;
-  border-bottom: 1px solid var(--s-line);
-  font-weight: 500;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
 .messages {
   flex: 1;
   overflow-y: auto;
@@ -423,6 +414,15 @@ pre {
   border-radius: 6px;
   padding: 2px 8px;
   font-size: 12px;
+}
+
+.msg-byline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  color: var(--s-muted);
+  font-size: 13px;
 }
 
 /* Agent replies: the Typeset chat preset. 14 px type, 1.6 leading, and 1em between blocks. */
@@ -1175,12 +1175,6 @@ pre {
 
 .print-menu button:hover {
   background: var(--s-soft);
-}
-
-.chat-model {
-  margin: 0 20px;
-  font-size: 12px;
-  color: var(--s-muted);
 }
 
 .waiting {
