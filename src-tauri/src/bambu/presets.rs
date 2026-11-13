@@ -540,7 +540,6 @@ impl Resolver {
         })
     }
 
-    /// The presets of a kind a person can pick, flattened, by name.
     fn instantiated(&mut self, kind: PresetKind) -> Result<Vec<(String, Rc<Resolved>)>> {
         let mut names: Vec<String> = self.index.keys().filter(|(listed, _)| *listed == kind).map(|(_, name)| name.clone()).collect();
         names.sort();

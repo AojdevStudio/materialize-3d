@@ -14,7 +14,6 @@ function agentLine({ model, astra }: Settings): string {
   return astra ? `${runs} Astra helps with drawings.` : runs
 }
 
-/** The saved printer as the frame names it: `Bambu Lab P2S, 0.4 mm, PETG Basic`. */
 function printerLine({ printer }: Settings): string {
   const machine = printer.machine.replace(/ (\S+) nozzle$/, ', $1 mm')
   return `${machine}, ${presetName(printer.filament).replace(/^Bambu /, '')}`

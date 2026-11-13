@@ -3,14 +3,11 @@ import type { Plate, Printer } from '../../sidecar/src/protocol'
 import { checkSlicer, sidecar, studio, type BambuLastUsed, type PrinterChoice } from './api'
 import type { StepProps } from './Setup'
 
-/** A printer as the step shows and saves it. The plate is always named, so the screen can show it. */
 type Choice = Required<Printer>
 type Nozzle = PrinterChoice['nozzles'][number]
 
-/** A choice with the printer and the nozzle it names, from the lists. */
 type Fitted = { choice: Choice; printer: PrinterChoice; nozzle: Nozzle }
-/** What the step offers once Bambu Studio answers. `found` is what Bambu Studio last used, when all of it can be saved. */
-type Offer = { printers: PrinterChoice[]; found: Fitted | undefined; start: Fitted }
+type Offer = { printers: PrinterChoice[]; confirmable: Fitted | undefined; start: Fitted }
 
 const PLATE: Record<Plate, string> = {
   'Cool Plate': 'Cool Plate',
@@ -24,7 +21,6 @@ const PLATE: Record<Plate, string> = {
 export const presetName = (name: string) => name.split(' @')[0]
 const quality = (process: string) => presetName(process).replace(/^([\d.]+)mm /, '$1 mm ')
 
-/** The wanted printer, keeping each part that fits it and giving the rest Bambu Studio's defaults for that printer. */
 function fit(printers: PrinterChoice[], wanted: { machine: string | null | undefined; process?: string | null; filament?: string | null; plate?: Plate | null }): Fitted | undefined {
   for (const printer of printers) {
     const nozzle = printer.nozzles.find((entry) => entry.machine === wanted.machine)
@@ -40,19 +36,17 @@ function fit(printers: PrinterChoice[], wanted: { machine: string | null | undef
   }
 }
 
-/** Nothing when Bambu Studio lists no printer at all. */
-function offer(printers: PrinterChoice[], last: BambuLastUsed | null, saved: Printer): Offer | undefined {
+function offer(printers: PrinterChoice[], first: Fitted, last: BambuLastUsed | null, saved: Printer): Offer {
   const read = last && { machine: last.machine.system, process: last.process?.system, filament: last.filament?.system, plate: last.plate }
   const fromRead = read ? fit(printers, read) : undefined
-  const found = fromRead && read?.process === fromRead.choice.process && read.filament === fromRead.choice.filament ? fromRead : undefined
-  const start = fromRead ?? fit(printers, saved) ?? fit(printers, { machine: printers[0]?.nozzles[0]?.machine })
-  return start && { printers, found, start }
+  const confirmable = fromRead && read?.process === fromRead.choice.process && read.filament === fromRead.choice.filament ? fromRead : undefined
+  return { printers, confirmable, start: fromRead ?? fit(printers, saved) ?? first }
 }
 
 /**
- * Setup's printer step. It shows what Bambu Studio last used when all of it can be saved, and a pick of every printer
- * the validated Bambu Studio slices for otherwise. With no such Bambu Studio nothing can be saved, so the step passes
- * and the saved printer stays.
+ * Setup's printer step. It shows what Bambu Studio last used when all of it can be saved. Otherwise it shows a pick of
+ * every printer the validated Bambu Studio slices for. With no such Bambu Studio nothing can be saved, so the step
+ * passes and the saved printer stays.
  */
 export default function SetupPrinter({ next, back, onError }: StepProps) {
   const [shown, setShown] = useState<Offer | null>(null)
@@ -67,10 +61,11 @@ export default function SetupPrinter({ next, back, onError }: StepProps) {
         if (slicer.found !== 'ready') return current && next()
         const [printers, last, { settings }] = await Promise.all([studio.printers(), studio.bambuLastUsed(), sidecar('state.get', {})])
         if (!current) return
-        const made = offer(printers, last, settings.printer)
-        if (made === undefined) return onError('Bambu Studio lists no printer to pick.')
+        const first = fit(printers, { machine: printers[0]?.nozzles[0]?.machine })
+        if (first === undefined) return onError('Bambu Studio lists no printer to pick.')
+        const made = offer(printers, first, last, settings.printer)
         setShown(made)
-        if (made.found === undefined) setPicking(made.start)
+        if (made.confirmable === undefined) setPicking(made.start)
       })
       .catch((err: unknown) => current && onError(String(err)))
     return () => {
@@ -101,9 +96,9 @@ export default function SetupPrinter({ next, back, onError }: StepProps) {
     </p>
   )
 
-  if (picking === null && shown.found !== undefined) {
-    const found = shown.found
-    const { choice, printer, nozzle } = found
+  if (picking === null && shown.confirmable !== undefined) {
+    const confirmable = shown.confirmable
+    const { choice, printer, nozzle } = confirmable
     const rows = [
       ['Printer', printer.printer],
       ['Nozzle', `${nozzle.nozzle} mm`],
@@ -125,7 +120,7 @@ export default function SetupPrinter({ next, back, onError }: StepProps) {
         </dl>
         {reason}
         <div className="setup-actions">
-          <button type="button" disabled={saving} onClick={() => setPicking(found)}>
+          <button type="button" disabled={saving} onClick={() => setPicking(confirmable)}>
             Change
           </button>
           <button type="button" className="primary" disabled={saving} onClick={() => save(choice)}>
@@ -175,7 +170,7 @@ export default function SetupPrinter({ next, back, onError }: StepProps) {
       </fieldset>
       {reason}
       <div className="setup-actions">
-        <button type="button" disabled={saving} onClick={() => (shown.found === undefined ? void back() : setPicking(null))}>
+        <button type="button" disabled={saving} onClick={() => (shown.confirmable === undefined ? void back() : setPicking(null))}>
           Back
         </button>
         <button type="button" className="primary" disabled={saving} onClick={() => save(choice)}>
