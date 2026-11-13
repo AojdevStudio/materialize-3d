@@ -26,6 +26,7 @@ afterEach(() => {
   invokeMock.mockReset()
   revealMock.mockReset()
   listeners.length = 0
+  slicerAnswer = undefined
 })
 
 const emit = (event: object) => act(async () => listeners.forEach((listener) => listener({ payload: event })))
@@ -64,6 +65,9 @@ const lastUsedA1Mini: BambuLastUsed = {
 type Machine = { toolchain: Toolchain; slicer: SlicerCheck }
 const ready: Machine = { toolchain: { uv: '0.9.2', python: '3.12.1' }, slicer: { found: 'ready', version: '02.08.02.61' } }
 
+/** When set, each slicer check waits for this answer instead of the machine's. */
+let slicerAnswer: (() => Promise<SlicerCheck>) | undefined
+
 function mockApp(machine: Machine = ready, logins: Login[] = claudeOnly, waiting: object | null = null) {
   revealMock.mockResolvedValue(undefined)
   const store: { settings: Settings; logins: Login[] } = {
@@ -95,7 +99,7 @@ function mockApp(machine: Machine = ready, logins: Login[] = claudeOnly, waiting
     'chat.open': () => ({ project: project.id, entries: [], running: false, waiting, turn: null, seq: 0 }),
   }
   invokeMock.mockImplementation((command: string, args: { method: string; params: Record<string, unknown> }) => {
-    if (command === 'studio_slicer') return Promise.resolve(machine.slicer)
+    if (command === 'studio_slicer') return slicerAnswer?.() ?? Promise.resolve(machine.slicer)
     if (command === 'studio_projects_folder') return Promise.resolve(FOLDER)
     if (command === 'studio_printers') return Promise.resolve(printers)
     if (command === 'bambu_last_used') return Promise.resolve(lastUsedA1Mini)
@@ -227,6 +231,24 @@ describe('settings', () => {
     expect(await screen.findByRole('heading', { name: 'Is this your printer?' })).toBeTruthy()
     fireEvent.click(within(screen.getByTestId('setup')).getAllByRole('button', { name: 'Back' })[0])
     expect(await screen.findByRole('region', { name: 'Slicer and printer' })).toBeTruthy()
+  })
+
+  it('a slicer check the printer step left by Back does not close the setup step opened after it', async () => {
+    mockApp()
+    render(<StudioApp />)
+    await openSettings()
+    const slicer = await show('Slicer and printer')
+    await within(slicer).findByText('Version 02.08.02.61.')
+    let answer = (_: SlicerCheck) => {}
+    slicerAnswer = () => new Promise((resolve) => (answer = resolve))
+    fireEvent.click(within(await within(slicer).findByTestId('settings-printer')).getByRole('button', { name: 'Change' }))
+    await screen.findByRole('region', { name: 'Your printer' })
+    const late = answer
+    fireEvent.click(within(screen.getByTestId('setup')).getAllByRole('button', { name: 'Back' })[0])
+    fireEvent.click(await within(await show('Agents and models')).findByRole('button', { name: 'Fix in setup' }))
+    await screen.findByRole('region', { name: 'Check your Mac' })
+    await act(async () => late({ found: 'none' }))
+    expect(screen.getByRole('region', { name: 'Check your Mac' })).toBeTruthy()
   })
 
   it('saves a new printer through setup\'s printer step, and Settings and the sidebar show it', async () => {

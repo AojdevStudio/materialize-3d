@@ -68,6 +68,7 @@ export default function SetupPrinter({ next, back }: StepProps) {
     void checkSlicer()
       .then(async (slicer) => {
         if (slicer.found !== 'ready') {
+          if (!current) return
           await next()
           // A save that went through has moved setup on. Still here means it failed, and the window showed why.
           if (current) setFailed('Setup could not move on.')
