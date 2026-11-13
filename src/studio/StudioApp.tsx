@@ -654,7 +654,6 @@ export default function StudioApp() {
               items={items}
               running={running}
               startedMs={view?.turn?.startedMs}
-              onPreview={openFile}
               onError={setError}
             />
             {composer('Reply, paste a link, or attach a file', false)}

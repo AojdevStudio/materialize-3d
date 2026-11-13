@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { buildChat, STOPPED } from './transcript'
 
 describe('buildChat', () => {
-  it("gathers a turn's steps in one trace with their results, and ends the turn with the files it wrote", () => {
+  it("gathers a turn's steps in one trace with their results, and adds no file card for the files it wrote", () => {
     const items = buildChat([
       { id: 1, kind: 'user', text: 'A dock mount', images: ['refs/arm.jpg'], files: [] },
       {
@@ -47,7 +47,6 @@ describe('buildChat', () => {
         ],
       },
       { kind: 'text', text: 'Done.' },
-      { kind: 'files', files: ['print/clip.3mf'] },
       { kind: 'user', text: 'thanks', images: [], files: [] },
     ])
   })

@@ -101,7 +101,12 @@ export function Composer({ text, onText, attachments, onAttach, onPaste, onRemov
         <span className="spacer" />
         {picker}
         {running && onStop ? (
-          <button type="button" onClick={onStop} data-testid="stop">Stop</button>
+          <button type="button" className="primary stop" onClick={onStop} data-testid="stop">
+            <svg viewBox="0 0 10 10" width={10} height={10} aria-hidden="true">
+              <rect width={10} height={10} rx={2} fill="currentColor" />
+            </svg>
+            Stop
+          </button>
         ) : (
           <button type="button" className="primary" onClick={onSend} data-testid="send" disabled={empty || busy}>
             {sendLabel}

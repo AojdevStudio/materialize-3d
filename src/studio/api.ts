@@ -65,12 +65,6 @@ export function fileKind(rel: string): FileKind {
   return 'other'
 }
 
-/** Files a turn's file cards offer to preview: the pages, models, and pictures the agent wrote. Ossie's own files in refs/ are not. */
-export function autoOpens(rel: string): boolean {
-  const kind = fileKind(rel)
-  return !rel.startsWith('refs/') && (kind === 'html' || kind === 'model' || kind === 'image')
-}
-
 export const is3mf = (rel: string) => rel.toLowerCase().endsWith('.3mf')
 
 /** The right panel's views, in the order its tabs show them. */

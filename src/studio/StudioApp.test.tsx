@@ -384,6 +384,35 @@ describe('StudioApp', () => {
     expect(screen.getByText('One body').tagName).toBe('LI')
   })
 
+  it('shows Stop as the primary button with a square icon while a turn runs', async () => {
+    mockSidecar({ 'chat.open': (params) => Promise.resolve(view(String(params.project), { running: true })) })
+    render(<StudioApp />)
+    fireEvent.click(await projectList().findByText('Project B'))
+    const stop = await screen.findByRole('button', { name: 'Stop' })
+    expect(stop.classList.contains('primary')).toBe(true)
+    expect(stop.querySelector('svg rect')).not.toBeNull()
+    expect(screen.queryByTestId('send')).toBeNull()
+  })
+
+  it("leaves a finished turn's print file to the print files bar, with no file card in the chat", async () => {
+    const asked = { id: 1, kind: 'user', text: 'A clip, sliced', images: [], files: [] }
+    const slice = { id: 2, kind: 'assistant', text: '', calls: [{ id: 'c1', name: 'slice', args: { inputs: ['clip.stl'], output: 'print/clip.3mf' } }] }
+    const sliced = { id: 3, kind: 'tool', callId: 'c1', name: 'slice', text: 'Wrote print/clip.3mf', failed: false }
+    const reply = { id: 4, kind: 'assistant', text: 'The clip is ready.', calls: [] }
+    mockSidecar(
+      { 'chat.open': (params) => Promise.resolve(view(String(params.project), { entries: [asked, slice, sliced, reply] })) },
+      [projectB],
+      {},
+      { [projectB.id]: [{ rel: 'print/clip.3mf', size: 1000, modifiedMs: 1 }] },
+    )
+    render(<StudioApp />)
+    fireEvent.click(await projectList().findByText('Project B'))
+    await screen.findByText('The clip is ready.')
+    const fileActions = { name: /^(Preview|Open in Bambu Studio|Reveal in Finder|Show in folder)$/ }
+    await waitFor(() => expect(within(screen.getByTestId('print-files')).getAllByRole('button', fileActions)).not.toHaveLength(0))
+    expect(within(screen.getByTestId('messages')).queryAllByRole('button', fileActions)).toHaveLength(0)
+  })
+
   it('shows the small mark and the app name at the top of the sidebar', async () => {
     mockSidecar()
     render(<StudioApp />)
