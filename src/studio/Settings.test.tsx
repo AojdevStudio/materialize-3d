@@ -42,7 +42,7 @@ function mockApp(machine: Machine = ready, logins: Login[] = claudeOnly) {
     settings: {
       model: { provider: 'anthropic', modelId: 'claude-opus-5-5' },
       thinking: 'high',
-      printer: { machine: 'Bambu Lab P2S 0.4 nozzle', process: '0.20mm Standard @BBL P2S', filament: 'Bambu PETG Basic @BBL P2S' },
+      printer: { machine: 'Bambu Lab P2S 0.4 nozzle', process: '0.20mm Standard @BBL P2S', filament: 'Bambu PETG Basic @BBL P2S', plate: 'Textured PEI Plate' },
       astra: true,
     },
   }
@@ -156,7 +156,7 @@ describe('settings', () => {
     expect(await within(slicer).findByText('Version 02.08.02.61.')).toBeTruthy()
     const printer = within(await within(slicer).findByTestId('settings-printer'))
     expect(await printer.findByText('Bambu Lab P2S 0.4 nozzle')).toBeTruthy()
-    expect(printer.getByText('Bambu PETG Basic @BBL P2S, 0.20mm Standard @BBL P2S')).toBeTruthy()
+    expect(printer.getByText('Bambu PETG Basic @BBL P2S, 0.20mm Standard @BBL P2S, Textured PEI Plate')).toBeTruthy()
     fireEvent.click(printer.getByRole('button', { name: 'Change' }))
     expect(await screen.findByTestId('setup')).toBeTruthy()
     fireEvent.click(button('Back'))

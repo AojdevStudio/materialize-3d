@@ -159,7 +159,9 @@ export default function Settings({ section, onSection, models, onSaved, onFix, o
                   <span />
                   <span className="setup-what">
                     <span className="setup-name">{saved?.printer.machine ?? 'Checking…'}</span>
-                    {saved !== null && <span className="setup-detail">{`${saved.printer.filament}, ${saved.printer.process}`}</span>}
+                    {saved !== null && (
+                      <span className="setup-detail">{[saved.printer.filament, saved.printer.process, saved.printer.plate].filter((part) => part !== undefined).join(', ')}</span>
+                    )}
                   </span>
                   <span className="setup-act">
                     <button type="button" onClick={() => onFix('printer')}>
