@@ -53,6 +53,8 @@ pub(super) fn parse_slice_info(xml: &str) -> Result<SliceInfo, String> {
     use quick_xml::events::Event;
 
     let mut info = SliceInfo { parts: 0, print_seconds: None, filament_grams: None, filament_slots: Vec::new() };
+    // Plate times add up in u128, so no file can overflow the sum. A total no u64 holds is no measure.
+    let mut seconds: Option<u128> = None;
     let mut reader = quick_xml::Reader::from_str(xml);
     loop {
         match reader.read_event().map_err(|e| format!("slice_info.config: {e}"))? {
@@ -62,8 +64,8 @@ pub(super) fn parse_slice_info(xml: &str) -> Result<SliceInfo, String> {
                 };
                 match tag.name().as_ref() {
                     b"metadata" if attr(b"key").as_deref() == Some("prediction") => {
-                        if let Some(seconds) = attr(b"value").and_then(|v| v.parse::<u64>().ok()) {
-                            *info.print_seconds.get_or_insert(0) += seconds;
+                        if let Some(plate) = attr(b"value").and_then(|v| v.parse::<u64>().ok()) {
+                            *seconds.get_or_insert(0) += u128::from(plate);
                         }
                     }
                     b"object" if attr(b"skipped").as_deref() != Some("true") => info.parts += 1,
@@ -78,7 +80,11 @@ pub(super) fn parse_slice_info(xml: &str) -> Result<SliceInfo, String> {
                     _ => {}
                 }
             }
-            Event::Eof => return Ok(info),
+            Event::Eof => {
+                info.print_seconds = seconds.and_then(|total| u64::try_from(total).ok());
+                info.filament_grams = info.filament_grams.filter(|grams| grams.is_finite());
+                return Ok(info);
+            }
             _ => {}
         }
     }
@@ -169,6 +175,15 @@ mod tests {
 
         let not_numbers = parse(Some(r#"<config><plate><filament id="1" used_g="NaN"/></plate></config>"#), Some(r#"{"layer_height": "inf"}"#));
         assert_eq!(not_numbers, PrintInfo::default());
+
+        let max = u64::MAX;
+        let huge = parse(
+            Some(&format!(
+                r#"<config><plate><metadata key="prediction" value="{max}"/><filament used_g="1e308"/></plate><plate><metadata key="prediction" value="{max}"/><filament used_g="1e308"/></plate></config>"#
+            )),
+            None,
+        );
+        assert_eq!(huge, PrintInfo::default());
     }
 
     #[test]
