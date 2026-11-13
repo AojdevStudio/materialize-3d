@@ -26,6 +26,7 @@
     "allow-studio-flushed",
     "allow-studio-open-files-privacy",
     "allow-bambu-last-used",
+    "allow-studio-printers",
     "allow-sidecar"
   ]
 }

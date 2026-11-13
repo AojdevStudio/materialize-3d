@@ -8,7 +8,9 @@ use std::process::{Command, Stdio};
 use serde::{Deserialize, Serialize};
 
 use super::print_info::{parse_slice_info, SliceInfo};
-use crate::bambu::{resolve_presets, BambuError, BambuStudio, Plate, PresetSelection, ResolvedPresets, VALIDATED_VERSIONS};
+use crate::bambu::{
+    printer_choices, resolve_presets, BambuError, BambuStudio, Plate, PresetSelection, PrinterChoice, ResolvedPresets, VALIDATED_VERSIONS,
+};
 
 /// The printer a slice runs for: three Bambu Lab system presets by name, and the plate. With no plate, the slice
 /// uses the default plate of the printer's model.
@@ -59,6 +61,17 @@ pub fn slice(request: &Request, cache_root: &Path) -> Result<Sliced, String> {
 pub fn check(printer: &Printer, cache_root: &Path) -> Result<(), String> {
     let studio = BambuStudio::locate().map_err(|e| e.to_string())?;
     presets_for(&studio, printer, cache_root).map(|_| ())
+}
+
+/// The printers the validated Bambu Studio can slice for, for the printer step of setup to pick from.
+#[tauri::command]
+pub async fn studio_printers() -> Result<Vec<PrinterChoice>, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let studio = BambuStudio::locate().map_err(|e| e.to_string())?;
+        printer_choices(&studio.profiles_dir).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 fn presets_for(studio: &BambuStudio, printer: &Printer, cache_root: &Path) -> Result<(ResolvedPresets, Plate), String> {
@@ -326,6 +339,33 @@ mod tests {
 
         let on_default = slice_in(&studio, project.path(), &["cube.stl".to_owned()], "print/default.3mf", &a1_mini(None), cache.path()).expect("slice");
         assert_eq!(on_default.plate, Plate::TexturedPei, "the A1 mini's own default plate");
+    }
+
+    #[test]
+    #[ignore = "runs the real Bambu Studio"]
+    fn every_printer_on_the_pick_lists_slices_with_the_presets_it_starts_with() {
+        let studio = BambuStudio::locate().expect("a validated Bambu Studio");
+        let cache = tempfile::tempdir().expect("cache");
+        let printers = printer_choices(&studio.profiles_dir).expect("lists");
+        let names: Vec<_> = printers.iter().map(|choice| choice.printer.as_str()).collect();
+        assert_eq!(names.len(), 14, "{names:?}");
+        assert_eq!(printers.iter().map(|choice| choice.nozzles.len()).sum::<usize>(), 56);
+
+        let p2s = printers.iter().find(|choice| choice.printer == "Bambu Lab P2S").expect("the P2S");
+        assert_eq!(p2s.default_plate, Plate::TexturedPei);
+        assert!(!p2s.plates.contains(&Plate::Cool) && p2s.plates.contains(&Plate::Supertack), "{:?}", p2s.plates);
+        let nozzles: Vec<_> = p2s.nozzles.iter().map(|nozzle| nozzle.nozzle.as_str()).collect();
+        assert_eq!(nozzles, ["0.2", "0.4", "0.6", "0.8"]);
+        let point_four = &p2s.nozzles[1];
+        assert_eq!((point_four.machine.as_str(), point_four.process.as_str()), ("Bambu Lab P2S 0.4 nozzle", "0.20mm Standard @BBL P2S"));
+        assert!(point_four.filaments.iter().any(|name| name == "Bambu PETG Basic @BBL P2S 0.4 nozzle"), "the store's default filament is offered");
+
+        for choice in &printers {
+            for nozzle in &choice.nozzles {
+                let starts_with = printer(&nozzle.machine, &nozzle.process, &nozzle.filament, Some(choice.default_plate));
+                check(&starts_with, cache.path()).unwrap_or_else(|e| panic!("{}: {e}", nozzle.machine));
+            }
+        }
     }
 
     #[test]

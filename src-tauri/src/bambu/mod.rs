@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-pub use presets::{resolve_presets, ResolvedPresets};
+pub use presets::{printer_choices, resolve_presets, PrinterChoice, ResolvedPresets};
 pub use studio::{BambuStudio, FoundBuild, VALIDATED_VERSIONS};
 
 pub type Result<T, E = BambuError> = std::result::Result<T, E>;

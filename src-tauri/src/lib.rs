@@ -45,6 +45,7 @@ pub fn run() {
             studio::quit::studio_flushed,
             studio::quit::studio_open_files_privacy,
             bambu::last_used::bambu_last_used,
+            studio::slice::studio_printers,
             sidecar::sidecar,
         ])
         .setup(|app| {

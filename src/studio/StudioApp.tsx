@@ -697,6 +697,7 @@ export default function StudioApp() {
           setSetup(state.setup)
           if (state.setup.done) {
             setDefaultModel(state.settings.model)
+            setPrinter(state.settings.printer)
             afterSetup(true)
           }
         }}

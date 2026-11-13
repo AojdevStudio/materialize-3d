@@ -16,8 +16,8 @@ vi.mock('@tauri-apps/plugin-opener', () => ({ openUrl: () => Promise.resolve() }
 vi.mock('@tauri-apps/api/webview', () => ({ getCurrentWebview: () => ({ onDragDropEvent: () => Promise.resolve(() => {}) }) }))
 
 import { OFFERED } from '../../sidecar/src/offered'
-import type { Login, Settings, Setup, Toolchain } from '../../sidecar/src/protocol'
-import type { SlicerCheck } from './api'
+import type { Login, Printer, Settings, Setup, Toolchain } from '../../sidecar/src/protocol'
+import type { BambuLastUsed, PrinterChoice, SlicerCheck } from './api'
 import StudioApp from './StudioApp'
 
 afterEach(() => {
@@ -36,13 +36,64 @@ const claudeIn = signedOut.map((login) => (login.provider === 'anthropic' ? { ..
 const bothIn = signIn(claudeIn, 'openai-codex')
 const opus = { provider: 'anthropic', modelId: 'claude-opus-5-5' }
 
-type Machine = { logins: Login[]; toolchain: Toolchain; slicer: SlicerCheck }
-const ready: Machine = { logins: claudeIn, toolchain: { uv: '0.9.2', python: '3.12.1' }, slicer: { found: 'ready', version: '02.08.02.61' } }
+const P2S: Printer = { machine: 'Bambu Lab P2S 0.4 nozzle', process: '0.20mm Standard @BBL P2S', filament: 'Bambu PETG Basic @BBL P2S 0.4 nozzle' }
+const printers: PrinterChoice[] = [
+  {
+    printer: 'Bambu Lab A1 mini',
+    plates: ['Engineering Plate', 'Textured PEI Plate', 'Supertack Plate'],
+    defaultPlate: 'Textured PEI Plate',
+    nozzles: [
+      {
+        nozzle: '0.4',
+        machine: 'Bambu Lab A1 mini 0.4 nozzle',
+        processes: ['0.12mm Fine @BBL A1M', '0.20mm Standard @BBL A1M'],
+        process: '0.20mm Standard @BBL A1M',
+        filaments: ['Bambu PETG Basic @BBL A1M', 'Bambu PLA Basic @BBL A1M'],
+        filament: 'Bambu PLA Basic @BBL A1M',
+      },
+    ],
+  },
+  {
+    printer: 'Bambu Lab P2S',
+    plates: ['Engineering Plate', 'High Temp Plate', 'Textured PEI Plate', 'Supertack Plate'],
+    defaultPlate: 'Textured PEI Plate',
+    nozzles: [
+      {
+        nozzle: '0.4',
+        machine: P2S.machine,
+        processes: ['0.16mm Standard @BBL P2S', P2S.process],
+        process: P2S.process,
+        filaments: [P2S.filament, 'Bambu PLA Basic @BBL P2S'],
+        filament: 'Bambu PLA Basic @BBL P2S',
+      },
+      {
+        nozzle: '0.6',
+        machine: 'Bambu Lab P2S 0.6 nozzle',
+        processes: ['0.30mm Standard @BBL P2S 0.6 nozzle'],
+        process: '0.30mm Standard @BBL P2S 0.6 nozzle',
+        filaments: ['Bambu PLA Basic @BBL P2S'],
+        filament: 'Bambu PLA Basic @BBL P2S',
+      },
+    ],
+  },
+]
+const preset = (name: string) => ({ name, system: name })
+const lastUsedP2S: BambuLastUsed = {
+  printer: 'Bambu Lab P2S',
+  nozzle: '0.4',
+  machine: preset(P2S.machine),
+  process: preset(P2S.process),
+  filament: preset(P2S.filament),
+  plate: 'Supertack Plate',
+}
+
+type Machine = { logins: Login[]; toolchain: Toolchain; slicer: SlicerCheck; lastUsed: BambuLastUsed | null }
+const ready: Machine = { logins: claudeIn, toolchain: { uv: '0.9.2', python: '3.12.1' }, slicer: { found: 'ready', version: '02.08.02.61' }, lastUsed: lastUsedP2S }
 
 type Calls = Record<string, (params: Record<string, unknown>, real: () => Promise<unknown>) => Promise<unknown>>
 
 function mockApp(setup: Setup, machine: Machine, overrides: Calls = {}) {
-  const settings = { model: opus, thinking: 'high', printer: { machine: '', process: '', filament: '' }, astra: true } satisfies Settings
+  const settings = { model: opus, thinking: 'high', printer: P2S, astra: true } satisfies Settings
   const store = { setup, logins: machine.logins, settings }
   const state = () => ({ setup: store.setup, settings: store.settings, projects: [], drafts: {}, importBlocked: null })
   const answers: Record<string, (params: Record<string, unknown>) => unknown> = {
@@ -55,6 +106,10 @@ function mockApp(setup: Setup, machine: Machine, overrides: Calls = {}) {
       store.settings = { ...store.settings, ...params }
       return state()
     },
+    'printer.set': (params) => {
+      store.settings = { ...store.settings, printer: params as Printer }
+      return state()
+    },
     'setup.tools': () => machine.toolchain,
     'auth.status': () => store.logins,
     'setup.check': () => [],
@@ -64,6 +119,8 @@ function mockApp(setup: Setup, machine: Machine, overrides: Calls = {}) {
   }
   invokeMock.mockImplementation((command: string, args: { method: string; params: Record<string, unknown> }) => {
     if (command === 'studio_slicer') return Promise.resolve(machine.slicer)
+    if (command === 'studio_printers') return Promise.resolve(printers)
+    if (command === 'bambu_last_used') return Promise.resolve(machine.lastUsed)
     if (command !== 'sidecar') return Promise.resolve(undefined)
     const real = () => Promise.resolve(answers[args.method]?.(args.params) ?? null)
     const override = overrides[args.method]
@@ -83,7 +140,7 @@ const summary = (name: string) => screen.getByTestId(`ready-${name}`).querySelec
 const emit = (event: object) => act(async () => listeners.forEach((listener) => listener({ payload: event })))
 
 describe('setup', () => {
-  it('goes Welcome, Check your Mac, Pick a model, Ready, and Start a project opens the start screen', async () => {
+  it('goes Welcome, Check your Mac, Pick a model, Your printer, Ready, and Start a project opens the start screen', async () => {
     mockApp({ step: 'welcome', done: false }, ready)
     render(<StudioApp />)
     fireEvent.click(await screen.findByRole('button', { name: 'Start setup' }))
@@ -96,6 +153,9 @@ describe('setup', () => {
     expect(screen.getByRole('listitem', { current: 'step' }).textContent).toBe('2 Pick a model')
     await screen.findByRole('radio', { name: /^Opus 5.5/ })
     fireEvent.click(button('Continue'))
+    expect(await screen.findByRole('heading', { name: 'Is this your printer?' })).toBeTruthy()
+    expect(screen.getByRole('listitem', { current: 'step' }).textContent).toBe('3 Your printer')
+    fireEvent.click(button('Looks right'))
     expect(await screen.findByRole('heading', { name: 'You’re set up' })).toBeTruthy()
     expect(screen.queryByRole('listitem', { current: 'step' })).toBeNull()
     fireEvent.click(button('Start a project'))
@@ -103,6 +163,7 @@ describe('setup', () => {
     expect(saved()).toEqual([
       { step: 'check', done: false },
       { step: 'model', done: false },
+      { step: 'printer', done: false },
       { step: 'ready', done: false },
       { step: 'ready', done: true },
     ])
@@ -173,9 +234,11 @@ describe('setup', () => {
     expect(await screen.findByTestId('start-screen')).toBeTruthy()
     expect(saved()).toEqual([
       { step: 'model', done: false },
+      { step: 'printer', done: false },
       { step: 'ready', done: false },
       { step: 'ready', done: true },
     ])
+    expect(calls('printer.set')).toEqual([])
     expect(screen.queryByTestId('setup-needed')).toBeNull()
   })
 
@@ -249,6 +312,7 @@ describe('setup', () => {
     fireEvent.click(button('Continue'))
     await screen.findByRole('radio', { name: /^Opus 5.5/ })
     fireEvent.click(button('Continue'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Looks right' }))
     fireEvent.click(await screen.findByRole('button', { name: 'Start a project' }))
     expect(await screen.findByTestId('start-screen')).toBeTruthy()
     await act(async () => release())
@@ -269,7 +333,7 @@ describe('setup: pick a model', () => {
     expect(astra().checked).toBe(false)
     expect(astra().disabled).toBe(true)
     fireEvent.click(button('Continue'))
-    expect(await screen.findByRole('heading', { name: 'You’re set up' })).toBeTruthy()
+    expect(await screen.findByRole('heading', { name: 'Is this your printer?' })).toBeTruthy()
     expect(calls('settings.set')).toEqual([{ model: opus, astra: false }])
   })
 
@@ -281,6 +345,7 @@ describe('setup: pick a model', () => {
     expect(astra().checked).toBe(true)
     fireEvent.click(astra())
     fireEvent.click(button('Continue'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Looks right' }))
     expect(await screen.findByRole('heading', { name: 'You’re set up' })).toBeTruthy()
     expect(calls('settings.set')).toEqual([{ model: { provider: 'anthropic', modelId: 'claude-sonnet-5-5' }, astra: false }])
     expect(await screen.findByText('Claude, Sonnet 5.5.')).toBeTruthy()
@@ -295,6 +360,7 @@ describe('setup: pick a model', () => {
     expect((await screen.findByRole('radio', { name: /^GPT 6.1 Sol/ }) as HTMLInputElement).checked).toBe(true)
     expect(radios()).toEqual(['GPT 6.1 Sol'])
     fireEvent.click(button('Continue'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Looks right' }))
     expect(await screen.findByText('ChatGPT, GPT 6.1 Sol. Astra helps with drawings.')).toBeTruthy()
     expect(calls('settings.set')).toEqual([{ model: { provider: 'openai-codex', modelId: 'gpt-6.1-sol' }, astra: true }])
   })
@@ -314,8 +380,8 @@ describe('setup: pick a model', () => {
     await act(async () => releaseSettings())
     expect(locked()).toBe(true)
     await act(async () => releaseStep())
-    expect(await screen.findByRole('heading', { name: 'You’re set up' })).toBeTruthy()
-    expect(saved()).toEqual([{ step: 'ready', done: false }])
+    expect(await screen.findByRole('heading', { name: 'Is this your printer?' })).toBeTruthy()
+    expect(saved()).toEqual([{ step: 'printer', done: false }])
   })
 
   it('keeps Continue and the choices off while Back saves, so a slow Back cannot be undone by Continue', async () => {
@@ -357,13 +423,14 @@ describe('setup: pick a model', () => {
 })
 
 describe('setup: ready', () => {
-  it('sums up the agent, the slicer, and the build tools, with no agent tools or printer line', async () => {
+  it('sums up the agent, the slicer, the printer, and the build tools, with no agent tools line', async () => {
     mockApp({ step: 'ready', done: false }, { ...ready, logins: bothIn })
     render(<StudioApp />)
     expect(await screen.findByText('Claude, Opus 5.5. Astra helps with drawings.')).toBeTruthy()
     expect(await screen.findByText('Bambu Studio')).toBeTruthy()
     expect(await screen.findByText('uv 0.9.2, Python 3.12.1')).toBeTruthy()
-    expect(screen.getAllByRole('term').map((term) => term.textContent)).toEqual(['Agent', 'Slicer', 'Build tools'])
+    expect(await screen.findByText('Bambu Lab P2S, 0.4 mm, PETG Basic')).toBeTruthy()
+    expect(screen.getAllByRole('term').map((term) => term.textContent)).toEqual(['Agent', 'Slicer', 'Printer', 'Build tools'])
     expect(summary('agent')).toBe('Claude, Opus 5.5. Astra helps with drawings.')
   })
 
@@ -378,5 +445,125 @@ describe('setup: ready', () => {
     mockApp({ step: 'ready', done: false }, { ...ready, slicer: { found: 'none' } })
     render(<StudioApp />)
     expect(await screen.findByText('Not found. You get guides and STL files, but no 3MF.')).toBeTruthy()
+  })
+})
+
+describe('setup: your printer', () => {
+  const field = (name: string) => screen.getByRole('combobox', { name }) as HTMLSelectElement
+  const shown = (name: string) => within(field(name)).getByRole('option', { selected: true }).textContent
+  const found = () => Object.fromEntries([...screen.getByTestId('printer-found').querySelectorAll('div')].map((row) => [row.querySelector('dt')?.textContent, row.querySelector('dd')?.textContent]))
+
+  it('shows the printer Bambu Studio last used, and Looks right saves it', async () => {
+    const store = mockApp({ step: 'printer', done: false }, ready)
+    render(<StudioApp />)
+    expect(await screen.findByRole('heading', { name: 'Is this your printer?' })).toBeTruthy()
+    expect(found()).toEqual({ Printer: 'Bambu Lab P2S', Nozzle: '0.4 mm', Filament: 'Bambu PETG Basic', Plate: 'SuperTack Plate', Quality: '0.20 mm Standard' })
+    fireEvent.click(button('Looks right'))
+    expect(await screen.findByRole('heading', { name: 'You’re set up' })).toBeTruthy()
+    expect(calls('printer.set')).toEqual([{ ...P2S, plate: 'Supertack Plate' }])
+    expect(store.settings.printer).toEqual({ ...P2S, plate: 'Supertack Plate' })
+  })
+
+  it('changes to another printer, which starts with its own defaults, and Saves it for Ready to name', async () => {
+    mockApp({ step: 'printer', done: false }, ready)
+    render(<StudioApp />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Change' }))
+    expect(await screen.findByRole('heading', { name: 'Pick your printer' })).toBeTruthy()
+    expect([shown('Printer'), shown('Nozzle'), shown('Filament'), shown('Plate'), shown('Quality')]).toEqual([
+      'Bambu Lab P2S',
+      '0.4 mm',
+      'Bambu PETG Basic',
+      'SuperTack Plate',
+      '0.20 mm Standard',
+    ])
+    fireEvent.change(field('Printer'), { target: { value: 'Bambu Lab A1 mini' } })
+    expect([shown('Nozzle'), shown('Filament'), shown('Plate'), shown('Quality')]).toEqual(['0.4 mm', 'Bambu PLA Basic', 'SuperTack Plate', '0.20 mm Standard'])
+    fireEvent.change(field('Filament'), { target: { value: 'Bambu PETG Basic @BBL A1M' } })
+    fireEvent.click(button('Save'))
+    expect(await screen.findByRole('heading', { name: 'You’re set up' })).toBeTruthy()
+    expect(calls('printer.set')).toEqual([
+      { machine: 'Bambu Lab A1 mini 0.4 nozzle', process: '0.20mm Standard @BBL A1M', filament: 'Bambu PETG Basic @BBL A1M', plate: 'Supertack Plate' },
+    ])
+    expect(await screen.findByText('Bambu Lab A1 mini, 0.4 mm, PETG Basic')).toBeTruthy()
+    fireEvent.click(button('Start a project'))
+    expect((await screen.findByTestId('printer')).querySelector('.printer-name')?.textContent).toBe('A1 mini')
+  })
+
+  it('opens the pick on the saved printer when Bambu Studio never ran, and Back goes to Pick a model', async () => {
+    mockApp({ step: 'printer', done: false }, { ...ready, lastUsed: null })
+    render(<StudioApp />)
+    expect(await screen.findByRole('heading', { name: 'Pick your printer' })).toBeTruthy()
+    expect([shown('Printer'), shown('Nozzle'), shown('Filament'), shown('Plate')]).toEqual(['Bambu Lab P2S', '0.4 mm', 'Bambu PETG Basic', 'Textured PEI Plate'])
+    fireEvent.click(button('Back'))
+    expect(await screen.findByRole('heading', { name: 'Pick your default model' })).toBeTruthy()
+    expect(calls('printer.set')).toEqual([])
+  })
+
+  it('opens the pick on the printer read when Bambu Studio recorded no filament', async () => {
+    mockApp({ step: 'printer', done: false }, { ...ready, lastUsed: { ...lastUsedP2S, machine: preset('Bambu Lab P2S 0.6 nozzle'), filament: null } })
+    render(<StudioApp />)
+    expect(await screen.findByRole('heading', { name: 'Pick your printer' })).toBeTruthy()
+    expect([shown('Printer'), shown('Nozzle'), shown('Filament'), shown('Plate')]).toEqual(['Bambu Lab P2S', '0.6 mm', 'Bambu PLA Basic', 'SuperTack Plate'])
+  })
+
+  it('shows why a printer was refused and stays on the step', async () => {
+    mockApp({ step: 'printer', done: false }, ready, {
+      'printer.set': () => Promise.reject('filament preset "Bambu PETG Basic @BBL P2S 0.4 nozzle" is not compatible with machine "Bambu Lab P2S 0.4 nozzle"'),
+    })
+    render(<StudioApp />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Looks right' }))
+    expect((await screen.findByRole('alert')).textContent).toContain('is not compatible with machine')
+    expect(screen.getByRole('heading', { name: 'Is this your printer?' })).toBeTruthy()
+    expect(saved()).toEqual([])
+    expect(button('Looks right').disabled).toBe(false)
+  })
+
+  it('keeps Save and the fields off while Back saves, so a late Save cannot undo Back', async () => {
+    let release = () => {}
+    mockApp({ step: 'printer', done: false }, { ...ready, lastUsed: null }, { 'setup.set': (_, real) => new Promise((resolve) => (release = () => resolve(real()))) })
+    render(<StudioApp />)
+    expect(await screen.findByRole('heading', { name: 'Pick your printer' })).toBeTruthy()
+    fireEvent.click(button('Back'))
+    expect(button('Save').disabled).toBe(true)
+    expect(field('Printer').matches(':disabled')).toBe(true)
+    await act(async () => release())
+    expect(await screen.findByRole('heading', { name: 'Pick your default model' })).toBeTruthy()
+    expect(calls('printer.set')).toEqual([])
+  })
+
+  it('opens the pick and says why when Bambu Studio’s settings cannot be read', async () => {
+    mockApp({ step: 'printer', done: false }, ready)
+    const app = invokeMock.getMockImplementation()
+    invokeMock.mockImplementation((command: string, args: unknown) =>
+      command === 'bambu_last_used' ? Promise.reject('BambuStudio.conf: invalid JSON') : app?.(command, args),
+    )
+    render(<StudioApp />)
+    expect(await screen.findByRole('heading', { name: 'Pick your printer' })).toBeTruthy()
+    expect(screen.getByText(/BambuStudio\.conf: invalid JSON/)).toBeTruthy()
+    fireEvent.click(button('Save'))
+    expect(await screen.findByRole('heading', { name: 'You’re set up' })).toBeTruthy()
+  })
+
+  it('shows why the printer list failed, and Try again reads it again', async () => {
+    mockApp({ step: 'printer', done: false }, ready)
+    const app = invokeMock.getMockImplementation()
+    let failures = 1
+    invokeMock.mockImplementation((command: string, args: unknown) =>
+      command === 'studio_printers' && failures-- > 0 ? Promise.reject('BBL.json: invalid JSON') : app?.(command, args),
+    )
+    render(<StudioApp />)
+    expect(await screen.findByText(/BBL\.json: invalid JSON/)).toBeTruthy()
+    expect(button('Back').disabled).toBe(false)
+    fireEvent.click(button('Try again'))
+    expect(await screen.findByRole('heading', { name: 'Is this your printer?' })).toBeTruthy()
+  })
+
+  it('passes on to Ready without a slicer, and Ready names the printer already saved', async () => {
+    mockApp({ step: 'printer', done: false }, { ...ready, slicer: { found: 'none' } })
+    render(<StudioApp />)
+    expect(await screen.findByRole('heading', { name: 'You’re set up' })).toBeTruthy()
+    expect(saved()).toEqual([{ step: 'ready', done: false }])
+    expect(invokeMock.mock.calls.some(([command]) => command === 'studio_printers')).toBe(false)
+    expect(await screen.findByText('Bambu Lab P2S, 0.4 mm, PETG Basic')).toBeTruthy()
   })
 })
