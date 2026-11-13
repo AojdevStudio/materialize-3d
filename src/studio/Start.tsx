@@ -12,8 +12,8 @@ const RECENT = 2
 /** A recent project's state under its title, by its sidebar group. */
 const STATE: Record<Group, string> = { working: 'working', ready: '3MF ready', printed: 'printed', drafts: 'draft' }
 
-/** What a recent project's folder shows: its newest render, and whether it has a guide. */
-type Folder = { render: ProjectFile | undefined; guide: boolean }
+/** What a recent chip shows once its folder is read: its newest render, and its state, none while its status has not come. */
+type Chip = { render: ProjectFile | undefined; line: string | undefined }
 
 /** The newest render in a project's folder: a PNG the agent made, not one of the person's own pictures in `refs/`. */
 function newestRender(files: ProjectFile[]): ProjectFile | undefined {
@@ -33,30 +33,35 @@ type Props = {
 
 /** The start screen: the question, the prompt box, suggestions, and the projects to pick up where the person left off. */
 export default function Start({ projects, status, composer, onSuggest, onOpen, onError }: Props) {
-  const [folders, setFolders] = useState<Partial<Record<string, Folder>>>({})
+  const [chips, setChips] = useState<Partial<Record<string, Chip>>>({})
 
   const recent = [...projects].sort((a, b) => lastActivity(b, status[b.id]) - lastActivity(a, status[a.id])).slice(0, RECENT)
-  const recentIds = recent.map((p) => p.id).join('\n')
-  /** When each recent project last changed, as the status read says. A file a turn writes moves it on. */
-  const recentActivity = recent.map((p) => lastActivity(p, status[p.id])).join('\n')
+  /**
+   * Each recent project's id, when it last changed, and its state as its sidebar group says it, empty while its status
+   * has not come. A file a turn writes moves the time on. A change to any of them reads the folder again.
+   */
+  const reads = recent
+    .map((p) => [p.id, lastActivity(p, status[p.id]), status[p.id] === undefined ? '' : STATE[groupOf(status[p.id])]].join('\t'))
+    .join('\n')
 
-  // Each recent project's folder, read again when the recent projects change, or when a status read shows one changed,
-  // as when its turn ended after it wrote a render or a guide. Only the newest read lands.
+  // A chip changes only when its folder read lands, so its line never pairs a new status with an old folder, as just
+  // after a turn that wrote a guide ends. Only the newest reads land, and a read that fails leaves the other chips.
   useEffect(() => {
-    const ids = recentIds === '' ? [] : recentIds.split('\n')
     let live = true
-    void Promise.all(
-      ids.map(async (id) => {
-        const files = await studio.files(id)
-        return [id, { render: newestRender(files), guide: panelFiles(files).guide !== undefined }] as const
-      }),
-    )
-      .then((found) => live && setFolders(Object.fromEntries(found)))
-      .catch((err: unknown) => live && onError(String(err)))
+    for (const read of reads === '' ? [] : reads.split('\n')) {
+      const [id, , state] = read.split('\t')
+      void studio.files(id).then(
+        (files) => {
+          const line = state === STATE.drafts && panelFiles(files).guide !== undefined ? 'guide ready' : state
+          if (live) setChips((chips) => ({ ...chips, [id]: { render: newestRender(files), line: line === '' ? undefined : line } }))
+        },
+        (err: unknown) => live && onError(String(err)),
+      )
+    }
     return () => {
       live = false
     }
-  }, [recentIds, recentActivity, onError])
+  }, [reads, onError])
 
   return (
     <div className="start" data-testid="start-screen">
@@ -73,16 +78,13 @@ export default function Start({ projects, status, composer, onSuggest, onOpen, o
         <div className="recent" data-testid="recent">
           <span className="recent-label">Pick up where you left off</span>
           {recent.map((p) => {
-            const folder = folders[p.id]
-            const group = groupOf(status[p.id])
+            const chip = chips[p.id]
             return (
               <button type="button" key={p.id} className="recent-chip" onClick={() => onOpen(p)} data-testid={`recent-${p.id}`}>
-                {folder?.render !== undefined && <img src={fileUrl(p.id, folder.render.rel, folder.render.modifiedMs)} alt="" />}
+                {chip?.render !== undefined && <img src={fileUrl(p.id, chip.render.rel, chip.render.modifiedMs)} alt="" />}
                 <span className="recent-text">
                   <span className="recent-title">{p.title}</span>
-                  {status[p.id] !== undefined && folder !== undefined && (
-                    <span className="recent-detail">{group === 'drafts' && folder.guide ? 'guide ready' : STATE[group]}</span>
-                  )}
+                  {chip?.line !== undefined && <span className="recent-detail">{chip.line}</span>}
                 </span>
               </button>
             )
