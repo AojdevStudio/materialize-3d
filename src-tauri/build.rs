@@ -32,5 +32,6 @@ const APP_COMMANDS: &[&str] = &[
     "studio_flushed",
     "studio_open_files_privacy",
     "bambu_last_used",
+    "studio_printers",
     "sidecar",
 ];
