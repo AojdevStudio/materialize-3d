@@ -20,7 +20,6 @@ function toolsLine(toolchain: Toolchain): string {
   return toolchain.python === null ? `uv ${toolchain.uv}, no Python` : `uv ${toolchain.uv}, Python ${toolchain.python}`
 }
 
-/** The end of setup: what new chats run with, and Start a project. Each line fills in as its part answers. */
 export default function SetupReady({ next, onError }: StepProps) {
   const [agent, setAgent] = useState(CHECKING)
   const [slicer, setSlicer] = useState(CHECKING)

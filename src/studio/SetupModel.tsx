@@ -5,8 +5,7 @@ import { Mark } from './ModelPicker'
 import type { StepProps } from './Setup'
 import { AGENTS } from './SetupCheck'
 
-/** The models of the signed-in agents, and whether the person may turn Astra on, which needs ChatGPT. */
-type Offer = { models: ModelOption[]; chatgpt: boolean }
+type Offer = { models: ModelOption[]; chatgptSignedIn: boolean }
 
 const same = (a: ModelChoice, b: ModelChoice) => a.provider === b.provider && a.modelId === b.modelId
 
@@ -15,7 +14,7 @@ const same = (a: ModelChoice, b: ModelChoice) => a.provider === b.provider && a.
  * saves both as shown, so a person without ChatGPT saves Astra off.
  */
 export default function SetupModel({ next, back, onError }: StepProps) {
-  const [offer, setOffer] = useState<Offer>({ models: [], chatgpt: false })
+  const [offer, setOffer] = useState<Offer>({ models: [], chatgptSignedIn: false })
   const [picked, setPicked] = useState<ModelChoice | null>(null)
   const [astra, setAstra] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -26,11 +25,11 @@ export default function SetupModel({ next, back, onError }: StepProps) {
       ([listed, logins, { settings }]) => {
         if (!current) return
         const models = listed.filter((model) => AGENTS.some((agent) => agent.provider === model.provider))
-        const chatgpt = logins.some((login) => login.provider === 'openai-codex' && login.login !== null)
+        const chatgptSignedIn = logins.some((login) => login.provider === 'openai-codex' && login.login !== null)
         const first = models.find((model) => same(model, settings.model)) ?? models[0]
-        setOffer({ models, chatgpt })
+        setOffer({ models, chatgptSignedIn })
         setPicked(first === undefined ? null : { provider: first.provider, modelId: first.modelId })
-        setAstra(settings.astra && chatgpt)
+        setAstra(settings.astra && chatgptSignedIn)
       },
       (err: unknown) => current && onError(String(err)),
     )
@@ -82,12 +81,12 @@ export default function SetupModel({ next, back, onError }: StepProps) {
           type="checkbox"
           role="switch"
           checked={astra}
-          disabled={!offer.chatgpt}
-          aria-describedby={offer.chatgpt ? undefined : 'setup-astra-needs'}
+          disabled={!offer.chatgptSignedIn}
+          aria-describedby={offer.chatgptSignedIn ? undefined : 'setup-astra-needs'}
           onChange={(event) => setAstra(event.target.checked)}
         />
         <label htmlFor="setup-astra">Let the main agent ask GPT (Astra) for drawings</label>
-        {!offer.chatgpt && (
+        {!offer.chatgptSignedIn && (
           <span id="setup-astra-needs" className="setup-detail">
             Needs a ChatGPT sign-in.
           </span>

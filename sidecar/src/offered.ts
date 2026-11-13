@@ -1,6 +1,6 @@
 /**
  * The short list the model picker offers. It holds the newest models of each provider the app signs in to. The rows
- * are in menu order, with the short name the app shows and the line setup shows under it. This file imports only types, so the window can share it.
+ * are in menu order, with the short name the app shows. This file imports only types, so the window can share it.
  */
 import type { ModelChoice, ModelOption, ProviderId } from './protocol'
 

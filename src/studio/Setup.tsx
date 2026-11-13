@@ -8,14 +8,13 @@ import SetupReady from './SetupReady'
 /** What every step's screen gets. `signIn` is a running sign-in's question, and `signIns` counts finished sign-ins. */
 export type StepProps = { next: () => void; back: () => void; onError: (message: string) => void; signIn: ReactNode; signIns: number }
 
-/** The steps in order. Welcome opens setup and Ready closes it, so the step bar numbers only the steps between them. */
-const STEPS: readonly { step: Setup['step']; name: string; Screen: ComponentType<StepProps> }[] = [
-  { step: 'welcome', name: 'Welcome', Screen: Welcome },
-  { step: 'check', name: 'Check your Mac', Screen: SetupCheck },
-  { step: 'model', name: 'Pick a model', Screen: SetupModel },
-  { step: 'ready', name: 'Ready', Screen: SetupReady },
+const STEPS: readonly { step: Setup['step']; name: string; numbered: boolean; Screen: ComponentType<StepProps> }[] = [
+  { step: 'welcome', name: 'Welcome', numbered: false, Screen: Welcome },
+  { step: 'check', name: 'Check your Mac', numbered: true, Screen: SetupCheck },
+  { step: 'model', name: 'Pick a model', numbered: true, Screen: SetupModel },
+  { step: 'ready', name: 'Ready', numbered: false, Screen: SetupReady },
 ]
-const NUMBERED = STEPS.slice(1, -1)
+const NUMBERED = STEPS.filter((entry) => entry.numbered)
 
 type Props = Omit<StepProps, 'next' | 'back'> & {
   setup: Setup
@@ -27,7 +26,7 @@ type Props = Omit<StepProps, 'next' | 'back'> & {
 /** First-launch setup, on the step the store keeps, until it is done. A step this build lacks starts it over. */
 export default function SetupFlow({ setup, onSaved, error, ...shared }: Props) {
   const at = Math.max(0, STEPS.findIndex((entry) => entry.step === setup.step))
-  const { step, name, Screen } = STEPS[at]
+  const { step, name, numbered, Screen } = STEPS[at]
   const following = STEPS[at + 1]
   const before = STEPS[at - 1]
   const saving = useRef(false)
@@ -50,7 +49,7 @@ export default function SetupFlow({ setup, onSaved, error, ...shared }: Props) {
     <main className="setup" data-testid="setup">
       {error}
       <section className="setup-card" aria-label={name}>
-        {NUMBERED.some((entry) => entry.step === step) && (
+        {numbered && (
           <ol className="setup-steps">
             {NUMBERED.map((entry, index) => (
               <li key={entry.step} aria-current={entry.step === step ? 'step' : undefined}>
