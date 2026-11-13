@@ -9,11 +9,11 @@ import { checkSlicer, sidecar, type SlicerCheck } from './api'
 import type { StepProps } from './Setup'
 
 /** Each part of the check: its answer, or `failed`. A part still being checked is missing. */
-type Found = { logins?: Login[] | 'failed'; toolchain?: Toolchain | 'failed'; slicer?: SlicerCheck | 'failed' }
+export type Found = { logins?: Login[] | 'failed'; toolchain?: Toolchain | 'failed'; slicer?: SlicerCheck | 'failed' }
 
 type Status = 'checking' | 'failed' | 'ready' | 'needs' | 'required-missing' | 'optional-missing'
 type Action = { kind: 'signIn'; provider: ProviderId; key: boolean } | { kind: 'copy'; command: string }
-type Row = { id: string; name: string; icon: string; status: Status; label: string; detail: string; action?: Action }
+export type Row = { id: string; name: string; icon: string; status: Status; label: string; detail: string; action?: Action }
 
 export const AGENTS: readonly { id: string; provider: ProviderId; name: string; icon: string }[] = [
   { id: 'claude', provider: 'anthropic', name: 'Claude', icon: claude },
@@ -33,7 +33,13 @@ const unanswered = (row: Pick<Row, 'id' | 'name' | 'icon'>, failed: boolean, loo
     ? { ...row, status: 'failed', label: 'Not checked', detail: 'The check failed. Press Check again.' }
     : { ...row, status: 'checking', label: 'Checking', detail: `Looking for ${lookingFor}…` }
 
-function agentRows(logins: Found['logins'], refused: string | undefined): Row[] {
+/** A sign-in that a waiting turn was refused with counts as signed out, so its row offers the fix. */
+export const forgetRefused = (found: Found, refused: string | undefined): Found =>
+  Array.isArray(found.logins)
+    ? { ...found, logins: found.logins.map((login) => (login.provider === refused ? { ...login, login: null } : login)) }
+    : found
+
+export function agentRows(logins: Found['logins'], refused: string | undefined): Row[] {
   return AGENTS.map(({ id, provider, name, icon }) => {
     if (logins === undefined || logins === 'failed') return unanswered({ id, name, icon }, logins === 'failed', 'your sign-in')
     const login = loginOf(logins, provider)
@@ -57,7 +63,7 @@ function agentRows(logins: Found['logins'], refused: string | undefined): Row[] 
   })
 }
 
-function slicerRow(slicer: Found['slicer']): Row {
+export function slicerRow(slicer: Found['slicer']): Row {
   const row = { id: 'bambu', name: 'Bambu Studio', icon: bambu }
   if (slicer === undefined || slicer === 'failed') return unanswered(row, slicer === 'failed', 'Bambu Studio')
   switch (slicer.found) {
@@ -70,7 +76,7 @@ function slicerRow(slicer: Found['slicer']): Row {
   }
 }
 
-function buildRows(toolchain: Found['toolchain']): Row[] {
+export function buildRows(toolchain: Found['toolchain']): Row[] {
   const uvRow = { id: 'uv', name: 'uv', icon: uv }
   const pythonRow = { id: 'python', name: 'Python', icon: python }
   if (toolchain === undefined || toolchain === 'failed') {
@@ -147,9 +153,7 @@ export default function SetupCheck({ next, onError, signIn, signIns, refused }: 
     }
   }, [round, signIns])
 
-  const withoutRefused: Found = Array.isArray(found.logins)
-    ? { ...found, logins: found.logins.map((login) => (login.provider === refused ? { ...login, login: null } : login)) }
-    : found
+  const withoutRefused = forgetRefused(found, refused)
   const verdict = verdictOf(withoutRefused)
   const copy = (command: string) =>
     void navigator.clipboard.writeText(command).then(

@@ -42,5 +42,6 @@ Each feature file has an H1 and one paragraph of user-visible behavior, followed
 
 - [Setup](./setup.md) is the first launch: Welcome, then Check your Mac, with a sign-in, Bambu Studio, uv, and Python.
 - [Studio](./studio.md) is the whole app: chat with the agent, pictures, the preview and Files panel, and Open in Bambu Studio. Its recipe starts at the start screen.
+- [Settings](./settings.md) opens from the gear in the sidebar footer: each sign-in, the default model, Bambu Studio, the printer, uv, Python, and the projects folder.
 - [Updater](./updater.md) covers the update banner at launch, Later, the wait for the agent's work, and the failed check and failed install states.
 - [Site](./site.md) covers the landing site's Playwright tests on Google Chrome. They do not use `wd.ts`.

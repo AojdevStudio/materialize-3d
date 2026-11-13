@@ -26,7 +26,7 @@ The sidebar icons in `src/assets/icons/` are by Streamline (https://www.streamli
 
 The Attach icon, `src/assets/icons/attach.svg`, is Streamline's Form Edition Image Attach icon from its Freehand Color set, under the same CC BY 4.0 license. Its black parts were changed to draw in the current text color, so it shows in dark mode. Its blue stays as Streamline drew it.
 
-The run trace icons in `src/assets/icons/` are by Lucide (https://lucide.dev), from lucide-static 1.70.0, under the ISC License. The terminal icon comes from Feather by Cole Bemis, under the MIT License. Both licenses are reproduced at the end of this file. The files are as Lucide ships them.
+The run trace icons and the Settings gear in `src/assets/icons/` are by Lucide (https://lucide.dev), from lucide-static 1.70.0, under the ISC License. The terminal icon comes from Feather by Cole Bemis, under the MIT License. Both licenses are reproduced at the end of this file. The files are as Lucide ships them.
 
 | Icon | File |
 |---|---|
@@ -36,6 +36,7 @@ The run trace icons in `src/assets/icons/` are by Lucide (https://lucide.dev), f
 | Layers | `src/assets/icons/layers.svg` |
 | Message square | `src/assets/icons/message-square.svg` |
 | Circle x | `src/assets/icons/circle-x.svg` |
+| Settings | `src/assets/icons/settings.svg` |
 
 ## Model marks
 

@@ -10,7 +10,7 @@ use serde::Serialize;
 use tauri::http::{header, Response, StatusCode};
 
 use super::print_info::{self, PrintInfo};
-use super::{project_dir, META_DIR};
+use super::{project_dir, projects_root, META_DIR};
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -169,6 +169,19 @@ pub fn studio_reveal(project: String, rel: String) -> Result<(), String> {
     }
 }
 
+/// Where projects live, for Settings to show and reveal.
+#[tauri::command]
+pub fn studio_projects_folder() -> Result<String, String> {
+    made(projects_root()?)
+}
+
+/// Makes the projects folder when it is missing, since Reveal needs a folder that exists and the first project may not
+/// be made yet.
+fn made(root: PathBuf) -> Result<String, String> {
+    std::fs::create_dir_all(&root).map_err(|e| format!("making {}: {e}", root.display()))?;
+    Ok(root.to_string_lossy().into_owned())
+}
+
 /// Opens a 3MF (or STL) in Bambu Studio.
 #[tauri::command]
 pub fn studio_open_in_bambu(project: String, rel: String) -> Result<(), String> {
@@ -287,6 +300,14 @@ pub fn register_protocol<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn settings_gets_a_projects_folder_that_exists_before_the_first_project() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let root = home.path().join("Materialize 3D");
+        assert_eq!(made(root.clone()).expect("made"), root.to_string_lossy());
+        assert!(root.is_dir());
+    }
 
     #[test]
     fn each_project_is_its_own_host_and_there_is_no_shared_one() {

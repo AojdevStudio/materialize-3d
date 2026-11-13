@@ -10,6 +10,7 @@ import layers from '../assets/icons/layers-stacked.svg?raw'
 import layoutLeft from '../assets/icons/layout-left.svg?raw'
 import loading from '../assets/icons/loading-half.svg?raw'
 import star from '../assets/icons/rating-star.svg?raw'
+import gear from '../assets/icons/settings.svg?raw'
 
 const HEADERS: Record<Group, { name: string; icon: string }> = {
   working: { name: 'Working', icon: loading },
@@ -74,13 +75,14 @@ type Props = {
   printer: Printer | null
   onOpen: (project: Project) => void
   onNew: () => void
+  onSettings: () => void
   onError: (message: string) => void
   /** Hands each project's status on, so the start screen shows the same one. */
   onStatus: (status: Record<string, ProjectStatus>) => void
 }
 
 /** The projects sidebar: projects grouped by status, newest first in each group, with the time of their last activity. */
-export default function Sidebar({ projects, current, engine, printer, onOpen, onNew, onError, onStatus }: Props) {
+export default function Sidebar({ projects, current, engine, printer, onOpen, onNew, onSettings, onError, onStatus }: Props) {
   /** The sidecar's last status read: print files, the printed mark, and last activity are only known from it. */
   const [read, setRead] = useState<Record<string, ProjectStatus>>({})
   /**
@@ -306,6 +308,9 @@ export default function Sidebar({ projects, current, engine, printer, onOpen, on
         ))}
       </div>
       <footer className="sessions-footer">
+        <button type="button" className="icon-button" aria-label="Settings" onClick={onSettings} data-testid="settings-open">
+          <Icon svg={gear} />
+        </button>
         <ThemeToggle />
         <p className="engine" data-testid="engine" title={engine}>
           {engine}
