@@ -1,6 +1,6 @@
 /**
- * The short list the model picker offers: the newest models of each provider the app signs in to, in menu order, by
- * the short name the app shows. It imports only types, so the window's code can share it.
+ * The short list the model picker offers. It holds the newest models of each provider the app signs in to. The rows
+ * are in menu order, with the short name the app shows. This file imports only types, so the window can share it.
  */
 import type { ModelChoice, ModelOption, ProviderId } from './protocol'
 
@@ -11,6 +11,9 @@ export const OFFERED: readonly (ModelOption & { provider: ProviderId })[] = [
   { provider: 'openai-codex', modelId: 'gpt-6.1-sol', name: 'GPT 6.1 Sol' },
 ]
 
-/** The name the app shows for a model: its short name, or its id when the list has none, as for a model an older version saved. */
+/**
+ * The name the app shows for a model. It is the short name, or the id when the list has none. A model that an older
+ * version saved can be such a model.
+ */
 export const modelName = ({ provider, modelId }: ModelChoice): string =>
   OFFERED.find((m) => m.provider === provider && m.modelId === modelId)?.name ?? modelId

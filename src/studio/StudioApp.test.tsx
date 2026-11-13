@@ -40,7 +40,6 @@ const projectA = { id: '2026-11-06-a', conversation: 2, title: 'Project A', crea
 const projectB = { id: '2026-11-06-b', conversation: 3, title: 'Project B', createdMs: 1 }
 const view = (project: string, more: object = {}) => ({ project, entries: [], running: false, waiting: null, turn: null, seq: 1, ...more })
 const settings = { model: { provider: 'anthropic', modelId: 'claude-opus-5-5' }, thinking: 'high', printer: {} }
-/** The models the mocked sidecar lists for the signed-in providers, by short name. */
 const models = [
   { provider: 'anthropic', modelId: 'claude-opus-5-5', name: 'Opus 5.5' },
   { provider: 'anthropic', modelId: 'claude-sonnet-5-5', name: 'Sonnet 5.5' },
