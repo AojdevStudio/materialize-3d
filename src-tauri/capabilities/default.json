@@ -23,6 +23,7 @@
     "allow-studio-flush-failed",
     "allow-studio-flushed",
     "allow-studio-open-files-privacy",
+    "allow-bambu-last-used",
     "allow-sidecar"
   ]
 }

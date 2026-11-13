@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
-import type { Method, Methods, SidecarEvent } from '../../sidecar/src/protocol'
+import type { Method, Methods, Plate, SidecarEvent } from '../../sidecar/src/protocol'
 
 /** The window's one call into the sidecar. A call made while it starts waits for it. */
 export const sidecar = <M extends Method>(method: M, params: Methods[M]['params']) =>
@@ -45,8 +45,32 @@ export interface ProjectFile {
   print?: PrintInfo
 }
 
-/** The project folder's own files: the native edges Rust keeps. */
+/**
+ * A preset by the name Bambu Studio shows. `system` is the Bambu Lab preset a slice can run with: the same name, or for
+ * a preset the person made, the one it was made from. It is `null` for a preset the person made from nothing.
+ */
+export interface BambuPreset {
+  name: string
+  system: string | null
+}
+
+/**
+ * What the person last used in Bambu Studio. `printer` and `nozzle` are the two parts of the printer preset's name,
+ * as in `Bambu Lab P2S` and `0.4`. Bambu Studio may have recorded no quality (`process`), filament, or plate.
+ */
+export interface BambuLastUsed {
+  printer: string
+  nozzle: string
+  machine: BambuPreset
+  process: BambuPreset | null
+  filament: BambuPreset | null
+  plate: Plate | null
+}
+
+/** The project folder's own files, and Bambu Studio's settings: the native edges Rust keeps. */
 export const studio = {
+  /** `null` when Bambu Studio has never run on this computer, or its last printer is not a Bambu Lab one. */
+  bambuLastUsed: () => invoke<BambuLastUsed | null>('bambu_last_used'),
   files: (project: string) => invoke<ProjectFile[]>('studio_files', { project }),
   saveBytes: (project: string, name: string, bytes: Uint8Array) =>
     invoke<string>('studio_save_bytes', bytes, { headers: { 'm3d-project': project, 'm3d-name': encodeURIComponent(name) } }),
