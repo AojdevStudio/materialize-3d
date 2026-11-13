@@ -73,10 +73,30 @@ export interface BambuLastUsed {
   plate: Plate | null
 }
 
+/**
+ * A printer the validated Bambu Studio can slice for, with the plates it takes. Each nozzle is one printer preset, with
+ * the qualities (`processes`) and filaments that fit it, and the ones Bambu Studio starts it with.
+ */
+export interface PrinterChoice {
+  printer: string
+  plates: Plate[]
+  defaultPlate: Plate
+  nozzles: {
+    nozzle: string
+    machine: string
+    processes: string[]
+    process: string
+    filaments: string[]
+    filament: string
+  }[]
+}
+
 /** The project folder's own files, and Bambu Studio's settings: the native edges Rust keeps. */
 export const studio = {
   /** `null` when Bambu Studio has never run on this computer, or its last printer is not a Bambu Lab one. */
   bambuLastUsed: () => invoke<BambuLastUsed | null>('bambu_last_used'),
+  /** Fails when the validated Bambu Studio is not installed. */
+  printers: () => invoke<PrinterChoice[]>('studio_printers'),
   files: (project: string) => invoke<ProjectFile[]>('studio_files', { project }),
   saveBytes: (project: string, name: string, bytes: Uint8Array) =>
     invoke<string>('studio_save_bytes', bytes, { headers: { 'm3d-project': project, 'm3d-name': encodeURIComponent(name) } }),

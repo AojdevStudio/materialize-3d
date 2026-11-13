@@ -3,6 +3,7 @@ import type { AppState, Setup } from '../../sidecar/src/protocol'
 import { sidecar } from './api'
 import SetupCheck from './SetupCheck'
 import SetupModel from './SetupModel'
+import SetupPrinter from './SetupPrinter'
 import SetupReady from './SetupReady'
 
 /**
@@ -22,6 +23,7 @@ const STEPS: readonly { step: Setup['step']; name: string; numbered: boolean; Sc
   { step: 'welcome', name: 'Welcome', numbered: false, Screen: Welcome },
   { step: 'check', name: 'Check your Mac', numbered: true, Screen: SetupCheck },
   { step: 'model', name: 'Pick a model', numbered: true, Screen: SetupModel },
+  { step: 'printer', name: 'Your printer', numbered: true, Screen: SetupPrinter },
   { step: 'ready', name: 'Ready', numbered: false, Screen: SetupReady },
 ]
 const NUMBERED = STEPS.filter((entry) => entry.numbered)

@@ -1557,6 +1557,63 @@ fieldset.setup-group {
   margin: 0;
 }
 
+.setup-printer {
+  margin: 20px 0 0;
+}
+
+.setup-printer div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--s-line);
+}
+
+.setup-printer dt {
+  color: var(--s-muted);
+}
+
+.setup-printer dd {
+  margin: 0;
+  text-align: right;
+}
+
+.setup-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+  margin: 20px 0 0;
+  padding: 0;
+  border: none;
+}
+
+.setup-fields label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.setup-fields select {
+  appearance: none;
+  width: 100%;
+  padding: 8px 32px 8px 12px;
+  border: 1px solid var(--s-line);
+  border-radius: 6px;
+  background: var(--s-raised)
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' fill='none' stroke='%236b6b6b' stroke-width='1.5'%3E%3Cpath d='M1 1l4 4 4-4'/%3E%3C/svg%3E")
+    right 12px center no-repeat;
+  color: inherit;
+  font: inherit;
+  font-size: 14px;
+}
+
+.setup-fields select:focus-visible {
+  outline: 2px solid var(--s-accent);
+  outline-offset: 2px;
+}
+
 .setup-needed {
   --setup-needed-bg: #fdf3e7;
   --setup-needed-text: #7e5310;
