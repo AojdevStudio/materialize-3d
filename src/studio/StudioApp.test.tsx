@@ -1420,6 +1420,45 @@ describe('StudioApp', () => {
     expect(await projectList().findByText('Project A')).toBeTruthy()
   })
 
+  it('reads the saved state again after a pause when the first read fails, so Send comes on with no engine restart', async () => {
+    let reads = 0
+    mockSidecar({ 'state.get': (_, real) => (++reads === 1 ? Promise.reject('The store was busy.') : real()) })
+    render(<StudioApp />)
+    type('A clip')
+    expect((await screen.findByRole('alert')).textContent).toContain('The store was busy.')
+    expect((screen.getByTestId('send') as HTMLButtonElement).disabled).toBe(true)
+    await waitFor(() => expect((screen.getByTestId('send') as HTMLButtonElement).disabled).toBe(false), { timeout: 5_000 })
+    expect(screen.queryByRole('alert')).toBeNull()
+  }, 10_000)
+
+  it('takes only the first answer to the startup reads, so a late one never brings back a sent start picture', async () => {
+    let reads = 0
+    let answerFirst: () => void = () => {}
+    const store = mockSidecar(
+      {
+        'state.get': (_, real) => {
+          if (++reads !== 1) return real()
+          const before = real()
+          return new Promise((resolve) => (answerFirst = () => resolve(before)))
+        },
+      },
+      [projectB],
+      { new: { text: '', attachments: ['/Users/me/pic.jpg'] } },
+    )
+    render(<StudioApp />)
+    await emit({ type: 'ready', version: '1.2.3' })
+    await waitFor(() => expect(screen.getByTestId('attachments').textContent).toContain('pic.jpg'))
+    await waitFor(() => expect((screen.getByTestId('send') as HTMLButtonElement).disabled).toBe(false))
+    fireEvent.click(screen.getByTestId('send'))
+    await waitFor(() => expect(store.sent).toHaveLength(1))
+    await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('New part'))
+    await act(async () => answerFirst())
+    await pause(500)
+    expect(store.drafts.new).toBeUndefined()
+    fireEvent.click(screen.getByTestId('new-project'))
+    expect(screen.queryByTestId('attachments')).toBeNull()
+  })
+
   it('keeps a picture the person took out and put back while its send was on its way', async () => {
     const sending = held()
     mockSidecar({ 'chat.send': sending.call }, [projectA, projectB], { [projectA.id]: { text: 'A clip like this', attachments: ['/Users/me/pic.jpg'] } })

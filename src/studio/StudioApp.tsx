@@ -25,6 +25,9 @@ const EMPTY: Draft = { text: '', attachments: [] }
 const QUIT_SAVE_TRIES = 4
 const QUIT_RETRY_MS = 3000
 
+/** How long a failed first read of the saved state waits before it tries again. */
+const STATE_RETRY_MS = 3000
+
 /**
  * A screen's unsent message as the window holds it. The sidecar owns the draft and the send: the window only knows
  * whether the screen changed since its last completed save, and that save's revision, which a send names.
@@ -90,6 +93,8 @@ export default function StudioApp() {
   const [setup, setSetup] = useState<Setup | null>(null)
   /** Counts setup's saves, so a state read that started before the newest save never puts back the setup it replaced. */
   const setupSaves = useRef(0)
+  /** Whether the window took the saved state. Only the first answer to a startup read is taken. */
+  const stateTaken = useRef(false)
   /** What the agent needs before a send, from the sidecar's check. Null until the check answers, and Send waits. */
   const [needs, setNeeds] = useState<Need[] | null>(null)
   /** The folder the chats from before the store could not be read from, when macOS keeps it from the app. */
@@ -258,18 +263,29 @@ export default function StudioApp() {
   }
 
   useEffect(() => {
-    // The first read of the saved state. If the engine stopped before it answered, it is read again once the engine is
-    // back, so the projects and drafts still come.
-    let stateRead = false
+    // The first read of the saved state, which Send waits for. A read that fails is tried again after a pause, and at
+    // once when the engine is back. Only the first answer is taken. Every startup read began before a send could go,
+    // so a later answer would bring back what that send took.
+    let retry: number | undefined
+    let failed: string | null = null
     const readState = () => {
       const saves = setupSaves.current
       return sidecar('state.get', {})
         .then((state) => {
-          stateRead = true
+          if (stateTaken.current) return
+          stateTaken.current = true
           takeState(state)
           if (saves === setupSaves.current) setSetup(state.setup)
+          if (failed !== null) setError((shown) => (shown === failed ? null : shown))
         })
-        .catch((err: unknown) => setError(String(err)))
+        .catch((err: unknown) => {
+          failed = String(err)
+          setError(failed)
+          window.clearTimeout(retry)
+          retry = window.setTimeout(() => {
+            if (!stateTaken.current) void readState()
+          }, STATE_RETRY_MS)
+        })
     }
     void readState()
     checkReady()
@@ -286,7 +302,7 @@ export default function StudioApp() {
           checkReady()
           loadModels()
           for (const wake of readyWaiters.current.splice(0)) wake()
-          if (!stateRead) void readState()
+          if (!stateTaken.current) void readState()
           // An engine that started again holds what a crash cut off from the window, such as a turn's last entry, so
           // the open chat is read again. The changes that arrive meanwhile are kept, as when it first opened.
           const project = currentId.current
@@ -333,6 +349,7 @@ export default function StudioApp() {
       .then(({ version }) => engineChanged || setEngine(`Engine ${version}`))
       .catch((err: unknown) => engineChanged || setEngine(String(err)))
     return () => {
+      window.clearTimeout(retry)
       void unlisten.then((stop) => stop())
     }
   }, [])
