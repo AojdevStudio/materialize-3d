@@ -240,7 +240,6 @@ export default function Sidebar({ projects, current, engine, printer, onOpen, on
           autoFocus
           onChange={(event) => setSearch(event.target.value)}
           onKeyDown={(event) => event.key === 'Escape' && setSearch(null)}
-          onBlur={() => search === '' && setSearch(null)}
         />
       )}
       <div className="groups">

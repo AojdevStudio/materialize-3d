@@ -509,6 +509,11 @@ describe('StudioApp', () => {
     fireEvent.keyDown(field, { key: 'Escape' })
     expect(projectList().queryByRole('searchbox')).toBeNull()
     expect(titles()).toEqual(['Project A', 'Project B', 'Cable clip'])
+    fireEvent.click(projectList().getByRole('button', { name: 'Search projects' }))
+    fireEvent.change(projectList().getByRole('searchbox'), { target: { value: 'clip' } })
+    fireEvent.click(projectList().getByRole('button', { name: 'Search projects' }))
+    expect(projectList().queryByRole('searchbox')).toBeNull()
+    expect(titles()).toEqual(['Project A', 'Project B', 'Cable clip'])
   })
 
   it('names the chosen printer at the bottom of the sidebar once the saved state comes', async () => {
