@@ -16,7 +16,7 @@ const requirements: readonly Requirement[] = [
   },
   {
     label: "AI sign-in",
-    text: "One inference provider: Claude, ChatGPT, or OpenCode Go, by subscription or by API key. Your provider's plan or API charges apply. The app is free.",
+    text: "A sign-in to Claude or ChatGPT. Claude takes a subscription sign-in or an API key. ChatGPT takes its own sign-in. Your provider's plan or API charges apply. The app is free.",
   },
   {
     label: "Bambu Studio",
@@ -25,7 +25,7 @@ const requirements: readonly Requirement[] = [
   { label: "uv", text: "uv and a Python it can run." },
   {
     label: "Printer",
-    text: "To print, a Bambu Lab P2S with a 0.4 mm nozzle. The agent slices for its presets. Materialize 3D does not send jobs to the printer.",
+    text: "To print, a Bambu Lab printer that Bambu Studio 02.08.02.61 has presets for. The agent slices for the printer you pick in setup. Materialize 3D does not send jobs to the printer.",
   },
 ];
 
@@ -53,11 +53,11 @@ const installSteps = [
       </>
     )}
   </>,
-  <>Add your Anthropic or OpenAI API key in Settings, under Agent.</>,
+  <>Follow setup: sign in to Claude or ChatGPT, pick a model, and confirm your printer.</>,
   <>
-    If Settings, under Bambu Studio, does not show version{" "}
-    <a href={release.bambuStudio.releaseUrl}>{release.bambuStudio.version}</a>, click Choose Bambu Studio and
-    select that copy.
+    If Check your Mac does not find Bambu Studio{" "}
+    <a href={release.bambuStudio.releaseUrl}>{release.bambuStudio.version}</a>, install that version and click Check
+    again.
   </>,
 ];
 

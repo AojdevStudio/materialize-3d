@@ -163,12 +163,15 @@ for (const theme of ["light", "dark"] as const) {
   });
 }
 
-test("how it works tells the chat studio story in order, and the page says no release has it yet", async ({ page }) => {
+test("how it works tells the chat studio story in order, and the page says no release has it only while that is true", async ({ page }) => {
   await open(page);
   await expect(page.locator("#how h3")).toHaveText(["Describe", "Make", "Look", "Print"]);
   const text = await page.locator("body").innerText();
-  expect(text).toContain("The chat studio is not in a release yet.");
-  expect(text).toContain(`This download is ${release.version}, the earlier sign app.`);
+  if (release.studio) expect(text).not.toContain("The chat studio is not in a release yet.");
+  else {
+    expect(text).toContain("The chat studio is not in a release yet.");
+    expect(text).toContain(`This download is ${release.version}, the earlier sign app.`);
+  }
   expect(text).not.toMatch(/\bMCP\b/);
 });
 
