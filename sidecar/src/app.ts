@@ -36,11 +36,8 @@ export async function runSidecar({ argv, addProviders }: SidecarOptions): Promis
   const version = values['app-version'] ?? 'dev'
 
   const host = new Host((line) => process.stdout.write(line))
-  // The credentials keep their index in the store, which needs the models to open, so the index is reached late.
-  const credentials = new KeychainCredentials(host, {
-    logins: () => store.logins(),
-    setLogin: (provider, kind) => store.setLogin(provider, kind),
-  })
+  // The credentials count each save in the store, which needs the models to open, so the store is reached late.
+  const credentials = new KeychainCredentials(host, (provider) => store.loginSaved(provider))
   const models = inferenceModels(credentials)
   addProviders?.(models)
 

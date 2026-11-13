@@ -11,9 +11,8 @@ import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
 import type { Models } from '@earendil-works/pi-ai'
 import { type Conversation, defineDoc, type HarnessOptions, Harness, type Registry } from '@earendil-works/pi-durable'
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node'
-import type { LoginIndex } from './inference'
 import type { LegacyProject } from './legacy'
-import { type Draft, type LoginKind, type ModelChoice, type Printer, type Project, type SavedDraft, type Settings, type Setup, START, type StoredState, type Turn, type Waiting } from './protocol'
+import { type Draft, type ModelChoice, type Printer, type Project, type SavedDraft, type Settings, type Setup, START, type StoredState, type Turn, type Waiting } from './protocol'
 import { guideTemplate } from './templates/guide' with { type: 'macro' }
 
 const context = BACKGROUND_CONTEXT
@@ -129,17 +128,6 @@ export const LoginSavesDoc = defineDoc<{ saves: Record<string, number> }>({
   checkpointWhen: always,
 })
 
-/** Which providers have a login in the Keychain. Never the secret itself. */
-const LoginsDoc = defineDoc<{ logins: Record<string, LoginKind> }>({
-  kind: 'm3d.logins',
-  version: 1,
-  scope: 'conversation',
-  history: 'latest',
-  fork: 'initial',
-  initial: () => ({ logins: {} }),
-  checkpointWhen: always,
-})
-
 /** The store's SQLite storage, through Pi's own async adapter, which queues every operation and transaction. */
 export const openStorage = (path: string) => openNodeSqliteStorage(path)
 
@@ -184,7 +172,7 @@ export interface StoreOptions {
   env: NonNullable<HarnessOptions['env']>
 }
 
-export class Store implements LoginIndex {
+export class Store {
   readonly #lock: DatabaseSync
   readonly harness: Harness
   readonly root: Conversation
@@ -357,19 +345,10 @@ export class Store implements LoginIndex {
     return project.id
   }
 
-  async logins(): Promise<Record<string, LoginKind>> {
-    return (await this.harness.snapshot(LoginsDoc, this.root.id, context))?.logins ?? {}
-  }
-
-  async setLogin(provider: string, kind: LoginKind | undefined): Promise<void> {
+  async loginSaved(provider: string): Promise<void> {
     await this.harness.commit(async (tx) => {
-      const { logins } = await tx.doc(LoginsDoc, this.root.id)
-      if (kind === undefined) delete logins[provider]
-      else {
-        logins[provider] = kind
-        const { saves } = await tx.doc(LoginSavesDoc, this.root.id)
-        saves[provider] = (saves[provider] ?? 0) + 1
-      }
+      const { saves } = await tx.doc(LoginSavesDoc, this.root.id)
+      saves[provider] = (saves[provider] ?? 0) + 1
     }, context)
   }
 

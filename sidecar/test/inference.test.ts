@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { InMemoryCredentialStore, type OAuthAuth } from '@earendil-works/pi-ai'
 import { inferenceModels, isLoginFailure, KeychainCredentials, keyCredential, Logins } from '../src/inference'
-import type { LoginEvent, LoginKind } from '../src/protocol'
+import type { LoginEvent } from '../src/protocol'
 import { spawnSidecar } from './sidecar'
 
 const TOKEN = 'sk-proxy-SENTINEL-7f3a9c'
@@ -33,6 +33,37 @@ describe('logins', () => {
     await reopened.call('auth.logout', { provider: 'anthropic' })
     expect(keychain.has('anthropic')).toBe(false)
     await reopened.quit()
+  })
+
+  test('a login removed from the Keychain outside the app is missing at the next start, before any send', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'm3d-login-'))
+    const keychain = new Map<string, string>()
+    const app = spawnSidecar(join(dir, 'state'), join(dir, 'projects'), keychain)
+    await app.next()
+    await app.call('auth.setKey', { provider: 'anthropic', key: TOKEN, baseUrl: 'http://127.0.0.1:8317' })
+    await app.quit()
+
+    keychain.delete('anthropic')
+    const reopened = spawnSidecar(join(dir, 'state'), join(dir, 'projects'), keychain)
+    await reopened.next()
+    expect(await reopened.call('auth.status')).toContainEqual({ provider: 'anthropic', name: 'Anthropic', login: null, kinds: ['api_key', 'oauth'] })
+    expect(await reopened.call('setup.check')).toContainEqual({ kind: 'login', provider: 'anthropic', name: 'Anthropic', fix: 'Sign in to Anthropic before you send.' })
+    await reopened.quit()
+  })
+
+  test('a damaged Keychain login reads as signed out for its own provider only, and a new sign-in replaces it', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'm3d-login-'))
+    const keychain = new Map<string, string>([['opencode-go', 'not a login']])
+    const app = spawnSidecar(join(dir, 'state'), join(dir, 'projects'), keychain)
+    await app.next()
+    await app.call('auth.setKey', { provider: 'anthropic', key: TOKEN, baseUrl: 'http://127.0.0.1:8317' })
+    const status = (await app.call('auth.status')) as { provider: string; login: unknown }[]
+    expect(status.find((row) => row.provider === 'anthropic')?.login).not.toBeNull()
+    expect(status.find((row) => row.provider === 'opencode-go')?.login).toBeNull()
+    await app.call('auth.setKey', { provider: 'opencode-go', key: 'og-key' })
+    expect(JSON.parse(keychain.get('opencode-go') ?? '{}')).toEqual({ type: 'api_key', key: 'og-key' })
+    await app.quit()
+    rmSync(dir, { recursive: true, force: true })
   })
 
   test('a proxy login sends the token as a bearer token to the proxy', async () => {
@@ -202,14 +233,7 @@ describe('the Keychain credential store', () => {
       if (method === 'keychain.delete') keychain.delete(params.account)
       return null
     }
-    const logins: Record<string, LoginKind> = {}
-    const store = new KeychainCredentials({ request } as never, {
-      logins: async () => logins,
-      setLogin: async (provider, kind) => {
-        if (kind === undefined) delete logins[provider]
-        else logins[provider] = kind
-      },
-    })
+    const store = new KeychainCredentials({ request } as never, async () => {})
     const credential = { type: 'oauth' as const, refresh: 'r', access: 'a', expires: 1 }
 
     const before = new AbortController()
@@ -224,13 +248,12 @@ describe('the Keychain credential store', () => {
       }, { signal: during.signal }),
     ).rejects.toThrow()
     expect(keychain.size).toBe(0)
-    expect(logins).toEqual({})
 
     await store.modify('anthropic', async () => credential)
     expect(JSON.parse(keychain.get('anthropic') ?? '{}')).toEqual(credential)
   })
 
-  test('a save cancelled while its login was being listed puts the earlier login back in both places', async () => {
+  test('a save cancelled while it was counted puts the earlier login back', async () => {
     const keychain = new Map<string, string>()
     const request = async (method: string, params: { account: string; secret?: string }) => {
       if (method === 'keychain.get') return { secret: keychain.get(params.account) ?? null }
@@ -238,21 +261,15 @@ describe('the Keychain credential store', () => {
       if (method === 'keychain.delete') keychain.delete(params.account)
       return null
     }
-    const logins: Record<string, LoginKind> = {}
-    const listing = Promise.withResolvers<void>()
+    const counting = Promise.withResolvers<void>()
     const finish = Promise.withResolvers<void>()
     let gate = false
-    const store = new KeychainCredentials({ request } as never, {
-      logins: async () => logins,
-      setLogin: async (provider, kind) => {
-        if (gate) {
-          gate = false
-          listing.resolve()
-          await finish.promise
-        }
-        if (kind === undefined) delete logins[provider]
-        else logins[provider] = kind
-      },
+    const store = new KeychainCredentials({ request } as never, async () => {
+      if (gate) {
+        gate = false
+        counting.resolve()
+        await finish.promise
+      }
     })
     const earlier = { type: 'api_key' as const, key: 'earlier' }
     await store.modify('anthropic', async () => earlier)
@@ -260,12 +277,11 @@ describe('the Keychain credential store', () => {
     const cancel = new AbortController()
     gate = true
     const save = store.modify('anthropic', async () => ({ type: 'oauth' as const, refresh: 'r', access: 'a', expires: 1 }), { signal: cancel.signal })
-    await listing.promise
+    await counting.promise
     cancel.abort()
     finish.resolve()
     await expect(save).rejects.toThrow()
     expect(JSON.parse(keychain.get('anthropic') ?? '{}')).toEqual(earlier)
-    expect(logins).toEqual({ anthropic: 'api_key' })
   })
 
   test('a save cancelled while the Keychain wrote it puts the earlier login back', async () => {
@@ -286,14 +302,7 @@ describe('the Keychain credential store', () => {
       if (method === 'keychain.delete') keychain.delete(params.account)
       return null
     }
-    const logins: Record<string, LoginKind> = {}
-    const store = new KeychainCredentials({ request } as never, {
-      logins: async () => logins,
-      setLogin: async (provider, kind) => {
-        if (kind === undefined) delete logins[provider]
-        else logins[provider] = kind
-      },
-    })
+    const store = new KeychainCredentials({ request } as never, async () => {})
     const earlier = { type: 'api_key' as const, key: 'earlier' }
     await store.modify('openai-codex', async () => earlier)
 
@@ -305,6 +314,5 @@ describe('the Keychain credential store', () => {
     finish.resolve()
     await expect(save).rejects.toThrow()
     expect(JSON.parse(keychain.get('openai-codex') ?? '{}')).toEqual(earlier)
-    expect(logins).toEqual({ 'openai-codex': 'api_key' })
   })
 })
