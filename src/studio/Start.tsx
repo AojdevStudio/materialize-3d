@@ -9,7 +9,7 @@ const SUGGESTIONS = ['A mount or bracket', 'A replacement part', 'A desk organiz
 /** How many recent projects the start screen offers: as many as fit on one row beside the label. */
 const RECENT = 2
 
-/** A recent project's state under its title, by its sidebar group. A draft with a guide says so instead. */
+/** A recent project's state under its title, by its sidebar group. */
 const STATE: Record<Group, string> = { working: 'working', ready: '3MF ready', printed: 'printed', drafts: 'draft' }
 
 /** What a recent project's folder shows: its newest render, and whether it has a guide. */

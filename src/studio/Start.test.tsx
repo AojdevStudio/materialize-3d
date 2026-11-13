@@ -36,7 +36,6 @@ describe('Start', () => {
     ['printed', status(1, { printed: true, printFiles: 1 }), [file('guide.html')]],
     ['3MF ready', status(1, { printFiles: 1 }), [file('guide.html')]],
     ['guide ready', status(1), [file('guide-adapter.html')]],
-    // A drawing is not a guide, and neither is a guide page in a subfolder or among the person's own files.
     ['draft', status(1), [file('drawing.html'), file('parts/guide.html'), file('refs/guide.html')]],
   ])('says "%s" under a recent project in that state', async (line, partStatus, files) => {
     const recent = start({ part: { status: partStatus, files } })
