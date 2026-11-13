@@ -1,7 +1,7 @@
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { type AppState, type Draft, type LoginEvent, type ModelChoice, type ModelOption, type Need, type Project, type ProjectStatus, START, type ChatView as View } from '../../sidecar/src/protocol'
+import { type AppState, type Draft, type LoginEvent, type ModelChoice, type ModelOption, type Need, type Printer, type Project, type ProjectStatus, START, type ChatView as View } from '../../sidecar/src/protocol'
 import { firstView, onQuitFlush, onSidecarEvent, panelFiles, sidecar, studio, viewOf, type PanelView, type ProjectFile } from './api'
 import { ChatView } from './Chat'
 import { Composer, releaseAttachment, savedAttachment, type PastedPicture } from './Composer'
@@ -93,6 +93,8 @@ export default function StudioApp() {
   const [models, setModels] = useState<ModelOption[]>([])
   /** The model a project made on the start screen runs on. Null until the saved state is read. */
   const [defaultModel, setDefaultModel] = useState<ModelChoice | null>(null)
+  /** The printer the next slice runs for, from the saved state. Null until it is read. */
+  const [printer, setPrinter] = useState<Printer | null>(null)
   /** Each project's status as the sidebar keeps it, for the start screen's recent projects. */
   const [status, setStatus] = useState<Record<string, ProjectStatus>>({})
   const sendingNow = useRef(false)
@@ -213,6 +215,7 @@ export default function StudioApp() {
       }
     }
     setDefaultModel(state.settings.model)
+    setPrinter(state.settings.printer)
     takeProjects(state)
   }
 
@@ -615,6 +618,7 @@ export default function StudioApp() {
         projects={projects}
         current={current?.id ?? null}
         engine={engine}
+        printer={printer}
         onOpen={(project) => void openProject(project)}
         onNew={() => show(null)}
         onError={setError}

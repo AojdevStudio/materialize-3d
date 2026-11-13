@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { Project, ProjectStatus } from '../../sidecar/src/protocol'
+import type { Printer, Project, ProjectStatus } from '../../sidecar/src/protocol'
 import { onSidecarEvent, sidecar } from './api'
-import { ago, detail, type Group, groupProjects, lastActivity } from './sidebarGroups'
+import { ago, detail, type Group, groupProjects, lastActivity, printerName } from './sidebarGroups'
 import { useTheme } from './theme'
 import mark from '../assets/brand/mark-small-32.svg'
+import bambuMark from '../assets/icons/bambulab.svg?raw'
 import blocks from '../assets/icons/module-three.svg?raw'
 import layers from '../assets/icons/layers-stacked.svg?raw'
 import layoutLeft from '../assets/icons/layout-left.svg?raw'
@@ -69,6 +70,8 @@ type Props = {
   projects: Project[]
   current: string | null
   engine: string
+  /** The printer the next slice runs for. Null until the saved state is read. */
+  printer: Printer | null
   onOpen: (project: Project) => void
   onNew: () => void
   onError: (message: string) => void
@@ -77,7 +80,7 @@ type Props = {
 }
 
 /** The projects sidebar: projects grouped by status, newest first in each group, with the time of their last activity. */
-export default function Sidebar({ projects, current, engine, onOpen, onNew, onError, onStatus }: Props) {
+export default function Sidebar({ projects, current, engine, printer, onOpen, onNew, onError, onStatus }: Props) {
   /** The sidecar's last status read: print files, the printed mark, and last activity are only known from it. */
   const [read, setRead] = useState<Record<string, ProjectStatus>>({})
   /**
@@ -90,6 +93,8 @@ export default function Sidebar({ projects, current, engine, onOpen, onNew, onEr
   const [now, setNow] = useState(() => Date.now())
   const [menuFor, setMenuFor] = useState<string | null>(null)
   const [collapsed, setCollapsed] = useState(false)
+  /** The search field's text while it is open. Null when it is closed. */
+  const [search, setSearch] = useState<string | null>(null)
   const menu = useRef<HTMLLIElement>(null)
   /** One status read at a time. A read asked for meanwhile runs once that one ends, so the newest state always lands. */
   const reading = useRef<{ busy: boolean; again: boolean }>({ busy: false, again: false })
@@ -170,7 +175,11 @@ export default function Sidebar({ projects, current, engine, onOpen, onNew, onEr
       Object.fromEntries(Object.entries(read).map(([id, s]) => [id, { ...s, running: live[id]?.running ?? s.running }])),
     [read, live],
   )
-  const groups = useMemo(() => groupProjects(projects, status), [projects, status])
+  const query = search?.trim().toLowerCase() ?? ''
+  const groups = useMemo(
+    () => groupProjects(query === '' ? projects : projects.filter((p) => p.title.toLowerCase().includes(query)), status),
+    [projects, status, query],
+  )
   useEffect(() => onStatus(status), [status, onStatus])
 
   const panelToggle = (
@@ -203,11 +212,44 @@ export default function Sidebar({ projects, current, engine, onOpen, onNew, onEr
         </div>
         {panelToggle}
       </div>
-      <button type="button" className="new-project primary" onClick={onNew} data-testid="new-project">
-        <span aria-hidden="true">+</span>
-        New project
-      </button>
+      <div className="side-actions">
+        <button type="button" className="new-project primary" onClick={onNew} data-testid="new-project">
+          <span aria-hidden="true">+</span>
+          New project
+        </button>
+        <button
+          type="button"
+          className="search-button"
+          aria-label="Search projects"
+          aria-expanded={search !== null}
+          onClick={() => setSearch(search === null ? '' : null)}
+        >
+          <svg viewBox="0 0 24 24" width={16} height={16} fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" aria-hidden="true">
+            <circle cx={11} cy={11} r={6.5} />
+            <path d="M16 16l4.5 4.5" />
+          </svg>
+        </button>
+      </div>
+      {search !== null && (
+        <input
+          type="search"
+          className="side-search"
+          aria-label="Search projects"
+          placeholder="Search projects"
+          value={search}
+          autoFocus
+          onChange={(event) => setSearch(event.target.value)}
+          onKeyDown={(event) => event.key === 'Escape' && setSearch(null)}
+          onBlur={() => search === '' && setSearch(null)}
+        />
+      )}
       <div className="groups">
+        <h2 className="group-header" data-testid="projects-row">
+          <Icon svg={blocks} />
+          <span className="group-name">Projects</span>
+          <span className="group-count">{projects.length}</span>
+        </h2>
+        {query !== '' && groups.length === 0 && <p className="no-match">No projects match.</p>}
         {groups.map(({ group, projects: rows }) => (
           <section key={group} className="group" data-testid={`group-${group}`} aria-label={HEADERS[group].name}>
             <h2 className="group-header">
@@ -260,9 +302,15 @@ export default function Sidebar({ projects, current, engine, onOpen, onNew, onEr
       </div>
       <footer className="sessions-footer">
         <ThemeToggle />
-        <p className="engine" data-testid="engine">
+        <p className="engine" data-testid="engine" title={engine}>
           {engine}
         </p>
+        {printer !== null && (
+          <p className="printer" data-testid="printer" title={printer.machine}>
+            <span className="side-icon" aria-hidden="true" dangerouslySetInnerHTML={{ __html: bambuMark }} />
+            <span className="printer-name">{printerName(printer.machine)}</span>
+          </p>
+        )}
       </footer>
     </nav>
   )
