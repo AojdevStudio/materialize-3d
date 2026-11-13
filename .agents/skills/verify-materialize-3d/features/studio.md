@@ -41,6 +41,9 @@ bun $S/mac.ts wait '.setup-actions .primary:not([disabled])' 60000
 bun $S/mac.ts click '.setup-actions .primary'
 bun $S/mac.ts wait 'section[aria-label="Pick a model"] input[type=radio]:checked' 30000
 bun $S/mac.ts click 'text=Continue'
+# Your printer: Looks right on the printer Bambu Studio last used, or Save on the pick. Without Bambu Studio it passes.
+bun $S/mac.ts wait 'section[aria-label="Your printer"] .setup-actions .primary' 30000
+bun $S/mac.ts click 'section[aria-label="Your printer"] .setup-actions .primary'
 bun $S/mac.ts wait 'section[aria-label="Ready"]' 30000
 bun $S/mac.ts click 'text=Start a project'
 bun $S/mac.ts wait '[data-testid=start-screen]' 30000
