@@ -318,6 +318,20 @@ describe('setup: pick a model', () => {
     expect(saved()).toEqual([{ step: 'ready', done: false }])
   })
 
+  it('keeps Continue and the choices off while Back saves, so a slow Back cannot be undone by Continue', async () => {
+    let releaseStep = () => {}
+    mockApp({ step: 'model', done: false }, ready, {
+      'setup.set': (_, real) => new Promise((resolve) => (releaseStep = () => resolve(real()))),
+    })
+    render(<StudioApp />)
+    await screen.findByRole('radio', { name: /^Opus 5.5/ })
+    fireEvent.click(button('Back'))
+    expect(button('Continue').disabled && radio('Sonnet 5.5').matches(':disabled')).toBe(true)
+    await act(async () => releaseStep())
+    expect(await screen.findByRole('region', { name: 'Check your Mac' })).toBeTruthy()
+    expect(calls('settings.set')).toEqual([])
+  })
+
   it('keeps a running sign-in, and a sign-in that ends there adds its models and Astra, keeping the pick', async () => {
     const store = mockApp({ step: 'model', done: false }, ready)
     render(<StudioApp />)
@@ -351,6 +365,13 @@ describe('setup: ready', () => {
     expect(await screen.findByText('uv 0.9.2, Python 3.12.1')).toBeTruthy()
     expect(screen.getAllByRole('term').map((term) => term.textContent)).toEqual(['Agent', 'Slicer', 'Build tools'])
     expect(summary('agent')).toBe('Claude, Opus 5.5. Astra helps with drawings.')
+  })
+
+  it('names a Bambu Studio that cannot slice, with the reason', async () => {
+    const detail = 'Bambu Studio 02.07.00.00 is installed. The app needs 02.08.02.61.'
+    mockApp({ step: 'ready', done: false }, { ...ready, slicer: { found: 'other', detail } })
+    render(<StudioApp />)
+    expect(await screen.findByText(`Not usable. ${detail}`)).toBeTruthy()
   })
 
   it('names a missing slicer', async () => {
