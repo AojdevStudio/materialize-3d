@@ -25,8 +25,8 @@ $S/wd.ts wait "xpath=//*[@data-testid='settings-claude']//*[normalize-space()='R
 $S/wd.ts click "xpath=//label[contains(@class,'settings-option')][.//*[contains(@class,'setup-name')][normalize-space()='Sonnet 5.5']]/input"
 $S/wd.ts click "xpath=//nav[@aria-label='Settings']/button[normalize-space()='Slicer and printer']"
 $S/wd.ts click "xpath=//*[@data-testid='settings-printer']//button[normalize-space()='Change']"
-$S/wd.ts wait '[data-testid=setup]'
-$S/wd.ts click 'text=Back'
+$S/wd.ts wait 'section[aria-label="Your printer"]'
+$S/wd.ts click "xpath=//div[@class='setup-back']/button"
 $S/wd.ts wait 'section[aria-label="Slicer and printer"]'
 $S/wd.ts click 'text=Close'
 $S/wd.ts wait '[data-testid=start-screen]'
@@ -38,4 +38,5 @@ Prove a model pick saved by a relaunch: `$S/wd.ts end`, `$S/wd.ts session`, then
 
 - Settings reads its rows each time it opens, so a fix made in setup shows when `Back` or `Continue` returns to it.
 - The Bambu Studio row stays Checking for the seconds Bambu Studio takes to answer `--help`.
+- `Change` opens setup's Your printer step. Going on there saves through `printer.set`, and the sidebar footer names the new printer once Settings closes.
 - `Reveal` opens a window outside the webview. WebDriver cannot see it, so prove it with a desktop screenshot.
