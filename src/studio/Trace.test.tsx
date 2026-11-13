@@ -92,6 +92,28 @@ describe('Trace', () => {
     expect(lines).toEqual(['Wrotea.py', 'Now the print file.', 'Slicingprint/grid.3mf'])
     expect(screen.getByText('print').tagName).toBe('STRONG')
   })
+
+  it('says how long each finished step took, in seconds and then as a clock', () => {
+    render(
+      <Trace
+        trace={trace([write('quick', { state: 'done', durationMs: 300 }), write('two', { state: 'done', durationMs: 2900 }), write('long', { state: 'failed', durationMs: 81_000 })], false)}
+        startedMs={undefined}
+        onError={() => {}}
+      />,
+    )
+    const line = (target: string) => text(screen.getByText(target, { selector: '.step-target' }).closest('summary'))
+    expect(line('quick.py')).toBe('Wrotequick.py<1s')
+    expect(line('two.py')).toBe('Wrotetwo.py2s')
+    expect(line('long.py')).toBe('Wrotelong.py1:21failed')
+  })
+
+  it('shows no time on a running step or on a step from an imported chat', () => {
+    const imported: ToolItem = { kind: 'tool', id: 'imported-2', action: 'run', label: 'Ran', doing: 'Ran', summary: 'Build the clip', detail: 'Build the clip', state: 'done', result: 'ok' }
+    render(<Trace trace={trace([imported, write('running')], true)} startedMs={undefined} onError={() => {}} />)
+    const line = (target: string) => text(screen.getByText(target, { selector: '.step-target' }).closest('summary'))
+    expect(line('Build the clip')).toBe('RanBuild the clip')
+    expect(line('running.py')).toBe('Writingrunning.py')
+  })
 })
 
 describe('clock', () => {

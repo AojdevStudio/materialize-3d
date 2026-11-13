@@ -8,7 +8,8 @@ export type StepState = 'running' | 'done' | 'failed' | 'stopped'
 
 /**
  * One tool step. `label` says what it did once it ended, and `doing` says it in the present tense while it runs.
- * `summary` is the file or command it worked on. `result` is what it gave back, once it ended.
+ * `summary` is the file or command it worked on. `result` is what it gave back, once it ended. `durationMs` is how long
+ * it ran, once it ended.
  */
 export type ToolItem = {
   kind: 'tool'
@@ -20,6 +21,7 @@ export type ToolItem = {
   detail: string
   state: StepState
   result?: string
+  durationMs?: number
 }
 
 /** What the agent said while it worked, kept in its place among the steps. */
@@ -151,6 +153,7 @@ export function buildChat(entries: ChatEntry[], running = true): ChatItem[] {
       case 'tool': {
         const item = tools.get(entry.callId)
         if (item === undefined) break
+        item.durationMs = entry.durationMs
         item.state = entry.failed ? 'failed' : 'done'
         item.result = entry.text
         break
