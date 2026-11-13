@@ -260,7 +260,7 @@ describe('StudioApp', () => {
     ['guide', 'Guide', ['guide.html', 'part.stl', 'drawing.html']],
     ['model', 'Model', ['part.stl', 'drawing.html']],
     ['drawing', 'Drawing', ['drawing.html', 'params.json']],
-    ['files', 'Files', ['params.json', 'notes.html']],
+    ['files', 'Files 2', ['params.json', 'notes.html']],
   ])('opens a project on the %s view when that is the first view with something to show', async (_, label, rels) => {
     mockSidecar({}, [projectB], {}, { [projectB.id]: rels.map((rel, i) => ({ rel, size: 10, modifiedMs: 10 - i })) })
     render(<StudioApp />)
