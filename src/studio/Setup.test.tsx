@@ -467,7 +467,7 @@ describe('setup: your printer', () => {
   it('says the plate is the default when Bambu Studio recorded none', async () => {
     mockApp({ step: 'printer', done: false }, { ...ready, lastUsed: { ...lastUsedP2S, plate: null } })
     render(<StudioApp />)
-    expect(await screen.findByText(/The plate is this printer’s default, because Bambu Studio did not record one\./)).toBeTruthy()
+    expect(await screen.findByText(/The plate is this printer’s default, because Bambu Studio recorded none this printer takes\./)).toBeTruthy()
     expect(screen.queryByText('Read from the settings you last used in Bambu Studio.')).toBeNull()
   })
 
