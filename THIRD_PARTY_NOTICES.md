@@ -53,6 +53,8 @@ The model picker shows each maker's official mark beside its models, and setup's
 
 Materialize 3D does not include or redistribute Bambu Studio. It runs a copy that you install from Bambu Lab.
 
+The Open in Bambu Studio button shows Bambu Lab's mark, `src/assets/icons/bambulab.svg`, to name the app it opens. The mark is Bambu Lab's trademark. It is used only to name that app, not to suggest that Bambu Lab endorses Materialize 3D. The SVG path comes from Simple Icons 15.22.0 (https://simpleicons.org, CC0 1.0), which took it from https://bambulab.com. It is drawn in Bambu Lab's brand color #00AE42.
+
 ## Software dependencies
 
 The app is built from open source Rust crates and JavaScript packages, each under its own license. `src-tauri/Cargo.lock` and `bun.lock` pin the exact versions.

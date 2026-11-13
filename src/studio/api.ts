@@ -32,10 +32,23 @@ export type SlicerCheck = { found: 'ready'; version: string } | { found: 'none' 
 /** Looks for the Bambu Studio the slice step uses. */
 export const checkSlicer = () => invoke<SlicerCheck>('studio_slicer')
 
+/** What a 3MF says about its print, as Rust reads it from the file. A field the file does not hold is absent. */
+export interface PrintInfo {
+  /** The printer model without the maker's name, as in `P2S`. */
+  printer?: string
+  /** The filament presets the slice used, as in `PETG Basic`. */
+  filaments: string[]
+  layerHeightMm?: number
+  printSeconds?: number
+  filamentGrams?: number
+}
+
 export interface ProjectFile {
   rel: string
   size: number
   modifiedMs: number
+  /** Only a 3MF has one. */
+  print?: PrintInfo
 }
 
 /** The project folder's own files: the native edges Rust keeps. */
@@ -69,12 +82,6 @@ export function fileKind(rel: string): FileKind {
   if (['png', 'jpg', 'jpeg', 'webp', 'gif', 'svg'].includes(ext)) return 'image'
   if (['json', 'py', 'txt', 'md', 'scad', 'csv'].includes(ext)) return 'text'
   return 'other'
-}
-
-/** Files a turn's file cards offer to preview: the pages, models, and pictures the agent wrote. Ossie's own files in refs/ are not. */
-export function autoOpens(rel: string): boolean {
-  const kind = fileKind(rel)
-  return !rel.startsWith('refs/') && (kind === 'html' || kind === 'model' || kind === 'image')
 }
 
 export const is3mf = (rel: string) => rel.toLowerCase().endsWith('.3mf')

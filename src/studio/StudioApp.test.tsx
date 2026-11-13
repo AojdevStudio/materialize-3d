@@ -260,7 +260,7 @@ describe('StudioApp', () => {
     ['guide', 'Guide', ['guide.html', 'part.stl', 'drawing.html']],
     ['model', 'Model', ['part.stl', 'drawing.html']],
     ['drawing', 'Drawing', ['drawing.html', 'params.json']],
-    ['files', 'Files', ['params.json', 'notes.html']],
+    ['files', 'Files 2', ['params.json', 'notes.html']],
   ])('opens a project on the %s view when that is the first view with something to show', async (_, label, rels) => {
     mockSidecar({}, [projectB], {}, { [projectB.id]: rels.map((rel, i) => ({ rel, size: 10, modifiedMs: 10 - i })) })
     render(<StudioApp />)
@@ -383,6 +383,36 @@ describe('StudioApp', () => {
     expect(screen.getByText('Wrote')).toBeTruthy()
     expect(screen.getByRole('heading', { level: 2, name: 'Ready' })).toBeTruthy()
     expect(screen.getByText('One body').tagName).toBe('LI')
+  })
+
+  it('shows Stop as the primary button with a square icon while a turn runs', async () => {
+    mockSidecar({ 'chat.open': (params) => Promise.resolve(view(String(params.project), { running: true })) })
+    render(<StudioApp />)
+    fireEvent.click(await projectList().findByText('Project B'))
+    const stop = await screen.findByRole('button', { name: 'Stop' })
+    expect(stop.classList.contains('primary')).toBe(true)
+    // jsdom cannot resolve the theme tokens, so the square must take the button's own text color.
+    expect(stop.querySelector('svg rect')?.getAttribute('fill')).toBe('currentColor')
+    expect(screen.queryByTestId('send')).toBeNull()
+  })
+
+  it("leaves a finished turn's print file to the print files bar, with no file card in the chat", async () => {
+    const asked = { id: 1, kind: 'user', text: 'A clip, sliced', images: [], files: [] }
+    const slice = { id: 2, kind: 'assistant', model: settings.model, text: '', calls: [{ id: 'c1', name: 'slice', args: { inputs: ['clip.stl'], output: 'print/clip.3mf' } }] }
+    const sliced = { id: 3, kind: 'tool', callId: 'c1', name: 'slice', text: 'Wrote print/clip.3mf', failed: false }
+    const reply = { id: 4, kind: 'assistant', model: settings.model, text: 'The clip is ready.', calls: [] }
+    mockSidecar(
+      { 'chat.open': (params) => Promise.resolve(view(String(params.project), { entries: [asked, slice, sliced, reply] })) },
+      [projectB],
+      {},
+      { [projectB.id]: [{ rel: 'print/clip.3mf', size: 1000, modifiedMs: 1 }] },
+    )
+    render(<StudioApp />)
+    fireEvent.click(await projectList().findByText('Project B'))
+    await screen.findByText('The clip is ready.')
+    const fileActions = { name: /^(Preview|Open in Bambu Studio|Reveal in Finder|Show in folder)$/ }
+    await waitFor(() => expect(within(screen.getByTestId('print-files')).getAllByRole('button', fileActions)).not.toHaveLength(0))
+    expect(within(screen.getByTestId('messages')).queryAllByRole('button', fileActions)).toHaveLength(0)
   })
 
   it("shows no title bar or model id line, and heads each reply with its model's mark and short name, or its id when the short list lacks it", async () => {

@@ -9,6 +9,7 @@ use std::time::UNIX_EPOCH;
 use serde::Serialize;
 use tauri::http::{header, Response, StatusCode};
 
+use super::print_info::{self, PrintInfo};
 use super::{project_dir, META_DIR};
 
 #[derive(Debug, Clone, Serialize)]
@@ -18,6 +19,9 @@ pub struct ProjectFile {
     pub(super) rel: String,
     size: u64,
     pub(super) modified_ms: u64,
+    /// What a 3MF says about its print. Other files have none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    print: Option<PrintInfo>,
 }
 
 /// Folders a person never wants to see in the file list.
@@ -45,7 +49,8 @@ fn walk(root: &Path, dir: &Path, out: &mut Vec<ProjectFile>) -> std::io::Result<
             let meta = entry.metadata()?;
             let modified_ms = modified_ms(&meta)?;
             let rel = path.strip_prefix(root).expect("walked under root").components().map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/");
-            out.push(ProjectFile { rel, size: meta.len(), modified_ms });
+            let print = rel.to_ascii_lowercase().ends_with(".3mf").then(|| print_info::read(&path));
+            out.push(ProjectFile { rel, size: meta.len(), modified_ms, print });
         }
     }
     Ok(())

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import { isMac, studio, type ProjectFile } from './api'
+import bambuMark from '../assets/icons/bambulab.svg?raw'
+import { isMac, studio, type PrintInfo, type ProjectFile } from './api'
 
 type Props = {
   project: string
@@ -8,9 +9,46 @@ type Props = {
   onError: (message: string) => void
 }
 
+const fileName = (rel: string) => rel.slice(rel.lastIndexOf('/') + 1)
+
+function duration(seconds: number) {
+  const minutes = Math.round(seconds / 60)
+  if (minutes === 0) return seconds === 0 ? undefined : '1 min'
+  const hours = Math.floor(minutes / 60)
+  const rest = minutes % 60
+  if (hours === 0) return `${rest} min`
+  return rest === 0 ? `${hours} h` : `${hours} h ${rest} min`
+}
+
+const filament = (info: PrintInfo) => (info.filaments.length === 0 ? undefined : info.filaments.join(' + '))
+
+function fileSummary({ rel, print }: ProjectFile): string[] {
+  const parts = [fileName(rel)]
+  const time = print?.printSeconds === undefined ? undefined : duration(print.printSeconds)
+  if (time !== undefined) parts.push(time)
+  if (print?.filamentGrams !== undefined) {
+    const grams = print.filamentGrams < 10 ? print.filamentGrams.toFixed(1) : Math.round(print.filamentGrams)
+    parts.push([`${grams} g`, filament(print)].filter((part) => part !== undefined).join(' '))
+  }
+  return parts
+}
+
+function sharedSettings(prints: ProjectFile[]): string[] {
+  const shared = (read: (info: PrintInfo) => string | undefined) => {
+    const values = new Set(prints.map(({ print }) => print && read(print)))
+    return values.size === 1 ? [...values][0] : undefined
+  }
+  return [
+    shared((info) => info.printer),
+    shared(filament),
+    shared((info) => (info.layerHeightMm === undefined ? undefined : `${info.layerHeightMm.toFixed(2)} mm`)),
+  ].filter((part) => part !== undefined)
+}
+
 /**
- * The print files bar: how many 3MF files the project holds, Reveal in Finder for the newest, and Open in Bambu Studio
- * for the newest, with a menu to open another when there are several. The app does not talk to the printer.
+ * The print files bar: how many 3MF files the project holds and what they print, Reveal in Finder for the newest, and
+ * Open in Bambu Studio for the newest, with a menu to open another when there are several. The app does not talk to
+ * the printer.
  */
 export default function PrintFiles({ project, prints, onError }: Props) {
   const [open, setOpen] = useState(false)
@@ -33,9 +71,18 @@ export default function PrintFiles({ project, prints, onError }: Props) {
 
   if (prints.length === 0) return null
   const newest = prints[0]
+  const line = prints.length === 1 ? fileSummary(newest) : sharedSettings(prints)
   return (
     <footer className="print-files" data-testid="print-files">
-      <span className="print-count">{prints.length === 1 ? '1 print file ready' : `${prints.length} print files ready`}</span>
+      <div className="print-summary">
+        <span className="print-count">{prints.length === 1 ? '1 print file ready' : `${prints.length} print files ready`}</span>
+        {line.length > 0 && (
+          <span className="print-details" data-testid="print-details" title={line.join(' · ')}>
+            <span className="print-lead">{line[0]}</span>
+            {line.length > 1 && <span className="print-rest">{` · ${line.slice(1).join(' · ')}`}</span>}
+          </span>
+        )}
+      </div>
       <button type="button" onClick={() => run(studio.reveal(project, newest.rel))}>
         {isMac ? 'Reveal in Finder' : 'Show in folder'}
       </button>
@@ -53,12 +100,13 @@ export default function PrintFiles({ project, prints, onError }: Props) {
                   void run(studio.openInBambu(project, file.rel))
                 }}
               >
-                {file.rel.split('/').pop()}
+                {fileName(file.rel)}
               </button>
             ))}
           </div>
         )}
         <button type="button" className="primary" title={newest.rel} onClick={() => run(studio.openInBambu(project, newest.rel))} data-testid="open-in-bambu">
+          <span className="print-mark" aria-hidden="true" dangerouslySetInnerHTML={{ __html: bambuMark }} />
           Open in Bambu Studio
         </button>
         {prints.length > 1 && (

@@ -18,6 +18,8 @@
   --s-error: #b42318;
   --s-working: #2563eb;
   --s-ready: #2f7d4f;
+  --s-ready-tint: #f2f8f4;
+  --s-ready-line: #cfe6d6;
   --s-code: var(--s-soft);
   --s-shadow: 0 6px 24px rgb(0 0 0 / 8%);
   /* The shared tokens the update banner reads, in light values. */
@@ -48,6 +50,8 @@
   --s-error: #f97066;
   --s-working: #60a5fa;
   --s-ready: #4ade80;
+  --s-ready-tint: #06120a;
+  --s-ready-line: #10311c;
   --s-shadow: none;
   --accent-blue: #60a5fa;
   --accent-blue-dim: #60a5fa26;
@@ -660,35 +664,6 @@ pre {
   padding: 3px 0 3px 22px;
 }
 
-.file-cards {
-  list-style: none;
-  margin: 4px 0;
-  padding: 0;
-  border: 1px solid var(--s-line);
-  border-radius: 8px;
-}
-
-.file-cards li {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
-}
-
-.file-cards li + li {
-  border-top: 1px solid var(--s-line);
-}
-
-.file-card-name {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-family: 'JetBrains Mono', ui-monospace, monospace;
-  font-size: 12px;
-}
-
 .error-bar {
   display: flex;
   align-items: center;
@@ -733,6 +708,12 @@ pre {
 
 .composer-bar .primary {
   font-weight: 500;
+}
+
+.stop {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .attach {
@@ -974,6 +955,11 @@ pre {
   border-color: transparent;
 }
 
+.tabs .tab-count {
+  color: var(--s-muted);
+  font-weight: 400;
+}
+
 .tabs .pop-out {
   display: flex;
   align-items: center;
@@ -1115,13 +1101,42 @@ pre {
   align-items: center;
   gap: 8px;
   padding: 10px 12px;
-  border-top: 1px solid var(--s-line);
-  background: var(--s-side);
+  border-top: 1px solid var(--s-ready-line);
+  background: var(--s-ready-tint);
+}
+
+.print-summary {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
 }
 
 .print-count {
-  flex: 1;
   font-weight: 500;
+}
+
+/* A long file name shortens first. The time and grams shorten only once the name is gone. */
+.print-details {
+  display: flex;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--s-muted);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.print-lead,
+.print-rest {
+  overflow: hidden;
+  min-width: 0;
+  text-overflow: ellipsis;
+}
+
+.print-rest {
+  flex-shrink: 0;
+  max-width: 100%;
+  white-space: pre;
 }
 
 .print-open {
@@ -1130,7 +1145,21 @@ pre {
 }
 
 .print-open > .primary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   padding: 6px 12px;
+}
+
+.print-mark {
+  display: inline-grid;
+  width: 14px;
+  height: 14px;
+}
+
+.print-mark svg {
+  width: 100%;
+  height: 100%;
 }
 
 .print-open > .primary:has(+ .print-pick) {
