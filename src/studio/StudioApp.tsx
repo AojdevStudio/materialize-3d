@@ -25,6 +25,9 @@ const EMPTY: Draft = { text: '', attachments: [] }
 const QUIT_SAVE_TRIES = 4
 const QUIT_RETRY_MS = 3000
 
+/** How long a failed first read of the saved state waits before it tries again. */
+const STATE_RETRY_MS = 3000
+
 /**
  * A screen's unsent message as the window holds it. The sidecar owns the draft and the send: the window only knows
  * whether the screen changed since its last completed save, and that save's revision, which a send names.
@@ -90,6 +93,8 @@ export default function StudioApp() {
   const [setup, setSetup] = useState<Setup | null>(null)
   /** Counts setup's saves, so a state read that started before the newest save never puts back the setup it replaced. */
   const setupSaves = useRef(0)
+  /** Whether the window took the saved state. Only the first answer to a startup read is taken. */
+  const stateTaken = useRef(false)
   /** What the agent needs before a send, from the sidecar's check. Null until the check answers, and Send waits. */
   const [needs, setNeeds] = useState<Need[] | null>(null)
   /** Whether the newest look found the Bambu Studio the slice step uses. Null until a look answers. */
@@ -281,17 +286,30 @@ export default function StudioApp() {
   }
 
   useEffect(() => {
-    // The first read of the saved state. If the engine stopped before it answered, it is read again once the engine is
-    // back, so the projects and drafts still come.
-    let stateRead = false
+    // The first read of the saved state, which Send waits for. A read that fails is tried again after a pause, and at
+    // once when the engine is back. Only the first answer is taken. Every startup read began before a send could go,
+    // so a later answer would bring back what that send took. A read that ends after the window closed does nothing.
+    let stopped = false
+    let retry: number | undefined
     const readState = () => {
       const saves = setupSaves.current
       return sidecar('state.get', {})
-        .then((state) => {
-          stateRead = true
-          takeState(state)
-          if (saves === setupSaves.current) setSetup(state.setup)
-        })
+        .then(
+          (state) => {
+            if (stopped || stateTaken.current) return
+            stateTaken.current = true
+            takeState(state)
+            if (saves === setupSaves.current) setSetup(state.setup)
+          },
+          (err: unknown) => {
+            if (stopped || stateTaken.current) return
+            setError(String(err))
+            window.clearTimeout(retry)
+            retry = window.setTimeout(() => {
+              if (!stateTaken.current) void readState()
+            }, STATE_RETRY_MS)
+          },
+        )
         .catch((err: unknown) => setError(String(err)))
     }
     void readState()
@@ -310,7 +328,7 @@ export default function StudioApp() {
           checkReady()
           loadModels()
           for (const wake of readyWaiters.current.splice(0)) wake()
-          if (!stateRead) void readState()
+          if (!stateTaken.current) void readState()
           // An engine that started again holds what a crash cut off from the window, such as a turn's last entry, so
           // the open chat is read again. The changes that arrive meanwhile are kept, as when it first opened.
           const project = currentId.current
@@ -357,6 +375,8 @@ export default function StudioApp() {
       .then(({ version }) => engineChanged || setEngine(`Engine ${version}`))
       .catch((err: unknown) => engineChanged || setEngine(String(err)))
     return () => {
+      stopped = true
+      window.clearTimeout(retry)
       void unlisten.then((stop) => stop())
     }
   }, [])
@@ -594,7 +614,8 @@ export default function StudioApp() {
   const nextWaitsForLogin = turnLogin !== undefined && turnLogin.provider === chosenModel?.provider
   const blocker: Blocker | undefined = needs?.[0] ?? (nextWaitsForLogin ? turnLogin : undefined)
   const cause: SetupCause | undefined = blocker ?? turnLogin ?? (slicerFound === false && !wentOnInSetup ? { kind: 'slicer' } : undefined)
-  const notReady = needs === null || blocker !== undefined
+  // Send waits for the saved state, which says whether setup is done, and for the check.
+  const notReady = setup?.done !== true || needs === null || blocker !== undefined
 
   /**
    * Saves a pick: the open project's model, or on the start screen the default the next project takes. The check runs
@@ -633,7 +654,7 @@ export default function StudioApp() {
       }}
       onSend={() => void send()}
       onStop={current ? () => void sidecar('chat.stop', { project: current.id }).catch((err: unknown) => setError(String(err))) : undefined}
-      busy={sending || running || needs === null}
+      busy={sending || running || notReady}
       running={running}
       placeholder={placeholder}
       locked={blocker === undefined ? undefined : lockedText(blocker)}
@@ -715,19 +736,12 @@ export default function StudioApp() {
         {cause !== undefined && <SetupBanner cause={cause} onFix={() => setFixing(true)} />}
         {current ? (
           <>
-            <header className="chat-title">{current.title}</header>
-            {view?.turn && (
-              <p className="chat-model" data-testid="chat-model">
-                {view.turn.model.modelId}
-              </p>
-            )}
             {waiting?.kind === 'error' && <WaitingBanner project={current.id} waiting={waiting} onError={setError} />}
             <ChatView
               project={current.id}
               items={items}
               running={running}
               startedMs={view?.turn?.startedMs}
-              onPreview={openFile}
               onError={setError}
             />
             {composer('Reply, paste a link, or attach a file', false)}

@@ -147,6 +147,31 @@ describe('setup', () => {
     expect(screen.queryByTestId('setup-needed')).toBeNull()
   })
 
+  it('names a Bambu Studio that is installed but cannot slice as not usable, not as missing', async () => {
+    mockApp({ step: 'check', done: false }, { ...ready, slicer: { found: 'other', detail: 'Bambu Studio 02.07.00.00 is installed. The app needs 02.08.02.61.' } })
+    render(<StudioApp />)
+    expect(await screen.findByRole('heading', { name: 'Bambu Studio cannot slice' })).toBeTruthy()
+    expect(row('bambu').getByText('Not usable')).toBeTruthy()
+    expect(row('bambu').getByText('Bambu Studio 02.07.00.00 is installed. The app needs 02.08.02.61.')).toBeTruthy()
+    expect(screen.getByText(/won’t get print-ready 3MF files until Bambu Studio can slice\./)).toBeTruthy()
+    expect(button('Continue without a slicer')).toBeTruthy()
+  })
+
+  it('keeps Send off until the saved setup is known to be done, though the send check already passed', async () => {
+    let release = () => {}
+    mockApp({ step: 'welcome', done: false }, ready, {
+      'state.get': (_, real) => new Promise((resolve) => (release = () => resolve(real()))),
+    })
+    render(<StudioApp />)
+    fireEvent.change(await screen.findByRole('textbox'), { target: { value: 'A clip' } })
+    await act(async () => {})
+    expect((screen.getByTestId('send') as HTMLButtonElement).disabled).toBe(true)
+    fireEvent.click(screen.getByTestId('send'))
+    await act(async () => release())
+    expect(await screen.findByRole('button', { name: 'Start setup' })).toBeTruthy()
+    expect(invokeMock.mock.calls.some(([command, args]) => command === 'sidecar' && args.method === 'chat.send')).toBe(false)
+  })
+
   it('lets a check that failed run again', async () => {
     let fails = true
     mockApp({ step: 'check', done: false }, ready, {

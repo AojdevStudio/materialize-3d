@@ -10,7 +10,7 @@ interface Props {
   project: string
   files: ProjectFile[]
   view: PanelView
-  /** The file the person opened from Files or the chat. Its view shows it in place of the newest. */
+  /** The file the person opened from Files. Its view shows it in place of the newest. */
   selected: string | null
   onView: (view: PanelView) => void
   /** Opens a file in its view. Null goes back to the list of files. */
@@ -165,6 +165,7 @@ export default function RightPanel({ project, files, view, selected, onView, onO
             data-testid={`${v}-tab`}
           >
             {LABELS[v]}
+            {v === 'files' && files.length > 0 && <> <span className="tab-count">{files.length}</span></>}
           </button>
         ))}
         {file && previewable(file) && (

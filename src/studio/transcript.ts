@@ -1,5 +1,4 @@
-import type { ChatEntry } from '../../sidecar/src/protocol'
-import { autoOpens, is3mf } from './api'
+import type { ChatEntry, ModelChoice } from '../../sidecar/src/protocol'
 
 /** What a step does, which picks its icon. */
 export type Action = 'read' | 'write' | 'run' | 'slice' | 'helper' | 'other'
@@ -34,9 +33,9 @@ export type TraceItem = { kind: 'trace'; id: string; lines: (ToolItem | NoteItem
 
 export type ChatItem =
   | { kind: 'user'; text: string; images: string[]; files: string[] }
+  | { kind: 'byline'; model: ModelChoice }
   | { kind: 'text'; text: string }
   | TraceItem
-  | { kind: 'files'; files: string[] }
 
 /** The result a step gets when its turn ended before the step did. */
 export const STOPPED = 'It stopped before it finished.'
@@ -78,26 +77,19 @@ const OLD_STEPS: Record<string, { action: Action; label: string }> = {
   Task: { action: 'helper', label: 'Helper' },
 }
 
-/** The file a step wrote that the person may want to look at, once its result came back without an error. */
-function written(name: string, args: Record<string, unknown>): string | undefined {
-  if (name === 'write' || name === 'edit') return str(args.path) || undefined
-  if (name === 'slice') return str(args.output) || undefined
-  return undefined
-}
-
 /**
- * Committed chat entries as chat items. A turn's tool steps gather in one trace, with each result attached and what
- * the agent said between them in its place. What it said before its first step shows above the trace, and an answer
- * without steps ends it. After each turn comes a card of the files it wrote that open in the preview, print files
- * first. A step left without a result, as a stop or a crash leaves it, shows as stopped once a later message starts a
- * new turn, or once its own turn no longer `running`.
+ * Committed chat entries as chat items. A turn's reply opens with a byline that names the model it ran on. A reply
+ * from before the store has none. A turn's tool steps gather in one trace, with each result attached and what the
+ * agent said between them in its place. What it said before its first step shows above the trace, and an answer
+ * without steps ends it. A step left without a result, as a stop or a crash leaves it, shows as stopped once a later
+ * message starts a new turn, or once its own turn no longer `running`.
  */
 export function buildChat(entries: ChatEntry[], running = true): ChatItem[] {
   const items: ChatItem[] = []
-  const tools = new Map<string, { item: ToolItem; writes: string | undefined }>()
-  let files: string[] = []
+  const tools = new Map<string, ToolItem>()
   /** The trace the next step joins. A message or an answer without steps closes it. */
   let trace: TraceItem | undefined
+  let bylined = false
   const step = (item: ToolItem) => {
     if (trace === undefined) {
       trace = { kind: 'trace', id: item.id, lines: [], running: false }
@@ -108,17 +100,15 @@ export function buildChat(entries: ChatEntry[], running = true): ChatItem[] {
   // A step with no result that a later message or the end of its turn leaves behind was stopped, as a stop or a crash
   // leaves it. It cannot run again.
   const stopUnfinished = () => {
-    for (const { item } of tools.values()) {
+    for (const item of tools.values()) {
       if (item.state !== 'running') continue
       item.state = 'stopped'
       item.result = STOPPED
     }
   }
   const endTurn = () => {
-    const shown = [...new Set(files)].filter(autoOpens).sort((a, b) => Number(is3mf(b)) - Number(is3mf(a)))
-    if (shown.length > 0) items.push({ kind: 'files', files: shown })
-    files = []
     trace = undefined
+    bylined = false
   }
   // An old chat came in one entry per block, so its narration between two steps is its own entry, like its answer. Text
   // with another imported step after it, before the next message, is narration. The last text in a turn is the answer.
@@ -138,6 +128,10 @@ export function buildChat(entries: ChatEntry[], running = true): ChatItem[] {
         items.push({ kind: 'user', text: entry.text, images: entry.images, files: entry.files })
         break
       case 'assistant':
+        if (!bylined && (entry.calls.length > 0 || entry.text.trim() !== '')) {
+          items.push({ kind: 'byline', model: entry.model })
+          bylined = true
+        }
         if (entry.calls.length === 0) {
           if (entry.text.trim() !== '') items.push({ kind: 'text', text: entry.text })
           trace = undefined
@@ -150,16 +144,15 @@ export function buildChat(entries: ChatEntry[], running = true): ChatItem[] {
         for (const call of entry.calls) {
           const args = (call.args ?? {}) as Record<string, unknown>
           const item: ToolItem = { kind: 'tool', id: call.id, ...describe(call.name, args), state: 'running' }
-          tools.set(call.id, { item, writes: written(call.name, args) })
+          tools.set(call.id, item)
           step(item)
         }
         break
       case 'tool': {
-        const call = tools.get(entry.callId)
-        if (call === undefined) break
-        call.item.state = entry.failed ? 'failed' : 'done'
-        call.item.result = entry.text
-        if (!entry.failed && call.writes !== undefined) files.push(call.writes)
+        const item = tools.get(entry.callId)
+        if (item === undefined) break
+        item.state = entry.failed ? 'failed' : 'done'
+        item.result = entry.text
         break
       }
       case 'imported':
@@ -180,10 +173,7 @@ export function buildChat(entries: ChatEntry[], running = true): ChatItem[] {
         break
     }
   }
-  // The last turn's trace runs while its turn does.
-  const open: TraceItem | undefined = trace
-  endTurn()
-  if (open !== undefined) open.running = running
+  if (trace !== undefined) trace.running = running
   if (!running) stopUnfinished()
   return items
 }
