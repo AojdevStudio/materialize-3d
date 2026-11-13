@@ -1,12 +1,13 @@
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { type AppState, type Draft, type LoginEvent, type ModelChoice, type ModelOption, type Need, type Project, type ProjectStatus, START, type ChatView as View } from '../../sidecar/src/protocol'
+import { type AppState, type Draft, type LoginEvent, type ModelChoice, type ModelOption, type Need, type Project, type ProjectStatus, type Setup, START, type ChatView as View } from '../../sidecar/src/protocol'
 import { firstView, onQuitFlush, onSidecarEvent, panelFiles, sidecar, studio, viewOf, type PanelView, type ProjectFile } from './api'
 import { ChatView } from './Chat'
 import { Composer, releaseAttachment, savedAttachment, type PastedPicture } from './Composer'
 import ModelPicker from './ModelPicker'
 import RightPanel from './RightPanel'
+import SetupFlow from './Setup'
 import Start from './Start'
 import { buildChat } from './transcript'
 import Sidebar from './Sidebar'
@@ -85,6 +86,8 @@ export default function StudioApp() {
   const [engine, setEngine] = useState('Engine starting')
   /** What a sign-in needs from the person: the code to enter on its page, or an answer. */
   const [signIn, setSignIn] = useState<Extract<LoginEvent, { step: 'open' | 'ask' }> | null>(null)
+  const [signIns, setSignIns] = useState(0)
+  const [setup, setSetup] = useState<Setup | null>(null)
   /** What the agent needs before a send, from the sidecar's check. Null until the check answers, and Send waits. */
   const [needs, setNeeds] = useState<Need[] | null>(null)
   /** The folder the chats from before the store could not be read from, when macOS keeps it from the app. */
@@ -213,6 +216,7 @@ export default function StudioApp() {
       }
     }
     setDefaultModel(state.settings.model)
+    setSetup(state.setup)
     takeProjects(state)
   }
 
@@ -309,6 +313,7 @@ export default function StudioApp() {
           if (event.step === 'ask') setSignIn(event)
           if (event.step === 'done') {
             setSignIn(null)
+            setSignIns((count) => count + 1)
             checkReady()
             loadModels()
           }
@@ -609,6 +614,42 @@ export default function StudioApp() {
     </>
   )
 
+  const errorBar = shownError && (
+    <div className="error-bar" role="alert">
+      <span>{shownError}</span>
+      <button type="button" onClick={dismissError} aria-label="Dismiss">×</button>
+    </div>
+  )
+  const signInAsk = signIn && (
+    <SignInAsk
+      key={signIn.step === 'ask' ? signIn.message : signIn.url}
+      ask={signIn}
+      onAnswer={(answer) => {
+        setSignIn(null)
+        void sidecar('auth.answer', { provider: signIn.provider, text: answer }).catch((err: unknown) => setError(String(err)))
+      }}
+    />
+  )
+
+  if (setup !== null && !setup.done) {
+    return (
+      <SetupFlow
+        setup={setup}
+        onSaved={(state) => {
+          setSetup(state.setup)
+          if (state.setup.done) {
+            checkReady()
+            loadModels()
+          }
+        }}
+        onError={setError}
+        error={errorBar}
+        signIn={signInAsk}
+        signIns={signIns}
+      />
+    )
+  }
+
   return (
     <div className={`studio ${current ? 'studio-work' : 'studio-start'}`}>
       <Sidebar
@@ -623,23 +664,9 @@ export default function StudioApp() {
 
       <main className="chat" aria-label="Chat">
         <UpdateBanner />
-        {shownError && (
-          <div className="error-bar" role="alert">
-            <span>{shownError}</span>
-            <button type="button" onClick={dismissError} aria-label="Dismiss">×</button>
-          </div>
-        )}
+        {errorBar}
         {importBlocked !== null && <ImportBlockedBanner folder={importBlocked} onRetry={retryImport} onError={setError} />}
-        {signIn && (
-          <SignInAsk
-            key={signIn.step === 'ask' ? signIn.message : signIn.url}
-            ask={signIn}
-            onAnswer={(answer) => {
-              setSignIn(null)
-              void sidecar('auth.answer', { provider: signIn.provider, text: answer }).catch((err: unknown) => setError(String(err)))
-            }}
-          />
-        )}
+        {signInAsk}
         {current ? (
           <>
             <header className="chat-title">{current.title}</header>

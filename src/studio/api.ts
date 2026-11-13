@@ -26,6 +26,12 @@ export const onQuitFlush = (save: () => Promise<void>) =>
 /** Opens the macOS setting that lets the app read Documents. */
 export const openFilesPrivacy = () => invoke<void>('studio_open_files_privacy')
 
+/** The Bambu Studio the slice step would use: its version, none at all, or why the one found cannot be used. */
+export type SlicerCheck = { found: 'ready'; version: string } | { found: 'none' } | { found: 'other'; detail: string }
+
+/** Looks for the Bambu Studio the slice step uses. */
+export const checkSlicer = () => invoke<SlicerCheck>('studio_slicer')
+
 export interface ProjectFile {
   rel: string
   size: number

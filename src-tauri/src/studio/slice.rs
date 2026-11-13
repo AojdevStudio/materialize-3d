@@ -7,7 +7,7 @@ use std::process::{Command, Stdio};
 
 use serde::{Deserialize, Serialize};
 
-use crate::bambu::{resolve_presets, BambuStudio, PresetSelection};
+use crate::bambu::{resolve_presets, BambuError, BambuStudio, PresetSelection, VALIDATED_VERSIONS};
 
 /// The presets the agent's workflow names: the P2S with a 0.4 mm nozzle, standard layers, PETG.
 const MACHINE: &str = "Bambu Lab P2S 0.4 nozzle";
@@ -45,6 +45,34 @@ pub fn slice(request: &Request, cache_root: &Path) -> Result<Sliced, String> {
     let dir = super::project_dir(&request.project)?;
     let studio = BambuStudio::locate().map_err(|e| e.to_string())?;
     slice_in(&studio, &dir, &request.inputs, &request.output, cache_root)
+}
+
+/// What setup's check shows for the slicer: the Bambu Studio the slice step would use.
+#[derive(Debug, Serialize)]
+#[serde(tag = "found", rename_all = "camelCase")]
+pub enum SlicerCheck {
+    Ready { version: String },
+    None,
+    Other { detail: String },
+}
+
+/// Looks for the Bambu Studio the slice step uses. Each candidate answers `--help`, which can take seconds, so the
+/// search runs off the main thread.
+#[tauri::command]
+pub async fn studio_slicer() -> Result<SlicerCheck, String> {
+    let located = tauri::async_runtime::spawn_blocking(BambuStudio::locate).await.map_err(|e| e.to_string())?;
+    Ok(match located {
+        Ok(studio) => SlicerCheck::Ready { version: studio.version.to_string() },
+        Err(BambuError::StudioNotFound { .. }) => SlicerCheck::None,
+        Err(BambuError::UnvalidatedStudio { found }) => SlicerCheck::Other {
+            detail: format!(
+                "Bambu Studio {} is installed. The app slices with version {}.",
+                found.iter().map(|build| build.version.as_ref().map_or("of an unknown version", |v| v.as_str())).collect::<Vec<_>>().join(", "),
+                VALIDATED_VERSIONS.join(" or "),
+            ),
+        },
+        Err(other) => SlicerCheck::Other { detail: other.to_string() },
+    })
 }
 
 /// A path the agent named, which must stay inside its project folder.
