@@ -15,7 +15,7 @@ Run on the Linux host, dev-substrate (`ssh ossie@dev-substrate`, Ubuntu 24.04.5)
 
 aojdevlinux, the Arch/Omarchy workstation, cannot run the app harness. Arch's `webkit2gtk-4.1` package ships no `WebKitWebDriver`, Xvfb (`xorg-server-xvfb`) is not installed and needs sudo, `tauri-driver` is not installed, and there is no passwordless sudo. There, `up` prints `m3d: missing Xvfb tauri-driver WebKitWebDriver; this host cannot run verification (use the Linux host)` and exits 1 **(observed 2026-11-03)**. From aojdevlinux, drive dev-substrate over ssh. Put each phase in a script, `scp` it to the job folder's `scripts/` (below), and run it with `ssh ossie@dev-substrate 'bash -l agent-work/m3d/<topic>/scripts/<script>'`, because nested quotes in an ssh command line break.
 
-Each verify job keeps everything it makes on the host in one job folder, `~/agent-work/m3d/<topic>/`: the checkout in `src/`, run scripts in `scripts/`, and any logs of your own in `logs/`. Nothing goes loose in the home folder. To verify work that lives on another machine, get the same tree into `src/`. Either push the branch and add a worktree of a checkout on the host with `git worktree add ~/agent-work/m3d/<topic>/src <branch>`, or `rsync -a --exclude node_modules --exclude src-tauri/target <tree>/ ossie@dev-substrate:agent-work/m3d/<topic>/src/`. Run every command below from `src/`. The lock `~/m3d-ui.lock` and the run evidence in `~/m3d-verify/` stay where they are, outside the job folder. The job folder goes when the job ends, as [Cleanup](#cleanup) says.
+Each verify job keeps everything it makes on the host in one job folder, `~/agent-work/m3d/<topic>/`: the checkout in `src/`, run scripts in `scripts/`, and any logs of your own in `logs/`. Nothing goes loose in the home folder. To verify work that lives on another machine, get the same tree into `src/`. Make the folder with `mkdir -p ~/agent-work/m3d/<topic>/scripts ~/agent-work/m3d/<topic>/logs`. Then either push the branch and add a worktree of the host's checkout, `git -C ~/materialize-3d fetch origin` and `git -C ~/materialize-3d worktree add --detach ~/agent-work/m3d/<topic>/src origin/<branch>`, or `rsync -a --exclude node_modules --exclude src-tauri/target <tree>/ ossie@dev-substrate:agent-work/m3d/<topic>/src/`. Run every command below from `src/`. The lock `~/m3d-ui.lock` and the run evidence in `~/m3d-verify/` stay where they are, outside the job folder. The job folder goes when the job ends, as [Cleanup](#cleanup) says.
 
 Only one run per host. Vite's port 1420 is fixed by `vite.config.ts` (`strictPort`) and by `devUrl` in `tauri.conf.json`. `up` refuses when 1420, 4444, or 4445 is already bound. Never drive an instance you did not start, and never run `down` on one.
 
@@ -120,10 +120,10 @@ $S/m3d.sh down
 
 `down` ends the WebDriver session, which closes the app. It stops ffmpeg, tauri-driver, Vite, and the Xvfb it started by killing each recorded process group. It never kills by process name. It deletes `xdg/` (app data, WebKit storage), `pids/`, and `session`, then removes the `current` link. It keeps `evidence/`, `fixtures/`, `logs/`, and `env.json`. Copy anything you need from `xdg/` first, such as the app log in `xdg/data/com.aojdevstudio.materialize3d/logs/`. Run `down` after a failed `up` too, because `up` leaves partial state for inspection. `down` does not touch `~/Documents/Materialize 3D/`, where a harness run's sends make project folders. After you keep the evidence you need, delete only the folders this run made. Their names start with the run's date, and the sidebar lists them.
 
-When the job ends, delete its job folder, after you pulled the evidence you need from `~/m3d-verify/<run>/evidence/` (see [Evidence](#evidence)). For a git worktree, remove it from its checkout first so that checkout forgets it, then remove the folder:
+When the job ends, delete its job folder, after you pulled the evidence you need from `~/m3d-verify/<run>/evidence/` (see [Evidence](#evidence)). For a git worktree, remove it from `~/materialize-3d` first so that checkout forgets it, then remove the folder:
 
 ```bash
-git -C <the checkout you added it from> worktree remove --force ~/agent-work/m3d/<topic>/src
+git -C ~/materialize-3d worktree remove --force ~/agent-work/m3d/<topic>/src
 rm -rf ~/agent-work/m3d/<topic>
 ```
 
