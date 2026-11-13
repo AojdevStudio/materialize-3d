@@ -4,13 +4,14 @@ import type { Models } from '@earendil-works/pi-ai'
 import { arr, bool, compile, int, lit, obj, opt, str, union } from '@earendil-works/pi-schema'
 import { toolchain, toolchainNeeds } from './agent'
 import type { Chats } from './chat'
-import type { Handlers } from './host'
+import type { Handlers, Host } from './host'
 import type { Logins } from './inference'
 import { OFFERED } from './offered'
 import type { AppState, Need } from './protocol'
 import type { Store } from './store'
 
 export interface Services {
+  host: Host
   store: Store
   models: Models
   logins: Logins
@@ -25,11 +26,12 @@ export interface Services {
 const step = union([lit('welcome'), lit('check'), lit('model'), lit('printer'), lit('ready')])
 const thinking = union([lit('off'), lit('minimal'), lit('low'), lit('medium'), lit('high'), lit('xhigh'), lit('max')])
 const model = obj({ provider: str(), modelId: str() })
-const printer = obj({ machine: str(), process: str(), filament: str() })
+const plate = union([lit('Cool Plate'), lit('Engineering Plate'), lit('High Temp Plate'), lit('Textured PEI Plate'), lit('Supertack Plate')])
+const printer = obj({ machine: str({ minLength: 1 }), process: str({ minLength: 1 }), filament: str({ minLength: 1 }), plate: opt(plate) })
 const provider = union([lit('anthropic'), lit('openai-codex'), lit('opencode-go')])
 
 /** Every method the window can call, each parsed at the pipe before it runs. */
-export function handlers({ store, models, logins, chats, version, legacy, pictures }: Services): Handlers {
+export function handlers({ host, store, models, logins, chats, version, legacy, pictures }: Services): Handlers {
   const state = async (): Promise<AppState> => ({ ...(await store.state()), importBlocked: legacy.blocked() })
   return {
     'app.ping': { params: compile(obj({})), run: async () => ({ version }) },
@@ -42,9 +44,17 @@ export function handlers({ store, models, logins, chats, version, legacy, pictur
       },
     },
     'settings.set': {
-      params: compile(obj({ model: opt(model), thinking: opt(thinking), printer: opt(printer) })),
+      params: compile(obj({ model: opt(model), thinking: opt(thinking) })),
       run: async (change) => {
         await store.setSettings(change)
+        return state()
+      },
+    },
+    'printer.set': {
+      params: compile(printer),
+      run: async (chosen) => {
+        await host.request('printer.check', chosen)
+        await store.setSettings({ printer: chosen })
         return state()
       },
     },

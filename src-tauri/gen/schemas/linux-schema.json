@@ -345,6 +345,12 @@
       "description": "Permission identifier",
       "oneOf": [
         {
+          "description": "Enables the bambu_last_used command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-bambu-last-used",
+          "markdownDescription": "Enables the bambu_last_used command without any pre-configured scope."
+        },
+        {
           "description": "Enables the sidecar command without any pre-configured scope.",
           "type": "string",
           "const": "allow-sidecar",
@@ -433,6 +439,12 @@
           "type": "string",
           "const": "allow-update-install",
           "markdownDescription": "Enables the update_install command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the bambu_last_used command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-bambu-last-used",
+          "markdownDescription": "Denies the bambu_last_used command without any pre-configured scope."
         },
         {
           "description": "Denies the sidecar command without any pre-configured scope.",

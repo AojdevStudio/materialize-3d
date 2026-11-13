@@ -13,7 +13,7 @@ import { type Conversation, defineDoc, type HarnessOptions, Harness, type Regist
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node'
 import type { LoginIndex } from './inference'
 import type { LegacyProject } from './legacy'
-import { type Draft, type LoginKind, type ModelChoice, type Project, type SavedDraft, type Settings, type Setup, START, type StoredState, type Turn, type Waiting } from './protocol'
+import { type Draft, type LoginKind, type ModelChoice, type Printer, type Project, type SavedDraft, type Settings, type Setup, START, type StoredState, type Turn, type Waiting } from './protocol'
 import { guideTemplate } from './templates/guide' with { type: 'macro' }
 
 const context = BACKGROUND_CONTEXT
@@ -247,6 +247,10 @@ export class Store implements LoginIndex {
     await this.harness.commit(async (tx) => {
       Object.assign(await tx.doc(SettingsDoc, this.root.id), change)
     }, context)
+  }
+
+  async printer(): Promise<Printer> {
+    return this.harness.commit(async (tx) => ({ ...(await tx.doc(SettingsDoc, this.root.id)).printer }), context)
   }
 
   /** Saves a draft, or removes an empty one, and answers its revision. A store from before revisions starts at 1. */
