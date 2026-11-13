@@ -152,6 +152,7 @@ describe('setup', () => {
     expect(await screen.findByRole('heading', { name: 'Bambu Studio cannot slice' })).toBeTruthy()
     expect(row('bambu').getByText('Not usable')).toBeTruthy()
     expect(row('bambu').getByText('Bambu Studio 02.07.00.00 is installed. The app needs 02.08.02.61.')).toBeTruthy()
+    expect(screen.getByText(/won’t get print-ready 3MF files until Bambu Studio can slice\./)).toBeTruthy()
     expect(button('Continue without a slicer')).toBeTruthy()
   })
 

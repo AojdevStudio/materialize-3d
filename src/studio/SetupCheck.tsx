@@ -99,7 +99,7 @@ function verdictOf({ logins, toolchain, slicer }: Found): Verdict {
   if (slicer.found !== 'ready') {
     return {
       title: slicer.found === 'none' ? 'No slicer found' : 'Bambu Studio cannot slice',
-      text: 'You can still design parts and get assembly guides. You won’t get print-ready 3MF files until Bambu Studio is installed.',
+      text: `You can still design parts and get assembly guides. You won’t get print-ready 3MF files until Bambu Studio ${slicer.found === 'none' ? 'is installed' : 'can slice'}.`,
       go: 'without-slicer',
     }
   }
