@@ -390,7 +390,8 @@ describe('StudioApp', () => {
     fireEvent.click(await projectList().findByText('Project B'))
     const stop = await screen.findByRole('button', { name: 'Stop' })
     expect(stop.classList.contains('primary')).toBe(true)
-    expect(stop.querySelector('svg rect')).not.toBeNull()
+    // jsdom cannot resolve the theme tokens, so the square must take the button's own text color.
+    expect(stop.querySelector('svg rect')?.getAttribute('fill')).toBe('currentColor')
     expect(screen.queryByTestId('send')).toBeNull()
   })
 
