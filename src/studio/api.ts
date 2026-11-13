@@ -26,10 +26,23 @@ export const onQuitFlush = (save: () => Promise<void>) =>
 /** Opens the macOS setting that lets the app read Documents. */
 export const openFilesPrivacy = () => invoke<void>('studio_open_files_privacy')
 
+/** What a 3MF says about its print, as Rust reads it from the file. A field the file does not hold is absent. */
+export interface PrintInfo {
+  /** The printer model without the maker's name, as in `P2S`. */
+  printer?: string
+  /** The filament presets the slice used, as in `PETG Basic`. */
+  filaments: string[]
+  layerHeightMm?: number
+  printSeconds?: number
+  filamentGrams?: number
+}
+
 export interface ProjectFile {
   rel: string
   size: number
   modifiedMs: number
+  /** Only a 3MF has one. */
+  print?: PrintInfo
 }
 
 /** The project folder's own files: the native edges Rust keeps. */

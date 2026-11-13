@@ -165,6 +165,7 @@ export default function RightPanel({ project, files, view, selected, onView, onO
             data-testid={`${v}-tab`}
           >
             {LABELS[v]}
+            {v === 'files' && files.length > 0 && <> <span className="tab-count">{files.length}</span></>}
           </button>
         ))}
         {file && previewable(file) && (
