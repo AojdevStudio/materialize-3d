@@ -558,6 +558,19 @@ describe('setup: your printer', () => {
     expect(await screen.findByRole('heading', { name: 'Is this your printer?' })).toBeTruthy()
   })
 
+  it.each([
+    ['no Bambu Studio', { found: 'none' as const }],
+    ['a Bambu Studio that cannot slice', { found: 'other' as const, detail: 'Bambu Studio 02.07.00.00 is installed.' }],
+  ])('offers Try again when the save that passes the step with %s fails', async (_, slicer) => {
+    let failures = 1
+    mockApp({ step: 'printer', done: false }, { ...ready, slicer }, {
+      'setup.set': (_, real) => (failures-- > 0 ? Promise.reject('disk full') : Promise.resolve(real())),
+    })
+    render(<StudioApp />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Try again' }))
+    expect(await screen.findByRole('heading', { name: 'You’re set up' })).toBeTruthy()
+  })
+
   it('passes on to Ready without a slicer, and Ready names the printer already saved', async () => {
     mockApp({ step: 'printer', done: false }, { ...ready, slicer: { found: 'none' } })
     render(<StudioApp />)

@@ -65,7 +65,12 @@ export default function SetupPrinter({ next, back }: StepProps) {
     })
     void checkSlicer()
       .then(async (slicer) => {
-        if (slicer.found !== 'ready') return current && next()
+        if (slicer.found !== 'ready') {
+          await next()
+          // A save that went through has moved setup on. Still here means it failed, and the window showed why.
+          if (current) setFailed('Setup could not move on.')
+          return
+        }
         const [printers, last, { settings }] = await Promise.all([studio.printers(), lastUsed, sidecar('state.get', {})])
         if (!current) return
         const first = fit(printers, { machine: printers[0]?.nozzles[0]?.machine })
