@@ -39,7 +39,7 @@ URL.revokeObjectURL = vi.fn()
 const projectA = { id: '2026-11-06-a', conversation: 2, title: 'Project A', createdMs: 2 }
 const projectB = { id: '2026-11-06-b', conversation: 3, title: 'Project B', createdMs: 1 }
 const view = (project: string, more: object = {}) => ({ project, entries: [], running: false, waiting: null, turn: null, seq: 1, ...more })
-const settings = { model: { provider: 'anthropic', modelId: 'claude-opus-5-5' }, thinking: 'high', printer: {} }
+const settings = { model: { provider: 'anthropic', modelId: 'claude-opus-5-5' }, thinking: 'high', printer: { machine: 'Bambu Lab P2S 0.4 nozzle', process: '0.20mm Standard @BBL P2S', filament: 'Bambu PETG Basic @BBL P2S' } }
 const models = [
   { provider: 'anthropic', modelId: 'claude-opus-5-5', name: 'Opus 5.5' },
   { provider: 'anthropic', modelId: 'claude-sonnet-5-5', name: 'Sonnet 5.5' },
@@ -483,6 +483,61 @@ describe('StudioApp', () => {
     ])
     expect(screen.queryByTestId('group-printed')).toBeNull()
     expect(screen.queryByTestId('group-drafts')).toBeNull()
+  })
+
+  it('counts every project on the Projects row', async () => {
+    const projectC = { id: '2026-11-06-c', conversation: 4, title: 'Project C', createdMs: 0 }
+    mockSidecar({
+      'projects.status': () => Promise.resolve({ [projectA.id]: { running: true, printed: false, printFiles: 0, lastMs: Date.now() } }),
+    }, [projectA, projectB, projectC])
+    render(<StudioApp />)
+    await screen.findByTestId('group-working')
+    expect(projectList().getByTestId('projects-row').textContent?.trim()).toBe('Projects3')
+  })
+
+  it('narrows the projects to titles that match the search, and shows them all again when it ends', async () => {
+    const clip = { id: '2026-11-06-clip', conversation: 4, title: 'Cable clip', createdMs: 0 }
+    mockSidecar({
+      'projects.status': () => Promise.resolve({ [projectA.id]: { running: false, printed: false, printFiles: 1, lastMs: Date.now() } }),
+    }, [projectA, projectB, clip])
+    render(<StudioApp />)
+    await screen.findByTestId('group-ready')
+    const titles = () => projectList().queryAllByRole('listitem').map((row) => row.querySelector('.row-title')?.textContent)
+    fireEvent.click(projectList().getByRole('button', { name: 'Search projects' }))
+    const field = projectList().getByRole('searchbox')
+    fireEvent.change(field, { target: { value: 'CLIP' } })
+    expect(titles()).toEqual(['Cable clip'])
+    expect(screen.queryByTestId('group-ready')).toBeNull()
+    fireEvent.change(field, { target: { value: 'project' } })
+    expect(titles()).toEqual(['Project A', 'Project B'])
+    fireEvent.change(field, { target: { value: 'gear' } })
+    expect(titles()).toEqual([])
+    expect(projectList().getByText('No projects match.')).toBeTruthy()
+    expect(projectList().getByTestId('projects-row').textContent?.trim()).toBe('Projects3')
+    fireEvent.change(field, { target: { value: '' } })
+    expect(titles()).toEqual(['Project A', 'Project B', 'Cable clip'])
+    fireEvent.change(field, { target: { value: 'clip' } })
+    fireEvent.keyDown(field, { key: 'Escape' })
+    expect(projectList().queryByRole('searchbox')).toBeNull()
+    expect(document.activeElement).toBe(projectList().getByRole('button', { name: 'Search projects' }))
+    expect(titles()).toEqual(['Project A', 'Project B', 'Cable clip'])
+    fireEvent.click(projectList().getByRole('button', { name: 'Search projects' }))
+    fireEvent.change(projectList().getByRole('searchbox'), { target: { value: 'clip' } })
+    fireEvent.click(projectList().getByRole('button', { name: 'Search projects' }))
+    expect(projectList().queryByRole('searchbox')).toBeNull()
+    expect(titles()).toEqual(['Project A', 'Project B', 'Cable clip'])
+  })
+
+  it('names the chosen printer at the bottom of the sidebar once the saved state comes', async () => {
+    const state = held()
+    mockSidecar({ 'state.get': state.call })
+    render(<StudioApp />)
+    await projectList().findByTestId('engine')
+    expect(projectList().queryByTestId('printer')).toBeNull()
+    await state.release()
+    const printer = await projectList().findByTestId('printer')
+    expect(printer.textContent?.trim()).toBe('P2S')
+    expect(printer.getAttribute('title')).toBe('Bambu Lab P2S 0.4 nozzle')
   })
 
   it('moves a project to Printed from its menu', async () => {
