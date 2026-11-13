@@ -379,7 +379,6 @@ pre {
   gap: 8px;
 }
 
-/* A short chat sits on the composer. justify-content: flex-end would hide the top of a long one from scrolling. */
 .messages > :first-child {
   margin-top: auto;
 }
