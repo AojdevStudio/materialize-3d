@@ -161,4 +161,15 @@ describe('the model', () => {
     expect(await app.call('models.list')).toEqual([...anthropic, { provider: 'openai-codex', modelId: 'gpt-6.1-sol', name: 'GPT 6.1 Sol' }])
     await app.quit()
   }, 30_000)
+
+  test('list offers an OpenCode Go sign-in its own short list, so that sign-in alone never gets an empty picker', async () => {
+    const where = scratch()
+    const app = await start(where, 'models')
+    await app.call('auth.setKey', { provider: 'opencode-go', key: 'sk-test-dummy-0000' })
+    expect(await app.call('models.list')).toEqual([
+      { provider: 'opencode-go', modelId: 'glm-5.3', name: 'GLM 5.3' },
+      { provider: 'opencode-go', modelId: 'kimi-k3.1-pro', name: 'Kimi K3.1 Pro' },
+    ])
+    await app.quit()
+  }, 30_000)
 })

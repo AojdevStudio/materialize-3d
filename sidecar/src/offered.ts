@@ -9,6 +9,8 @@ export const OFFERED: readonly (ModelOption & { provider: ProviderId })[] = [
   { provider: 'anthropic', modelId: 'claude-sonnet-5-5', name: 'Sonnet 5.5' },
   { provider: 'anthropic', modelId: 'claude-fable-5-2', name: 'Fable 5.2' },
   { provider: 'openai-codex', modelId: 'gpt-6.1-sol', name: 'GPT 6.1 Sol' },
+  { provider: 'opencode-go', modelId: 'glm-5.3', name: 'GLM 5.3' },
+  { provider: 'opencode-go', modelId: 'kimi-k3.1-pro', name: 'Kimi K3.1 Pro' },
 ]
 
 /**
