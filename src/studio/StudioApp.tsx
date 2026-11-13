@@ -643,6 +643,7 @@ export default function StudioApp() {
           setupSaves.current += 1
           setSetup(state.setup)
           if (state.setup.done) {
+            setDefaultModel(state.settings.model)
             checkReady()
             loadModels()
           }

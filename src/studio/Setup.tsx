@@ -2,16 +2,22 @@ import { type ComponentType, type ReactNode, useRef } from 'react'
 import type { AppState, Setup } from '../../sidecar/src/protocol'
 import { sidecar } from './api'
 import SetupCheck from './SetupCheck'
+import SetupModel from './SetupModel'
+import SetupReady from './SetupReady'
 
 /** What every step's screen gets. `signIn` is a running sign-in's question, and `signIns` counts finished sign-ins. */
-export type StepProps = { next: () => void; onError: (message: string) => void; signIn: ReactNode; signIns: number }
+export type StepProps = { next: () => void; back: () => void; onError: (message: string) => void; signIn: ReactNode; signIns: number }
 
-const STEPS: readonly { step: Setup['step']; name?: string; Screen: ComponentType<StepProps> }[] = [
-  { step: 'welcome', Screen: Welcome },
+/** The steps in order. Welcome opens setup and Ready closes it, so the step bar numbers only the steps between them. */
+const STEPS: readonly { step: Setup['step']; name: string; Screen: ComponentType<StepProps> }[] = [
+  { step: 'welcome', name: 'Welcome', Screen: Welcome },
   { step: 'check', name: 'Check your Mac', Screen: SetupCheck },
+  { step: 'model', name: 'Pick a model', Screen: SetupModel },
+  { step: 'ready', name: 'Ready', Screen: SetupReady },
 ]
+const NUMBERED = STEPS.slice(1, -1)
 
-type Props = Omit<StepProps, 'next'> & {
+type Props = Omit<StepProps, 'next' | 'back'> & {
   setup: Setup
   /** The app's state once a step change is saved. */
   onSaved: (state: AppState) => void
@@ -23,32 +29,37 @@ export default function SetupFlow({ setup, onSaved, error, ...shared }: Props) {
   const at = Math.max(0, STEPS.findIndex((entry) => entry.step === setup.step))
   const { step, name, Screen } = STEPS[at]
   const following = STEPS[at + 1]
+  const before = STEPS[at - 1]
   const saving = useRef(false)
-  const next = () => {
+  const save = (change: Setup) => {
     if (saving.current) return
     saving.current = true
-    void sidecar('setup.set', following === undefined ? { step, done: true } : { step: following.step, done: false })
+    void sidecar('setup.set', change)
       .then(onSaved)
       .catch((err: unknown) => shared.onError(String(err)))
       .finally(() => {
         saving.current = false
       })
   }
+  const next = () => save(following === undefined ? { step, done: true } : { step: following.step, done: false })
+  const back = () => {
+    if (before !== undefined) save({ step: before.step, done: false })
+  }
 
   return (
     <main className="setup" data-testid="setup">
       {error}
-      <section className="setup-card" aria-label={name ?? 'Welcome'}>
-        {name !== undefined && (
+      <section className="setup-card" aria-label={name}>
+        {NUMBERED.some((entry) => entry.step === step) && (
           <ol className="setup-steps">
-            {STEPS.filter((entry) => entry.name !== undefined).map((entry, index) => (
+            {NUMBERED.map((entry, index) => (
               <li key={entry.step} aria-current={entry.step === step ? 'step' : undefined}>
                 <span>{index + 1}</span> {entry.name}
               </li>
             ))}
           </ol>
         )}
-        <Screen next={next} {...shared} />
+        <Screen next={next} back={back} {...shared} />
       </section>
     </main>
   )

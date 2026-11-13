@@ -16,7 +16,7 @@ type Status = 'checking' | 'failed' | 'ready' | 'needs' | 'required-missing' | '
 type Action = { kind: 'signIn'; provider: ProviderId; key: boolean } | { kind: 'copy'; command: string }
 type Row = { id: string; name: string; icon: string; status: Status; label: string; detail: string; action?: Action }
 
-const AGENTS: readonly { id: string; provider: ProviderId; name: string; icon: string }[] = [
+export const AGENTS: readonly { id: string; provider: ProviderId; name: string; icon: string }[] = [
   { id: 'claude', provider: 'anthropic', name: 'Claude', icon: claude },
   { id: 'chatgpt', provider: 'openai-codex', name: 'ChatGPT', icon: openai },
 ]
