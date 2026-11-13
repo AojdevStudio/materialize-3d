@@ -88,4 +88,13 @@ describe('Start', () => {
     await waitFor(() => expect(chip('a')).toBe('aguide ready'))
     expect(onError).toHaveBeenCalledWith('Error: gone')
   })
+
+  it('drops a working line when its turn ends, though the folder read after it fails', async () => {
+    folders = { part: [] }
+    const { chip, update } = start({ part: status(1, { running: true }) })
+    await waitFor(() => expect(chip('part')).toBe('partworking'))
+    folders = { part: () => Promise.reject(new Error('gone')) }
+    update({ part: status(2) })
+    await waitFor(() => expect(chip('part')).toBe('partdraft'))
+  })
 })

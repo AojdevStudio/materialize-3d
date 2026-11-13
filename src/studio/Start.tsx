@@ -45,7 +45,8 @@ export default function Start({ projects, status, composer, onSuggest, onOpen, o
     .join('\n')
 
   // A chip changes only when its folder read lands, so its line never pairs a new status with an old folder, as just
-  // after a turn that wrote a guide ends. Only the newest reads land, and a read that fails leaves the other chips.
+  // after a turn that wrote a guide ends. Only the newest reads land. A read that fails sets its own chip's line from the
+  // status and leaves the other chips.
   useEffect(() => {
     let live = true
     for (const read of reads === '' ? [] : reads.split('\n')) {
@@ -55,7 +56,12 @@ export default function Start({ projects, status, composer, onSuggest, onOpen, o
           const line = state === STATE.drafts && panelFiles(files).guide !== undefined ? 'guide ready' : state
           if (live) setChips((chips) => ({ ...chips, [id]: { render: newestRender(files), line: line === '' ? undefined : line } }))
         },
-        (err: unknown) => live && onError(String(err)),
+        (err: unknown) => {
+          if (!live) return
+          // Without the folder, the status still says the state. Only "guide ready" needs the folder.
+          setChips((chips) => ({ ...chips, [id]: { render: chips[id]?.render, line: state === '' ? undefined : state } }))
+          onError(String(err))
+        },
       )
     }
     return () => {
