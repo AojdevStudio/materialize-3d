@@ -1466,6 +1466,10 @@ pre {
   background: var(--s-soft);
 }
 
+.composer.locked textarea::placeholder {
+  color: var(--s-muted);
+}
+
 .composer.locked .primary:disabled {
   opacity: 1;
   background: none;

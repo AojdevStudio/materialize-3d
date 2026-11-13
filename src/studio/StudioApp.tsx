@@ -634,7 +634,7 @@ export default function StudioApp() {
       autoFocus={autoFocus}
       hint={current ? undefined : 'Photo, PDF, 3MF, STL'}
       sendLabel={current ? 'Send' : 'Start'}
-      picker={<ModelPicker models={models} chosen={chosenModel} onPick={pickModel} />}
+      picker={blocker !== undefined && models.length === 0 ? null : <ModelPicker models={models} chosen={chosenModel} onPick={pickModel} />}
     />
   )
 

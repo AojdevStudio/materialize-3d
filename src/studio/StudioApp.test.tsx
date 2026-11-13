@@ -768,6 +768,7 @@ describe('StudioApp', () => {
     mockSidecar({
       'setup.check': () => Promise.resolve(needs),
       'auth.status': () => Promise.resolve([{ provider: 'anthropic', name: 'Anthropic', login: null, kinds: ['api_key', 'oauth'] }]),
+      'models.list': () => Promise.resolve([]),
     })
     render(<StudioApp />)
     fireEvent.click(await projectList().findByText('Project B'))
@@ -775,6 +776,7 @@ describe('StudioApp', () => {
     expect(prompt().placeholder).toBe('Log in to an agent to send')
     expect((screen.getByTestId('send') as HTMLButtonElement).disabled).toBe(true)
     expect(screen.queryByLabelText('API key or token')).toBeNull()
+    expect(screen.queryByTestId('model-picker')).toBeNull()
 
     fireEvent.click(screen.getByRole('button', { name: 'Fix in setup' }))
     await screen.findByRole('heading', { name: 'Sign in to an agent' })
