@@ -99,8 +99,12 @@ fn read(dir: &Path) -> Result<Option<LastUsed>> {
     }))
 }
 
-/// The two parts of a Bambu Lab printer preset's name, `<printer> <nozzle> nozzle`.
+/// The two parts of a Bambu Lab printer preset's name, `Bambu Lab <model> <nozzle> nozzle`. Bambu Studio ships
+/// printers of other makers named the same way, such as `Prusa MK3S 0.4 nozzle`, and the slice step cannot use them.
 fn printer_and_nozzle(machine: &str) -> Option<(&str, &str)> {
+    if !machine.starts_with("Bambu Lab ") {
+        return None;
+    }
     machine.strip_suffix(" nozzle")?.rsplit_once(' ')
 }
 
@@ -215,6 +219,8 @@ mod tests {
         assert_eq!(read(&unset.path()).expect("no printer"), None);
         let other = config_with(|conf| conf["presets"]["machine"] = "Default Printer".into());
         assert_eq!(read(&other.path()).expect("another printer"), None);
+        let prusa = config_with(|conf| conf["presets"]["machine"] = "Prusa MK3S 0.4 nozzle".into());
+        assert_eq!(read(&prusa.path()).expect("a printer of another maker"), None);
     }
 
     #[test]
