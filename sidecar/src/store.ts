@@ -61,6 +61,7 @@ export const SettingsDoc = defineDoc<Settings>({
       process: '0.20mm Standard @BBL P2S',
       filament: 'Bambu PETG Basic @BBL P2S 0.4 nozzle',
     },
+    astra: true,
   }),
   checkpointWhen: always,
 })
@@ -204,7 +205,17 @@ export class Store implements LoginIndex {
     const root = await harness.root(context)
     const store = new Store(lock, harness, root, options.projectsDir)
     await store.#skipSetupForEarlierUsers()
+    await store.#keepAstraForEarlierUsers()
     return store
+  }
+
+  /** Settings saved before the Astra setting have none. Astra was always offered then, so it stays on. */
+  async #keepAstraForEarlierUsers(): Promise<void> {
+    const settings = await this.harness.snapshot(SettingsDoc, this.root.id, context)
+    if (settings === undefined || 'astra' in settings) return
+    await this.harness.commit(async (tx) => {
+      ;(await tx.doc(SettingsDoc, this.root.id)).astra = true
+    }, context)
   }
 
   /** A store an app before setup used opens with setup done. The first open by an app with setup decides it once. */

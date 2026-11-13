@@ -195,4 +195,16 @@ describe('the agent', () => {
     expect(read?.kind === 'tool' && read.text).toContain('outside the project folder')
     await app.quit()
   })
+
+  test('gets no Astra tool when the person turned Astra off', async () => {
+    const where = scratch()
+    const app = start(where, 'models')
+    await app.next()
+    await app.call('settings.set', { astra: false })
+    const project = await firstSend(app, 'A 20 mm cube')
+    expect(await app.call('agent.tools', { project })).toEqual(['read', 'write', 'edit', 'run', 'slice'])
+    expect(((await app.call('chat.open', { project })) as ChatView).turn?.tools).toEqual(['read', 'write', 'edit', 'run', 'slice'])
+    await answered(app, project, 'answered by faux-a')
+    await app.quit()
+  })
 })

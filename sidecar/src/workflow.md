@@ -33,7 +33,7 @@ Start every guide from the app's template, `.m3d/guide-template.html`. It holds 
 
 ## Astra, the GPT helper
 
-You can hand a task to Astra with the `astra` tool. Astra suits drawings and second opinions. Astra works in this same folder with the same file tools, but cannot see this chat, so the task must say everything it needs: what to do, the files to read, and the file to write. Check what Astra writes before you show it.
+When you have the `astra` tool, you can hand a task to Astra with it. Astra suits drawings and second opinions. Astra works in this same folder with the same file tools, but cannot see this chat, so the task must say everything it needs: what to do, the files to read, and the file to write. Check what Astra writes before you show it.
 
 ## Rules
 

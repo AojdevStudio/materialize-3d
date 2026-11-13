@@ -301,6 +301,7 @@ export class Chats {
         const chosen = (await tx.doc(ProjectsDoc, store.root.id)).projects.find((p) => p.id === project.id)?.model ?? settings.model
         const model = { provider: chosen.provider, modelId: chosen.modelId }
         const thinking = settings.thinking
+        const offered = settings.astra ? tools : tools.filter((tool) => tool.name !== 'astra')
         await conversation.submit(tx, {
           type: 'input',
           content,
@@ -308,8 +309,8 @@ export class Chats {
           whenBusy: 'reject',
           entry: { kind: 'm3d.user', data: { text: draft.text, images: shown, files: named } },
         })
-        await configure(tx, conversation.id, { model, thinkingLevel: thinking, extensions: [extension], tools, instructions: WORKFLOW, cwd: folder })
-        const turn: Turn = { requestId, model, thinking, tools: tools.map((t) => t.name), instructions: WORKFLOW_VERSION, app: version, startedMs: Date.now() }
+        await configure(tx, conversation.id, { model, thinkingLevel: thinking, extensions: [extension], tools: offered, instructions: WORKFLOW, cwd: folder })
+        const turn: Turn = { requestId, model, thinking, tools: offered.map((t) => t.name), instructions: WORKFLOW_VERSION, app: version, startedMs: Date.now() }
         ;(await tx.doc(TurnDoc, conversation.id)).turn = turn
         const { drafts } = await tx.doc(DraftsDoc, store.root.id)
         if (drafts[project.id]?.rev === rev) delete drafts[project.id]

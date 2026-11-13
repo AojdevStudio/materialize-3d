@@ -15,11 +15,15 @@ export type Thinking = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' |
 /** Where first-launch setup stands. Setup reopens on `step` until it is `done`. */
 export type Setup = { step: 'welcome' | 'check' | 'model' | 'printer' | 'ready'; done: boolean }
 
-/** What the next turn starts with. A running turn keeps what it started with. */
+/**
+ * What the next turn starts with. A running turn keeps what it started with. `astra` lets the main agent hand a task to
+ * Astra, the GPT helper.
+ */
 export type Settings = {
   model: ModelChoice
   thinking: Thinking
   printer: { machine: string; process: string; filament: string }
+  astra: boolean
 }
 
 /**
