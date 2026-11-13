@@ -516,6 +516,46 @@ describe('setup: your printer', () => {
     expect(button('Looks right').disabled).toBe(false)
   })
 
+  it('keeps Save and the fields off while Back saves, so a late Save cannot undo Back', async () => {
+    let release = () => {}
+    mockApp({ step: 'printer', done: false }, { ...ready, lastUsed: null }, { 'setup.set': (_, real) => new Promise((resolve) => (release = () => resolve(real()))) })
+    render(<StudioApp />)
+    expect(await screen.findByRole('heading', { name: 'Pick your printer' })).toBeTruthy()
+    fireEvent.click(button('Back'))
+    expect(button('Save').disabled).toBe(true)
+    expect(field('Printer').matches(':disabled')).toBe(true)
+    await act(async () => release())
+    expect(await screen.findByRole('heading', { name: 'Pick your default model' })).toBeTruthy()
+    expect(calls('printer.set')).toEqual([])
+  })
+
+  it('opens the pick and says why when Bambu Studio’s settings cannot be read', async () => {
+    mockApp({ step: 'printer', done: false }, ready)
+    const app = invokeMock.getMockImplementation()
+    invokeMock.mockImplementation((command: string, args: unknown) =>
+      command === 'bambu_last_used' ? Promise.reject('BambuStudio.conf: invalid JSON') : app?.(command, args),
+    )
+    render(<StudioApp />)
+    expect(await screen.findByRole('heading', { name: 'Pick your printer' })).toBeTruthy()
+    expect(screen.getByText(/BambuStudio\.conf: invalid JSON/)).toBeTruthy()
+    fireEvent.click(button('Save'))
+    expect(await screen.findByRole('heading', { name: 'You’re set up' })).toBeTruthy()
+  })
+
+  it('shows why the printer list failed, and Try again reads it again', async () => {
+    mockApp({ step: 'printer', done: false }, ready)
+    const app = invokeMock.getMockImplementation()
+    let failures = 1
+    invokeMock.mockImplementation((command: string, args: unknown) =>
+      command === 'studio_printers' && failures-- > 0 ? Promise.reject('BBL.json: invalid JSON') : app?.(command, args),
+    )
+    render(<StudioApp />)
+    expect(await screen.findByText(/BBL\.json: invalid JSON/)).toBeTruthy()
+    expect(button('Back').disabled).toBe(false)
+    fireEvent.click(button('Try again'))
+    expect(await screen.findByRole('heading', { name: 'Is this your printer?' })).toBeTruthy()
+  })
+
   it('passes on to Ready without a slicer, and Ready names the printer already saved', async () => {
     mockApp({ step: 'printer', done: false }, { ...ready, slicer: { found: 'none' } })
     render(<StudioApp />)

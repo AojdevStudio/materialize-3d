@@ -48,30 +48,42 @@ function offer(printers: PrinterChoice[], first: Fitted, last: BambuLastUsed | n
  * every printer the validated Bambu Studio slices for. With no such Bambu Studio nothing can be saved, so the step
  * passes and the saved printer stays.
  */
-export default function SetupPrinter({ next, back, onError }: StepProps) {
+export default function SetupPrinter({ next, back }: StepProps) {
   const [shown, setShown] = useState<Offer | null>(null)
   const [picking, setPicking] = useState<Fitted | null>(null)
   const [saving, setSaving] = useState(false)
   const [refused, setRefused] = useState<string | null>(null)
+  const [unread, setUnread] = useState<string | null>(null)
+  const [failed, setFailed] = useState<string | null>(null)
+  const [attempt, setAttempt] = useState(0)
 
   useEffect(() => {
     let current = true
+    const lastUsed = studio.bambuLastUsed().catch((err: unknown) => {
+      if (current) setUnread(String(err))
+      return null
+    })
     void checkSlicer()
       .then(async (slicer) => {
         if (slicer.found !== 'ready') return current && next()
-        const [printers, last, { settings }] = await Promise.all([studio.printers(), studio.bambuLastUsed(), sidecar('state.get', {})])
+        const [printers, last, { settings }] = await Promise.all([studio.printers(), lastUsed, sidecar('state.get', {})])
         if (!current) return
         const first = fit(printers, { machine: printers[0]?.nozzles[0]?.machine })
-        if (first === undefined) return onError('Bambu Studio lists no printer to pick.')
+        if (first === undefined) return setFailed('Bambu Studio lists no printer to pick.')
         const made = offer(printers, first, last, settings.printer)
         setShown(made)
         if (made.confirmable === undefined) setPicking(made.start)
       })
-      .catch((err: unknown) => current && onError(String(err)))
+      .catch((err: unknown) => current && setFailed(String(err)))
     return () => {
       current = false
     }
-  }, [])
+  }, [attempt])
+
+  const leave = () => {
+    setSaving(true)
+    void back().finally(() => setSaving(false))
+  }
 
   const save = (choice: Choice) => {
     setSaving(true)
@@ -85,7 +97,32 @@ export default function SetupPrinter({ next, back, onError }: StepProps) {
     return (
       <>
         <h1>Your printer</h1>
-        <p>Checking…</p>
+        {failed === null ? (
+          <p>Checking…</p>
+        ) : (
+          <>
+            <p className="setup-hint" role="alert">
+              {failed}
+            </p>
+            <div className="setup-actions">
+              <button type="button" disabled={saving} onClick={leave}>
+                Back
+              </button>
+              <button
+                type="button"
+                className="primary"
+                disabled={saving}
+                onClick={() => {
+                  setFailed(null)
+                  setUnread(null)
+                  setAttempt(attempt + 1)
+                }}
+              >
+                Try again
+              </button>
+            </div>
+          </>
+        )}
       </>
     )
   }
@@ -154,6 +191,7 @@ export default function SetupPrinter({ next, back, onError }: StepProps) {
     <>
       <h1>Pick your printer</h1>
       <p>The agent slices for this printer.</p>
+      {unread && <p className="setup-hint">Bambu Studio’s last settings could not be read. {unread}</p>}
       <fieldset className="setup-fields" disabled={saving}>
         {fields.map(({ label, value, options, onChange }) => (
           <label key={label}>
@@ -170,7 +208,7 @@ export default function SetupPrinter({ next, back, onError }: StepProps) {
       </fieldset>
       {reason}
       <div className="setup-actions">
-        <button type="button" disabled={saving} onClick={() => (shown.confirmable === undefined ? void back() : setPicking(null))}>
+        <button type="button" disabled={saving} onClick={() => (shown.confirmable === undefined ? leave() : setPicking(null))}>
           Back
         </button>
         <button type="button" className="primary" disabled={saving} onClick={() => save(choice)}>
