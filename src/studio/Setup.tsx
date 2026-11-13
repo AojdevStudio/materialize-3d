@@ -3,25 +3,25 @@ import type { AppState, Setup } from '../../sidecar/src/protocol'
 import { sidecar } from './api'
 import SetupCheck from './SetupCheck'
 
-/** What every step's screen gets. `signIn` is a running sign-in's question, and `signIns` counts finished sign-ins. */
-export type StepProps = { next: () => void; onError: (message: string) => void; signIn: ReactNode; signIns: number }
+/**
+ * What every step's screen gets. `signIn` is a running sign-in's question, and `signIns` counts finished sign-ins.
+ * `refused` is the provider a waiting turn needs a new sign-in to.
+ */
+export type StepProps = { next: () => void; onError: (message: string) => void; signIn: ReactNode; signIns: number; refused?: string }
 
 const STEPS: readonly { step: Setup['step']; name?: string; Screen: ComponentType<StepProps> }[] = [
   { step: 'welcome', Screen: Welcome },
   { step: 'check', name: 'Check your Mac', Screen: SetupCheck },
 ]
 
-type Props = Omit<StepProps, 'next'> & {
-  setup: Setup
-  /** The app's state once a step change is saved. */
-  onSaved: (state: AppState) => void
-  error: ReactNode
-}
+type Shared = Omit<StepProps, 'next'> & { error: ReactNode }
+
+const indexOf = (step: Setup['step']) => Math.max(0, STEPS.findIndex((entry) => entry.step === step))
 
 /** First-launch setup, on the step the store keeps, until it is done. A step this build lacks starts it over. */
-export default function SetupFlow({ setup, onSaved, error, ...shared }: Props) {
-  const at = Math.max(0, STEPS.findIndex((entry) => entry.step === setup.step))
-  const { step, name, Screen } = STEPS[at]
+export default function SetupFlow({ setup, onSaved, ...shared }: Shared & { setup: Setup; onSaved: (state: AppState) => void }) {
+  const at = indexOf(setup.step)
+  const { step } = STEPS[at]
   const following = STEPS[at + 1]
   const saving = useRef(false)
   const next = () => {
@@ -35,9 +35,26 @@ export default function SetupFlow({ setup, onSaved, error, ...shared }: Props) {
       })
   }
 
+  return <SetupCard at={at} next={next} {...shared} />
+}
+
+/** One step of setup opened again, as Fix in setup does. Going on, or Back, ends it there. The stored setup stays done. */
+export function SetupStep({ step, onDone, ...shared }: Shared & { step: Setup['step']; onDone: () => void }) {
+  return <SetupCard at={indexOf(step)} next={onDone} back={onDone} {...shared} />
+}
+
+function SetupCard({ at, next, back, error, ...shared }: Shared & { at: number; next: () => void; back?: () => void }) {
+  const { step, name, Screen } = STEPS[at]
   return (
     <main className="setup" data-testid="setup">
       {error}
+      {back !== undefined && (
+        <div className="setup-back">
+          <button type="button" onClick={back}>
+            Back
+          </button>
+        </div>
+      )}
       <section className="setup-card" aria-label={name ?? 'Welcome'}>
         {name !== undefined && (
           <ol className="setup-steps">

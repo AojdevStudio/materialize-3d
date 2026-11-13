@@ -7,7 +7,6 @@ import python from '../assets/icons/python.svg?raw'
 import uv from '../assets/icons/uv.svg?raw'
 import { checkSlicer, sidecar, type SlicerCheck } from './api'
 import type { StepProps } from './Setup'
-import { KeyForm } from './Waiting'
 
 /** Each part of the check: its answer, or `failed`. A part still being checked is missing. */
 type Found = { logins?: Login[] | 'failed'; toolchain?: Toolchain | 'failed'; slicer?: SlicerCheck | 'failed' }
@@ -16,7 +15,7 @@ type Status = 'checking' | 'failed' | 'ready' | 'needs' | 'required-missing' | '
 type Action = { kind: 'signIn'; provider: ProviderId; key: boolean } | { kind: 'copy'; command: string }
 type Row = { id: string; name: string; icon: string; status: Status; label: string; detail: string; action?: Action }
 
-const AGENTS: readonly { id: string; provider: ProviderId; name: string; icon: string }[] = [
+export const AGENTS: readonly { id: string; provider: ProviderId; name: string; icon: string }[] = [
   { id: 'claude', provider: 'anthropic', name: 'Claude', icon: claude },
   { id: 'chatgpt', provider: 'openai-codex', name: 'ChatGPT', icon: openai },
 ]
@@ -34,7 +33,7 @@ const unanswered = (row: Pick<Row, 'id' | 'name' | 'icon'>, failed: boolean, loo
     ? { ...row, status: 'failed', label: 'Not checked', detail: 'The check failed. Press Check again.' }
     : { ...row, status: 'checking', label: 'Checking', detail: `Looking for ${lookingFor}…` }
 
-function agentRows(logins: Found['logins']): Row[] {
+function agentRows(logins: Found['logins'], refused: string | undefined): Row[] {
   return AGENTS.map(({ id, provider, name, icon }) => {
     if (logins === undefined || logins === 'failed') return unanswered({ id, name, icon }, logins === 'failed', 'your sign-in')
     const login = loginOf(logins, provider)
@@ -47,7 +46,12 @@ function agentRows(logins: Found['logins']): Row[] {
       icon,
       status: 'needs',
       label: 'Needs login',
-      detail: other === undefined ? 'Not signed in.' : `Not signed in. Optional while ${other.name} works.`,
+      detail:
+        provider === refused
+          ? 'Sign in so the waiting message can go on.'
+          : other === undefined
+            ? 'Not signed in.'
+            : `Not signed in. Optional while ${other.name} works.`,
       action: { kind: 'signIn', provider, key: login?.kinds.includes('api_key') ?? false },
     }
   })
@@ -107,7 +111,7 @@ function verdictOf({ logins, toolchain, slicer }: Found): Verdict {
 }
 
 /** Setup's check of the Mac: a row for each sign-in, Bambu Studio, uv, and Python. */
-export default function SetupCheck({ next, onError, signIn, signIns }: StepProps) {
+export default function SetupCheck({ next, onError, signIn, signIns, refused }: StepProps) {
   const [found, setFound] = useState<Found>({})
   const [round, setRound] = useState(0)
   const [keyFormFor, setKeyFormFor] = useState<ProviderId | null>(null)
@@ -143,7 +147,11 @@ export default function SetupCheck({ next, onError, signIn, signIns }: StepProps
     }
   }, [round, signIns])
 
-  const verdict = verdictOf(found)
+  // A sign-in a waiting turn was refused with counts as none, so its row offers a new one.
+  const checked: Found = Array.isArray(found.logins)
+    ? { ...found, logins: found.logins.map((login) => (login.provider === refused ? { ...login, login: null } : login)) }
+    : found
+  const verdict = verdictOf(checked)
   const copy = (command: string) =>
     void navigator.clipboard.writeText(command).then(
       () => setCopied(command),
@@ -202,9 +210,9 @@ export default function SetupCheck({ next, onError, signIn, signIns }: StepProps
       {verdict.text !== undefined && <p>{verdict.text}</p>}
       {group(
         'Agent that does the work (at least one)',
-        agentRows(found.logins),
+        agentRows(checked.logins, refused),
         <>
-          {keyFormFor !== null && Array.isArray(found.logins) && !signedIn(found.logins, keyFormFor) && (
+          {keyFormFor !== null && Array.isArray(checked.logins) && !signedIn(checked.logins, keyFormFor) && (
             <div className="setup-key">
               <KeyForm provider={keyFormFor} onError={onError} />
             </div>
@@ -226,5 +234,27 @@ export default function SetupCheck({ next, onError, signIn, signIns }: StepProps
         </button>
       </div>
     </>
+  )
+}
+
+/** A sign-in with an API key or a proxy's token, and for Anthropic the proxy's URL. */
+function KeyForm({ provider, onError }: { provider: ProviderId; onError: (message: string) => void }) {
+  const [key, setKey] = useState('')
+  const [baseUrl, setBaseUrl] = useState('')
+  return (
+    <form
+      onSubmit={(event) => {
+        event.preventDefault()
+        void sidecar('auth.setKey', { provider, key, ...(baseUrl === '' ? {} : { baseUrl }) }).catch((err: unknown) => onError(String(err)))
+      }}
+    >
+      <input type="password" placeholder="API key or token" value={key} onChange={(e) => setKey(e.target.value)} aria-label="API key or token" />
+      {provider === 'anthropic' && (
+        <input placeholder="Proxy URL (optional)" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} aria-label="Proxy URL" />
+      )}
+      <button type="submit" disabled={key === ''}>
+        Save
+      </button>
+    </form>
   )
 }

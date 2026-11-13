@@ -2,16 +2,16 @@ import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { type AppState, type Draft, type LoginEvent, type ModelChoice, type ModelOption, type Need, type Project, type ProjectStatus, type Setup, START, type ChatView as View } from '../../sidecar/src/protocol'
-import { firstView, onQuitFlush, onSidecarEvent, panelFiles, sidecar, studio, viewOf, type PanelView, type ProjectFile } from './api'
+import { checkSlicer, firstView, onQuitFlush, onSidecarEvent, panelFiles, sidecar, studio, viewOf, type PanelView, type ProjectFile } from './api'
 import { ChatView } from './Chat'
 import { Composer, releaseAttachment, savedAttachment, type PastedPicture } from './Composer'
 import ModelPicker from './ModelPicker'
 import RightPanel from './RightPanel'
-import SetupFlow from './Setup'
+import SetupFlow, { SetupStep } from './Setup'
 import Start from './Start'
 import { buildChat } from './transcript'
 import Sidebar from './Sidebar'
-import { ImportBlockedBanner, ReadinessBanner, SignInAsk, WaitingBanner } from './Waiting'
+import { ImportBlockedBanner, lockedText, SetupBanner, SignInAsk, WaitingBanner, type Blocker, type SetupCause, type TurnLogin } from './Waiting'
 import { UpdateBanner } from '../components/UpdateBanner'
 import { checkForUpdatesAtLaunch, useUpdateEvents } from '../stores/updates'
 import './studio.css'
@@ -92,6 +92,13 @@ export default function StudioApp() {
   const setupSaves = useRef(0)
   /** What the agent needs before a send, from the sidecar's check. Null until the check answers, and Send waits. */
   const [needs, setNeeds] = useState<Need[] | null>(null)
+  /**
+   * Whether Bambu Studio is there for the slice step. `skipped` when it is missing and the person went on without it in
+   * setup's check, so its banner stays away until the next launch. Null until checked.
+   */
+  const [slicer, setSlicer] = useState<'ready' | 'missing' | 'skipped' | null>(null)
+  /** Setup's check, opened again from Fix in setup. It ends back on the screen it was opened from. */
+  const [fixing, setFixing] = useState(false)
   /** The folder the chats from before the store could not be read from, when macOS keeps it from the app. */
   const [importBlocked, setImportBlocked] = useState<string | null>(null)
   /** The models of the providers the person signed in to, for the model picker. */
@@ -248,6 +255,15 @@ export default function StudioApp() {
       .catch((err: unknown) => setError(String(err)))
   }
 
+  /** Reads again what setup can change: the send check, the models, and the slicer. */
+  const afterSetup = () => {
+    checkReady()
+    loadModels()
+    void checkSlicer()
+      .then(({ found }) => setSlicer(found === 'ready' ? 'ready' : 'skipped'))
+      .catch((err: unknown) => setError(String(err)))
+  }
+
   // An import retry brings old chats in as projects. Its saved state may be read before a send the person makes
   // meanwhile, so it takes the projects only, never drafts, which this window already holds.
   const retryImport = () => {
@@ -274,6 +290,9 @@ export default function StudioApp() {
     void readState()
     checkReady()
     loadModels()
+    void checkSlicer()
+      .then(({ found }) => setSlicer((now) => now ?? (found === 'ready' ? 'ready' : 'missing')))
+      .catch((err: unknown) => setError(String(err)))
     // The listener is in place before the ping, so no engine change is missed, and a ping that answers late never
     // hides one.
     let engineChanged = false
@@ -562,11 +581,16 @@ export default function StudioApp() {
     if (current) setSendErrors(({ [current.id]: _, ...rest }) => rest)
   }
 
-  // Send waits for the check, and stays off while the agent lacks a sign-in, uv, or Python.
-  const notReady = needs === null || needs.length > 0
-
   /** The open project's own model, or the default for one from before the picker. On the start screen, the default. */
   const chosenModel = (current ? projects.find((p) => p.id === current.id)?.model : undefined) ?? defaultModel
+
+  const waiting = view?.waiting ?? null
+  const turnLogin: TurnLogin | undefined = waiting?.kind === 'login' ? { kind: 'turn-login', provider: waiting.provider, name: waiting.name } : undefined
+  // A turn that waits for a sign-in to the provider the next message runs on stops that message too.
+  const blocker: Blocker | undefined = needs?.[0] ?? (turnLogin?.provider === chosenModel?.provider ? turnLogin : undefined)
+  const cause: SetupCause | undefined = blocker ?? turnLogin ?? (slicer === 'missing' ? { kind: 'slicer' } : undefined)
+  // Send waits for the check, and stays off while the agent lacks a sign-in, uv, or Python, or its turn waits for one.
+  const notReady = needs === null || blocker !== undefined
 
   /**
    * Saves a pick: the open project's model, or on the start screen the default the next project takes. The check runs
@@ -592,30 +616,28 @@ export default function StudioApp() {
   }
 
   const composer = (placeholder: string, autoFocus: boolean) => (
-    <>
-      {needs !== null && <ReadinessBanner needs={needs} onCheck={checkReady} onError={setError} />}
-      <Composer
-        text={shown.text}
-        onText={type}
-        attachments={attachments}
-        onAttach={(more) => setAttachments([...draftOf(openKey()).attachments, ...more.map((a) => a.path)])}
-        onPaste={pastePictures}
-        onRemove={(index) => {
-          releaseAttachment(attachments[index])
-          previews.current.delete(shown.attachments[index])
-          setAttachments(draftOf(openKey()).attachments.filter((_, i) => i !== index))
-        }}
-        onSend={() => void send()}
-        onStop={current ? () => void sidecar('chat.stop', { project: current.id }).catch((err: unknown) => setError(String(err))) : undefined}
-        busy={sending || running || notReady}
-        running={running}
-        placeholder={placeholder}
-        autoFocus={autoFocus}
-        hint={current ? undefined : 'Photo, PDF, 3MF, STL'}
-        sendLabel={current ? 'Send' : 'Start'}
-        picker={<ModelPicker models={models} chosen={chosenModel} onPick={pickModel} />}
-      />
-    </>
+    <Composer
+      text={shown.text}
+      onText={type}
+      attachments={attachments}
+      onAttach={(more) => setAttachments([...draftOf(openKey()).attachments, ...more.map((a) => a.path)])}
+      onPaste={pastePictures}
+      onRemove={(index) => {
+        releaseAttachment(attachments[index])
+        previews.current.delete(shown.attachments[index])
+        setAttachments(draftOf(openKey()).attachments.filter((_, i) => i !== index))
+      }}
+      onSend={() => void send()}
+      onStop={current ? () => void sidecar('chat.stop', { project: current.id }).catch((err: unknown) => setError(String(err))) : undefined}
+      busy={sending || running || needs === null}
+      running={running}
+      placeholder={placeholder}
+      locked={blocker === undefined ? undefined : lockedText(blocker)}
+      autoFocus={autoFocus}
+      hint={current ? undefined : 'Photo, PDF, 3MF, STL'}
+      sendLabel={current ? 'Send' : 'Start'}
+      picker={<ModelPicker models={models} chosen={chosenModel} onPick={pickModel} />}
+    />
   )
 
   const errorBar = shownError && (
@@ -642,10 +664,24 @@ export default function StudioApp() {
         onSaved={(state) => {
           setupSaves.current += 1
           setSetup(state.setup)
-          if (state.setup.done) {
-            checkReady()
-            loadModels()
-          }
+          if (state.setup.done) afterSetup()
+        }}
+        onError={setError}
+        error={errorBar}
+        signIn={signInAsk}
+        signIns={signIns}
+      />
+    )
+  }
+
+  if (fixing) {
+    return (
+      <SetupStep
+        step="check"
+        refused={turnLogin?.provider}
+        onDone={() => {
+          setFixing(false)
+          afterSetup()
         }}
         onError={setError}
         error={errorBar}
@@ -672,6 +708,7 @@ export default function StudioApp() {
         {errorBar}
         {importBlocked !== null && <ImportBlockedBanner folder={importBlocked} onRetry={retryImport} onError={setError} />}
         {signInAsk}
+        {cause !== undefined && <SetupBanner cause={cause} onFix={() => setFixing(true)} />}
         {current ? (
           <>
             <header className="chat-title">{current.title}</header>
@@ -680,7 +717,7 @@ export default function StudioApp() {
                 {view.turn.model.modelId}
               </p>
             )}
-            {view?.waiting && <WaitingBanner project={current.id} waiting={view.waiting} onError={setError} />}
+            {waiting?.kind === 'error' && <WaitingBanner project={current.id} waiting={waiting} onError={setError} />}
             <ChatView
               project={current.id}
               items={items}

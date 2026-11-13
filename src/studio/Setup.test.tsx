@@ -75,7 +75,7 @@ describe('setup', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Start setup' }))
     expect(await screen.findByRole('heading', { name: 'Your Mac is ready' })).toBeTruthy()
     expect(screen.queryByTestId('start-screen')).toBeNull()
-    expect(screen.queryByTestId('readiness')).toBeNull()
+    expect(screen.queryByTestId('setup-needed')).toBeNull()
     fireEvent.click(button('Continue'))
     expect(await screen.findByTestId('start-screen')).toBeTruthy()
     expect(saved()).toEqual([
@@ -144,6 +144,7 @@ describe('setup', () => {
     fireEvent.click(button('Continue without a slicer'))
     expect(await screen.findByTestId('start-screen')).toBeTruthy()
     expect(saved()).toEqual([{ step: 'check', done: true }])
+    expect(screen.queryByTestId('setup-needed')).toBeNull()
   })
 
   it('lets a check that failed run again', async () => {

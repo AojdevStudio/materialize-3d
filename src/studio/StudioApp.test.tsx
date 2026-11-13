@@ -149,6 +149,13 @@ function mockSidecar(overrides: Calls = {}, projects: Project[] = [projectB], dr
         return Promise.resolve(view(String(params.project)))
       case 'setup.check':
         return Promise.resolve([])
+      case 'setup.tools':
+        return Promise.resolve({ uv: '0.9.2', python: '3.12.1' })
+      case 'auth.status':
+        return Promise.resolve([
+          { provider: 'anthropic', name: 'Anthropic', login: 'api_key', kinds: ['api_key', 'oauth'] },
+          { provider: 'openai-codex', name: 'ChatGPT', login: null, kinds: ['oauth'] },
+        ])
       case 'models.list':
         return Promise.resolve(models)
       case 'projects.status':
@@ -169,6 +176,10 @@ function mockSidecar(overrides: Calls = {}, projects: Project[] = [projectB], dr
   invokeMock.mockImplementation((command: string, args: { method: string; params: Params; project?: string }) => {
     if (command === 'update_check') return Promise.resolve({ status: 'upToDate' })
     if (command === 'studio_files') return Promise.resolve(files[String(args.project)] ?? [])
+    if (command === 'studio_slicer') {
+      const found = () => Promise.resolve({ found: 'ready', version: '02.08.02.61' })
+      return overrides.studio_slicer?.({}, found) ?? found()
+    }
     if (command !== 'sidecar') return Promise.resolve(undefined)
     const real = () => defaults(args.method, args.params)
     const override = overrides[args.method]
@@ -650,16 +661,34 @@ describe('StudioApp', () => {
     expect(sidebar.getByText('Project B')).toBeTruthy()
   })
 
-  it('shows what a waiting turn needs, and a proxy sign-in goes to the sidecar', async () => {
+  it('sends a turn that waits for a sign-in to setup, and comes back to the same chat once the turn goes on', async () => {
     const waiting = { kind: 'login', provider: 'anthropic', name: 'Anthropic', fix: 'Sign in to Anthropic. The message picks up where it stopped.' }
-    mockSidecar({ 'chat.open': (params) => Promise.resolve(view(String(params.project), { waiting })) })
+    mockSidecar({ 'chat.open': (params) => Promise.resolve(view(String(params.project), { waiting })) }, [projectB], { [projectB.id]: { text: 'make it red' } })
     render(<StudioApp />)
     fireEvent.click(await projectList().findByText('Project B'))
-    expect((await screen.findByTestId('waiting')).textContent).toContain('Sign in to Anthropic. The message picks up where it stopped.')
+    const banner = await screen.findByTestId('setup-needed')
+    expect(banner.textContent).toContain('Claude needs a new login. Your chats are saved, and the message picks up where it stopped.')
+    expect(prompt().placeholder).toBe('Log in to an agent to send')
+    expect((screen.getByTestId('send') as HTMLButtonElement).disabled).toBe(true)
+    expect(screen.queryByLabelText('API key or token')).toBeNull()
+
+    fireEvent.click(within(banner).getByRole('button', { name: 'Fix in setup' }))
+    const claude = within(await screen.findByTestId('check-claude'))
+    expect(await claude.findByText('Needs login')).toBeTruthy()
+    fireEvent.click(claude.getByRole('button', { name: 'Use a key' }))
     fireEvent.change(screen.getByLabelText('API key or token'), { target: { value: 'proxy-token' } })
     fireEvent.change(screen.getByLabelText('Proxy URL'), { target: { value: 'http://127.0.0.1:8317' } })
     fireEvent.click(screen.getByText('Save'))
     await waitFor(() => expect(sidecarCalls('auth.setKey')).toEqual([{ provider: 'anthropic', key: 'proxy-token', baseUrl: 'http://127.0.0.1:8317' }]))
+    await emit({ type: 'login', provider: 'anthropic', step: 'done' })
+    await emit({ type: 'chat', ...view(projectB.id, { seq: 2 }) })
+    expect(await claude.findByText('Ready')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+    await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project B'))
+    expect(screen.queryByTestId('setup-needed')).toBeNull()
+    expect(prompt().value).toBe('make it red')
+    expect((screen.getByTestId('send') as HTMLButtonElement).disabled).toBe(false)
   })
 
   it('saves the draft once typing pauses, and fills the composer with it when the project opens', async () => {
@@ -716,31 +745,64 @@ describe('StudioApp', () => {
     expect(saves()).toEqual([{ key: projectB.id, text: 'half a thought', attachments: [] }])
   })
 
-  it('keeps Send off until the agent can run, and names the fix', async () => {
+  it('keeps Send off until the agent can run, names the fix, and checks again once setup is done', async () => {
     let needs: unknown[] = [{ kind: 'uv', fix: 'Install uv, then check again.' }]
     mockSidecar({ 'setup.check': () => Promise.resolve(needs) })
     render(<StudioApp />)
     fireEvent.click(await projectList().findByText('Project B'))
-    expect((await screen.findByTestId('readiness')).textContent).toContain('Install uv, then check again.')
+    expect((await screen.findByTestId('setup-needed')).textContent).toContain('uv is missing. Your chats are saved. Install it to keep working.')
     type('A clip')
+    expect(prompt().placeholder).toBe('Install uv to send')
     expect((screen.getByTestId('send') as HTMLButtonElement).disabled).toBe(true)
     needs = []
-    fireEvent.click(screen.getByText('Check again'))
-    await waitFor(() => expect(screen.queryByTestId('readiness')).toBeNull())
+    fireEvent.click(screen.getByRole('button', { name: 'Fix in setup' }))
+    await screen.findByRole('heading', { name: 'Your Mac is ready' })
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+    await waitFor(() => expect(screen.queryByTestId('setup-needed')).toBeNull())
+    expect(prompt().value).toBe('A clip')
     expect((screen.getByTestId('send') as HTMLButtonElement).disabled).toBe(false)
   })
 
-  it('asks for the sign-in a provider needs before a send, and checks again once it is done', async () => {
+  it('says which sign-in the model needs, with no key form in the chat, and lets the person back out of setup', async () => {
     let needs: unknown[] = [{ kind: 'login', provider: 'anthropic', name: 'Anthropic', fix: 'Sign in to Anthropic before you send.' }]
-    mockSidecar({ 'setup.check': () => Promise.resolve(needs) })
+    mockSidecar({
+      'setup.check': () => Promise.resolve(needs),
+      'auth.status': () => Promise.resolve([{ provider: 'anthropic', name: 'Anthropic', login: null, kinds: ['api_key', 'oauth'] }]),
+    })
     render(<StudioApp />)
     fireEvent.click(await projectList().findByText('Project B'))
-    const notice = await screen.findByTestId('readiness')
-    expect(notice.textContent).toContain('Sign in to Anthropic before you send.')
-    expect(screen.getByLabelText('API key or token')).toBeTruthy()
+    expect((await screen.findByTestId('setup-needed')).textContent).toContain('Claude is logged out. Your chats are saved. Log in to keep working.')
+    expect(prompt().placeholder).toBe('Log in to an agent to send')
+    expect((screen.getByTestId('send') as HTMLButtonElement).disabled).toBe(true)
+    expect(screen.queryByLabelText('API key or token')).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Fix in setup' }))
+    await screen.findByRole('heading', { name: 'Sign in to an agent' })
+    expect((screen.getByRole('button', { name: 'Continue' }) as HTMLButtonElement).disabled).toBe(true)
+    fireEvent.click(screen.getByRole('button', { name: 'Back' }))
+    await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project B'))
+    expect(screen.getByTestId('setup-needed')).toBeTruthy()
+
     needs = []
     await emit({ type: 'login', provider: 'anthropic', step: 'done' })
-    await waitFor(() => expect(screen.queryByTestId('readiness')).toBeNull())
+    await waitFor(() => expect(screen.queryByTestId('setup-needed')).toBeNull())
+    expect(prompt().placeholder).toBe('Reply, paste a link, or attach a file')
+  })
+
+  it('says when Bambu Studio is gone but keeps Send on, and stays quiet once setup went on without it', async () => {
+    mockSidecar({ studio_slicer: () => Promise.resolve({ found: 'none' }) })
+    render(<StudioApp />)
+    fireEvent.click(await projectList().findByText('Project B'))
+    expect((await screen.findByTestId('setup-needed')).textContent).toContain('No slicer found. You can still design parts, but you won’t get print-ready 3MF files.')
+    type('A clip')
+    expect(prompt().placeholder).toBe('Reply, paste a link, or attach a file')
+    await waitFor(() => expect((screen.getByTestId('send') as HTMLButtonElement).disabled).toBe(false))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Fix in setup' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue without a slicer' }))
+    await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project B'))
+    await pause(50)
+    expect(screen.queryByTestId('setup-needed')).toBeNull()
   })
 
   it('says when macOS keeps the old chats from the app, and imports them once the person allows it', async () => {
@@ -786,7 +848,7 @@ describe('StudioApp', () => {
     await waitFor(() => expect((screen.getByTestId('send') as HTMLButtonElement).disabled).toBe(false))
     await first.release()
     await pause(50)
-    expect(screen.queryByTestId('readiness')).toBeNull()
+    expect(screen.queryByTestId('setup-needed')).toBeNull()
     expect((screen.getByTestId('send') as HTMLButtonElement).disabled).toBe(false)
   })
 
