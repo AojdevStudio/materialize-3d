@@ -21,20 +21,25 @@ The studio is the whole app. Each chat is a project folder in `~/Documents/Mater
 
 ## How to get to it (user POV)
 
-- Open the app. The start screen shows. Type a request, optionally attach a file, and press Enter or Start.
+- Open the app. On a fresh store, pass [setup](./setup.md) first. The start screen shows. Type a request, optionally attach a file, and press Enter or Start.
 - Earlier projects are in the left sidebar (`nav[aria-label=Projects]`). `new-project` returns to the start screen.
 
 ## Driving it with wd.ts
 
-On macOS, drive it with `mac.ts` from an `e2e` build. Answer `Attach` with `mac.ts dialog <png>` before the click. A fresh data folder has no login, so `readiness` asks for one before `send` turns on. That order is from the code (`notReady` in `src/studio/StudioApp.tsx`). `ANTHROPIC_TOKEN` and `ANTHROPIC_PROXY` are the host's proxy token and URL.
+On macOS, drive it with `mac.ts` from an `e2e` build. Answer `Attach` with `mac.ts dialog <png>` before the click. A fresh data folder opens [setup](./setup.md), which asks for a login, uv, and Python before the start screen. That order is from the code (`src/studio/Setup.tsx`). `ANTHROPIC_TOKEN` and `ANTHROPIC_PROXY` are the host's proxy token and URL.
 
 ```bash
-bun $S/mac.ts wait '[data-testid=start-screen]' 30000
-bun $S/mac.ts wait '[data-testid=readiness]' 20000
+bun $S/mac.ts wait '[data-testid=setup]' 30000
+bun $S/mac.ts click 'text=Start setup'
+bun $S/mac.ts click '[data-testid=check-claude] .setup-link'
 bun $S/mac.ts type '[aria-label="API key or token"]' "$ANTHROPIC_TOKEN"
 bun $S/mac.ts type '[aria-label="Proxy URL"]' "$ANTHROPIC_PROXY"
 bun $S/mac.ts click 'text=Save'
-# If readiness still names uv or Python, install it, click 'text=Check again', and wait for the banner to clear.
+# If the check names uv or Python, install it and click 'text=Check again'. Without Bambu Studio the button reads
+# 'Continue without a slicer'.
+bun $S/mac.ts wait '.setup-actions .primary:not([disabled])' 60000
+bun $S/mac.ts click '.setup-actions .primary'
+bun $S/mac.ts wait '[data-testid=start-screen]' 30000
 bun $S/mac.ts dialog "$HOME/fixtures/sketch.png"
 bun $S/mac.ts click 'text=Attach'
 bun $S/mac.ts type '[data-testid=prompt]' 'Make a cable clip like in this sketch, then slice it to a 3MF'
