@@ -94,7 +94,16 @@ describe('Start', () => {
     const { chip, update } = start({ part: status(1, { running: true }) })
     await waitFor(() => expect(chip('part')).toBe('partworking'))
     folders = { part: () => Promise.reject(new Error('gone')) }
+    update({ part: status(2, { printFiles: 1 }) })
+    await waitFor(() => expect(chip('part')).toBe('part3MF ready'))
+  })
+
+  it('shows no line for a draft whose folder read fails, as only the folder tells a guide from a draft', async () => {
+    folders = { part: [file('guide.html')] }
+    const { chip, update } = start({ part: status(1, { printFiles: 1 }) })
+    await waitFor(() => expect(chip('part')).toBe('part3MF ready'))
+    folders = { part: () => Promise.reject(new Error('gone')) }
     update({ part: status(2) })
-    await waitFor(() => expect(chip('part')).toBe('partdraft'))
+    await waitFor(() => expect(chip('part')).toBe('part'))
   })
 })

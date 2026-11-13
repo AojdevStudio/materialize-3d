@@ -58,8 +58,10 @@ export default function Start({ projects, status, composer, onSuggest, onOpen, o
         },
         (err: unknown) => {
           if (!live) return
-          // Without the folder, the status still says the state. Only "guide ready" needs the folder.
-          setChips((chips) => ({ ...chips, [id]: { render: chips[id]?.render, line: state === '' ? undefined : state } }))
+          // Only a draft needs its folder, to tell "guide ready" from "draft". Without the folder a draft shows no line,
+          // and every other state still comes from its status.
+          const line = state === '' || state === STATE.drafts ? undefined : state
+          setChips((chips) => ({ ...chips, [id]: { render: chips[id]?.render, line } }))
           onError(String(err))
         },
       )
