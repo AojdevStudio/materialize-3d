@@ -110,6 +110,13 @@ describe('RightPanel', () => {
     expect(details()).toBe('plate.3mf')
   })
 
+  it('shows the whole print details line on hover when a long name cuts it off', () => {
+    const long = 'print/a-very-long-bracket-name-that-fills-the-bar.3mf'
+    show([{ ...file(long, 1), print: { filaments: ['PETG Basic'], printSeconds: 4320, filamentGrams: 38.2 } }], 'model')
+    const details = screen.getByTestId('print-details')
+    expect(details.getAttribute('title')).toBe(details.textContent)
+  })
+
   it('shows one print file without a menu, and no bar without print files', () => {
     show([file('print/part.3mf', 1)], 'model')
     expect(screen.getByText('1 print file ready')).toBeTruthy()

@@ -53,6 +53,7 @@ pub(super) fn parse_slice_info(xml: &str) -> Result<SliceInfo, String> {
     use quick_xml::events::Event;
 
     let mut info = SliceInfo { parts: 0, print_seconds: None, filament_grams: None, filament_slots: Vec::new() };
+    let mut seen_slots = std::collections::HashSet::new();
     // Plate times add up in u128, so no file can overflow the sum. A total no u64 holds is no measure.
     let mut seconds: Option<u128> = None;
     let mut reader = quick_xml::Reader::from_str(xml);
@@ -73,7 +74,7 @@ pub(super) fn parse_slice_info(xml: &str) -> Result<SliceInfo, String> {
                         let Some(grams) = attr(b"used_g").as_deref().and_then(measure) else { continue };
                         *info.filament_grams.get_or_insert(0.0) += grams;
                         let slot = attr(b"id").and_then(|v| v.parse::<usize>().ok());
-                        if let Some(slot) = slot.filter(|slot| grams > 0.0 && !info.filament_slots.contains(slot)) {
+                        if let Some(slot) = slot.filter(|slot| grams > 0.0 && seen_slots.insert(*slot)) {
                             info.filament_slots.push(slot);
                         }
                     }
