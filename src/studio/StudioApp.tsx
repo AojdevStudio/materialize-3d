@@ -265,27 +265,29 @@ export default function StudioApp() {
   useEffect(() => {
     // The first read of the saved state, which Send waits for. A read that fails is tried again after a pause, and at
     // once when the engine is back. Only the first answer is taken. Every startup read began before a send could go,
-    // so a later answer would bring back what that send took.
+    // so a later answer would bring back what that send took. A read that ends after the window closed does nothing.
+    let stopped = false
     let retry: number | undefined
-    let failed: string | null = null
     const readState = () => {
       const saves = setupSaves.current
       return sidecar('state.get', {})
-        .then((state) => {
-          if (stateTaken.current) return
-          stateTaken.current = true
-          takeState(state)
-          if (saves === setupSaves.current) setSetup(state.setup)
-          if (failed !== null) setError((shown) => (shown === failed ? null : shown))
-        })
-        .catch((err: unknown) => {
-          failed = String(err)
-          setError(failed)
-          window.clearTimeout(retry)
-          retry = window.setTimeout(() => {
-            if (!stateTaken.current) void readState()
-          }, STATE_RETRY_MS)
-        })
+        .then(
+          (state) => {
+            if (stopped || stateTaken.current) return
+            stateTaken.current = true
+            takeState(state)
+            if (saves === setupSaves.current) setSetup(state.setup)
+          },
+          (err: unknown) => {
+            if (stopped || stateTaken.current) return
+            setError(String(err))
+            window.clearTimeout(retry)
+            retry = window.setTimeout(() => {
+              if (!stateTaken.current) void readState()
+            }, STATE_RETRY_MS)
+          },
+        )
+        .catch((err: unknown) => setError(String(err)))
     }
     void readState()
     checkReady()
@@ -349,6 +351,7 @@ export default function StudioApp() {
       .then(({ version }) => engineChanged || setEngine(`Engine ${version}`))
       .catch((err: unknown) => engineChanged || setEngine(String(err)))
     return () => {
+      stopped = true
       window.clearTimeout(retry)
       void unlisten.then((stop) => stop())
     }

@@ -1428,7 +1428,38 @@ describe('StudioApp', () => {
     expect((await screen.findByRole('alert')).textContent).toContain('The store was busy.')
     expect((screen.getByTestId('send') as HTMLButtonElement).disabled).toBe(true)
     await waitFor(() => expect((screen.getByTestId('send') as HTMLButtonElement).disabled).toBe(false), { timeout: 5_000 })
+  }, 10_000)
+
+  it('shows no error and reads no more when a startup read fails after another one was taken', async () => {
+    let reads = 0
+    let failFirst: () => void = () => {}
+    mockSidecar({
+      'state.get': (_, real) => (++reads === 1 ? new Promise((_, reject) => (failFirst = () => reject('The engine restarted before it answered.'))) : real()),
+    })
+    render(<StudioApp />)
+    await emit({ type: 'ready', version: '1.2.3' })
+    await projectList().findByText('Project B')
+    await act(async () => failFirst())
+    await pause(3_500)
     expect(screen.queryByRole('alert')).toBeNull()
+    expect(reads).toBe(2)
+  }, 10_000)
+
+  it('reads the saved state no more once the window closes, even when a read fails after', async () => {
+    let reads = 0
+    let failFirst: () => void = () => {}
+    mockSidecar({
+      'state.get': () => {
+        reads += 1
+        return new Promise((_, reject) => (failFirst = () => reject('The engine stopped.')))
+      },
+    })
+    const app = render(<StudioApp />)
+    await waitFor(() => expect(reads).toBe(1))
+    app.unmount()
+    await act(async () => failFirst())
+    await pause(3_500)
+    expect(reads).toBe(1)
   }, 10_000)
 
   it('takes only the first answer to the startup reads, so a late one never brings back a sent start picture', async () => {
