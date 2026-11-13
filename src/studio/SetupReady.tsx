@@ -20,7 +20,7 @@ function toolsLine(toolchain: Toolchain): string {
   return toolchain.python === null ? `uv ${toolchain.uv}, no Python` : `uv ${toolchain.uv}, Python ${toolchain.python}`
 }
 
-export default function SetupReady({ next, onError }: StepProps) {
+export default function SetupReady({ next, onError, signIn }: StepProps) {
   const [agent, setAgent] = useState(CHECKING)
   const [slicer, setSlicer] = useState(CHECKING)
   const [tools, setTools] = useState(CHECKING)
@@ -58,6 +58,7 @@ export default function SetupReady({ next, onError }: StepProps) {
           </div>
         ))}
       </dl>
+      {signIn}
       <div className="setup-actions">
         <button type="button" className="primary" onClick={next}>
           Start a project

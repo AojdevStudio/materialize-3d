@@ -6,7 +6,7 @@ import SetupModel from './SetupModel'
 import SetupReady from './SetupReady'
 
 /** What every step's screen gets. `signIn` is a running sign-in's question, and `signIns` counts finished sign-ins. */
-export type StepProps = { next: () => void; back: () => void; onError: (message: string) => void; signIn: ReactNode; signIns: number }
+export type StepProps = { next: () => Promise<void>; back: () => Promise<void>; onError: (message: string) => void; signIn: ReactNode; signIns: number }
 
 const STEPS: readonly { step: Setup['step']; name: string; numbered: boolean; Screen: ComponentType<StepProps> }[] = [
   { step: 'welcome', name: 'Welcome', numbered: false, Screen: Welcome },
@@ -30,10 +30,10 @@ export default function SetupFlow({ setup, onSaved, error, ...shared }: Props) {
   const following = STEPS[at + 1]
   const before = STEPS[at - 1]
   const saving = useRef(false)
-  const save = (change: Setup) => {
+  const save = async (change: Setup) => {
     if (saving.current) return
     saving.current = true
-    void sidecar('setup.set', change)
+    await sidecar('setup.set', change)
       .then(onSaved)
       .catch((err: unknown) => shared.onError(String(err)))
       .finally(() => {
@@ -41,8 +41,8 @@ export default function SetupFlow({ setup, onSaved, error, ...shared }: Props) {
       })
   }
   const next = () => save(following === undefined ? { step, done: true } : { step: following.step, done: false })
-  const back = () => {
-    if (before !== undefined) save({ step: before.step, done: false })
+  const back = async () => {
+    if (before !== undefined) await save({ step: before.step, done: false })
   }
 
   return (

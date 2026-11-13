@@ -265,6 +265,35 @@ describe('setup: pick a model', () => {
     expect(calls('settings.set')).toEqual([{ model: { provider: 'openai-codex', modelId: 'gpt-6.1-sol' }, astra: true }])
   })
 
+  it('keeps Back and the choices off while Continue saves, so a slow save cannot undo Back', async () => {
+    let release = () => {}
+    mockApp({ step: 'model', done: false }, ready, {
+      'settings.set': (_, real) => new Promise((resolve) => (release = () => resolve(real()))),
+    })
+    render(<StudioApp />)
+    await screen.findByRole('radio', { name: /^Opus 5.5/ })
+    fireEvent.click(button('Continue'))
+    expect(button('Back').disabled).toBe(true)
+    expect(radio('Sonnet 5.5').matches(':disabled')).toBe(true)
+    await act(async () => release())
+    expect(await screen.findByRole('heading', { name: 'You’re set up' })).toBeTruthy()
+    expect(saved()).toEqual([{ step: 'ready', done: false }])
+  })
+
+  it('keeps a running sign-in, and a sign-in that ends there adds its models and Astra, keeping the pick', async () => {
+    const store = mockApp({ step: 'model', done: false }, ready)
+    render(<StudioApp />)
+    fireEvent.click(await screen.findByRole('radio', { name: /^Sonnet 5.5/ }))
+    await emit({ type: 'login', provider: 'openai-codex', step: 'open', url: 'https://auth.example/device', code: 'ABCD-1234' })
+    expect(screen.getByTestId('sign-in').textContent).toContain('ABCD-1234')
+    store.logins = bothIn
+    await emit({ type: 'login', provider: 'openai-codex', step: 'done' })
+    expect(await screen.findByRole('radio', { name: /^GPT 6.1 Sol/ })).toBeTruthy()
+    expect(astra().disabled).toBe(false)
+    expect(astra().checked).toBe(true)
+    expect(radio('Sonnet 5.5').checked).toBe(true)
+  })
+
   it('goes Back to Check your Mac', async () => {
     mockApp({ step: 'model', done: false }, ready)
     render(<StudioApp />)
