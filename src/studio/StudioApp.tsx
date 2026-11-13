@@ -642,12 +642,6 @@ export default function StudioApp() {
         )}
         {current ? (
           <>
-            <header className="chat-title">{current.title}</header>
-            {view?.turn && (
-              <p className="chat-model" data-testid="chat-model">
-                {view.turn.model.modelId}
-              </p>
-            )}
             {view?.waiting && <WaitingBanner project={current.id} waiting={view.waiting} onError={setError} />}
             <ChatView
               project={current.id}

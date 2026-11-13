@@ -12,7 +12,7 @@ function markOf(modelId: string): string | undefined {
 }
 
 /** A model's mark. A model with none keeps the space, so the names line up. */
-function Mark({ modelId }: { modelId: string }) {
+export function Mark({ modelId }: { modelId: string }) {
   const svg = markOf(modelId)
   return <span className="model-mark" aria-hidden="true" dangerouslySetInnerHTML={svg === undefined ? undefined : { __html: svg }} />
 }

@@ -1,6 +1,8 @@
 import { useEffect, useRef } from 'react'
+import { modelName } from '../../sidecar/src/offered'
 import { fileUrl } from './api'
 import Markdown from './Markdown'
+import { Mark } from './ModelPicker'
 import Trace, { Working } from './Trace'
 import type { ChatItem } from './transcript'
 
@@ -38,6 +40,13 @@ export function ChatView({ project, items, running, startedMs, onError }: ChatVi
                   </ul>
                 )}
                 {item.text && <div className="bubble">{item.text}</div>}
+              </div>
+            )
+          case 'byline':
+            return (
+              <div key={i} className="msg-byline" data-testid="byline">
+                <Mark modelId={item.model.modelId} />
+                {modelName(item.model)}
               </div>
             )
           case 'text':
