@@ -1429,7 +1429,6 @@ pre {
   color: var(--s-muted);
 }
 
-/* Setup needed again: the banner over a chat or the start screen, and the composer it keeps from sending. */
 .setup-needed {
   --setup-needed-bg: #fdf3e7;
   --setup-needed-text: #7e5310;

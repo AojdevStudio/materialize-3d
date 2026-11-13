@@ -12,7 +12,6 @@ export type Blocker = Need | TurnLogin
 /** Why setup is needed again. A missing slicer leaves Send on. */
 export type SetupCause = Blocker | { kind: 'slicer' }
 
-/** The agent's name as setup's rows show it, so the banner and the row it leads to say the same name. */
 const agentName = ({ provider, name }: { provider: string; name: string }) => AGENTS.find((agent) => agent.provider === provider)?.name ?? name
 
 /** What the composer says while `blocker` keeps Send off. */

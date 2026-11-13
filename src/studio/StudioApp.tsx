@@ -255,7 +255,6 @@ export default function StudioApp() {
       .catch((err: unknown) => setError(String(err)))
   }
 
-  /** Reads again what setup can change: the send check, the models, and the slicer. */
   const afterSetup = () => {
     checkReady()
     loadModels()
@@ -586,10 +585,9 @@ export default function StudioApp() {
 
   const waiting = view?.waiting ?? null
   const turnLogin: TurnLogin | undefined = waiting?.kind === 'login' ? { kind: 'turn-login', provider: waiting.provider, name: waiting.name } : undefined
-  // A turn that waits for a sign-in to the provider the next message runs on stops that message too.
-  const blocker: Blocker | undefined = needs?.[0] ?? (turnLogin?.provider === chosenModel?.provider ? turnLogin : undefined)
+  const nextWaitsForLogin = turnLogin !== undefined && turnLogin.provider === chosenModel?.provider
+  const blocker: Blocker | undefined = needs?.[0] ?? (nextWaitsForLogin ? turnLogin : undefined)
   const cause: SetupCause | undefined = blocker ?? turnLogin ?? (slicer === 'missing' ? { kind: 'slicer' } : undefined)
-  // Send waits for the check, and stays off while the agent lacks a sign-in, uv, or Python, or its turn waits for one.
   const notReady = needs === null || blocker !== undefined
 
   /**

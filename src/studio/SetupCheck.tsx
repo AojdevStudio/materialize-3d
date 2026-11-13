@@ -147,11 +147,10 @@ export default function SetupCheck({ next, onError, signIn, signIns, refused }: 
     }
   }, [round, signIns])
 
-  // A sign-in a waiting turn was refused with counts as none, so its row offers a new one.
-  const checked: Found = Array.isArray(found.logins)
+  const withoutRefused: Found = Array.isArray(found.logins)
     ? { ...found, logins: found.logins.map((login) => (login.provider === refused ? { ...login, login: null } : login)) }
     : found
-  const verdict = verdictOf(checked)
+  const verdict = verdictOf(withoutRefused)
   const copy = (command: string) =>
     void navigator.clipboard.writeText(command).then(
       () => setCopied(command),
@@ -210,9 +209,9 @@ export default function SetupCheck({ next, onError, signIn, signIns, refused }: 
       {verdict.text !== undefined && <p>{verdict.text}</p>}
       {group(
         'Agent that does the work (at least one)',
-        agentRows(checked.logins, refused),
+        agentRows(withoutRefused.logins, refused),
         <>
-          {keyFormFor !== null && Array.isArray(checked.logins) && !signedIn(checked.logins, keyFormFor) && (
+          {keyFormFor !== null && Array.isArray(withoutRefused.logins) && !signedIn(withoutRefused.logins, keyFormFor) && (
             <div className="setup-key">
               <KeyForm provider={keyFormFor} onError={onError} />
             </div>
@@ -237,7 +236,6 @@ export default function SetupCheck({ next, onError, signIn, signIns, refused }: 
   )
 }
 
-/** A sign-in with an API key or a proxy's token, and for Anthropic the proxy's URL. */
 function KeyForm({ provider, onError }: { provider: ProviderId; onError: (message: string) => void }) {
   const [key, setKey] = useState('')
   const [baseUrl, setBaseUrl] = useState('')
