@@ -42,7 +42,7 @@ export function handlers({ store, models, logins, chats, version, legacy, pictur
       },
     },
     'settings.set': {
-      params: compile(obj({ model: opt(model), thinking: opt(thinking), printer: opt(printer) })),
+      params: compile(obj({ model: opt(model), thinking: opt(thinking), printer: opt(printer), astra: opt(bool()) })),
       run: async (change) => {
         await store.setSettings(change)
         return state()

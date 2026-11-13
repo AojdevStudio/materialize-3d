@@ -692,7 +692,10 @@ export default function StudioApp() {
         onSaved={(state) => {
           setupSaves.current += 1
           setSetup(state.setup)
-          if (state.setup.done) afterSetup(true)
+          if (state.setup.done) {
+            setDefaultModel(state.settings.model)
+            afterSetup(true)
+          }
         }}
         onError={setError}
         error={errorBar}
