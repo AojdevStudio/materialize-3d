@@ -23,8 +23,22 @@ const GUIDE_TEMPLATE = guideTemplate()
 
 const always = () => true
 
-const SetupDoc = defineDoc<Setup>({
+/**
+ * v0.3.0 and earlier wrote this document on every state read and never changed it, so it says only that one of them
+ * ran here. This app reads it and never writes it, so those versions still open the store.
+ */
+const SetupBeforeSetupScreens = defineDoc<Setup>({
   kind: 'm3d.setup',
+  version: 1,
+  scope: 'conversation',
+  history: 'latest',
+  fork: 'initial',
+  initial: () => ({ step: 'welcome', done: false }),
+  checkpointWhen: always,
+})
+
+const SetupDoc = defineDoc<Setup>({
+  kind: 'm3d.setup-steps',
   version: 1,
   scope: 'conversation',
   history: 'latest',
@@ -188,7 +202,19 @@ export class Store implements LoginIndex {
     const storage = await openStorage(join(options.dataDir, 'store.sqlite'))
     const harness = await Harness.open(storage, { models: options.models, registry: options.registry, env: options.env }, context)
     const root = await harness.root(context)
-    return new Store(lock, harness, root, options.projectsDir)
+    const store = new Store(lock, harness, root, options.projectsDir)
+    await store.#skipSetupForEarlierUsers()
+    return store
+  }
+
+  /** A store an app before setup used opens with setup done. The first open by an app with setup decides it once. */
+  async #skipSetupForEarlierUsers(): Promise<void> {
+    const id = this.root.id
+    if ((await this.harness.snapshot(SetupDoc, id, context)) !== undefined) return
+    if ((await this.harness.snapshot(SetupBeforeSetupScreens, id, context)) === undefined) return
+    await this.harness.commit(async (tx) => {
+      ;(await tx.doc(SetupDoc, id)).done = true
+    }, context)
   }
 
   /** The app's state at one point in the store's history: the four documents are read in one commit. */

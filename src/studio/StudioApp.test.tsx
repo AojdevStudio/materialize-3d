@@ -694,15 +694,25 @@ describe('StudioApp', () => {
     await waitFor(() => expect(screen.queryByRole('alert')).toBeNull())
   })
 
-  it('keeps a project made while the saved state was still on its way', async () => {
-    let finishState: (state: unknown) => void = () => {}
-    mockSidecar({ 'state.get': () => new Promise((resolve) => (finishState = resolve)) })
+  it("keeps a project made while an import retry's saved state was still on its way", async () => {
+    let reads = 0
+    let answerRetry: () => void = () => {}
+    mockSidecar({
+      'state.get': (_, real) => {
+        if (++reads === 1) return real().then((state) => ({ ...(state as object), importBlocked: '/Users/me/Documents/Materialize 3D' }))
+        const before = real()
+        return new Promise((resolve) => (answerRetry = () => resolve(before)))
+      },
+      'legacy.import': () => Promise.resolve({ imported: 0, blocked: null }),
+    })
     render(<StudioApp />)
+    fireEvent.click(await screen.findByText('Try again'))
+    await waitFor(() => expect(reads).toBe(2))
     type('A clip for my desk')
     await waitFor(() => expect((screen.getByTestId('send') as HTMLButtonElement).disabled).toBe(false))
     fireEvent.click(screen.getByTestId('send'))
     await waitFor(() => expect(openTitle()).toBe('A clip for my desk'))
-    await act(async () => finishState({ setup: { step: 'ready', done: true }, settings, projects: [projectB], drafts: {} }))
+    await act(async () => answerRetry())
     const sidebar = within(screen.getByRole('navigation', { name: 'Projects' }))
     expect(sidebar.getByText('A clip for my desk')).toBeTruthy()
     expect(sidebar.getByText('Project B')).toBeTruthy()
@@ -1223,26 +1233,6 @@ describe('StudioApp', () => {
     expect(store.drafts[projectB.id]).toMatchObject({ text: 'Make it blue' })
   })
 
-  it('sends pictures restored from a late saved state under a new revision, never as a repeat of a sent one', async () => {
-    let finishState: (state: unknown) => void = () => {}
-    const store = mockSidecar({ 'state.get': () => new Promise((resolve) => (finishState = resolve)), 'chat.send': lostOnce() })
-    render(<StudioApp />)
-    type('a hook')
-    await pause(500)
-    fireEvent.click(screen.getByTestId('send'))
-    await screen.findByRole('alert')
-    await act(async () =>
-      finishState({ setup: { step: 'ready', done: true }, settings, projects: [projectB], drafts: { new: { text: 'older', attachments: ['/Users/me/hook.jpg'], rev: 1 } }, importBlocked: null }),
-    )
-    expect(screen.getByTestId('attachments').textContent).toContain('hook.jpg')
-    fireEvent.click(screen.getByTestId('send'))
-    await waitFor(() => expect(sends()).toHaveLength(2))
-    const [first, second] = sends()
-    expect(second?.rev).not.toBe(first?.rev)
-    expect(last(saves('new'))).toEqual({ key: 'new', text: 'a hook', attachments: ['/Users/me/hook.jpg'] })
-    expect(last(store.sent)).toMatchObject({ rev: second?.rev, attachments: ['/Users/me/hook.jpg'] })
-  })
-
   it('takes a picture-only first message to its project and leaves the start screen empty, after a relaunch too', async () => {
     const store = mockSidecar()
     const first = render(<StudioApp />)
@@ -1264,7 +1254,7 @@ describe('StudioApp', () => {
     expect(prompt().value).toBe('')
   })
 
-  it('brings back an unsent start picture from a first saved state that arrives after a text send', async () => {
+  it('sends nothing before the first saved state arrives, so a start picture it brings back goes out with the text typed before it', async () => {
     let answerState: () => void = () => {}
     const store = mockSidecar(
       {
@@ -1280,12 +1270,13 @@ describe('StudioApp', () => {
     await screen.findByText('Engine 1.2.3')
     type('A clip')
     fireEvent.click(screen.getByTestId('send'))
-    await waitFor(() => expect(store.sent).toHaveLength(1))
-    await waitFor(() => expect(openTitle()).toBe('A clip'))
+    await pause(50)
+    expect(sends()).toEqual([])
     await act(async () => answerState())
-    fireEvent.click(screen.getByTestId('new-project'))
-    // a.jpg was saved on the start screen but never shown or sent, so it is still the start screen's.
-    await waitFor(() => expect(screen.getByTestId('attachments').textContent).toContain('a.jpg'))
+    expect(screen.getByTestId('attachments').textContent).toContain('a.jpg')
+    fireEvent.click(screen.getByTestId('send'))
+    await waitFor(() => expect(store.sent).toHaveLength(1))
+    expect(store.sent[0]).toMatchObject({ text: 'A clip', attachments: ['/Users/me/a.jpg'] })
   })
 
   it('never brings back a sent start picture from a saved state that was read before the send', async () => {
@@ -1485,6 +1476,76 @@ describe('StudioApp', () => {
     expect(projectList().queryByText('Project A')).toBeNull()
     await emit({ type: 'ready', version: '1.2.3' })
     expect(await projectList().findByText('Project A')).toBeTruthy()
+  })
+
+  it('reads the saved state again after a pause when the first read fails, so Send comes on with no engine restart', async () => {
+    let reads = 0
+    mockSidecar({ 'state.get': (_, real) => (++reads === 1 ? Promise.reject('The store was busy.') : real()) })
+    render(<StudioApp />)
+    type('A clip')
+    expect((await screen.findByRole('alert')).textContent).toContain('The store was busy.')
+    expect((screen.getByTestId('send') as HTMLButtonElement).disabled).toBe(true)
+    await waitFor(() => expect((screen.getByTestId('send') as HTMLButtonElement).disabled).toBe(false), { timeout: 5_000 })
+  }, 10_000)
+
+  it('shows no error and reads no more when a startup read fails after another one was taken', async () => {
+    let reads = 0
+    let failFirst: () => void = () => {}
+    mockSidecar({
+      'state.get': (_, real) => (++reads === 1 ? new Promise((_, reject) => (failFirst = () => reject('The engine restarted before it answered.'))) : real()),
+    })
+    render(<StudioApp />)
+    await emit({ type: 'ready', version: '1.2.3' })
+    await projectList().findByText('Project B')
+    await act(async () => failFirst())
+    await pause(3_500)
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(reads).toBe(2)
+  }, 10_000)
+
+  it('reads the saved state no more once the window closes, even when a read fails after', async () => {
+    let reads = 0
+    let failFirst: () => void = () => {}
+    mockSidecar({
+      'state.get': () => {
+        reads += 1
+        return new Promise((_, reject) => (failFirst = () => reject('The engine stopped.')))
+      },
+    })
+    const app = render(<StudioApp />)
+    await waitFor(() => expect(reads).toBe(1))
+    app.unmount()
+    await act(async () => failFirst())
+    await pause(3_500)
+    expect(reads).toBe(1)
+  }, 10_000)
+
+  it('takes only the first answer to the startup reads, so a late one never brings back a sent start picture', async () => {
+    let reads = 0
+    let answerFirst: () => void = () => {}
+    const store = mockSidecar(
+      {
+        'state.get': (_, real) => {
+          if (++reads !== 1) return real()
+          const before = real()
+          return new Promise((resolve) => (answerFirst = () => resolve(before)))
+        },
+      },
+      [projectB],
+      { new: { text: '', attachments: ['/Users/me/pic.jpg'] } },
+    )
+    render(<StudioApp />)
+    await emit({ type: 'ready', version: '1.2.3' })
+    await waitFor(() => expect(screen.getByTestId('attachments').textContent).toContain('pic.jpg'))
+    await waitFor(() => expect((screen.getByTestId('send') as HTMLButtonElement).disabled).toBe(false))
+    fireEvent.click(screen.getByTestId('send'))
+    await waitFor(() => expect(store.sent).toHaveLength(1))
+    await waitFor(() => expect(openTitle()).toBe('New part'))
+    await act(async () => answerFirst())
+    await pause(500)
+    expect(store.drafts.new).toBeUndefined()
+    fireEvent.click(screen.getByTestId('new-project'))
+    expect(screen.queryByTestId('attachments')).toBeNull()
   })
 
   it('keeps a picture the person took out and put back while its send was on its way', async () => {

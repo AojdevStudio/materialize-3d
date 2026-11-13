@@ -2,7 +2,7 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import type { Models } from '@earendil-works/pi-ai'
 import { arr, bool, compile, int, lit, obj, opt, str, union } from '@earendil-works/pi-schema'
-import { toolchainNeeds } from './agent'
+import { toolchain, toolchainNeeds } from './agent'
 import type { Chats } from './chat'
 import type { Handlers, Host } from './host'
 import type { Logins } from './inference'
@@ -76,6 +76,7 @@ export function handlers({ host, store, models, logins, chats, version, legacy, 
         return [...needs, ...(await toolchainNeeds())]
       },
     },
+    'setup.tools': { params: compile(obj({})), run: () => toolchain() },
     'legacy.import': { params: compile(obj({})), run: () => legacy.retry() },
     'drafts.picture': {
       params: compile(obj({ name: str({ minLength: 1 }), data: str() })),
