@@ -13,7 +13,16 @@ function agentLine({ model, astra }: Settings): string {
   return astra ? `${runs} Astra helps with drawings.` : runs
 }
 
-const slicerLine = (slicer: SlicerCheck) => (slicer.found === 'ready' ? 'Bambu Studio' : 'Not found. You get guides and STL files, but no 3MF.')
+function slicerLine(slicer: SlicerCheck): string {
+  switch (slicer.found) {
+    case 'ready':
+      return 'Bambu Studio'
+    case 'other':
+      return `Not usable. ${slicer.detail}`
+    case 'none':
+      return 'Not found. You get guides and STL files, but no 3MF.'
+  }
+}
 
 function toolsLine(toolchain: Toolchain): string {
   if (toolchain.uv === null) return 'uv is missing.'

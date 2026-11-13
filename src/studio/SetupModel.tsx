@@ -54,6 +54,11 @@ export default function SetupModel({ next, back, onError, signIn, signIns }: Ste
       .finally(() => setSaving(false))
   }
 
+  const goBack = () => {
+    setSaving(true)
+    void back().finally(() => setSaving(false))
+  }
+
   return (
     <>
       <h1>Pick your default model</h1>
@@ -102,7 +107,7 @@ export default function SetupModel({ next, back, onError, signIn, signIns }: Ste
       </div>
       {signIn}
       <div className="setup-actions">
-        <button type="button" disabled={saving} onClick={back}>
+        <button type="button" disabled={saving} onClick={goBack}>
           Back
         </button>
         <button type="button" className="primary" disabled={model === undefined || saving} onClick={save}>
