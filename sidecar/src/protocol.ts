@@ -15,14 +15,23 @@ export type Thinking = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' |
 /** Where first-launch setup stands. Setup reopens on `step` until it is `done`. */
 export type Setup = { step: 'welcome' | 'check' | 'model' | 'printer' | 'ready'; done: boolean }
 
+/** A build plate, by the name Bambu Studio's `curr_bed_type` setting takes. */
+export type Plate = 'Cool Plate' | 'Engineering Plate' | 'High Temp Plate' | 'Textured PEI Plate' | 'Supertack Plate'
+
 /**
- * What the next turn starts with. A running turn keeps what it started with. `astra` lets the main agent hand a task to
- * Astra, the GPT helper.
+ * The printer a slice runs for: three Bambu Lab system presets by the names Bambu Studio gives them, and the plate.
+ * With no plate, a slice uses the default plate of the printer's model.
+ */
+export type Printer = { machine: string; process: string; filament: string; plate?: Plate }
+
+/**
+ * What the next turn starts with. A running turn keeps the model and thinking it started with. Each slice reads the
+ * printer when it starts. `astra` lets the main agent hand a task to Astra, the GPT helper.
  */
 export type Settings = {
   model: ModelChoice
   thinking: Thinking
-  printer: { machine: string; process: string; filament: string }
+  printer: Printer
   astra: boolean
 }
 
@@ -146,7 +155,12 @@ export interface Methods {
   'app.ping': { params: Record<string, never>; result: { version: string } }
   'state.get': { params: Record<string, never>; result: AppState }
   'setup.set': { params: Setup; result: AppState }
-  'settings.set': { params: Partial<Settings>; result: AppState }
+  'settings.set': { params: Partial<Omit<Settings, 'printer'>>; result: AppState }
+  /**
+   * Saves the printer the next slice runs for. Rust resolves its presets and plate against the validated Bambu Studio
+   * first, as a slice does, so a printer it cannot slice for is refused with the reason and nothing is saved.
+   */
+  'printer.set': { params: Printer; result: AppState }
   /** Saves a draft, and answers the revision it was saved as. */
   'drafts.set': { params: { key: string } & Draft; result: { rev: number } }
   /** Keeps a pasted picture in a file of its own, outside any project, and answers its path, for a draft to keep. */
@@ -194,6 +208,8 @@ export interface HostRequests {
   'keychain.get': { params: { account: string }; result: { secret: string | null } }
   'keychain.set': { params: { account: string; secret: string }; result: null }
   'keychain.delete': { params: { account: string }; result: null }
+  /** Whether a slice can run for this printer. Refused with the reason when it cannot. */
+  'printer.check': { params: Printer; result: null }
   slice: { params: SliceParams; result: SliceResult }
   /** Holds or gives back the update gate's pass. Refused while an update installs. */
   busy: { params: { busy: boolean }; result: null }
@@ -210,13 +226,16 @@ export interface SliceParams {
   project: string
   inputs: string[]
   output: string
+  printer: Printer
 }
 
+/** `plate` is the plate the slice ran on: the printer's own choice, or its model's default. */
 export interface SliceResult {
   output: string
   parts: number
   printSeconds: number
   filamentGrams: number
+  plate: Plate
 }
 
 /** What the window hears on the one `sidecar://event` channel: the sidecar's own events and, from Rust, the engine's state. */

@@ -5,13 +5,20 @@ type Message = Record<string, unknown>
  * plays Rust. Like Rust, it reads stdout all the time, since the sidecar stops when no one drains it. It answers the
  * sidecar's Keychain requests from `keychain`, which stands in for the macOS Keychain, and its update-gate requests,
  * recording each in `gate` and refusing the pass while `gate.installing` is set, as an installing update does. `hold`
- * may hold a request's answer, read when the request came, until it calls `answer`, as a slow Keychain does.
+ * may hold a request's answer, read when the request came, until it calls `answer`, as a slow Keychain does. `rust`
+ * answers the other requests a test names, by method, as Rust's Bambu Studio does. One that throws refuses its request.
  */
 export function spawnSidecar(
   dataDir: string,
   projectsDir: string,
   keychain = new Map<string, string>(),
-  options: { script?: string; env?: Record<string, string>; version?: string; hold?: (request: Message, answer: () => void) => void } = {},
+  options: {
+    script?: string
+    env?: Record<string, string>
+    version?: string
+    hold?: (request: Message, answer: () => void) => void
+    rust?: Record<string, (params: unknown) => unknown>
+  } = {},
 ) {
   const entry = options.script === undefined ? 'src/main.ts' : 'test/fixtures/scripted-sidecar.ts'
   // The bun running the tests, as a test may give the sidecar a PATH without one.
@@ -36,6 +43,15 @@ export function spawnSidecar(
             ? { kind: 'answer', id: request.id, ok: false, error: 'An update is installing.' }
             : { kind: 'answer', id: request.id, ok: true, value: null },
         )
+    }
+    const own = options.rust?.[String(request.method)]
+    if (own !== undefined) {
+      try {
+        const value = own(request.params)
+        return () => send({ kind: 'answer', id: request.id, ok: true, value })
+      } catch (error) {
+        return () => send({ kind: 'answer', id: request.id, ok: false, error: error instanceof Error ? error.message : String(error) })
+      }
     }
     const params = request.params as { account: string; secret?: string }
     const value =
