@@ -102,11 +102,18 @@ Do not rotate or rewrite user credentials to satisfy these limits. If existing c
 
    The first release that contains the updater must still be installed by hand from its DMG. Only later releases arrive as updates.
 
-6. Download the published files from the actual release. The release must hold exactly four files, with the labels above. Compare the downloaded DMG's full SHA-256 with the build's `.sha256` file and with the DMG SHA-256 in the release body. Compare the downloaded archive's full SHA-256 with its build checksum. Compare the downloaded `latest.json` and `.sig` byte for byte with the files in `dist-release/`. Then confirm that the Latest feed URL serves the same `latest.json`. Stop on any mismatch, missing file, or extra file. Store this published-download proof with the acceptance record in the meta repo.
+6. Download the published files from the actual release. The release must hold exactly four files, with the labels above. Compare the downloaded DMG's full SHA-256 with the build's `.sha256` file and with the DMG SHA-256 in the release body. Compare the downloaded archive's full SHA-256 with its build checksum. Compare the downloaded `latest.json` and `.sig` byte for byte with the files in `dist-release/`. Then confirm that the Latest feed URL serves the same `latest.json`. `diff` prints nothing only when the release holds exactly the four files with these labels. Stop on any mismatch, missing file, or extra file. Store this published-download proof with the acceptance record in the meta repo.
 
    ```bash
    V="$(jq -r .version package.json)"
-   gh release view "v$V" -R AojdevStudio/materialize-3d --json assets --jq '.assets[] | "\(.name) | \(.label)"'
+   gh release view "v$V" -R AojdevStudio/materialize-3d --json assets --jq '.assets[] | "\(.name) | \(.label)"' | sort > assets.txt
+   sort > expected.txt <<EOF
+   latest.json | latest.json  (for automatic updates, skip)
+   Materialize-3D-$V-macos-arm64.app.tar.gz | updater-archive.tar.gz  (for automatic updates, skip)
+   Materialize-3D-$V-macos-arm64.app.tar.gz.sig | updater-signature.sig  (for automatic updates, skip)
+   Materialize-3D-$V-macos-arm64.dmg | Materialize-3D-$V-mac.dmg  (download this one)
+   EOF
+   diff expected.txt assets.txt && rm expected.txt assets.txt
    mkdir -p dist-release/published && cd dist-release/published
    gh release download "v$V" -R AojdevStudio/materialize-3d
    shasum -a 256 "Materialize-3D-$V-macos-arm64.dmg"
