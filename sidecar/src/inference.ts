@@ -88,12 +88,19 @@ export class KeychainCredentials implements CredentialStore {
     return run
   }
 
+  /** A Keychain item this app cannot read counts as no login, so only its provider asks for a sign-in, which replaces it. */
   async read(provider: string): Promise<Credential | undefined> {
     const { secret } = await this.#host.request('keychain.get', { account: provider })
     if (secret === null) return undefined
-    const parsed: unknown = JSON.parse(secret)
-    if (!credential.check(parsed)) throw new Error(`the Keychain login for ${provider} is not one this app wrote`)
-    return parsed as Credential
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(secret)
+    } catch {
+      parsed = undefined
+    }
+    if (credential.check(parsed)) return parsed as Credential
+    console.error(`the Keychain login for ${provider} is not one this app wrote, so it counts as signed out`)
+    return undefined
   }
 
   async list(): Promise<readonly CredentialInfo[]> {

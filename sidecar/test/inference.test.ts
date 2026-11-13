@@ -51,6 +51,21 @@ describe('logins', () => {
     await reopened.quit()
   })
 
+  test('a damaged Keychain login reads as signed out for its own provider only, and a new sign-in replaces it', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'm3d-login-'))
+    const keychain = new Map<string, string>([['opencode-go', 'not a login']])
+    const app = spawnSidecar(join(dir, 'state'), join(dir, 'projects'), keychain)
+    await app.next()
+    await app.call('auth.setKey', { provider: 'anthropic', key: TOKEN, baseUrl: 'http://127.0.0.1:8317' })
+    const status = (await app.call('auth.status')) as { provider: string; login: unknown }[]
+    expect(status.find((row) => row.provider === 'anthropic')?.login).not.toBeNull()
+    expect(status.find((row) => row.provider === 'opencode-go')?.login).toBeNull()
+    await app.call('auth.setKey', { provider: 'opencode-go', key: 'og-key' })
+    expect(JSON.parse(keychain.get('opencode-go') ?? '{}')).toEqual({ type: 'api_key', key: 'og-key' })
+    await app.quit()
+    rmSync(dir, { recursive: true, force: true })
+  })
+
   test('a proxy login sends the token as a bearer token to the proxy', async () => {
     const credentials = new InMemoryCredentialStore()
     await credentials.modify('anthropic', async () => keyCredential(TOKEN, 'http://127.0.0.1:8317'))
