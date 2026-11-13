@@ -157,7 +157,6 @@ describe('the model', () => {
       { provider: 'anthropic', modelId: 'claude-sonnet-5-5', name: 'Sonnet 5.5' },
     ]
     expect(await app.call('models.list')).toEqual(anthropic)
-    // This test's OpenAI provider runs only GPT-6 Astra, so GPT 6.1 Sol stays out.
     await app.call('auth.setKey', { provider: 'openai-codex', key: 'sk-test-dummy-0000' })
     expect(await app.call('models.list')).toEqual(anthropic)
     await app.quit()

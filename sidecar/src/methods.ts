@@ -136,7 +136,7 @@ export function handlers({ store, models, logins, chats, version, legacy, pictur
       params: compile(obj({})),
       run: async () => {
         const signedIn = new Set((await logins.status()).flatMap((login) => (login.login === null ? [] : [login.provider])))
-        // A model its provider's catalog lacks cannot run, so its row waits until the catalog lists it.
+        // The pi-ai catalog can lack a model on the short list. That model cannot run, so its row stays out.
         return OFFERED.filter((m) => signedIn.has(m.provider) && models.getModel(m.provider, m.modelId) !== undefined)
       },
     },

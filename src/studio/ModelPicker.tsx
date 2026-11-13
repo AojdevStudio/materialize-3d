@@ -24,13 +24,15 @@ type Props = {
   onPick: (model: ModelChoice) => void
 }
 
-/** The model picker: the chosen model's mark and short name, and the short list of the signed-in providers' models with a check on it. */
+/**
+ * The model picker. The button shows the chosen model's mark and short name. The menu shows the short list for the
+ * signed-in providers, with a check on the chosen model.
+ */
 export default function ModelPicker({ models, chosen, onPick }: Props) {
   const [open, setOpen] = useState(false)
   const box = useRef<HTMLDivElement>(null)
   const isChosen = (model: ModelChoice) => model.provider === chosen?.provider && model.modelId === chosen.modelId
 
-  // The open menu closes on a click outside it, or on Escape.
   useEffect(() => {
     if (!open) return
     const close = (event: Event) => {

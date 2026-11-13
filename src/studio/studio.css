@@ -748,7 +748,6 @@ pre {
   font-size: 12px;
 }
 
-/* Model picker. The menu opens above the composer, at its left edge. */
 .model-button {
   display: flex;
   align-items: center;
