@@ -25,8 +25,8 @@ function start(projects: Record<string, { status: ProjectStatus; files: ProjectF
   invokeMock.mockImplementation((command: string, args: { project: string }) =>
     Promise.resolve(command === 'studio_files' ? projects[args.project].files : undefined),
   )
-  const status = Object.fromEntries(Object.entries(projects).map(([id, p]) => [id, p.status]))
-  render(<Start projects={Object.keys(projects).map(project)} status={status} composer={null} onSuggest={ignore} onOpen={ignore} onError={ignore} />)
+  const statuses = Object.fromEntries(Object.entries(projects).map(([id, p]) => [id, p.status]))
+  render(<Start projects={Object.keys(projects).map(project)} status={statuses} composer={null} onSuggest={ignore} onOpen={ignore} onError={ignore} />)
   return within(screen.getByTestId('recent'))
 }
 
@@ -38,8 +38,8 @@ describe('Start', () => {
     ['guide ready', status(1), [file('guide-adapter.html')]],
     // A drawing is not a guide, and neither is a guide page in a subfolder or among the person's own files.
     ['draft', status(1), [file('drawing.html'), file('parts/guide.html'), file('refs/guide.html')]],
-  ])('says "%s" under a recent project in that state', async (line, status, files) => {
-    const recent = start({ part: { status, files } })
+  ])('says "%s" under a recent project in that state', async (line, partStatus, files) => {
+    const recent = start({ part: { status: partStatus, files } })
     await waitFor(() => expect(recent.getByTestId('recent-part').textContent).toBe(`part${line}`))
   })
 
