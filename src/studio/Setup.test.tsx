@@ -266,16 +266,20 @@ describe('setup: pick a model', () => {
   })
 
   it('keeps Back and the choices off while Continue saves, so a slow save cannot undo Back', async () => {
-    let release = () => {}
+    let releaseSettings = () => {}
+    let releaseStep = () => {}
     mockApp({ step: 'model', done: false }, ready, {
-      'settings.set': (_, real) => new Promise((resolve) => (release = () => resolve(real()))),
+      'settings.set': (_, real) => new Promise((resolve) => (releaseSettings = () => resolve(real()))),
+      'setup.set': (_, real) => new Promise((resolve) => (releaseStep = () => resolve(real()))),
     })
     render(<StudioApp />)
     await screen.findByRole('radio', { name: /^Opus 5.5/ })
+    const locked = () => button('Back').disabled && radio('Sonnet 5.5').matches(':disabled')
     fireEvent.click(button('Continue'))
-    expect(button('Back').disabled).toBe(true)
-    expect(radio('Sonnet 5.5').matches(':disabled')).toBe(true)
-    await act(async () => release())
+    expect(locked()).toBe(true)
+    await act(async () => releaseSettings())
+    expect(locked()).toBe(true)
+    await act(async () => releaseStep())
     expect(await screen.findByRole('heading', { name: 'You’re set up' })).toBeTruthy()
     expect(saved()).toEqual([{ step: 'ready', done: false }])
   })
