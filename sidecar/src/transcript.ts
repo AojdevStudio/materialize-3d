@@ -37,7 +37,16 @@ export function chatEntry(entry: EntryRecord): ChatEntry | undefined {
     }
     case 'pi.tool-result': {
       if (message?.role !== 'toolResult') return undefined
-      return { id: entry.id, kind: 'tool', callId: message.toolCallId, name: message.toolName, text: textOf(message.content), failed: message.isError }
+      const { durationMs } = message
+      return {
+        id: entry.id,
+        kind: 'tool',
+        callId: message.toolCallId,
+        name: message.toolName,
+        text: textOf(message.content),
+        failed: message.isError,
+        ...(durationMs === undefined ? {} : { durationMs }),
+      }
     }
     default:
       return undefined
