@@ -464,6 +464,13 @@ describe('setup: your printer', () => {
     expect(store.settings.printer).toEqual({ ...P2S, plate: 'Supertack Plate' })
   })
 
+  it('says the plate is the default when Bambu Studio recorded none', async () => {
+    mockApp({ step: 'printer', done: false }, { ...ready, lastUsed: { ...lastUsedP2S, plate: null } })
+    render(<StudioApp />)
+    expect(await screen.findByText(/The plate is this printer’s default, because Bambu Studio did not record one\./)).toBeTruthy()
+    expect(screen.queryByText('Read from the settings you last used in Bambu Studio.')).toBeNull()
+  })
+
   it('changes to another printer, which starts with its own defaults, and Saves it for Ready to name', async () => {
     mockApp({ step: 'printer', done: false }, ready)
     render(<StudioApp />)

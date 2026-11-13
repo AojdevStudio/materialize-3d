@@ -7,7 +7,8 @@ type Choice = Required<Printer>
 type Nozzle = PrinterChoice['nozzles'][number]
 
 type Fitted = { choice: Choice; printer: PrinterChoice; nozzle: Nozzle }
-type Offer = { printers: PrinterChoice[]; confirmable: Fitted | undefined; start: Fitted }
+/** `plateRead` is false when Bambu Studio named no plate the printer takes, so the confirm view shows the default. */
+type Offer = { printers: PrinterChoice[]; confirmable: Fitted | undefined; plateRead: boolean; start: Fitted }
 
 const PLATE: Record<Plate, string> = {
   'Cool Plate': 'Cool Plate',
@@ -40,7 +41,8 @@ function offer(printers: PrinterChoice[], first: Fitted, last: BambuLastUsed | n
   const read = last && { machine: last.machine.system, process: last.process?.system, filament: last.filament?.system, plate: last.plate }
   const fromRead = read ? fit(printers, read) : undefined
   const confirmable = fromRead && read?.process === fromRead.choice.process && read.filament === fromRead.choice.filament ? fromRead : undefined
-  return { printers, confirmable, start: fromRead ?? fit(printers, saved) ?? first }
+  const plateRead = confirmable !== undefined && read?.plate === confirmable.choice.plate
+  return { printers, confirmable, plateRead, start: fromRead ?? fit(printers, saved) ?? first }
 }
 
 /**
@@ -151,7 +153,11 @@ export default function SetupPrinter({ next, back }: StepProps) {
     return (
       <>
         <h1>Is this your printer?</h1>
-        <p>Read from the settings you last used in Bambu Studio.</p>
+        <p>
+          {shown.plateRead
+            ? 'Read from the settings you last used in Bambu Studio.'
+            : 'Read from the settings you last used in Bambu Studio. The plate is this printer’s default, because Bambu Studio recorded none this printer takes.'}
+        </p>
         <dl className="setup-printer" data-testid="printer-found">
           {rows.map(([label, text]) => (
             <div key={label}>
