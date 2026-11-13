@@ -35,6 +35,22 @@ describe('logins', () => {
     await reopened.quit()
   })
 
+  test('a login removed from the Keychain outside the app is missing at the next start, before any send', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'm3d-login-'))
+    const keychain = new Map<string, string>()
+    const app = spawnSidecar(join(dir, 'state'), join(dir, 'projects'), keychain)
+    await app.next()
+    await app.call('auth.setKey', { provider: 'anthropic', key: TOKEN, baseUrl: 'http://127.0.0.1:8317' })
+    await app.quit()
+
+    keychain.delete('anthropic')
+    const reopened = spawnSidecar(join(dir, 'state'), join(dir, 'projects'), keychain)
+    await reopened.next()
+    expect(await reopened.call('auth.status')).toContainEqual({ provider: 'anthropic', name: 'Anthropic', login: null, kinds: ['api_key', 'oauth'] })
+    expect(await reopened.call('setup.check')).toContainEqual({ kind: 'login', provider: 'anthropic', name: 'Anthropic', fix: 'Sign in to Anthropic before you send.' })
+    await reopened.quit()
+  })
+
   test('a proxy login sends the token as a bearer token to the proxy', async () => {
     const credentials = new InMemoryCredentialStore()
     await credentials.modify('anthropic', async () => keyCredential(TOKEN, 'http://127.0.0.1:8317'))
