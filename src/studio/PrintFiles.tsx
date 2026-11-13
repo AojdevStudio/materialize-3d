@@ -78,7 +78,8 @@ export default function PrintFiles({ project, prints, onError }: Props) {
         <span className="print-count">{prints.length === 1 ? '1 print file ready' : `${prints.length} print files ready`}</span>
         {line.length > 0 && (
           <span className="print-details" data-testid="print-details" title={line.join(' · ')}>
-            {line.join(' · ')}
+            <span className="print-lead">{line[0]}</span>
+            {line.length > 1 && <span className="print-rest">{` · ${line.slice(1).join(' · ')}`}</span>}
           </span>
         )}
       </div>

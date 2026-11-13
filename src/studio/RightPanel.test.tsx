@@ -110,11 +110,14 @@ describe('RightPanel', () => {
     expect(details()).toBe('plate.3mf')
   })
 
-  it('shows the whole print details line on hover when a long name cuts it off', () => {
+  it('shortens only a long file name, so the time and grams stay in view, and shows the whole line on hover', () => {
     const long = 'print/a-very-long-bracket-name-that-fills-the-bar.3mf'
     show([{ ...file(long, 1), print: { filaments: ['PETG Basic'], printSeconds: 4320, filamentGrams: 38.2 } }], 'model')
     const details = screen.getByTestId('print-details')
     expect(details.getAttribute('title')).toBe(details.textContent)
+    // jsdom draws no layout, so the check is that the time and grams sit outside the part that shortens.
+    expect(details.querySelector('.print-lead')?.textContent).toBe('a-very-long-bracket-name-that-fills-the-bar.3mf')
+    expect(details.querySelector('.print-rest')?.textContent).toBe(' · 1 h 12 min · 38 g PETG Basic')
   })
 
   it('shows one print file without a menu, and no bar without print files', () => {
