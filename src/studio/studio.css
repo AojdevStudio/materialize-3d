@@ -632,6 +632,7 @@ pre {
 }
 
 .step-action,
+.step-time,
 .step-flag {
   flex: none;
 }

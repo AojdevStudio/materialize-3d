@@ -40,6 +40,11 @@ export function clock(ms: number): string {
   return hours > 0 ? `${hours}:${String(minutes).padStart(2, '0')}:${ss}` : `${minutes}:${ss}`
 }
 
+function took(ms: number): string {
+  if (ms < 1000) return '<1s'
+  return ms < 60_000 ? `${Math.floor(ms / 1000)}s` : clock(ms)
+}
+
 /**
  * The time since `startedMs` after `before`, read again each second. It keeps the clock to itself, so a tick redraws
  * this text and not the lines around it. Nothing without a start.
@@ -90,6 +95,7 @@ function StepLine({ step }: { step: ToolItem }) {
           <Icon svg={ICONS[step.action]} />
           <span className="step-action">{actionOf(step)}</span>
           {step.summary !== '' && <span className="step-target">{step.summary}</span>}
+          {step.durationMs !== undefined && <span className="step-time">{took(step.durationMs)}</span>}
           <Flag step={step} />
         </summary>
         <pre>{step.detail}</pre>

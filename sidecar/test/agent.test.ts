@@ -207,4 +207,15 @@ describe('the agent', () => {
     await answered(app, project, 'answered by faux-a')
     await app.quit()
   })
+
+  test('says how long each step it ran took', async () => {
+    const where = scratch()
+    const app = start(where, 'escape')
+    await app.next()
+    const project = await firstSend(app, 'read the hostname')
+    await answered(app, project, 'tried')
+    const view = (await app.call('chat.open', { project })) as ChatView
+    expect(view.entries.find((entry) => entry.kind === 'tool')).toMatchObject({ kind: 'tool', durationMs: expect.any(Number) })
+    await app.quit()
+  })
 })

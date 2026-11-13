@@ -96,6 +96,15 @@ describe('buildChat', () => {
     expect(items[2]).toMatchObject({ kind: 'trace', running: false, lines: [{ id: 'c1', state: 'done', result: 'ok' }] })
   })
 
+  it('keeps how long a finished step took', () => {
+    const items = buildChat([
+      { id: 1, kind: 'user', text: 'A clip', images: [], files: [] },
+      { id: 2, kind: 'assistant', model: opus, text: '', calls: [{ id: 'c1', name: 'run', args: { args: ['run', 'python', 'build/model.py'] } }] },
+      { id: 3, kind: 'tool', callId: 'c1', name: 'run', text: 'ok', failed: false, durationMs: 4200 },
+    ])
+    expect(items[2]).toMatchObject({ kind: 'trace', lines: [{ id: 'c1', state: 'done', durationMs: 4200 }] })
+  })
+
   it('shows a step left without a result as stopped once its turn no longer runs', () => {
     const entries = [
       { id: 1, kind: 'user' as const, text: 'Thicker', images: [], files: [] },

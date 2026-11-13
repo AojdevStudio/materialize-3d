@@ -93,7 +93,7 @@ export type ChatEntry =
   | ({ id: number; kind: 'imported' } & ImportedEntry)
   | { id: number; kind: 'user'; text: string; images: string[]; files: string[] }
   | { id: number; kind: 'assistant'; text: string; calls: { id: string; name: string; args: unknown }[]; model: ModelChoice }
-  | { id: number; kind: 'tool'; callId: string; name: string; text: string; failed: boolean }
+  | { id: number; kind: 'tool'; callId: string; name: string; text: string; failed: boolean; durationMs?: number }
 
 /** Why a turn stopped before its answer, and the one thing that lets it go on. */
 export type Waiting =
