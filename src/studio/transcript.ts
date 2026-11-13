@@ -162,7 +162,6 @@ export function buildChat(entries: ChatEntry[], running = true): ChatItem[] {
         break
     }
   }
-  // The last turn's trace runs while its turn does.
   if (trace !== undefined) trace.running = running
   if (!running) stopUnfinished()
   return items
