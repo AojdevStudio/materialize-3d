@@ -877,7 +877,6 @@ pre {
 
 .recent {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
   justify-content: center;
   gap: 8px;
@@ -885,6 +884,7 @@ pre {
 }
 
 .recent-label {
+  flex: none;
   color: var(--s-muted);
   font-size: 13px;
 }
@@ -893,6 +893,7 @@ pre {
   display: flex;
   align-items: center;
   gap: 10px;
+  min-width: 0;
   max-width: 220px;
   padding: 4px 12px 4px 4px;
   border-radius: 8px;

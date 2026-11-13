@@ -1867,7 +1867,7 @@ describe('StudioApp', () => {
 
     const recent = await screen.findByTestId('recent')
     await waitFor(() =>
-      expect(within(recent).getAllByRole('button').map((chip) => chip.textContent)).toEqual(['Project A1 print file', 'Project BBuilding parts', 'Project C']),
+      expect(within(recent).getAllByRole('button').map((chip) => chip.textContent)).toEqual(['Project A3MF ready', 'Project Bworking']),
     )
     await waitFor(() => expect(within(recent).getByTestId(`recent-${projectA.id}`).querySelector('img')?.getAttribute('src')).toBe(`m3dfile://${projectA.id}/parts/render-new.png?v=3`))
     expect(within(recent).getByTestId(`recent-${projectB.id}`).querySelector('img')).toBeNull()
@@ -1901,11 +1901,11 @@ describe('StudioApp', () => {
     mockSidecar({ 'projects.status': () => Promise.resolve({ [projectB.id]: { running: false, printed: false, printFiles: 1, lastMs: 5 } }) })
     render(<StudioApp />)
     const chip = () => screen.getByTestId(`recent-${projectB.id}`).textContent
-    await waitFor(() => expect(chip()).toBe('Project B1 print file'))
+    await waitFor(() => expect(chip()).toBe('Project B3MF ready'))
     await emit({ type: 'chat', ...view(projectB.id, { running: true, seq: 5 }) })
-    await waitFor(() => expect(chip()).toBe('Project BBuilding parts'))
+    await waitFor(() => expect(chip()).toBe('Project Bworking'))
     await pause(50)
-    expect(chip()).toBe('Project BBuilding parts')
+    expect(chip()).toBe('Project Bworking')
   })
 
   it('attaches any dropped file, and sends a PDF and an STL beside a picture', async () => {
