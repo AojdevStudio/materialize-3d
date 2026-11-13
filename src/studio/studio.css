@@ -1643,3 +1643,8 @@ pre {
   width: 18px;
   height: 18px;
 }
+
+.settings [data-testid='settings-printer'] .setup-act {
+  grid-column: 3 / -1;
+  justify-self: end;
+}

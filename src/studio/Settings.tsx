@@ -143,7 +143,6 @@ export default function Settings({ section, onSection, models, onSaved, onFix, o
                       Change
                     </button>
                   </span>
-                  <span />
                 </li>
               </ul>
             </section>
