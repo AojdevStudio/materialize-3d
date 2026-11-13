@@ -717,6 +717,12 @@ export default function StudioApp() {
         onDone={(wentOn) => {
           setFixing(null)
           afterSetup(wentOn && fixing === 'check')
+          // The printer step saved through printer.set, whose answer a reopened step does not hand on.
+          if (wentOn && fixing === 'printer') {
+            void sidecar('state.get', {})
+              .then((state) => setPrinter(state.settings.printer))
+              .catch((err: unknown) => setError(String(err)))
+          }
         }}
         onError={setError}
         error={errorBar}

@@ -15,8 +15,8 @@ vi.mock('@tauri-apps/api/event', () => ({
 vi.mock('@tauri-apps/plugin-opener', () => ({ openUrl: () => Promise.resolve(), revealItemInDir: revealMock }))
 vi.mock('@tauri-apps/api/webview', () => ({ getCurrentWebview: () => ({ onDragDropEvent: () => Promise.resolve(() => {}) }) }))
 
-import type { Login, ModelChoice, ModelOption, Project, Settings, Toolchain } from '../../sidecar/src/protocol'
-import type { SlicerCheck } from './api'
+import type { Login, ModelChoice, ModelOption, Printer, Project, Settings, Toolchain } from '../../sidecar/src/protocol'
+import type { BambuLastUsed, PrinterChoice, SlicerCheck } from './api'
 import StudioApp from './StudioApp'
 
 Element.prototype.scrollIntoView = vi.fn()
@@ -42,6 +42,25 @@ const models: ModelOption[] = [
 const FOLDER = '/Users/someone/Documents/Materialize 3D'
 const project: Project = { id: '2026-11-12-clip', conversation: 1, title: 'Cable clip', createdMs: 1 }
 
+const A1_MINI = { machine: 'Bambu Lab A1 mini 0.4 nozzle', process: '0.20mm Standard @BBL A1M', filament: 'Bambu PLA Basic @BBL A1M' }
+const printers: PrinterChoice[] = [
+  {
+    printer: 'Bambu Lab A1 mini',
+    plates: ['Textured PEI Plate'],
+    defaultPlate: 'Textured PEI Plate',
+    nozzles: [{ nozzle: '0.4', ...A1_MINI, processes: [A1_MINI.process], filaments: [A1_MINI.filament] }],
+  },
+]
+const preset = (name: string) => ({ name, system: name })
+const lastUsedA1Mini: BambuLastUsed = {
+  printer: 'Bambu Lab A1 mini',
+  nozzle: '0.4',
+  machine: preset(A1_MINI.machine),
+  process: preset(A1_MINI.process),
+  filament: preset(A1_MINI.filament),
+  plate: 'Textured PEI Plate',
+}
+
 type Machine = { toolchain: Toolchain; slicer: SlicerCheck }
 const ready: Machine = { toolchain: { uv: '0.9.2', python: '3.12.1' }, slicer: { found: 'ready', version: '02.08.02.61' } }
 
@@ -63,6 +82,10 @@ function mockApp(machine: Machine = ready, logins: Login[] = claudeOnly, waiting
       store.settings = { ...store.settings, ...params }
       return state()
     },
+    'printer.set': (params) => {
+      store.settings = { ...store.settings, printer: params as Printer }
+      return state()
+    },
     'setup.tools': () => machine.toolchain,
     'auth.status': () => store.logins,
     'setup.check': () => [],
@@ -74,6 +97,8 @@ function mockApp(machine: Machine = ready, logins: Login[] = claudeOnly, waiting
   invokeMock.mockImplementation((command: string, args: { method: string; params: Record<string, unknown> }) => {
     if (command === 'studio_slicer') return Promise.resolve(machine.slicer)
     if (command === 'studio_projects_folder') return Promise.resolve(FOLDER)
+    if (command === 'studio_printers') return Promise.resolve(printers)
+    if (command === 'bambu_last_used') return Promise.resolve(lastUsedA1Mini)
     if (command === 'studio_files') return Promise.resolve([])
     if (command !== 'sidecar') return Promise.resolve(undefined)
     return Promise.resolve(answers[args.method]?.(args.params) ?? null)
@@ -199,9 +224,24 @@ describe('settings', () => {
     expect(await printer.findByText('Bambu Lab P2S 0.4 nozzle')).toBeTruthy()
     expect(printer.getByText('Bambu PETG Basic @BBL P2S, 0.20mm Standard @BBL P2S, Textured PEI Plate')).toBeTruthy()
     fireEvent.click(printer.getByRole('button', { name: 'Change' }))
-    expect(await screen.findByTestId('setup')).toBeTruthy()
-    fireEvent.click(button('Back'))
+    expect(await screen.findByRole('heading', { name: 'Is this your printer?' })).toBeTruthy()
+    fireEvent.click(within(screen.getByTestId('setup')).getAllByRole('button', { name: 'Back' })[0])
     expect(await screen.findByRole('region', { name: 'Slicer and printer' })).toBeTruthy()
+  })
+
+  it('saves a new printer through setup\'s printer step, and Settings and the sidebar show it', async () => {
+    const store = mockApp()
+    render(<StudioApp />)
+    expect(await screen.findByTestId('printer')).toBeTruthy()
+    await openSettings()
+    const slicer = await show('Slicer and printer')
+    fireEvent.click(within(await within(slicer).findByTestId('settings-printer')).getByRole('button', { name: 'Change' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Looks right' }))
+    const row = within(await screen.findByTestId('settings-printer'))
+    expect(await row.findByText(A1_MINI.machine)).toBeTruthy()
+    expect(store.settings.printer.machine).toBe(A1_MINI.machine)
+    fireEvent.click(button('Close'))
+    expect((await screen.findByTestId('printer')).getAttribute('title')).toBe(A1_MINI.machine)
   })
 
   it('shows a missing slicer with its fix in setup', async () => {
