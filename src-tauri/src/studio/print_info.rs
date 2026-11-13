@@ -25,6 +25,11 @@ pub struct PrintInfo {
     filament_grams: Option<f64>,
 }
 
+/// A number the file holds. `NaN` and `inf` parse as floats but are no measure, and JSON would carry them as `null`.
+fn measure(text: &str) -> Option<f64> {
+    text.parse::<f64>().ok().filter(|value| value.is_finite())
+}
+
 /// What `Metadata/slice_info.config` reports across every plate.
 pub(super) struct SliceInfo {
     /// The objects Bambu did not skip.
@@ -63,7 +68,7 @@ pub(super) fn parse_slice_info(xml: &str) -> Result<SliceInfo, String> {
                     }
                     b"object" if attr(b"skipped").as_deref() != Some("true") => info.parts += 1,
                     b"filament" => {
-                        let Some(grams) = attr(b"used_g").and_then(|v| v.parse::<f64>().ok()) else { continue };
+                        let Some(grams) = attr(b"used_g").as_deref().and_then(measure) else { continue };
                         *info.filament_grams.get_or_insert(0.0) += grams;
                         let slot = attr(b"id").and_then(|v| v.parse::<usize>().ok());
                         if let Some(slot) = slot.filter(|slot| grams > 0.0 && !info.filament_slots.contains(slot)) {
@@ -120,7 +125,7 @@ fn parse(slice_info: Option<&str>, project_settings: Option<&str>) -> PrintInfo 
     PrintInfo {
         printer: settings.as_ref().and_then(|s| s.printer_model.as_deref()).map(|model| model.strip_prefix("Bambu Lab ").unwrap_or(model).to_owned()),
         filaments,
-        layer_height_mm: settings.as_ref().and_then(|s| s.layer_height.as_deref()?.parse().ok()),
+        layer_height_mm: settings.as_ref().and_then(|s| measure(s.layer_height.as_deref()?)),
         print_seconds: slice.as_ref().and_then(|s| s.print_seconds),
         filament_grams: slice.as_ref().and_then(|s| s.filament_grams),
     }
@@ -161,6 +166,9 @@ mod tests {
 
         let unsliced = parse(None, Some(r#"{"printer_model": "Bambu Lab X1 Carbon", "filament_settings_id": ["Bambu PLA Basic @BBL X1C"]}"#));
         assert_eq!(unsliced, PrintInfo { printer: Some("X1 Carbon".to_owned()), ..PrintInfo::default() });
+
+        let not_numbers = parse(Some(r#"<config><plate><filament id="1" used_g="NaN"/></plate></config>"#), Some(r#"{"layer_height": "inf"}"#));
+        assert_eq!(not_numbers, PrintInfo::default());
     }
 
     #[test]
