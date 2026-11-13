@@ -558,7 +558,6 @@ fn keychain_item(account: &str) -> Result<String, String> {
     }
 }
 
-/// Where the presets flattened for Bambu Studio are kept, for a slice and for the check of a printer setting.
 fn preset_cache(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(app.path().app_cache_dir().map_err(|e| format!("finding the app's cache folder: {e}"))?.join("bambu-presets"))
 }
@@ -589,7 +588,6 @@ async fn answer(app: &AppHandle, run: u64, method: &str, params: Value) -> Resul
         "printer.check" => {
             let printer: studio::slice::Printer = parse(method, params)?;
             let cache = preset_cache(app)?;
-            // No pass: a restart that cuts the check off loses nothing, as the setting is saved only after it.
             tauri::async_runtime::spawn_blocking(move || studio::slice::check(&printer, &cache))
                 .await
                 .map_err(|e| format!("the printer check failed: {e}"))??;

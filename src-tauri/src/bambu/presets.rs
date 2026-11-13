@@ -207,8 +207,7 @@ struct Resolver {
     manifest_path: PathBuf,
     profile_version: String,
     index: HashMap<PresetKey, String>,
-    /// Each printer model's file, by the name a machine preset's `printer_model` gives.
-    models: HashMap<String, String>,
+    model_sub_paths: HashMap<String, String>,
     defaults: JsonMap,
     raw: HashMap<PresetKey, Rc<JsonMap>>,
     resolved: HashMap<PresetKey, Rc<Resolved>>,
@@ -380,7 +379,7 @@ impl Resolver {
                 }
             }
         }
-        let models = manifest_list(&manifest, "machine_model_list")?
+        let model_sub_paths = manifest_list(&manifest, "machine_model_list")?
             .into_iter()
             .map(|(name, sub_path)| (name.to_owned(), sub_path.to_owned()))
             .collect();
@@ -389,7 +388,7 @@ impl Resolver {
             manifest_path,
             profile_version,
             index,
-            models,
+            model_sub_paths,
             defaults: JsonMap::new(),
             raw: HashMap::new(),
             resolved: HashMap::new(),
@@ -425,10 +424,9 @@ impl Resolver {
         Ok(source)
     }
 
-    /// The plates of the printer model a resolved machine preset belongs to, from the model's own file.
     fn plates(&self, machine: &JsonMap, name: &str) -> Result<Plates> {
         let model = required_str(machine.get("printer_model"), &format!("{name} printer_model"))?;
-        let sub_path = self.models.get(model).ok_or_else(|| {
+        let sub_path = self.model_sub_paths.get(model).ok_or_else(|| {
             preset_err(format!("machine {name:?} is a {model:?}, a printer model BBL.json does not list"))
         })?;
         let raw = read_json_object(&self.profile_path(sub_path)?)?;
@@ -640,7 +638,6 @@ impl Resolver {
     }
 }
 
-/// The `name` and `sub_path` of each entry of one of the manifest's lists.
 fn manifest_list<'a>(manifest: &'a JsonMap, list_key: &str) -> Result<Vec<(&'a str, &'a str)>> {
     let Some(Value::Array(items)) = manifest.get(list_key) else {
         return Err(preset_err(format!(

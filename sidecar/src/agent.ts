@@ -320,17 +320,17 @@ export function agentTools({ host, projectOf, signedIn, loginSaves, printer }: A
     parameters: obj({ inputs: arr(str(), { minItems: 1 }), output: str() }),
     replay: 'safe',
     execute: async ({ inputs, output }, api, context) => {
-      // A receipt from before the printer could be chosen names neither the printer nor the plate.
-      type Sliced =
-        | { ok: true; parts: number; printSeconds: number; filamentGrams: number; used?: { printer: Printer; plate: Plate } }
-        | { ok: false; error: string }
+      type Totals = { parts: number; printSeconds: number; filamentGrams: number }
+      type ReceiptFromBeforePrinters = { ok: true; used?: never } & Totals
+      type Sliced = ({ ok: true; used: { printer: Printer; plate: Plate } } & Totals) | ReceiptFromBeforePrinters | { ok: false; error: string }
       const op = operation<Sliced>(api, context)
       const project = await projectOf(api.conversationId)
       const sliced = await once<Sliced>(op.memo, op.receipt, async () => {
-        const chosen = await printer()
+        // Rust runs each operation once, so a rerun after a crash asks for the printer the first request named.
+        const startedWith = await api.memo('printer', await printer(), context)
         try {
-          const { parts, printSeconds, filamentGrams, plate } = await host.request('slice', { operation: op.id, project, inputs, output, printer: chosen })
-          return { ok: true, parts, printSeconds, filamentGrams, used: { printer: chosen, plate } }
+          const { parts, printSeconds, filamentGrams, plate } = await host.request('slice', { operation: op.id, project, inputs, output, printer: startedWith })
+          return { ok: true, parts, printSeconds, filamentGrams, used: { printer: startedWith, plate } }
         } catch (error) {
           return { ok: false, error: error instanceof Error ? error.message : String(error) }
         }

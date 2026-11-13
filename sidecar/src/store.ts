@@ -223,7 +223,6 @@ export class Store implements LoginIndex {
     }, context)
   }
 
-  /** The printer a slice that starts now runs for. */
   async printer(): Promise<Printer> {
     return this.harness.commit(async (tx) => ({ ...(await tx.doc(SettingsDoc, this.root.id)).printer }), context)
   }

@@ -3,12 +3,12 @@
 
 use std::fs;
 use std::io;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 use super::presets::PresetKind;
-use super::{io_err, parse_json_object, BambuError, Plate, Result};
+use super::{io_err, BambuError, Plate, Result};
 
 /// The printer, nozzle, quality, filament, and plate Bambu Studio last had selected. Bambu Studio always records a
 /// printer once one is chosen. The process, the filament, and the plate can each be missing.
@@ -47,6 +47,12 @@ struct App {
     curr_bed_type: Option<String>,
     /// The folder under `user/` with the presets the person made: their account's id, or `default` signed out.
     preset_folder: Option<String>,
+}
+
+/// A preset the person made. `inherits` names the system preset it was made from.
+#[derive(Deserialize)]
+struct Made {
+    inherits: Option<String>,
 }
 
 #[derive(Default, Deserialize)]
@@ -107,25 +113,19 @@ fn printer_and_nozzle(machine: &str) -> Option<(&str, &str)> {
 /// A preset Bambu Studio names, with the system preset under it. A preset the person made is a file of that name in
 /// their preset folder, whose `inherits` names the system preset it was made from.
 fn preset(dir: &Path, folder: &str, kind: PresetKind, name: String) -> Result<Preset> {
-    // Only a plain file name is looked for, so a name from the config never leads out of the preset folder.
-    let one_name = |text: &str| {
-        let mut parts = Path::new(text).components();
-        matches!((parts.next(), parts.next()), (Some(Component::Normal(_)), None))
-    };
-    if !one_name(folder) || !one_name(&name) {
-        return Ok(Preset { system: Some(name.clone()), name });
-    }
     let made = dir.join("user").join(folder).join(kind.as_str()).join(format!("{name}.json"));
-    let system = match fs::read_to_string(&made) {
-        Ok(text) => parse_json_object(&text, &made)?
-            .get("inherits")
-            .and_then(serde_json::Value::as_str)
-            .filter(|parent| !parent.is_empty())
-            .map(str::to_owned),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Some(name.clone()),
+    // The file is read where it really is, so a name or a link that leads out of the config folder is refused.
+    let real = match made.canonicalize() {
+        Ok(real) => real,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Preset { system: Some(name.clone()), name }),
         Err(e) => return Err(io_err(&made)(e)),
     };
-    Ok(Preset { name, system })
+    if !real.starts_with(dir.canonicalize().map_err(io_err(dir))?) {
+        return Err(BambuError::Preset(format!("{} leads outside Bambu Studio's config folder", made.display())));
+    }
+    let text = fs::read_to_string(&real).map_err(io_err(&real))?;
+    let Made { inherits } = serde_json::from_str(&text).map_err(|source| BambuError::Json { path: made, source })?;
+    Ok(Preset { name, system: inherits.filter(|parent| !parent.is_empty()) })
 }
 
 #[cfg(test)]
@@ -140,7 +140,6 @@ mod tests {
         Preset { name: name.to_owned(), system: Some(name.to_owned()) }
     }
 
-    /// A config folder whose `BambuStudio.conf` is the fixture's with `change` applied, beside the fixture's presets.
     fn config_with(change: impl FnOnce(&mut serde_json::Value)) -> tempfile::TempDir {
         let dir = tempfile::tempdir().expect("tempdir");
         let mut conf: serde_json::Value = serde_json::from_str(&fs::read_to_string(fixture().join("BambuStudio.conf")).expect("conf")).expect("json");
@@ -182,6 +181,23 @@ mod tests {
         assert_eq!(last.plate, Some(Plate::Supertack));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn a_preset_file_that_leads_out_of_the_config_folder_is_refused() {
+        let outside = tempfile::tempdir().expect("outside");
+        fs::write(outside.path().join("secret.json"), r#"{ "inherits": "Bambu PLA Basic @BBL P2S" }"#).expect("write");
+        let dir = config_with(|conf| conf["presets"]["filaments"] = serde_json::json!(["Linked"]));
+        std::os::unix::fs::symlink(outside.path().join("secret.json"), dir.path().join("user/1234567890/filament/Linked.json")).expect("link");
+        let err = read(dir.path()).expect_err("a link out of the folder");
+        assert!(err.to_string().contains("leads outside Bambu Studio's config folder"), "{err}");
+
+        let climbing = config_with(|conf| conf["presets"]["filaments"] = serde_json::json!(["../../../../outside"]));
+        fs::write(climbing.path().parent().expect("parent").join("outside.json"), "{}").expect("write");
+        let err = read(climbing.path()).expect_err("a name that climbs out of the folder");
+        assert!(err.to_string().contains("leads outside Bambu Studio's config folder"), "{err}");
+        fs::remove_file(climbing.path().parent().expect("parent").join("outside.json")).expect("remove");
+    }
+
     #[test]
     fn nothing_when_bambu_studio_never_ran_or_has_no_bambu_lab_printer() {
         let empty = tempfile::tempdir().expect("tempdir");
@@ -214,5 +230,10 @@ mod tests {
         fs::write(broken.path().join("BambuStudio.conf"), "{ \"presets\": ").expect("write");
         let err = read(broken.path()).expect_err("half a config");
         assert!(err.to_string().contains("BambuStudio.conf: invalid JSON"), "{err}");
+
+        let odd = config_with(|conf| conf["presets"]["filaments"] = serde_json::json!(["Odd"]));
+        fs::write(odd.path().join("user/1234567890/filament/Odd.json"), r#"{ "inherits": 42 }"#).expect("write");
+        let err = read(odd.path()).expect_err("a parent that is not a name");
+        assert!(err.to_string().contains("Odd.json: invalid JSON"), "{err}");
     }
 }

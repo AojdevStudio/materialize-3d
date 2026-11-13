@@ -45,6 +45,26 @@ describe('one writer', () => {
   })
 })
 
+const P2S = { machine: 'Bambu Lab P2S 0.4 nozzle', process: '0.20mm Standard @BBL P2S', filament: 'Bambu PETG Basic @BBL P2S 0.4 nozzle' }
+const A1_MINI = { machine: 'Bambu Lab A1 mini 0.4 nozzle', process: '0.20mm Standard @BBL A1M', filament: 'Bambu PLA Basic @BBL A1M', plate: 'Supertack Plate' }
+
+/** A sidecar whose Rust refuses the printer `Bambu Lab Z9`, as a Bambu Studio without that preset does. `checked` holds each printer it was asked about. */
+function withPrinterCheck(data: string, projects: string) {
+  const checked: unknown[] = []
+  const app = spawnSidecar(data, projects, new Map(), {
+    rust: {
+      'printer.check': (printer) => {
+        checked.push(printer)
+        if ((printer as { machine: string }).machine.includes('Z9')) throw new Error('machine preset not found in BBL.json: "Bambu Lab Z9 0.4 nozzle"')
+        return null
+      },
+    },
+  })
+  return { app, checked }
+}
+
+const printerOf = async (app: ReturnType<typeof spawnSidecar>) => ((await app.call('state.get')) as { settings: { printer: unknown } }).settings.printer
+
 describe('app state', () => {
   test('setup progress, settings, projects, and drafts survive a quit and a crash', async () => {
     const { data, projects } = scratch()
@@ -77,43 +97,45 @@ describe('app state', () => {
     await afterCrash.quit()
   })
 
-  test('a printer is saved once Rust can slice for it, and one it refuses, or the pipe cannot parse, is not', async () => {
+  test('a printer is saved once Rust can slice for it, and survives a restart', async () => {
     const { data, projects } = scratch()
-    const checked: unknown[] = []
-    const app = spawnSidecar(data, projects, new Map(), {
-      rust: {
-        'printer.check': (printer) => {
-          checked.push(printer)
-          if ((printer as { machine: string }).machine.includes('Z9')) throw new Error('machine preset not found in BBL.json: "Bambu Lab Z9 0.4 nozzle"')
-          return null
-        },
-      },
-    })
+    const { app, checked } = withPrinterCheck(data, projects)
     await app.next()
-    const printerOf = async () => ((await app.call('state.get')) as { settings: { printer: unknown } }).settings.printer
-    const p2s = { machine: 'Bambu Lab P2S 0.4 nozzle', process: '0.20mm Standard @BBL P2S', filament: 'Bambu PETG Basic @BBL P2S 0.4 nozzle' }
-    expect(await printerOf()).toEqual(p2s)
+    expect(await printerOf(app)).toEqual(P2S)
 
-    const a1Mini = { machine: 'Bambu Lab A1 mini 0.4 nozzle', process: '0.20mm Standard @BBL A1M', filament: 'Bambu PLA Basic @BBL A1M', plate: 'Supertack Plate' }
-    expect(await app.call('printer.set', a1Mini)).toMatchObject({ settings: { printer: a1Mini } })
-    expect(checked).toEqual([a1Mini])
-
-    await expect(app.call('printer.set', { ...p2s, machine: 'Bambu Lab Z9 0.4 nozzle' })).rejects.toThrow('machine preset not found in BBL.json: "Bambu Lab Z9 0.4 nozzle"')
-    await expect(app.call('printer.set', { ...p2s, plate: 'Glass Plate' })).rejects.toThrow('bad params for printer.set')
-    await expect(app.call('printer.set', { machine: p2s.machine, process: p2s.process })).rejects.toThrow('bad params for printer.set')
-    // The printer has one way in, which Rust checks.
-    await expect(app.call('settings.set', { printer: p2s })).rejects.toThrow('bad params for settings.set')
-    expect(checked).toHaveLength(2)
-    expect(await printerOf()).toEqual(a1Mini)
-
-    // A printer with no plate takes the plate away, so the slice goes back to the printer's own default.
-    await app.call('printer.set', p2s)
-    expect(await printerOf()).toEqual(p2s)
+    expect(await app.call('printer.set', A1_MINI)).toMatchObject({ settings: { printer: A1_MINI } })
+    expect(checked).toEqual([A1_MINI])
     expect(await app.quit()).toBe(EXIT.done)
     const reopened = spawnSidecar(data, projects)
     await reopened.next()
-    expect(((await reopened.call('state.get')) as { settings: { printer: unknown } }).settings.printer).toEqual(p2s)
+    expect(await printerOf(reopened)).toEqual(A1_MINI)
     await reopened.quit()
+  })
+
+  test('a printer Rust refuses is not saved, and one the pipe cannot parse never reaches Rust', async () => {
+    const { data, projects } = scratch()
+    const { app, checked } = withPrinterCheck(data, projects)
+    await app.next()
+    await app.call('printer.set', A1_MINI)
+
+    await expect(app.call('printer.set', { ...P2S, machine: 'Bambu Lab Z9 0.4 nozzle' })).rejects.toThrow('machine preset not found in BBL.json: "Bambu Lab Z9 0.4 nozzle"')
+    expect(checked).toHaveLength(2)
+    await expect(app.call('printer.set', { ...P2S, plate: 'Glass Plate' })).rejects.toThrow('bad params for printer.set')
+    await expect(app.call('printer.set', { machine: P2S.machine, process: P2S.process })).rejects.toThrow('bad params for printer.set')
+    await expect(app.call('settings.set', { printer: P2S })).rejects.toThrow('bad params for settings.set')
+    expect(checked).toHaveLength(2)
+    expect(await printerOf(app)).toEqual(A1_MINI)
+    await app.quit()
+  })
+
+  test('a printer set with no plate takes the saved plate away', async () => {
+    const { data, projects } = scratch()
+    const { app } = withPrinterCheck(data, projects)
+    await app.next()
+    await app.call('printer.set', A1_MINI)
+    await app.call('printer.set', P2S)
+    expect(await printerOf(app)).toEqual(P2S)
+    await app.quit()
   })
 
   test('the app state is read at one point in the store, never half before and half after a commit', async () => {

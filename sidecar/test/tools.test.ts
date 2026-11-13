@@ -99,6 +99,45 @@ describe('the slice tool', () => {
     expect(asked[0]).toMatchObject({ project, inputs: ['cube.stl'], output: 'print/cube.3mf', printer: a1Mini })
     await app.quit()
   })
+
+  test('a slice a crash cut off goes on for the printer it started with, not one chosen since', async () => {
+    const where = scratch()
+    const asked: { printer: unknown }[] = []
+    const rust = {
+      'printer.check': () => null,
+      slice: (params: unknown) => {
+        asked.push(params as { printer: unknown })
+        return { output: 'print/cube.3mf', parts: 1, printSeconds: 600, filamentGrams: 2, plate: 'Textured PEI Plate' }
+      },
+    }
+    const p2s = { machine: 'Bambu Lab P2S 0.4 nozzle', process: '0.20mm Standard @BBL P2S', filament: 'Bambu PETG Basic @BBL P2S 0.4 nozzle' }
+    // Rust never answers the first slice, as when the sidecar crashes while Bambu Studio still runs.
+    const first = spawnSidecar(where.data, where.projects, new Map(), {
+      script: 'slice',
+      env: where.env,
+      rust,
+      hold: (request, answer) => {
+        if (request.method !== 'slice') answer()
+      },
+    })
+    await first.next()
+    const project = await firstSend(first)
+    while (asked.length === 0) await Bun.sleep(25)
+    await first.call('printer.set', { machine: 'Bambu Lab A1 mini 0.4 nozzle', process: '0.20mm Standard @BBL A1M', filament: 'Bambu PLA Basic @BBL A1M' })
+    first.child.kill('SIGKILL')
+    await first.child.exited
+
+    const second = spawnSidecar(where.data, where.projects, new Map(), { script: 'slice', env: where.env, rust })
+    await second.next()
+    await answered(
+      second,
+      project,
+      'Wrote print/cube.3mf: 1 part(s), about 10 min and 2.0 g of filament. Sliced for Bambu Lab P2S 0.4 nozzle, ' +
+        '0.20mm Standard @BBL P2S, Bambu PETG Basic @BBL P2S 0.4 nozzle, on the Textured PEI Plate.',
+    )
+    expect(asked.map((request) => request.printer)).toEqual([p2s, p2s])
+    await second.quit()
+  }, 30_000)
 })
 
 describe('the run tool', () => {

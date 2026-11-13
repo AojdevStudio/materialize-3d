@@ -1,7 +1,6 @@
 //! The validated Bambu Studio and its system presets, for the agent's slice step
 //! (`crate::studio::slice`): [`BambuStudio::locate`] finds the build, and
 //! [`resolve_presets`] flattens the named presets into files its CLI loads.
-//! [`last_used`] reads what the person last used in Bambu Studio.
 
 pub mod last_used;
 mod presets;
@@ -73,7 +72,6 @@ impl Plate {
         Self::ALL.into_iter().find(|plate| plate.label() == label)
     }
 
-    /// The plate Bambu Studio's own config holds as a `BedType` number.
     fn from_number(number: usize) -> Option<Self> {
         Self::ALL.get(number.checked_sub(1)?).copied()
     }
