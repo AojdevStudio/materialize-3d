@@ -4,6 +4,7 @@ import type { AppState, Methods, ModelChoice, ModelOption, Settings as Saved, Se
 import { checkSlicer, projectsFolder, sidecar } from './api'
 import { Mark } from './ModelPicker'
 import { agentRows, buildRows, type Found, type Row, slicerRow } from './SetupCheck'
+import { astraSignedIn } from './SetupModel'
 
 const ORDER = ['agents', 'slicer', 'tools', 'folder'] as const
 export type Section = (typeof ORDER)[number]
@@ -76,6 +77,8 @@ export default function Settings({ section, onSection, models, onSaved, onFix, o
       .finally(() => setSaving(false))
   }
 
+  const astra = Array.isArray(found.logins) && astraSignedIn(found.logins)
+
   const rows = (title: string, list: Row[]) => (
     <section className="setup-group" aria-label={title}>
       <h2>{title}</h2>
@@ -119,10 +122,30 @@ export default function Settings({ section, onSection, models, onSaved, onFix, o
                     onChange={() => save({ model: { provider: model.provider, modelId: model.modelId } })}
                   />
                   <Mark modelId={model.modelId} />
-                  <span>{model.name}</span>
+                  <span className="setup-what">
+                    <span className="setup-name">{model.name}</span>
+                    <span className="setup-detail">{model.description}</span>
+                  </span>
                 </label>
               ))}
             </fieldset>
+            <div className="setup-switch">
+              <input
+                id="settings-astra"
+                type="checkbox"
+                role="switch"
+                checked={astra && (saved?.astra ?? false)}
+                disabled={!astra || saved === null || saving}
+                aria-describedby={astra ? undefined : 'settings-astra-needs'}
+                onChange={(event) => save({ astra: event.target.checked })}
+              />
+              <label htmlFor="settings-astra">Let the main agent ask GPT (Astra) for drawings</label>
+              {!astra && (
+                <span id="settings-astra-needs" className="setup-detail">
+                  Needs a ChatGPT sign-in.
+                </span>
+              )}
+            </div>
           </>
         )
       case 'slicer':

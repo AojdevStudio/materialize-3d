@@ -1,11 +1,14 @@
 import { useEffect, useState } from 'react'
-import type { ModelChoice, ModelOption, Settings } from '../../sidecar/src/protocol'
+import type { Login, ModelChoice, ModelOption, Settings } from '../../sidecar/src/protocol'
 import { sidecar } from './api'
 import { Mark } from './ModelPicker'
 import type { StepProps } from './Setup'
 import { AGENTS } from './SetupCheck'
 
 type Offer = { models: ModelOption[]; chatgptSignedIn: boolean; saved: Settings }
+
+/** Astra is GPT, so it needs a ChatGPT sign-in. Without one its switch shows off and cannot change. */
+export const astraSignedIn = (logins: Login[]) => logins.some((login) => login.provider === 'openai-codex' && login.login !== null)
 
 const same = (a: ModelChoice, b: ModelChoice) => a.provider === b.provider && a.modelId === b.modelId
 
@@ -27,7 +30,7 @@ export default function SetupModel({ next, back, onError, signIn, signIns }: Ste
         current &&
         setOffer({
           models: listed.filter((model) => AGENTS.some((agent) => agent.provider === model.provider)),
-          chatgptSignedIn: logins.some((login) => login.provider === 'openai-codex' && login.login !== null),
+          chatgptSignedIn: astraSignedIn(logins),
           saved: settings,
         }),
       (err: unknown) => current && onError(String(err)),

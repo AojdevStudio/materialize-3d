@@ -21,13 +21,14 @@ afterEach(() => {
   revealMock.mockReset()
 })
 
-const logins: Login[] = [
+const claudeOnly: Login[] = [
   { provider: 'anthropic', name: 'Anthropic', login: 'oauth', kinds: ['oauth', 'api_key'] },
   { provider: 'openai-codex', name: 'ChatGPT', login: null, kinds: ['oauth'] },
 ]
+const bothIn = claudeOnly.map((login) => (login.provider === 'openai-codex' ? { ...login, login: 'oauth' as const } : login))
 const models: ModelOption[] = [
-  { provider: 'anthropic', modelId: 'claude-opus-5-5', name: 'Opus 5.5' },
-  { provider: 'anthropic', modelId: 'claude-sonnet-5-5', name: 'Sonnet 5.5' },
+  { provider: 'anthropic', modelId: 'claude-opus-5-5', name: 'Opus 5.5', description: 'The strongest for hard parts.' },
+  { provider: 'anthropic', modelId: 'claude-sonnet-5-5', name: 'Sonnet 5.5', description: 'Fast for everyday parts.' },
 ]
 const FOLDER = '/Users/someone/Documents/Materialize 3D'
 const project: Project = { id: '2026-11-12-clip', conversation: 1, title: 'Cable clip', createdMs: 1 }
@@ -35,13 +36,14 @@ const project: Project = { id: '2026-11-12-clip', conversation: 1, title: 'Cable
 type Machine = { toolchain: Toolchain; slicer: SlicerCheck }
 const ready: Machine = { toolchain: { uv: '0.9.2', python: '3.12.1' }, slicer: { found: 'ready', version: '02.08.02.61' } }
 
-function mockApp(machine: Machine = ready) {
+function mockApp(machine: Machine = ready, logins: Login[] = claudeOnly) {
   revealMock.mockResolvedValue(undefined)
   const store: { settings: Settings } = {
     settings: {
       model: { provider: 'anthropic', modelId: 'claude-opus-5-5' },
       thinking: 'high',
       printer: { machine: 'Bambu Lab P2S 0.4 nozzle', process: '0.20mm Standard @BBL P2S', filament: 'Bambu PETG Basic @BBL P2S' },
+      astra: true,
     },
   }
   const state = () => ({ setup: { step: 'check', done: true }, settings: store.settings, projects: [project], drafts: {}, importBlocked: null })
@@ -122,6 +124,28 @@ describe('settings', () => {
     fireEvent.click(button('Close'))
     expect(await screen.findByTestId('start-screen')).toBeTruthy()
     expect(screen.getByRole('button', { name: /Sonnet 5.5/ })).toBeTruthy()
+  })
+
+  it('turns Astra off through settings.set when ChatGPT is signed in', async () => {
+    mockApp(ready, bothIn)
+    render(<StudioApp />)
+    await openSettings()
+    const astra = (await screen.findByRole('switch', { name: /Astra/ })) as HTMLInputElement
+    await waitFor(() => expect(astra.disabled).toBe(false))
+    expect(astra.checked).toBe(true)
+    fireEvent.click(astra)
+    await waitFor(() => expect(saves()).toEqual([{ astra: false }]))
+    await waitFor(() => expect(astra.checked).toBe(false))
+  })
+
+  it('shows Astra off and locked without a ChatGPT sign-in', async () => {
+    mockApp()
+    render(<StudioApp />)
+    await openSettings()
+    expect(await screen.findByText('Needs a ChatGPT sign-in.')).toBeTruthy()
+    const astra = screen.getByRole('switch', { name: /Astra/ }) as HTMLInputElement
+    expect(astra.checked).toBe(false)
+    expect(astra.disabled).toBe(true)
   })
 
   it('shows Bambu Studio and the chosen printer, and Change opens setup, which Back leaves for Slicer and printer', async () => {
