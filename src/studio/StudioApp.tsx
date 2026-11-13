@@ -562,8 +562,9 @@ export default function StudioApp() {
     if (current) setSendErrors(({ [current.id]: _, ...rest }) => rest)
   }
 
-  // Send waits for the check, and stays off while the agent lacks a sign-in, uv, or Python.
-  const notReady = needs === null || needs.length > 0
+  // Send waits for the saved state, which says whether setup is done, and for the check. It stays off while the agent
+  // lacks a sign-in, uv, or Python.
+  const notReady = setup?.done !== true || needs === null || needs.length > 0
 
   /** The open project's own model, or the default for one from before the picker. On the start screen, the default. */
   const chosenModel = (current ? projects.find((p) => p.id === current.id)?.model : undefined) ?? defaultModel

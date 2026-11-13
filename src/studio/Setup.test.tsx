@@ -155,6 +155,21 @@ describe('setup', () => {
     expect(button('Continue without a slicer')).toBeTruthy()
   })
 
+  it('keeps Send off until the saved setup is known to be done, though the send check already passed', async () => {
+    let release = () => {}
+    mockApp({ step: 'welcome', done: false }, ready, {
+      'state.get': (_, real) => new Promise((resolve) => (release = () => resolve(real()))),
+    })
+    render(<StudioApp />)
+    fireEvent.change(await screen.findByRole('textbox'), { target: { value: 'A clip' } })
+    await act(async () => {})
+    expect((screen.getByTestId('send') as HTMLButtonElement).disabled).toBe(true)
+    fireEvent.click(screen.getByTestId('send'))
+    await act(async () => release())
+    expect(await screen.findByRole('button', { name: 'Start setup' })).toBeTruthy()
+    expect(invokeMock.mock.calls.some(([command, args]) => command === 'sidecar' && args.method === 'chat.send')).toBe(false)
+  })
+
   it('lets a check that failed run again', async () => {
     let fails = true
     mockApp({ step: 'check', done: false }, ready, {
