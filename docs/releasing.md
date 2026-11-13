@@ -21,7 +21,7 @@ Do not rotate or rewrite user credentials to satisfy these limits. If existing c
 
 ## Steps
 
-1. Set the same version in `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`. Update only the root `materialize-3d` package entry in `src-tauri/Cargo.lock`. Keep dependency versions unchanged. Prepare `docs/releases/v0.3.0.md` with source capabilities and publication requirements, then land the version change through a pull request. Keep the final source commit, DMG checksum, and measured acceptance results in the external release body and attached software acceptance record, not tracked source.
+1. Set the same version in `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`. Update only the root `materialize-3d` package entry in `src-tauri/Cargo.lock`. Keep dependency versions unchanged. Prepare `docs/releases/v0.3.0.md` with source capabilities and publication requirements, then land the version change through a pull request. Keep the final source commit, DMG checksum, and measured acceptance results out of tracked source. They go in the release body and in the acceptance record in the meta repo (step 5).
 2. Tag the merged commit on `main` and push the tag:
 
    ```bash
@@ -52,31 +52,70 @@ Do not rotate or rewrite user credentials to satisfy these limits. If existing c
    The script stops when either updater secret is missing or signing fails.
 
 4. Run the [installed GUI checklist](verify-on-mac.md) on that exact DMG. Keep the sliced 3MF and its hash, the Bambu Studio P2S 0.4 mm proof, and the GUI recording.
-5. Complete the required software acceptance record below and prepare an external release body from the source notes. Put the exact tagged source commit and final DMG checksum in both. Do not edit tracked notes to insert their own source commit or DMG checksum. Keep shared release tags unchanged. If source or packaging changes, build and test a new candidate. Required software checks and release approval gate publication. After they pass, publish the DMG, its checksum, and the completed record. The filenames below require the completed files described here, not placeholders.
+5. Complete the required software acceptance record below. Store it, its evidence, and the build's `.sha256` files in the meta repo's cycle folder, `cycles/<cycle>/release-v<version>/` in `AojdevStudio/materialize-3d-meta`, not on the release. Then write the release body, `dist-release/release-notes-short.md`. A visitor must see at once which file to download, so the body stays short and the full notes stay in `docs/releases/v<version>.md`, linked from the body. Put the exact tagged source commit and the final DMG checksum only in the body's collapsed part and in the record. Do not edit tracked notes to insert them. Keep shared release tags unchanged. If source or packaging changes, build and test a new candidate. Required software checks and release approval gate publication.
 
-   ```bash
-   gh release create v0.3.0 --verify-tag --title "Materialize 3D 0.3.0" --notes-file dist-release/release-notes.md \
-     dist-release/Materialize-3D-0.3.0-macos-arm64.dmg dist-release/Materialize-3D-0.3.0-macos-arm64.dmg.sha256 \
-     dist-release/latest.json dist-release/Materialize-3D-0.3.0-macos-arm64.app.tar.gz \
-     dist-release/Materialize-3D-0.3.0-macos-arm64.app.tar.gz.sig \
-     dist-release/software-acceptance.md
+   The body has this shape, copied from the v0.3.1 release:
+
+   ```markdown
+   ## Download
+
+   ### [⬇ Download Materialize 3D for Mac](https://github.com/AojdevStudio/materialize-3d/releases/download/v<version>/Materialize-3D-<version>-macos-arm64.dmg)
+
+   For Macs with Apple Silicon (M1 or newer) on macOS 26 or later.
+
+   Open the file, then drag Materialize 3D into Applications. <one line on what the first launch does>
+
+   ## What's new in <version>
+
+   - <the change most people notice>
+   - <the second>
+   - <the third>
+
+   <one line for each earlier version that reads the update banner, as v0.3.1 does for 0.3.0 and 0.2.2>
+
+   [Full release notes](https://github.com/AojdevStudio/materialize-3d/blob/v<version>/docs/releases/v<version>.md)
+
+   <details>
+   <summary>The other files below</summary>
+
+   You only need the Mac download above. The other files are for the app's automatic updates and for the source code.
+
+   DMG SHA-256: `<full SHA-256 of the DMG>`
+   Signed and notarized by Apple. Built from commit `<short commit of the tag>`.
+   </details>
    ```
 
-   Attach the three update assets under exactly these names, because `latest.json` names the archive's URL.
+   After they pass, publish only the DMG and the three update files. Never upload the `.sha256` files, the acceptance record, or its evidence. Each file gets a label with gh's `file#label` form, so the release page says which one to download. Run this from the tag's checkout:
+
+   ```bash
+   V="$(jq -r .version package.json)"
+   gh release create "v$V" --verify-tag --title "Materialize 3D $V" --notes-file dist-release/release-notes-short.md \
+     "dist-release/Materialize-3D-$V-macos-arm64.dmg#Materialize-3D-$V-mac.dmg  (download this one)" \
+     "dist-release/latest.json#latest.json  (for automatic updates, skip)" \
+     "dist-release/Materialize-3D-$V-macos-arm64.app.tar.gz#updater-archive.tar.gz  (for automatic updates, skip)" \
+     "dist-release/Materialize-3D-$V-macos-arm64.app.tar.gz.sig#updater-signature.sig  (for automatic updates, skip)"
+   ```
+
+   A label changes only what the page shows. The files keep the names the build wrote. Never rename them, because `latest.json` and installed apps fetch them by those names.
 
    Publishing a release as **Latest** is what updates installed apps. Each installed app reads `https://github.com/AojdevStudio/materialize-3d/releases/latest/download/latest.json` at launch, and offers the update when that version is newer than its own. A draft or a prerelease never reaches installed apps. To hold a release back, publish it as a draft or prerelease, or leave the earlier release marked Latest until the download check below passes.
 
    The first release that contains the updater must still be installed by hand from its DMG. Only later releases arrive as updates.
 
-6. Download the published DMG, checksum file, update assets, and record from the actual release. Compare the downloaded DMG's full SHA-256 with the build checksum, published checksum file, release body, and acceptance record. Compare the downloaded archive's full SHA-256 with its build checksum. Compare the downloaded `latest.json` and `.sig` byte for byte with the files in `dist-release/`. Then confirm that the Latest feed URL serves the same `latest.json`. Stop on any mismatch or missing attachment. Retain this published-download proof with the release evidence.
+6. Download the published files from the actual release. The release must hold exactly four files, with the labels above. Compare the downloaded DMG's full SHA-256 with the build's `.sha256` file and with the DMG SHA-256 in the release body. Compare the downloaded archive's full SHA-256 with its build checksum. Compare the downloaded `latest.json` and `.sig` byte for byte with the files in `dist-release/`. Then confirm that the Latest feed URL serves the same `latest.json`. Stop on any mismatch, missing file, or extra file. Store this published-download proof with the acceptance record in the meta repo.
 
    ```bash
+   V="$(jq -r .version package.json)"
+   gh release view "v$V" -R AojdevStudio/materialize-3d --json assets --jq '.assets[] | "\(.name) | \(.label)"'
    mkdir -p dist-release/published && cd dist-release/published
-   gh release download v0.3.0 -R AojdevStudio/materialize-3d
-   shasum -a 256 Materialize-3D-0.3.0-macos-arm64.app.tar.gz
-   cat ../Materialize-3D-0.3.0-macos-arm64.app.tar.gz.sha256
+   gh release download "v$V" -R AojdevStudio/materialize-3d
+   shasum -a 256 "Materialize-3D-$V-macos-arm64.dmg"
+   cat "../Materialize-3D-$V-macos-arm64.dmg.sha256"
+   gh release view "v$V" -R AojdevStudio/materialize-3d --json body --jq .body | grep 'DMG SHA-256'
+   shasum -a 256 "Materialize-3D-$V-macos-arm64.app.tar.gz"
+   cat "../Materialize-3D-$V-macos-arm64.app.tar.gz.sha256"
    cmp latest.json ../latest.json
-   cmp Materialize-3D-0.3.0-macos-arm64.app.tar.gz.sig ../Materialize-3D-0.3.0-macos-arm64.app.tar.gz.sig
+   cmp "Materialize-3D-$V-macos-arm64.app.tar.gz.sig" "../Materialize-3D-$V-macos-arm64.app.tar.gz.sig"
    curl -fsSL https://github.com/AojdevStudio/materialize-3d/releases/latest/download/latest.json | cmp - ../latest.json
    ```
 
@@ -84,7 +123,7 @@ Do not rotate or rewrite user credentials to satisfy these limits. If existing c
 
 ## Required software acceptance record
 
-The completed record is a publication gate. Attach it to the eventual release with accessible recordings, screenshots, and logs. Keep it outside tracked source so recording the final bytes cannot change their source commit. Do not publish with missing or failed required software checks. A rehearsal result cannot replace a final tagged DMG test.
+The completed record is a publication gate. Store it in the meta repo's cycle folder, `cycles/<cycle>/release-v<version>/`, with its recordings, screenshots, and logs. It never goes on the release. Keep it outside tracked source so recording the final bytes cannot change their source commit. Do not publish with missing or failed required software checks. A rehearsal result cannot replace a final tagged DMG test.
 
 Record the exact source tag and commit, DMG filename and full SHA-256, and installed bundle version. Identify each machine, macOS version, chip, isolation option, effective HOME and `PATH`, and whether that machine built the DMG.
 
