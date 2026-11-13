@@ -255,12 +255,19 @@ export default function StudioApp() {
       .catch((err: unknown) => setError(String(err)))
   }
 
-  const afterSetup = () => {
+  /** Looks for Bambu Studio. A missing one the person went on without stays passed over until the next launch. */
+  const findSlicer = () => {
+    void checkSlicer()
+      .then(({ found }) => setSlicer((now) => (found === 'ready' ? 'ready' : now === 'skipped' ? 'skipped' : 'missing')))
+      .catch((err: unknown) => setError(String(err)))
+  }
+
+  /** Setup's check ended, by going on or by Back. Going on passes over a missing slicer at once. */
+  const afterSetup = (wentOn: boolean) => {
+    if (wentOn) setSlicer((now) => (now === 'ready' ? now : 'skipped'))
     checkReady()
     loadModels()
-    void checkSlicer()
-      .then(({ found }) => setSlicer(found === 'ready' ? 'ready' : 'skipped'))
-      .catch((err: unknown) => setError(String(err)))
+    findSlicer()
   }
 
   // An import retry brings old chats in as projects. Its saved state may be read before a send the person makes
@@ -289,9 +296,7 @@ export default function StudioApp() {
     void readState()
     checkReady()
     loadModels()
-    void checkSlicer()
-      .then(({ found }) => setSlicer((now) => now ?? (found === 'ready' ? 'ready' : 'missing')))
-      .catch((err: unknown) => setError(String(err)))
+    findSlicer()
     // The listener is in place before the ping, so no engine change is missed, and a ping that answers late never
     // hides one.
     let engineChanged = false
@@ -662,7 +667,7 @@ export default function StudioApp() {
         onSaved={(state) => {
           setupSaves.current += 1
           setSetup(state.setup)
-          if (state.setup.done) afterSetup()
+          if (state.setup.done) afterSetup(true)
         }}
         onError={setError}
         error={errorBar}
@@ -677,9 +682,9 @@ export default function StudioApp() {
       <SetupStep
         step="check"
         refused={turnLogin?.provider}
-        onDone={() => {
+        onDone={(wentOn) => {
           setFixing(false)
-          afterSetup()
+          afterSetup(wentOn)
         }}
         onError={setError}
         error={errorBar}

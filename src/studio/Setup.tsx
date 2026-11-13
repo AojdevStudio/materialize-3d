@@ -39,8 +39,8 @@ export default function SetupFlow({ setup, onSaved, ...shared }: Shared & { setu
 }
 
 /** One step of setup opened again, as Fix in setup does. Going on, or Back, ends it there. The stored setup stays done. */
-export function SetupStep({ step, onDone, ...shared }: Shared & { step: Setup['step']; onDone: () => void }) {
-  return <SetupCard at={indexOf(step)} next={onDone} back={onDone} {...shared} />
+export function SetupStep({ step, onDone, ...shared }: Shared & { step: Setup['step']; onDone: (wentOn: boolean) => void }) {
+  return <SetupCard at={indexOf(step)} next={() => onDone(true)} back={() => onDone(false)} {...shared} />
 }
 
 function SetupCard({ at, next, back, error, ...shared }: Shared & { at: number; next: () => void; back?: () => void }) {

@@ -791,8 +791,10 @@ describe('StudioApp', () => {
     expect(prompt().placeholder).toBe('Reply, paste a link, or attach a file')
   })
 
-  it('says when Bambu Studio is gone but keeps Send on, and stays quiet once setup went on without it', async () => {
-    mockSidecar({ studio_slicer: () => Promise.resolve({ found: 'none' }) })
+  it('says when Bambu Studio is gone but keeps Send on, keeps saying it after Back, and stops once setup went on without it', async () => {
+    const lookAfterGoingOn = 5
+    let looks = 0
+    mockSidecar({ studio_slicer: () => (++looks === lookAfterGoingOn ? new Promise(() => {}) : Promise.resolve({ found: 'none' })) })
     render(<StudioApp />)
     fireEvent.click(await projectList().findByText('Project B'))
     expect((await screen.findByTestId('setup-needed')).textContent).toContain('No slicer found. You can still design parts, but you won’t get print-ready 3MF files.')
@@ -801,9 +803,15 @@ describe('StudioApp', () => {
     await waitFor(() => expect((screen.getByTestId('send') as HTMLButtonElement).disabled).toBe(false))
 
     fireEvent.click(screen.getByRole('button', { name: 'Fix in setup' }))
+    await screen.findByRole('heading', { name: 'No slicer found' })
+    fireEvent.click(screen.getByRole('button', { name: 'Back' }))
+    await waitFor(() => expect(looks).toBe(3))
+    await pause(50)
+    expect(screen.getByTestId('setup-needed')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Fix in setup' }))
     fireEvent.click(await screen.findByRole('button', { name: 'Continue without a slicer' }))
     await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project B'))
-    await pause(50)
     expect(screen.queryByTestId('setup-needed')).toBeNull()
   })
 
