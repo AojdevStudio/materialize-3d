@@ -24,7 +24,7 @@ import { NodeExecutionEnv } from '@earendil-works/pi-durable/env/node'
 import { createEditTool, createReadTool, createWriteTool } from '@earendil-works/pi-durable/tools'
 import { arr, int, obj, opt, str } from '@earendil-works/pi-schema'
 import type { Host } from './host'
-import type { Need } from './protocol'
+import type { Need, Toolchain } from './protocol'
 import { isLoginFailure } from './inference'
 import { textOf } from './transcript'
 import workflow from './workflow.md' with { type: 'text' }
@@ -64,29 +64,38 @@ function commandEnv(): Record<string, string> {
 /** How long one toolchain check may run. A check still running then, as one stuck on a lock, counts as failed. */
 const CHECK_MS = 5_000
 
-/**
- * Whether `command` runs to a zero exit, within `CHECK_MS`, in the environment the agent's commands get. A missing
- * program does not. It runs beside the sidecar's other work, so a stuck check holds up no chat.
- */
-async function succeeds(command: string[]): Promise<boolean> {
+async function outputOf(command: string[]): Promise<string | null> {
   try {
-    const child = Bun.spawn(command, { env: commandEnv(), stdout: 'ignore', stderr: 'ignore', timeout: CHECK_MS })
-    return (await child.exited) === 0
+    const child = Bun.spawn(command, { env: commandEnv(), stdout: 'pipe', stderr: 'ignore', timeout: CHECK_MS })
+    const [code, output] = await Promise.all([child.exited, new Response(child.stdout).text()])
+    return code === 0 ? output.trim() : null
   } catch {
-    return false
+    return null
   }
 }
 
+const versionIn = (line: string) => line.split(/\s+/)[1] ?? line
+
 /**
- * What the `run` tool lacks in this sidecar's environment: uv, which runs every build and check script, and a Python
- * that uv can run them with. A Python uv would have to download first counts as missing, as a turn could not count on
- * the network for it.
+ * The tools the `run` tool needs in this sidecar's environment: uv, which runs every build and check script, and a
+ * Python that uv can run them with. A Python uv would have to download first counts as missing, as a turn could not
+ * count on the network for it.
  */
+export async function toolchain(): Promise<Toolchain> {
+  const uv = await outputOf(['uv', '--version'])
+  if (uv === null) return { uv: null }
+  const python = await outputOf(['uv', 'python', 'find'])
+  const version = python === null ? null : await outputOf([python, '--version'])
+  return { uv: versionIn(uv), python: version === null ? null : versionIn(version) }
+}
+
+/** What the `run` tool lacks, and the one thing that gives it. */
 export async function toolchainNeeds(): Promise<Need[]> {
-  if (!(await succeeds(['uv', '--version']))) {
+  const found = await toolchain()
+  if (found.uv === null) {
     return [{ kind: 'uv', fix: 'Install uv, the tool the agent runs its build scripts with (docs.astral.sh/uv), then check again.' }]
   }
-  if (!(await succeeds(['uv', 'python', 'find']))) {
+  if (found.python === null) {
     return [{ kind: 'python', fix: 'Install a Python for uv: run "uv python install" in Terminal, then check again.' }]
   }
   return []
