@@ -9,8 +9,8 @@ The studio is the whole app. Each chat is a project folder in `~/Documents/Mater
 - `model-picker` lists the app's short list (`sidecar/src/offered.ts`) for each signed-in provider, by short name, such as Opus 5.5. A model the provider's catalog lacks stays out. The button names the chosen model even before any sign-in. A saved model the list does not name shows its id. On the start screen a pick is the default the next project starts with. In a project it is saved for that project.
 - `messages` shows committed chat lines only: agent text as Markdown (`.msg-agent`), each turn's tool steps in one `trace` (a `.trace-step` line per step, `.step-running` until its result is committed, and a `.trace-head` button that folds the lines to one summary line). A turn's print files show in `print-files`, not in the chat. `working` shows while a turn runs (the running trace's head once the turn has a step), and `stop`, the primary button with a square icon, replaces `send`.
 - `byline` heads each turn's reply with the mark and short name of the model it ran on, such as Opus 5.5. A model the short list does not name shows its id. A reply imported from before the store has none. The chat has no title bar.
-- `readiness` shows on the start screen while the agent lacks something, with the fix for each need: a sign-in, uv, a Python uv can run, or a model from a provider the app offers (the fix names the offered providers). A missing sign-in shows the same sign-in controls as `waiting`. `Check again` reruns the check. `send` stays disabled until nothing is missing.
-- `waiting` shows when a turn stopped before its answer: the fix, and the control for it. A provider with no login shows `Sign in with Claude` or `Sign in with ChatGPT`, and for Anthropic and OpenCode Go a key form (`API key or token`, and for Anthropic `Proxy URL`). Once the login is saved, the turn goes on by itself. Any other failure shows its error and `Try again`.
+- `setup-needed` shows on the start screen and in a chat while setup is needed again: the chosen model's sign-in is missing, a turn waits for a new sign-in, uv or a Python uv can run is missing, or Bambu Studio is gone. `Fix in setup` opens setup's Check your Mac, and Continue or `Back` returns to the same screen. While a sign-in, uv, or Python is missing, `prompt` says why (`Log in to an agent to send`, `Install uv to send`) and `send` stays disabled. A missing slicer leaves `send` on, and the banner stays away for the rest of the launch once setup went on without it. A model from a provider the app does not offer has no button, and the banner names the offered providers.
+- `waiting` shows when a turn stopped on an error: the error and `Try again`. A turn that waits for a sign-in shows `setup-needed` instead, and goes on by itself once the login is saved.
 - A turn cut off by quitting or a crash goes on from its last committed step when the app opens again.
 - `engine` in the sidebar shows the sidecar's version, or why it stopped.
 - `projects-row` heads the sidebar's list with the count of every project. `Search projects`, the button beside `new-project`, opens a search field that narrows the list to titles holding the typed text, in any letter case. A group with no match hides. An empty field shows every project. Escape, or the button again, closes the field and shows every project.
@@ -23,20 +23,25 @@ The studio is the whole app. Each chat is a project folder in `~/Documents/Mater
 
 ## How to get to it (user POV)
 
-- Open the app. The start screen shows. Type a request, optionally attach a file, and press Enter or Start.
+- Open the app. On a fresh store, pass [setup](./setup.md) first. The start screen shows. Type a request, optionally attach a file, and press Enter or Start.
 - Earlier projects are in the left sidebar (`nav[aria-label=Projects]`). `new-project` returns to the start screen.
 
 ## Driving it with wd.ts
 
-On macOS, drive it with `mac.ts` from an `e2e` build. Answer `Attach` with `mac.ts dialog <png>` before the click. A fresh data folder has no login, so `readiness` asks for one before `send` turns on. That order is from the code (`notReady` in `src/studio/StudioApp.tsx`). `ANTHROPIC_TOKEN` and `ANTHROPIC_PROXY` are the host's proxy token and URL.
+On macOS, drive it with `mac.ts` from an `e2e` build. Answer `Attach` with `mac.ts dialog <png>` before the click. A fresh data folder opens [setup](./setup.md), which asks for a login, uv, and Python before the start screen. That order is from the code (`src/studio/Setup.tsx`). `ANTHROPIC_TOKEN` and `ANTHROPIC_PROXY` are the host's proxy token and URL.
 
 ```bash
-bun $S/mac.ts wait '[data-testid=start-screen]' 30000
-bun $S/mac.ts wait '[data-testid=readiness]' 20000
+bun $S/mac.ts wait '[data-testid=setup]' 30000
+bun $S/mac.ts click 'text=Start setup'
+bun $S/mac.ts click '[data-testid=check-claude] .setup-link'
 bun $S/mac.ts type '[aria-label="API key or token"]' "$ANTHROPIC_TOKEN"
 bun $S/mac.ts type '[aria-label="Proxy URL"]' "$ANTHROPIC_PROXY"
 bun $S/mac.ts click 'text=Save'
-# If readiness still names uv or Python, install it, click 'text=Check again', and wait for the banner to clear.
+# If the check names uv or Python, install it and click 'text=Check again'. Without Bambu Studio the button reads
+# 'Continue without a slicer'.
+bun $S/mac.ts wait '.setup-actions .primary:not([disabled])' 60000
+bun $S/mac.ts click '.setup-actions .primary'
+bun $S/mac.ts wait '[data-testid=start-screen]' 30000
 bun $S/mac.ts dialog "$HOME/fixtures/sketch.png"
 bun $S/mac.ts click 'text=Attach'
 bun $S/mac.ts type '[data-testid=prompt]' 'Make a cable clip like in this sketch, then slice it to a 3MF'

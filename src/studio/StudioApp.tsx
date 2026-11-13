@@ -1,16 +1,17 @@
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { type AppState, type Draft, type LoginEvent, type ModelChoice, type ModelOption, type Need, type Printer, type Project, type ProjectStatus, START, type ChatView as View } from '../../sidecar/src/protocol'
-import { firstView, onQuitFlush, onSidecarEvent, panelFiles, sidecar, studio, viewOf, type PanelView, type ProjectFile } from './api'
+import { type AppState, type Draft, type LoginEvent, type ModelChoice, type ModelOption, type Need, type Printer, type Project, type ProjectStatus, type Setup, START, type ChatView as View } from '../../sidecar/src/protocol'
+import { checkSlicer, firstView, onQuitFlush, onSidecarEvent, panelFiles, sidecar, studio, viewOf, type PanelView, type ProjectFile } from './api'
 import { ChatView } from './Chat'
 import { Composer, releaseAttachment, savedAttachment, type PastedPicture } from './Composer'
 import ModelPicker from './ModelPicker'
 import RightPanel from './RightPanel'
+import SetupFlow, { SetupStep } from './Setup'
 import Start from './Start'
 import { buildChat } from './transcript'
 import Sidebar from './Sidebar'
-import { ImportBlockedBanner, ReadinessBanner, SignInAsk, WaitingBanner } from './Waiting'
+import { ImportBlockedBanner, lockedText, SetupBanner, SignInAsk, WaitingBanner, type Blocker, type SetupCause, type TurnLogin } from './Waiting'
 import { UpdateBanner } from '../components/UpdateBanner'
 import { checkForUpdatesAtLaunch, useUpdateEvents } from '../stores/updates'
 import './studio.css'
@@ -23,6 +24,9 @@ const EMPTY: Draft = { text: '', attachments: [] }
 /** How often a quit tries to save a draft, and how long it waits between tries for the engine to come back. */
 const QUIT_SAVE_TRIES = 4
 const QUIT_RETRY_MS = 3000
+
+/** How long a failed first read of the saved state waits before it tries again. */
+const STATE_RETRY_MS = 3000
 
 /**
  * A screen's unsent message as the window holds it. The sidecar owns the draft and the send: the window only knows
@@ -85,8 +89,22 @@ export default function StudioApp() {
   const [engine, setEngine] = useState('Engine starting')
   /** What a sign-in needs from the person: the code to enter on its page, or an answer. */
   const [signIn, setSignIn] = useState<Extract<LoginEvent, { step: 'open' | 'ask' }> | null>(null)
+  const [signIns, setSignIns] = useState(0)
+  const [setup, setSetup] = useState<Setup | null>(null)
+  /** Counts setup's saves, so a state read that started before the newest save never puts back the setup it replaced. */
+  const setupSaves = useRef(0)
+  /** Whether the window took the saved state. Only the first answer to a startup read is taken. */
+  const stateTaken = useRef(false)
   /** What the agent needs before a send, from the sidecar's check. Null until the check answers, and Send waits. */
   const [needs, setNeeds] = useState<Need[] | null>(null)
+  /** Whether the newest look found the Bambu Studio the slice step uses. Null until a look answers. */
+  const [slicerFound, setSlicerFound] = useState<boolean | null>(null)
+  /** Counts looks for Bambu Studio, so an older look that answers late never replaces a newer one. */
+  const slicerLooks = useRef(0)
+  /** The person went on from setup's check, so a missing slicer gets no banner until the next launch. */
+  const [wentOnInSetup, setWentOnInSetup] = useState(false)
+  /** Setup's check, opened again from Fix in setup. It ends back on the screen it was opened from. */
+  const [fixing, setFixing] = useState(false)
   /** The folder the chats from before the store could not be read from, when macOS keeps it from the app. */
   const [importBlocked, setImportBlocked] = useState<string | null>(null)
   /** The models of the providers the person signed in to, for the model picker. */
@@ -246,6 +264,21 @@ export default function StudioApp() {
       .catch((err: unknown) => setError(String(err)))
   }
 
+  const findSlicer = () => {
+    const look = ++slicerLooks.current
+    void checkSlicer()
+      .then(({ found }) => look === slicerLooks.current && setSlicerFound(found === 'ready'))
+      .catch((err: unknown) => look === slicerLooks.current && setError(String(err)))
+  }
+
+  /** Setup's check ended, by going on or by Back. What it can change is read again. */
+  const afterSetup = (wentOn: boolean) => {
+    if (wentOn) setWentOnInSetup(true)
+    checkReady()
+    loadModels()
+    findSlicer()
+  }
+
   // An import retry brings old chats in as projects. Its saved state may be read before a send the person makes
   // meanwhile, so it takes the projects only, never drafts, which this window already holds.
   const retryImport = () => {
@@ -256,19 +289,36 @@ export default function StudioApp() {
   }
 
   useEffect(() => {
-    // The first read of the saved state. If the engine stopped before it answered, it is read again once the engine is
-    // back, so the projects and drafts still come.
-    let stateRead = false
-    const readState = () =>
-      sidecar('state.get', {})
-        .then((state) => {
-          stateRead = true
-          takeState(state)
-        })
+    // The first read of the saved state, which Send waits for. A read that fails is tried again after a pause, and at
+    // once when the engine is back. Only the first answer is taken. Every startup read began before a send could go,
+    // so a later answer would bring back what that send took. A read that ends after the window closed does nothing.
+    let stopped = false
+    let retry: number | undefined
+    const readState = () => {
+      const saves = setupSaves.current
+      return sidecar('state.get', {})
+        .then(
+          (state) => {
+            if (stopped || stateTaken.current) return
+            stateTaken.current = true
+            takeState(state)
+            if (saves === setupSaves.current) setSetup(state.setup)
+          },
+          (err: unknown) => {
+            if (stopped || stateTaken.current) return
+            setError(String(err))
+            window.clearTimeout(retry)
+            retry = window.setTimeout(() => {
+              if (!stateTaken.current) void readState()
+            }, STATE_RETRY_MS)
+          },
+        )
         .catch((err: unknown) => setError(String(err)))
+    }
     void readState()
     checkReady()
     loadModels()
+    findSlicer()
     // The listener is in place before the ping, so no engine change is missed, and a ping that answers late never
     // hides one.
     let engineChanged = false
@@ -281,7 +331,7 @@ export default function StudioApp() {
           checkReady()
           loadModels()
           for (const wake of readyWaiters.current.splice(0)) wake()
-          if (!stateRead) void readState()
+          if (!stateTaken.current) void readState()
           // An engine that started again holds what a crash cut off from the window, such as a turn's last entry, so
           // the open chat is read again. The changes that arrive meanwhile are kept, as when it first opened.
           const project = currentId.current
@@ -312,6 +362,7 @@ export default function StudioApp() {
           if (event.step === 'ask') setSignIn(event)
           if (event.step === 'done') {
             setSignIn(null)
+            setSignIns((count) => count + 1)
             checkReady()
             loadModels()
           }
@@ -327,6 +378,8 @@ export default function StudioApp() {
       .then(({ version }) => engineChanged || setEngine(`Engine ${version}`))
       .catch((err: unknown) => engineChanged || setEngine(String(err)))
     return () => {
+      stopped = true
+      window.clearTimeout(retry)
       void unlisten.then((stop) => stop())
     }
   }, [])
@@ -556,11 +609,16 @@ export default function StudioApp() {
     if (current) setSendErrors(({ [current.id]: _, ...rest }) => rest)
   }
 
-  // Send waits for the check, and stays off while the agent lacks a sign-in, uv, or Python.
-  const notReady = needs === null || needs.length > 0
-
   /** The open project's own model, or the default for one from before the picker. On the start screen, the default. */
   const chosenModel = (current ? projects.find((p) => p.id === current.id)?.model : undefined) ?? defaultModel
+
+  const waiting = view?.waiting ?? null
+  const turnLogin: TurnLogin | undefined = waiting?.kind === 'login' ? { kind: 'turn-login', provider: waiting.provider, name: waiting.name } : undefined
+  const nextWaitsForLogin = turnLogin !== undefined && turnLogin.provider === chosenModel?.provider
+  const blocker: Blocker | undefined = needs?.[0] ?? (nextWaitsForLogin ? turnLogin : undefined)
+  const cause: SetupCause | undefined = blocker ?? turnLogin ?? (slicerFound === false && !wentOnInSetup ? { kind: 'slicer' } : undefined)
+  // Send waits for the saved state, which says whether setup is done, and for the check.
+  const notReady = setup?.done !== true || needs === null || blocker !== undefined
 
   /**
    * Saves a pick: the open project's model, or on the start screen the default the next project takes. The check runs
@@ -586,31 +644,80 @@ export default function StudioApp() {
   }
 
   const composer = (placeholder: string, autoFocus: boolean) => (
-    <>
-      {needs !== null && <ReadinessBanner needs={needs} onCheck={checkReady} onError={setError} />}
-      <Composer
-        text={shown.text}
-        onText={type}
-        attachments={attachments}
-        onAttach={(more) => setAttachments([...draftOf(openKey()).attachments, ...more.map((a) => a.path)])}
-        onPaste={pastePictures}
-        onRemove={(index) => {
-          releaseAttachment(attachments[index])
-          previews.current.delete(shown.attachments[index])
-          setAttachments(draftOf(openKey()).attachments.filter((_, i) => i !== index))
-        }}
-        onSend={() => void send()}
-        onStop={current ? () => void sidecar('chat.stop', { project: current.id }).catch((err: unknown) => setError(String(err))) : undefined}
-        busy={sending || running || notReady}
-        running={running}
-        placeholder={placeholder}
-        autoFocus={autoFocus}
-        hint={current ? undefined : 'Photo, PDF, 3MF, STL'}
-        sendLabel={current ? 'Send' : 'Start'}
-        picker={<ModelPicker models={models} chosen={chosenModel} onPick={pickModel} />}
-      />
-    </>
+    <Composer
+      text={shown.text}
+      onText={type}
+      attachments={attachments}
+      onAttach={(more) => setAttachments([...draftOf(openKey()).attachments, ...more.map((a) => a.path)])}
+      onPaste={pastePictures}
+      onRemove={(index) => {
+        releaseAttachment(attachments[index])
+        previews.current.delete(shown.attachments[index])
+        setAttachments(draftOf(openKey()).attachments.filter((_, i) => i !== index))
+      }}
+      onSend={() => void send()}
+      onStop={current ? () => void sidecar('chat.stop', { project: current.id }).catch((err: unknown) => setError(String(err))) : undefined}
+      busy={sending || running || notReady}
+      running={running}
+      placeholder={placeholder}
+      locked={blocker === undefined ? undefined : lockedText(blocker)}
+      autoFocus={autoFocus}
+      hint={current ? undefined : 'Photo, PDF, 3MF, STL'}
+      sendLabel={current ? 'Send' : 'Start'}
+      picker={blocker !== undefined && models.length === 0 ? null : <ModelPicker models={models} chosen={chosenModel} onPick={pickModel} />}
+    />
   )
+
+  const errorBar = shownError && (
+    <div className="error-bar" role="alert">
+      <span>{shownError}</span>
+      <button type="button" onClick={dismissError} aria-label="Dismiss">×</button>
+    </div>
+  )
+  const signInAsk = signIn && (
+    <SignInAsk
+      key={signIn.step === 'ask' ? signIn.message : signIn.url}
+      ask={signIn}
+      onAnswer={(answer) => {
+        setSignIn(null)
+        void sidecar('auth.answer', { provider: signIn.provider, text: answer }).catch((err: unknown) => setError(String(err)))
+      }}
+    />
+  )
+
+  if (setup !== null && !setup.done) {
+    return (
+      <SetupFlow
+        setup={setup}
+        onSaved={(state) => {
+          setupSaves.current += 1
+          setSetup(state.setup)
+          if (state.setup.done) afterSetup(true)
+        }}
+        onError={setError}
+        error={errorBar}
+        signIn={signInAsk}
+        signIns={signIns}
+      />
+    )
+  }
+
+  if (fixing) {
+    return (
+      <SetupStep
+        step="check"
+        refused={turnLogin?.provider}
+        onDone={(wentOn) => {
+          setFixing(false)
+          afterSetup(wentOn)
+        }}
+        onError={setError}
+        error={errorBar}
+        signIn={signInAsk}
+        signIns={signIns}
+      />
+    )
+  }
 
   return (
     <div className={`studio ${current ? 'studio-work' : 'studio-start'}`}>
@@ -627,26 +734,13 @@ export default function StudioApp() {
 
       <main className="chat" aria-label="Chat">
         <UpdateBanner />
-        {shownError && (
-          <div className="error-bar" role="alert">
-            <span>{shownError}</span>
-            <button type="button" onClick={dismissError} aria-label="Dismiss">×</button>
-          </div>
-        )}
+        {errorBar}
         {importBlocked !== null && <ImportBlockedBanner folder={importBlocked} onRetry={retryImport} onError={setError} />}
-        {signIn && (
-          <SignInAsk
-            key={signIn.step === 'ask' ? signIn.message : signIn.url}
-            ask={signIn}
-            onAnswer={(answer) => {
-              setSignIn(null)
-              void sidecar('auth.answer', { provider: signIn.provider, text: answer }).catch((err: unknown) => setError(String(err)))
-            }}
-          />
-        )}
+        {signInAsk}
+        {cause !== undefined && <SetupBanner cause={cause} onFix={() => setFixing(true)} />}
         {current ? (
           <>
-            {view?.waiting && <WaitingBanner project={current.id} waiting={view.waiting} onError={setError} />}
+            {waiting?.kind === 'error' && <WaitingBanner project={current.id} waiting={waiting} onError={setError} />}
             <ChatView
               project={current.id}
               items={items}

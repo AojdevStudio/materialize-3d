@@ -1,81 +1,75 @@
 import { useState } from 'react'
-import type { LoginEvent, Need, ProviderId, Waiting } from '../../sidecar/src/protocol'
+import type { LoginEvent, Need, Waiting } from '../../sidecar/src/protocol'
 import { openFilesPrivacy, sidecar } from './api'
+import { AGENTS } from './SetupCheck'
 
-/** Providers a key or a proxy can sign in to, and those with a subscription sign-in. */
-const KEYS: readonly string[] = ['anthropic', 'opencode-go']
-const OAUTH: Record<string, string> = { anthropic: 'Sign in with Claude', 'openai-codex': 'Sign in with ChatGPT' }
+/** A turn that stopped until the person signs in to its provider again: the saved sign-in was refused, or is gone. */
+export type TurnLogin = { kind: 'turn-login'; provider: string; name: string }
+
+/** What keeps the next message from going out: a finding of the send check, or the sign-in a waiting turn needs. */
+export type Blocker = Need | TurnLogin
+
+/** Why setup is needed again. A missing slicer leaves Send on. */
+export type SetupCause = Blocker | { kind: 'slicer' }
+
+const agentName = ({ provider, name }: { provider: string; name: string }) => AGENTS.find((agent) => agent.provider === provider)?.name ?? name
+
+/** What the composer says while `blocker` keeps Send off. */
+export function lockedText(blocker: Blocker): string {
+  switch (blocker.kind) {
+    case 'login':
+    case 'turn-login':
+      return 'Log in to an agent to send'
+    case 'uv':
+      return 'Install uv to send'
+    case 'python':
+      return 'Install Python to send'
+    case 'model':
+      return 'Choose a model to send'
+  }
+}
+
+function bannerText(cause: SetupCause): string {
+  switch (cause.kind) {
+    case 'login':
+      return `${agentName(cause)} is logged out. Your chats are saved. Log in to keep working.`
+    case 'turn-login':
+      return `${agentName(cause)} needs a new login. Your chats are saved, and the message picks up where it stopped.`
+    case 'uv':
+      return 'uv is missing. Your chats are saved. Install it to keep working.'
+    case 'python':
+      return 'Python is missing. Your chats are saved. Install it to keep working.'
+    case 'model':
+      return cause.fix
+    case 'slicer':
+      return 'No slicer found. You can still design parts, but you won’t get print-ready 3MF files.'
+  }
+}
 
 /**
- * Why the open chat's turn stopped, and the one thing that lets it go on: a sign-in, or a retry. Once the fix is in,
- * the turn picks up where it stopped on its own.
+ * Setup is needed again: what is missing, and Fix in setup, which opens setup's check. A model the app does not offer is
+ * fixed in the model picker instead, so it has no button.
  */
-export function WaitingBanner({ project, waiting, onError }: { project: string; waiting: Waiting; onError: (message: string) => void }) {
-  const run = (work: Promise<unknown>) => void work.catch((err: unknown) => onError(String(err)))
-
-  if (waiting.kind === 'error') {
-    return (
-      <div className="waiting" role="status" data-testid="waiting">
-        <span>{waiting.detail}</span>
-        <button type="button" onClick={() => run(sidecar('chat.retry', { project }))}>
-          {waiting.fix}
-        </button>
-      </div>
-    )
-  }
+export function SetupBanner({ cause, onFix }: { cause: SetupCause; onFix: () => void }) {
   return (
-    <div className="waiting" role="status" data-testid="waiting">
-      <span>{waiting.fix}</span>
-      <SignInControls provider={waiting.provider as ProviderId} onError={onError} />
+    <div className="setup-needed" role="status" data-testid="setup-needed">
+      <span>{bannerText(cause)}</span>
+      {cause.kind !== 'model' && (
+        <button type="button" onClick={onFix}>
+          Fix in setup
+        </button>
+      )}
     </div>
   )
 }
 
-/** The ways to sign in to `provider`: its subscription sign-in, and a key or a proxy where it takes one. */
-function SignInControls({ provider, onError }: { provider: ProviderId; onError: (message: string) => void }) {
-  const [key, setKey] = useState('')
-  const [baseUrl, setBaseUrl] = useState('')
-  const run = (work: Promise<unknown>) => void work.catch((err: unknown) => onError(String(err)))
+/** A turn that stopped on an error, and the retry that lets it go on. */
+export function WaitingBanner({ project, waiting, onError }: { project: string; waiting: Extract<Waiting, { kind: 'error' }>; onError: (message: string) => void }) {
   return (
-    <>
-      {OAUTH[provider] !== undefined && (
-        <button type="button" onClick={() => run(sidecar('auth.login', { provider }))}>
-          {OAUTH[provider]}
-        </button>
-      )}
-      {KEYS.includes(provider) && (
-        <form
-          onSubmit={(event) => {
-            event.preventDefault()
-            run(sidecar('auth.setKey', { provider, key, ...(baseUrl === '' ? {} : { baseUrl }) }))
-          }}
-        >
-          <input type="password" placeholder="API key or token" value={key} onChange={(e) => setKey(e.target.value)} aria-label="API key or token" />
-          {provider === 'anthropic' && (
-            <input placeholder="Proxy URL (optional)" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} aria-label="Proxy URL" />
-          )}
-          <button type="submit" disabled={key === ''}>
-            Save
-          </button>
-        </form>
-      )}
-    </>
-  )
-}
-
-/**
- * What the agent needs before a message can go out, with the one thing that gives it: a sign-in, or uv or a Python
- * to install. Send stays off until the check finds nothing missing.
- */
-export function ReadinessBanner({ needs, onCheck, onError }: { needs: Need[]; onCheck: () => void; onError: (message: string) => void }) {
-  const [need] = needs
-  if (need === undefined) return null
-  return (
-    <div className="waiting" role="status" data-testid="readiness">
-      <span>{need.fix}</span>
-      {need.kind === 'login' && <SignInControls provider={need.provider} onError={onError} />}
-      <button type="button" onClick={onCheck}>
-        Check again
+    <div className="waiting" role="status" data-testid="waiting">
+      <span>{waiting.detail}</span>
+      <button type="button" onClick={() => void sidecar('chat.retry', { project }).catch((err: unknown) => onError(String(err)))}>
+        {waiting.fix}
       </button>
     </div>
   )

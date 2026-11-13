@@ -8,7 +8,7 @@ use std::process::{Command, Stdio};
 use serde::{Deserialize, Serialize};
 
 use super::print_info::{parse_slice_info, SliceInfo};
-use crate::bambu::{resolve_presets, BambuStudio, Plate, PresetSelection, ResolvedPresets};
+use crate::bambu::{resolve_presets, BambuError, BambuStudio, Plate, PresetSelection, ResolvedPresets, VALIDATED_VERSIONS};
 
 /// The printer a slice runs for: three Bambu Lab system presets by name, and the plate. With no plate, the slice
 /// uses the default plate of the printer's model.
@@ -67,6 +67,34 @@ fn presets_for(studio: &BambuStudio, printer: &Printer, cache_root: &Path) -> Re
     let presets = resolve_presets(studio, &selection, cache_root).map_err(|e| e.to_string())?;
     let plate = presets.plates.choose(printer.plate).map_err(|e| e.to_string())?;
     Ok((presets, plate))
+}
+
+/// What setup's check shows for the slicer: the Bambu Studio the slice step would use.
+#[derive(Debug, Serialize)]
+#[serde(tag = "found", rename_all = "camelCase")]
+pub enum SlicerCheck {
+    Ready { version: String },
+    None,
+    Other { detail: String },
+}
+
+/// Looks for the Bambu Studio the slice step uses. Each candidate answers `--help`, which can take seconds, so the
+/// search runs off the main thread.
+#[tauri::command]
+pub async fn studio_slicer() -> Result<SlicerCheck, String> {
+    let located = tauri::async_runtime::spawn_blocking(BambuStudio::locate).await.map_err(|e| e.to_string())?;
+    Ok(match located {
+        Ok(studio) => SlicerCheck::Ready { version: studio.version.to_string() },
+        Err(BambuError::StudioNotFound { .. }) => SlicerCheck::None,
+        Err(BambuError::UnvalidatedStudio { found }) => SlicerCheck::Other {
+            detail: format!(
+                "Bambu Studio {} is installed. The app slices with version {}.",
+                found.iter().map(|build| build.version.as_ref().map_or("of an unknown version", |v| v.as_str())).collect::<Vec<_>>().join(", "),
+                VALIDATED_VERSIONS.join(" or "),
+            ),
+        },
+        Err(other) => SlicerCheck::Other { detail: other.to_string() },
+    })
 }
 
 /// A path the agent named, which must stay inside its project folder.

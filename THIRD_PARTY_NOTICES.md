@@ -39,12 +39,15 @@ The run trace icons in `src/assets/icons/` are by Lucide (https://lucide.dev), f
 
 ## Model marks
 
-The model picker shows each maker's official mark beside its models. The marks are the makers' trademarks. They are used only to name the maker of a model, not to suggest that the maker endorses Materialize 3D. The SVG paths come from Simple Icons 15.22.0 (https://simpleicons.org, CC0 1.0), which collects each mark from its maker's own site.
+The model picker shows each maker's official mark beside its models, and setup's check shows the mark of each tool it looks for. The marks are their owners' trademarks. They are used only to name a model's maker or a tool, not to suggest that the owner endorses Materialize 3D. The SVG paths come from Simple Icons 15.22.0 (https://simpleicons.org, CC0 1.0), which collects each mark from its owner's own site.
 
 | Mark | File | Owner and source |
 |---|---|---|
 | Claude | `src/assets/icons/claude.svg` | Anthropic, PBC. Taken from https://claude.ai, in its brand color #D97757 |
 | OpenAI | `src/assets/icons/openai.svg` | OpenAI. Taken from https://openai.com/brand, drawn in the current text color |
+| Bambu Lab | `src/assets/icons/bambu-studio.svg` | Bambu Lab. Taken from https://bambulab.com, in its brand color #00AE42 |
+| uv | `src/assets/icons/uv.svg` | Astral. Taken from https://docs.astral.sh/uv/, in its brand color #DE5FE9 |
+| Python | `src/assets/icons/python.svg` | Python Software Foundation. Taken from https://www.python.org/community/logos/, in its brand color #3776AB |
 
 ## Bambu Studio
 
