@@ -660,35 +660,6 @@ pre {
   padding: 3px 0 3px 22px;
 }
 
-.file-cards {
-  list-style: none;
-  margin: 4px 0;
-  padding: 0;
-  border: 1px solid var(--s-line);
-  border-radius: 8px;
-}
-
-.file-cards li {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
-}
-
-.file-cards li + li {
-  border-top: 1px solid var(--s-line);
-}
-
-.file-card-name {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-family: 'JetBrains Mono', ui-monospace, monospace;
-  font-size: 12px;
-}
-
 .error-bar {
   display: flex;
   align-items: center;
@@ -733,6 +704,12 @@ pre {
 
 .composer-bar .primary {
   font-weight: 500;
+}
+
+.stop {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .attach {
