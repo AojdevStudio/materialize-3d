@@ -92,11 +92,12 @@ export default function StudioApp() {
   const setupSaves = useRef(0)
   /** What the agent needs before a send, from the sidecar's check. Null until the check answers, and Send waits. */
   const [needs, setNeeds] = useState<Need[] | null>(null)
-  /**
-   * Whether Bambu Studio is there for the slice step. `skipped` when it is missing and the person went on without it in
-   * setup's check, so its banner stays away until the next launch. Null until checked.
-   */
-  const [slicer, setSlicer] = useState<'ready' | 'missing' | 'skipped' | null>(null)
+  /** Whether the newest look found the Bambu Studio the slice step uses. Null until a look answers. */
+  const [slicerFound, setSlicerFound] = useState<boolean | null>(null)
+  /** Counts looks for Bambu Studio, so an older look that answers late never replaces a newer one. */
+  const slicerLooks = useRef(0)
+  /** The person went on from setup's check, so a missing slicer gets no banner until the next launch. */
+  const [wentOnInSetup, setWentOnInSetup] = useState(false)
   /** Setup's check, opened again from Fix in setup. It ends back on the screen it was opened from. */
   const [fixing, setFixing] = useState(false)
   /** The folder the chats from before the store could not be read from, when macOS keeps it from the app. */
@@ -255,16 +256,16 @@ export default function StudioApp() {
       .catch((err: unknown) => setError(String(err)))
   }
 
-  /** Looks for Bambu Studio. A missing one the person went on without stays passed over until the next launch. */
   const findSlicer = () => {
+    const look = ++slicerLooks.current
     void checkSlicer()
-      .then(({ found }) => setSlicer((now) => (found === 'ready' ? 'ready' : now === 'skipped' ? 'skipped' : 'missing')))
-      .catch((err: unknown) => setError(String(err)))
+      .then(({ found }) => look === slicerLooks.current && setSlicerFound(found === 'ready'))
+      .catch((err: unknown) => look === slicerLooks.current && setError(String(err)))
   }
 
-  /** Setup's check ended, by going on or by Back. Going on passes over a missing slicer at once. */
+  /** Setup's check ended, by going on or by Back. What it can change is read again. */
   const afterSetup = (wentOn: boolean) => {
-    if (wentOn) setSlicer((now) => (now === 'ready' ? now : 'skipped'))
+    if (wentOn) setWentOnInSetup(true)
     checkReady()
     loadModels()
     findSlicer()
@@ -592,7 +593,7 @@ export default function StudioApp() {
   const turnLogin: TurnLogin | undefined = waiting?.kind === 'login' ? { kind: 'turn-login', provider: waiting.provider, name: waiting.name } : undefined
   const nextWaitsForLogin = turnLogin !== undefined && turnLogin.provider === chosenModel?.provider
   const blocker: Blocker | undefined = needs?.[0] ?? (nextWaitsForLogin ? turnLogin : undefined)
-  const cause: SetupCause | undefined = blocker ?? turnLogin ?? (slicer === 'missing' ? { kind: 'slicer' } : undefined)
+  const cause: SetupCause | undefined = blocker ?? turnLogin ?? (slicerFound === false && !wentOnInSetup ? { kind: 'slicer' } : undefined)
   const notReady = needs === null || blocker !== undefined
 
   /**

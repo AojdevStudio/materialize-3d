@@ -794,7 +794,11 @@ describe('StudioApp', () => {
   it('says when Bambu Studio is gone but keeps Send on, keeps saying it after Back, and stops once setup went on without it', async () => {
     const lookAfterGoingOn = 5
     let looks = 0
-    mockSidecar({ studio_slicer: () => (++looks === lookAfterGoingOn ? new Promise(() => {}) : Promise.resolve({ found: 'none' })) })
+    let answerLastLook = () => {}
+    mockSidecar({
+      studio_slicer: () =>
+        ++looks === lookAfterGoingOn ? new Promise((resolve) => (answerLastLook = () => resolve({ found: 'none' }))) : Promise.resolve({ found: 'none' }),
+    })
     render(<StudioApp />)
     fireEvent.click(await projectList().findByText('Project B'))
     expect((await screen.findByTestId('setup-needed')).textContent).toContain('No slicer found. You can still design parts, but you won’t get print-ready 3MF files.')
@@ -812,6 +816,46 @@ describe('StudioApp', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Fix in setup' }))
     fireEvent.click(await screen.findByRole('button', { name: 'Continue without a slicer' }))
     await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project B'))
+    expect(screen.queryByTestId('setup-needed')).toBeNull()
+    await act(async () => answerLastLook())
+    await pause(50)
+    expect(screen.queryByTestId('setup-needed')).toBeNull()
+  })
+
+  it('stays quiet about a slicer setup went on without, even when Bambu Studio was there at launch', async () => {
+    let needs: unknown[] = [{ kind: 'uv', fix: 'Install uv, then check again.' }]
+    let looks = 0
+    mockSidecar({
+      'setup.check': () => Promise.resolve(needs),
+      studio_slicer: (_, ready) => (++looks === 1 ? ready() : Promise.resolve({ found: 'none' })),
+    })
+    render(<StudioApp />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Fix in setup' }))
+    needs = []
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue without a slicer' }))
+    await screen.findByTestId('start-screen')
+    await waitFor(() => expect(looks).toBe(3))
+    await pause(50)
+    expect(screen.queryByTestId('setup-needed')).toBeNull()
+  })
+
+  it('takes only the newest look for Bambu Studio, even when an older one answers last', async () => {
+    let needs: unknown[] = [{ kind: 'uv', fix: 'Install uv, then check again.' }]
+    let looks = 0
+    let answerLaunchLook = () => {}
+    mockSidecar({
+      'setup.check': () => Promise.resolve(needs),
+      studio_slicer: (_, ready) => (++looks === 1 ? new Promise((resolve) => (answerLaunchLook = () => resolve({ found: 'none' }))) : ready()),
+    })
+    render(<StudioApp />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Fix in setup' }))
+    await screen.findByRole('heading', { name: 'Your Mac is ready' })
+    needs = []
+    fireEvent.click(screen.getByRole('button', { name: 'Back' }))
+    await waitFor(() => expect(looks).toBe(3))
+    await waitFor(() => expect(screen.queryByTestId('setup-needed')).toBeNull())
+    await act(async () => answerLaunchLook())
+    await pause(50)
     expect(screen.queryByTestId('setup-needed')).toBeNull()
   })
 
