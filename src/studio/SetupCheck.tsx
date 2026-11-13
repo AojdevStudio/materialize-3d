@@ -62,7 +62,7 @@ function slicerRow(slicer: Found['slicer']): Row {
     case 'none':
       return { ...row, status: 'optional-missing', label: 'Not found', detail: 'Not installed. Bambu Studio makes the print-ready 3MF.' }
     case 'other':
-      return { ...row, status: 'optional-missing', label: 'Not found', detail: slicer.detail }
+      return { ...row, status: 'optional-missing', label: 'Not usable', detail: slicer.detail }
   }
 }
 
@@ -98,7 +98,7 @@ function verdictOf({ logins, toolchain, slicer }: Found): Verdict {
   if (toolchain.python === null) return { title: 'One thing to install', text: 'uv needs a Python to run the build scripts.', hint: INSTALL_HINT, go: 'blocked' }
   if (slicer.found !== 'ready') {
     return {
-      title: 'No slicer found',
+      title: slicer.found === 'none' ? 'No slicer found' : 'Bambu Studio cannot slice',
       text: 'You can still design parts and get assembly guides. You won’t get print-ready 3MF files until Bambu Studio is installed.',
       go: 'without-slicer',
     }

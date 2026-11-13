@@ -146,6 +146,15 @@ describe('setup', () => {
     expect(saved()).toEqual([{ step: 'check', done: true }])
   })
 
+  it('names a Bambu Studio that is installed but cannot slice as not usable, not as missing', async () => {
+    mockApp({ step: 'check', done: false }, { ...ready, slicer: { found: 'other', detail: 'Bambu Studio 02.07.00.00 is installed. The app needs 02.08.02.61.' } })
+    render(<StudioApp />)
+    expect(await screen.findByRole('heading', { name: 'Bambu Studio cannot slice' })).toBeTruthy()
+    expect(row('bambu').getByText('Not usable')).toBeTruthy()
+    expect(row('bambu').getByText('Bambu Studio 02.07.00.00 is installed. The app needs 02.08.02.61.')).toBeTruthy()
+    expect(button('Continue without a slicer')).toBeTruthy()
+  })
+
   it('lets a check that failed run again', async () => {
     let fails = true
     mockApp({ step: 'check', done: false }, ready, {
