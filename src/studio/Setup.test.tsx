@@ -485,6 +485,8 @@ describe('setup: your printer', () => {
       { machine: 'Bambu Lab A1 mini 0.4 nozzle', process: '0.20mm Standard @BBL A1M', filament: 'Bambu PETG Basic @BBL A1M', plate: 'Supertack Plate' },
     ])
     expect(await screen.findByText('Bambu Lab A1 mini, 0.4 mm, PETG Basic')).toBeTruthy()
+    fireEvent.click(button('Start a project'))
+    expect((await screen.findByTestId('printer')).querySelector('.printer-name')?.textContent).toBe('A1 mini')
   })
 
   it('opens the pick on the saved printer when Bambu Studio never ran, and Back goes to Pick a model', async () => {
