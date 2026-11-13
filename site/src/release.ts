@@ -24,22 +24,22 @@ export type Release = {
 };
 
 export const release: Release = {
-  version: "0.1.0",
+  version: "0.3.1",
   repoUrl: "https://github.com/AojdevStudio/materialize-3d",
   releasesUrl: "https://github.com/AojdevStudio/materialize-3d/releases",
   docsUrl: "https://github.com/AojdevStudio/materialize-3d#readme",
   dmgUrl:
-    "https://github.com/AojdevStudio/materialize-3d/releases/download/v0.1.0/Materialize-3D-0.1.0-macos-arm64.dmg",
-  sha256: "b5d2f1cf52a97143c66af969f90b71c2eaddb4cc5d3ecc333d440fad2d10cb8d",
+    "https://github.com/AojdevStudio/materialize-3d/releases/download/v0.3.1/Materialize-3D-0.3.1-macos-arm64.dmg",
+  sha256: "47a28b08545ecd64a51585084fd19b14b088f0012bd8ca6ed9411dfd9c0b7aee",
   signed: true,
   notarized: true,
-  testedMacOS: "macOS 26.7",
+  testedMacOS: "macOS 26.7.2",
   architecture: "Apple Silicon",
   bambuStudio: {
     version: "02.08.02.61",
     releaseUrl: "https://github.com/bambulab/BambuStudio/releases/tag/v02.08.02.61",
   },
-  studio: false,
+  studio: true,
 };
 
 /** The page may say "signed and notarized by Apple" only when this is true. */
