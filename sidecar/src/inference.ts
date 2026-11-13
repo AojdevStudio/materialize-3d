@@ -1,7 +1,7 @@
 /**
  * Inference only: the person's own logins to Anthropic, OpenAI Codex (the ChatGPT plan), and OpenCode Go, through
- * pi-ai. Logins live in the macOS Keychain, reached through Rust. The store keeps which providers have one, never
- * the secret. Nothing of the person's environment or files is read: no env var, no `auth.json`, no CLI config.
+ * pi-ai. Logins live in the macOS Keychain, reached through Rust, and only the Keychain says which providers have one.
+ * Nothing of the person's environment or files is read: no env var, no `auth.json`, no CLI config.
  */
 import {
   type ApiKeyAuth,
@@ -68,24 +68,19 @@ const LOGIN_FAILURE = /not configured|\b401\b|unauthori[sz]ed|authentication|inv
 
 export const isLoginFailure = (detail: string) => LOGIN_FAILURE.test(detail)
 
-/** Which providers have a login. Not secret: it lives in the store. */
-export interface LoginIndex {
-  logins(): Promise<Record<string, LoginKind>>
-  setLogin(provider: string, kind: LoginKind | undefined): Promise<void>
-}
-
 /**
  * pi-ai's credential store, kept in the Keychain. Each provider's writes run one after another, as pi-ai requires,
  * because OAuth refresh happens inside `modify`. One process owns the store, so a lock in memory is enough.
  */
 export class KeychainCredentials implements CredentialStore {
   readonly #host: Pick<Host, 'request'>
-  readonly #index: LoginIndex
+  /** Counts a login saved for the provider, which a turn waiting on a sign-in watches for. */
+  readonly #saved: (provider: string) => Promise<void>
   readonly #queues = new Map<string, Promise<unknown>>()
 
-  constructor(host: Pick<Host, 'request'>, index: LoginIndex) {
+  constructor(host: Pick<Host, 'request'>, saved: (provider: string) => Promise<void>) {
     this.#host = host
-    this.#index = index
+    this.#saved = saved
   }
 
   #serial<T>(provider: string, work: () => Promise<T>): Promise<T> {
@@ -102,13 +97,15 @@ export class KeychainCredentials implements CredentialStore {
     return parsed as Credential
   }
 
+  /** Asks the Keychain itself, as the person can remove a login there while the app is closed. */
   async list(): Promise<readonly CredentialInfo[]> {
-    return Object.entries(await this.#index.logins()).map(([providerId, type]) => ({ providerId, type }))
+    const found = await Promise.all(PROVIDERS.map(async (providerId) => ({ providerId, credential: await this.read(providerId) })))
+    return found.flatMap(({ providerId, credential }) => (credential === undefined ? [] : [{ providerId, type: credential.type }]))
   }
 
   /**
    * A sign-in that was cancelled, by a newer one or a sign-out, writes nothing, even once its turn in line comes, and
-   * one cancelled while it was saved leaves the earlier login in place, in the Keychain and in the index.
+   * one cancelled while it was saved leaves the earlier login in place.
    */
   modify(provider: string, change: (current: Credential | undefined) => Promise<Credential | undefined>, options?: AuthOperationOptions) {
     return this.#serial(provider, async () => {
@@ -118,13 +115,14 @@ export class KeychainCredentials implements CredentialStore {
       options?.signal?.throwIfAborted()
       if (next === undefined) return current
       await this.#host.request('keychain.set', { account: provider, secret: JSON.stringify(next) })
-      await this.#index.setLogin(provider, next.type)
+      await this.#saved(provider)
       if (options?.signal?.aborted) {
-        // Cancelled while it was saved: the earlier login goes back, in the Keychain and in the index, before anything
-        // else reads this one.
+        // Cancelled while it was saved: the earlier login goes back before anything else reads this one.
         if (current === undefined) await this.#host.request('keychain.delete', { account: provider })
-        else await this.#host.request('keychain.set', { account: provider, secret: JSON.stringify(current) })
-        await this.#index.setLogin(provider, current?.type)
+        else {
+          await this.#host.request('keychain.set', { account: provider, secret: JSON.stringify(current) })
+          await this.#saved(provider)
+        }
         options.signal.throwIfAborted()
       }
       return next
@@ -134,7 +132,6 @@ export class KeychainCredentials implements CredentialStore {
   delete(provider: string): Promise<void> {
     return this.#serial(provider, async () => {
       await this.#host.request('keychain.delete', { account: provider })
-      await this.#index.setLogin(provider, undefined)
     })
   }
 }
