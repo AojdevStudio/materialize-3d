@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Project, ProjectStatus } from '../../sidecar/src/protocol'
-import { ago, detail, groupOf, groupProjects } from './sidebarGroups'
+import { ago, detail, groupOf, groupProjects, printerName } from './sidebarGroups'
 
 const status = (more: Partial<ProjectStatus> = {}): ProjectStatus => ({ running: false, printed: false, printFiles: 0, lastMs: 0, ...more })
 const project = (id: string, createdMs = 0): Project => ({ id, conversation: 1, title: id, createdMs })
@@ -51,5 +51,13 @@ describe('last activity', () => {
     expect(before(3 * 24 * 60 * 60_000)).toBe('3d')
     expect(ago(new Date(2026, 9, 30, 12, 0).getTime(), now)).toBe('Oct 30')
     expect(ago(new Date(2025, 9, 30, 12, 0).getTime(), now)).toBe('Oct 30, 2025')
+  })
+})
+
+describe('printer name', () => {
+  it('names a printer by its model, without the maker or the nozzle', () => {
+    expect(printerName('Bambu Lab P2S 0.4 nozzle')).toBe('P2S')
+    expect(printerName('Bambu Lab A1 mini 0.2 nozzle')).toBe('A1 mini')
+    expect(printerName('My P2S for PETG')).toBe('My P2S for PETG')
   })
 })

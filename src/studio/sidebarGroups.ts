@@ -52,3 +52,9 @@ export function detail(group: Group, status: ProjectStatus | undefined): string 
   if (group === 'drafts' || status === undefined || status.printFiles === 0) return undefined
   return status.printFiles === 1 ? '1 print file' : `${status.printFiles} print files`
 }
+
+/**
+ * A printer's short name, as the sidebar shows it: the model from a Bambu Lab system preset name, such as "P2S" from
+ * "Bambu Lab P2S 0.4 nozzle". Any other name is shown whole.
+ */
+export const printerName = (machine: string) => /^Bambu Lab (.+) \d+(?:\.\d+)? nozzle$/.exec(machine)?.[1] ?? machine
