@@ -558,6 +558,11 @@ fn keychain_item(account: &str) -> Result<String, String> {
     }
 }
 
+/// Where the presets flattened for Bambu Studio are kept, for a slice and for the check of a printer setting.
+fn preset_cache(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(app.path().app_cache_dir().map_err(|e| format!("finding the app's cache folder: {e}"))?.join("bambu-presets"))
+}
+
 /// Answers one request from the sidecar run `run`. Errors name what failed and never carry a secret.
 async fn answer(app: &AppHandle, run: u64, method: &str, params: Value) -> Result<Value, String> {
     match method {
@@ -581,9 +586,18 @@ async fn answer(app: &AppHandle, run: u64, method: &str, params: Value) -> Resul
             set_busy(&app.state::<Sidecar>(), app.state::<Arc<BuildGate>>().inner(), run, busy)?;
             Ok(Value::Null)
         }
+        "printer.check" => {
+            let printer: studio::slice::Printer = parse(method, params)?;
+            let cache = preset_cache(app)?;
+            // No pass: a restart that cuts the check off loses nothing, as the setting is saved only after it.
+            tauri::async_runtime::spawn_blocking(move || studio::slice::check(&printer, &cache))
+                .await
+                .map_err(|e| format!("the printer check failed: {e}"))??;
+            Ok(Value::Null)
+        }
         "slice" => {
             let SliceCall { operation, request } = parse(method, params)?;
-            let cache = app.path().app_cache_dir().map_err(|e| format!("finding the app's cache folder: {e}"))?.join("bambu-presets");
+            let cache = preset_cache(app)?;
             // The pass comes first, so a refusal while an update installs is not kept as the operation's result, and
             // the same slice can run once the gate opens.
             let gate = app.state::<Arc<BuildGate>>().inner().clone();
@@ -753,10 +767,11 @@ printf '__M3D_PATH__/opt/tools/bin__M3D_PATH__'
 
     #[test]
     fn a_slice_call_carries_its_operation_id() {
+        let printer = json!({ "machine": "Bambu Lab P2S 0.4 nozzle", "process": "0.20mm Standard @BBL P2S", "filament": "Bambu PETG Basic @BBL P2S 0.4 nozzle" });
         let call: SliceCall =
-            serde_json::from_value(json!({ "operation": "abc", "project": "p", "inputs": ["a.stl"], "output": "out.3mf" })).expect("slice call");
+            serde_json::from_value(json!({ "operation": "abc", "project": "p", "inputs": ["a.stl"], "output": "out.3mf", "printer": printer })).expect("slice call");
         assert_eq!(call.operation, "abc");
-        assert!(serde_json::from_value::<SliceCall>(json!({ "project": "p", "inputs": ["a.stl"], "output": "out.3mf" })).is_err());
+        assert!(serde_json::from_value::<SliceCall>(json!({ "project": "p", "inputs": ["a.stl"], "output": "out.3mf", "printer": printer })).is_err());
     }
 
     /// The pass a busy sidecar takes holds an update off until it gives it back, and while the update installs

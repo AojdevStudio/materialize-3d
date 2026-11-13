@@ -70,6 +70,37 @@ describe('an outside action', () => {
   })
 })
 
+describe('the slice tool', () => {
+  test('slices for the printer chosen in the app, and its answer names that printer and the plate Rust used', async () => {
+    const where = scratch()
+    const asked: unknown[] = []
+    const app = spawnSidecar(where.data, where.projects, new Map(), {
+      script: 'slice',
+      env: where.env,
+      rust: {
+        'printer.check': () => null,
+        slice: (params) => {
+          asked.push(params)
+          return { output: 'print/cube.3mf', parts: 1, printSeconds: 1500, filamentGrams: 3.21, plate: 'Textured PEI Plate' }
+        },
+      },
+    })
+    await app.next()
+    const a1Mini = { machine: 'Bambu Lab A1 mini 0.4 nozzle', process: '0.20mm Standard @BBL A1M', filament: 'Bambu PLA Basic @BBL A1M' }
+    await app.call('printer.set', a1Mini)
+    const project = await firstSend(app)
+    await answered(
+      app,
+      project,
+      'Wrote print/cube.3mf: 1 part(s), about 25 min and 3.2 g of filament. Sliced for Bambu Lab A1 mini 0.4 nozzle, ' +
+        '0.20mm Standard @BBL A1M, Bambu PLA Basic @BBL A1M, on the Textured PEI Plate.',
+    )
+    expect(asked).toHaveLength(1)
+    expect(asked[0]).toMatchObject({ project, inputs: ['cube.stl'], output: 'print/cube.3mf', printer: a1Mini })
+    await app.quit()
+  })
+})
+
 describe('the run tool', () => {
   test('gets none of the sidecar environment but what commands need, plus its operation id', async () => {
     const where = scratch({ M3D_SECRET: 'leak' })

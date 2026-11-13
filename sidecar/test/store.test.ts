@@ -77,6 +77,45 @@ describe('app state', () => {
     await afterCrash.quit()
   })
 
+  test('a printer is saved once Rust can slice for it, and one it refuses, or the pipe cannot parse, is not', async () => {
+    const { data, projects } = scratch()
+    const checked: unknown[] = []
+    const app = spawnSidecar(data, projects, new Map(), {
+      rust: {
+        'printer.check': (printer) => {
+          checked.push(printer)
+          if ((printer as { machine: string }).machine.includes('Z9')) throw new Error('machine preset not found in BBL.json: "Bambu Lab Z9 0.4 nozzle"')
+          return null
+        },
+      },
+    })
+    await app.next()
+    const printerOf = async () => ((await app.call('state.get')) as { settings: { printer: unknown } }).settings.printer
+    const p2s = { machine: 'Bambu Lab P2S 0.4 nozzle', process: '0.20mm Standard @BBL P2S', filament: 'Bambu PETG Basic @BBL P2S 0.4 nozzle' }
+    expect(await printerOf()).toEqual(p2s)
+
+    const a1Mini = { machine: 'Bambu Lab A1 mini 0.4 nozzle', process: '0.20mm Standard @BBL A1M', filament: 'Bambu PLA Basic @BBL A1M', plate: 'Supertack Plate' }
+    expect(await app.call('printer.set', a1Mini)).toMatchObject({ settings: { printer: a1Mini } })
+    expect(checked).toEqual([a1Mini])
+
+    await expect(app.call('printer.set', { ...p2s, machine: 'Bambu Lab Z9 0.4 nozzle' })).rejects.toThrow('machine preset not found in BBL.json: "Bambu Lab Z9 0.4 nozzle"')
+    await expect(app.call('printer.set', { ...p2s, plate: 'Glass Plate' })).rejects.toThrow('bad params for printer.set')
+    await expect(app.call('printer.set', { machine: p2s.machine, process: p2s.process })).rejects.toThrow('bad params for printer.set')
+    // The printer has one way in, which Rust checks.
+    await expect(app.call('settings.set', { printer: p2s })).rejects.toThrow('bad params for settings.set')
+    expect(checked).toHaveLength(2)
+    expect(await printerOf()).toEqual(a1Mini)
+
+    // A printer with no plate takes the plate away, so the slice goes back to the printer's own default.
+    await app.call('printer.set', p2s)
+    expect(await printerOf()).toEqual(p2s)
+    expect(await app.quit()).toBe(EXIT.done)
+    const reopened = spawnSidecar(data, projects)
+    await reopened.next()
+    expect(((await reopened.call('state.get')) as { settings: { printer: unknown } }).settings.printer).toEqual(p2s)
+    await reopened.quit()
+  })
+
   test('the app state is read at one point in the store, never half before and half after a commit', async () => {
     const { data, projects } = scratch()
     const app = spawnSidecar(data, projects)

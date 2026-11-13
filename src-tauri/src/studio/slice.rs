@@ -1,4 +1,4 @@
-//! The agent's slice step: STL parts in a project folder to one print-ready 3MF for the P2S,
+//! The agent's slice step: STL parts in a project folder to one print-ready 3MF for the chosen printer,
 //! sliced by the validated Bambu Studio build with its own system presets merged in full.
 
 use std::fs::File;
@@ -7,15 +7,18 @@ use std::process::{Command, Stdio};
 
 use serde::{Deserialize, Serialize};
 
-use super::print_info::parse_slice_info;
-use crate::bambu::{resolve_presets, BambuStudio, PresetSelection};
+use super::print_info::{parse_slice_info, SliceInfo};
+use crate::bambu::{resolve_presets, BambuStudio, Plate, PresetSelection, ResolvedPresets};
 
-/// The presets the agent's workflow names: the P2S with a 0.4 mm nozzle, standard layers, PETG.
-const MACHINE: &str = "Bambu Lab P2S 0.4 nozzle";
-const PROCESS: &str = "0.20mm Standard @BBL P2S";
-const FILAMENT: &str = "Bambu PETG Basic @BBL P2S 0.4 nozzle";
-/// The P2S machine model's `default_bed_type` (`machine/Bambu Lab P2S.json`), which the preset chain does not carry.
-const PLATE: &str = "Textured PEI Plate";
+/// The printer a slice runs for: three Bambu Lab system presets by name, and the plate. With no plate, the slice
+/// uses the default plate of the printer's model.
+#[derive(Debug, Deserialize)]
+pub struct Printer {
+    machine: String,
+    process: String,
+    filament: String,
+    plate: Option<Plate>,
+}
 
 /// Paths are relative to the project folder.
 #[derive(Debug, Deserialize)]
@@ -23,8 +26,10 @@ pub struct Request {
     project: String,
     inputs: Vec<String>,
     output: String,
+    printer: Printer,
 }
 
+/// `plate` is the plate the slice ran on, which is the printer's default when the request named none.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Sliced {
@@ -32,6 +37,7 @@ pub struct Sliced {
     parts: usize,
     print_seconds: u64,
     filament_grams: f64,
+    plate: Plate,
 }
 
 /// What Bambu Studio reports in `result.json`.
@@ -45,7 +51,23 @@ struct Outcome {
 pub fn slice(request: &Request, cache_root: &Path) -> Result<Sliced, String> {
     let dir = super::project_dir(&request.project)?;
     let studio = BambuStudio::locate().map_err(|e| e.to_string())?;
-    slice_in(&studio, &dir, &request.inputs, &request.output, cache_root)
+    slice_in(&studio, &dir, &request.inputs, &request.output, &request.printer, cache_root)
+}
+
+/// Whether a slice can run for `printer`: the validated Bambu Studio ships its three presets, they fit each other,
+/// and the printer takes the plate. The setting is saved only after this passes.
+pub fn check(printer: &Printer, cache_root: &Path) -> Result<(), String> {
+    let studio = BambuStudio::locate().map_err(|e| e.to_string())?;
+    presets_for(&studio, printer, cache_root).map(|_| ())
+}
+
+/// The printer's presets, flattened for Bambu Studio's command line, and the plate to slice on.
+fn presets_for(studio: &BambuStudio, printer: &Printer, cache_root: &Path) -> Result<(ResolvedPresets, Plate), String> {
+    let selection = PresetSelection { machine: printer.machine.clone(), process: printer.process.clone(), filaments: vec![printer.filament.clone()] };
+    std::fs::create_dir_all(cache_root).map_err(|e| format!("{}: {e}", cache_root.display()))?;
+    let presets = resolve_presets(studio, &selection, cache_root).map_err(|e| e.to_string())?;
+    let plate = presets.plates.choose(printer.plate).map_err(|e| e.to_string())?;
+    Ok((presets, plate))
 }
 
 /// A path the agent named, which must stay inside its project folder.
@@ -90,22 +112,19 @@ fn resolve(dir: &Path, inputs: &[String], output: &str) -> Result<(Vec<PathBuf>,
     Ok((inputs, folder.join(target.file_name().expect("a path inside the project names a file"))))
 }
 
-fn slice_in(studio: &BambuStudio, dir: &Path, inputs: &[String], output: &str, cache_root: &Path) -> Result<Sliced, String> {
+fn slice_in(studio: &BambuStudio, dir: &Path, inputs: &[String], output: &str, printer: &Printer, cache_root: &Path) -> Result<Sliced, String> {
     let (inputs, target) = resolve(dir, inputs, output)?;
     let parent = target.parent().expect("the output has a folder");
-
-    let selection = PresetSelection { machine: MACHINE.to_owned(), process: PROCESS.to_owned(), filaments: vec![FILAMENT.to_owned()] };
-    std::fs::create_dir_all(cache_root).map_err(|e| format!("{}: {e}", cache_root.display()))?;
-    let presets = resolve_presets(studio, &selection, cache_root).map_err(|e| e.to_string())?;
+    let (presets, plate) = presets_for(studio, printer, cache_root)?;
 
     // Bambu works in a folder of this run's own beside the output, and the 3MF moves into place only once
     // it checks out, so an earlier 3MF at the output path can never pass as this one.
     let staging = tempfile::Builder::new().prefix(".slice-").tempdir_in(parent).map_err(|e| e.to_string())?;
     let staged = staging.path().join("out.3mf");
     let log = staging.path().join("bambu.log");
-    // An STL carries no plate, and Bambu's own default is one the P2S cannot use.
+    // An STL carries no plate, and Bambu's own default is one most of its printers cannot use.
     let mut process = presets.process.config.clone();
-    process.insert("curr_bed_type".to_owned(), PLATE.into());
+    process.insert("curr_bed_type".to_owned(), plate.setting().into());
     let process_path = staging.path().join("process.json");
     std::fs::write(&process_path, serde_json::to_vec(&process).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
     let status = Command::new(&studio.exe)
@@ -143,11 +162,10 @@ fn slice_in(studio: &BambuStudio, dir: &Path, inputs: &[String], output: &str, c
         return Err(format!("Bambu Studio sliced {} of {} parts, so a part is off the plate or too small", info.parts, inputs.len()));
     }
     std::fs::rename(&staged, &target).map_err(|e| format!("{}: {e}", target.display()))?;
-    Ok(Sliced { output: output.to_owned(), ..info })
+    Ok(Sliced { output: output.to_owned(), parts: info.parts, print_seconds: info.print_seconds.unwrap_or(0), filament_grams: info.filament_grams.unwrap_or(0.0), plate })
 }
 
-/// What a sliced 3MF's `Metadata/slice_info.config` reports, with `output` left for the caller.
-fn slice_info(path: &Path) -> Result<Sliced, String> {
+fn slice_info(path: &Path) -> Result<SliceInfo, String> {
     let mut archive = zip::ZipArchive::new(File::open(path).map_err(|e| format!("{}: {e}", path.display()))?)
         .map_err(|e| format!("{}: not a 3MF: {e}", path.display()))?;
     let mut xml = String::new();
@@ -156,8 +174,7 @@ fn slice_info(path: &Path) -> Result<Sliced, String> {
         &mut xml,
     )
     .map_err(|e| format!("reading slice_info.config: {e}"))?;
-    let info = parse_slice_info(&xml)?;
-    Ok(Sliced { output: String::new(), parts: info.parts, print_seconds: info.print_seconds.unwrap_or(0), filament_grams: info.filament_grams.unwrap_or(0.0) })
+    parse_slice_info(&xml)
 }
 
 #[cfg(test)]
@@ -221,6 +238,23 @@ mod tests {
         stl
     }
 
+    fn printer(machine: &str, process: &str, filament: &str, plate: Option<Plate>) -> Printer {
+        Printer { machine: machine.to_owned(), process: process.to_owned(), filament: filament.to_owned(), plate }
+    }
+
+    /// The printer a new store starts with (`SettingsDoc` in `sidecar/src/store.ts`).
+    fn p2s() -> Printer {
+        printer("Bambu Lab P2S 0.4 nozzle", "0.20mm Standard @BBL P2S", "Bambu PETG Basic @BBL P2S 0.4 nozzle", None)
+    }
+
+    /// One file of a sliced 3MF, as text.
+    fn entry(path: &Path, name: &str) -> String {
+        let mut archive = zip::ZipArchive::new(File::open(path).expect("3mf")).expect("zip");
+        let mut text = String::new();
+        std::io::Read::read_to_string(&mut archive.by_name(name).unwrap_or_else(|e| panic!("{name}: {e}")), &mut text).expect("text");
+        text
+    }
+
     /// Needs the validated Bambu Studio build (BAMBU_STUDIO_CLI or an install), as CI's Bambu step has.
     #[test]
     #[ignore = "runs the real Bambu Studio"]
@@ -230,18 +264,57 @@ mod tests {
         let cache = tempfile::tempdir().expect("cache");
         std::fs::write(project.path().join("cube.stl"), cube_stl(20.0)).expect("stl");
 
-        let sliced = slice_in(&studio, project.path(), &["cube.stl".to_owned()], "print/cube.3mf", cache.path()).expect("slice");
-        assert_eq!(sliced.parts, 1);
+        let sliced = slice_in(&studio, project.path(), &["cube.stl".to_owned()], "print/cube.3mf", &p2s(), cache.path()).expect("slice");
+        assert_eq!((sliced.parts, sliced.plate), (1, Plate::TexturedPei));
         assert!(sliced.print_seconds > 0 && sliced.filament_grams > 0.0, "{sliced:?}");
-        let mut archive = zip::ZipArchive::new(File::open(project.path().join("print/cube.3mf")).expect("3mf")).expect("zip");
-        let mut gcode = String::new();
-        std::io::Read::read_to_string(&mut archive.by_name("Metadata/plate_1.gcode").expect("plate 1's G-code"), &mut gcode).expect("text");
+        let gcode = entry(&project.path().join("print/cube.3mf"), "Metadata/plate_1.gcode");
         assert!(gcode.contains("P2S start gcode"), "the P2S machine preset is in the G-code");
         assert!(gcode.contains("; curr_bed_type = Textured PEI Plate"), "the P2S plate is in the G-code");
         let leftovers: Vec<_> = std::fs::read_dir(project.path().join("print")).expect("print").filter_map(Result::ok).map(|e| e.file_name()).collect();
         assert_eq!(leftovers, ["cube.3mf"], "the staging folder is gone");
 
-        let missing = slice_in(&studio, project.path(), &["gone.stl".to_owned()], "print/gone.3mf", cache.path()).expect_err("missing input");
+        let missing = slice_in(&studio, project.path(), &["gone.stl".to_owned()], "print/gone.3mf", &p2s(), cache.path()).expect_err("missing input");
         assert!(missing.contains("does not exist"), "{missing}");
+    }
+
+    #[test]
+    #[ignore = "runs the real Bambu Studio"]
+    fn a_cube_slices_for_the_chosen_printer_and_plate() {
+        let studio = BambuStudio::locate().expect("a validated Bambu Studio");
+        let project = tempfile::tempdir().expect("project");
+        let cache = tempfile::tempdir().expect("cache");
+        std::fs::write(project.path().join("cube.stl"), cube_stl(20.0)).expect("stl");
+        let a1_mini = |plate| printer("Bambu Lab A1 mini 0.4 nozzle", "0.20mm Standard @BBL A1M", "Bambu PLA Basic @BBL A1M", plate);
+
+        let sliced = slice_in(&studio, project.path(), &["cube.stl".to_owned()], "print/cube.3mf", &a1_mini(Some(Plate::Supertack)), cache.path()).expect("slice");
+        assert_eq!((sliced.parts, sliced.plate), (1, Plate::Supertack));
+        let settings: serde_json::Value =
+            serde_json::from_str(&entry(&project.path().join("print/cube.3mf"), "Metadata/project_settings.config")).expect("project settings");
+        assert_eq!(settings["printer_model"], "Bambu Lab A1 mini");
+        assert_eq!(settings["printer_settings_id"], "Bambu Lab A1 mini 0.4 nozzle");
+        assert_eq!(settings["print_settings_id"], "0.20mm Standard @BBL A1M");
+        assert_eq!(settings["filament_settings_id"], serde_json::json!(["Bambu PLA Basic @BBL A1M"]));
+        assert_eq!(settings["curr_bed_type"], "Supertack Plate");
+        let gcode = entry(&project.path().join("print/cube.3mf"), "Metadata/plate_1.gcode");
+        assert!(gcode.contains("; printer_model = Bambu Lab A1 mini"), "the A1 mini machine preset is in the G-code");
+        assert!(gcode.contains("; curr_bed_type = Supertack Plate"), "the chosen plate is in the G-code");
+
+        let on_default = slice_in(&studio, project.path(), &["cube.stl".to_owned()], "print/default.3mf", &a1_mini(None), cache.path()).expect("slice");
+        assert_eq!(on_default.plate, Plate::TexturedPei, "the A1 mini's own default plate");
+    }
+
+    #[test]
+    #[ignore = "runs the real Bambu Studio"]
+    fn a_printer_bambu_studio_cannot_slice_for_is_refused() {
+        let cache = tempfile::tempdir().expect("cache");
+        let refused = |printer: Printer| check(&printer, cache.path()).expect_err("refused");
+
+        check(&p2s(), cache.path()).expect("the printer a new store starts with");
+        let unknown = refused(printer("Bambu Lab Z9 0.4 nozzle", "0.20mm Standard @BBL P2S", "Bambu PETG Basic @BBL P2S 0.4 nozzle", None));
+        assert!(unknown.contains(r#"machine preset not found in BBL.json: "Bambu Lab Z9 0.4 nozzle""#), "{unknown}");
+        let another = refused(printer("Bambu Lab A1 mini 0.4 nozzle", "0.20mm Standard @BBL A1M", "Bambu PETG Basic @BBL P2S 0.4 nozzle", None));
+        assert!(another.contains(r#"is not compatible with machine "Bambu Lab A1 mini 0.4 nozzle""#), "{another}");
+        let plate = refused(printer("Bambu Lab P2S 0.4 nozzle", "0.20mm Standard @BBL P2S", "Bambu PETG Basic @BBL P2S 0.4 nozzle", Some(Plate::Cool)));
+        assert!(plate.contains("The Bambu Lab P2S cannot use the Cool Plate"), "{plate}");
     }
 }

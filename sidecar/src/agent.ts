@@ -24,7 +24,7 @@ import { NodeExecutionEnv } from '@earendil-works/pi-durable/env/node'
 import { createEditTool, createReadTool, createWriteTool } from '@earendil-works/pi-durable/tools'
 import { arr, int, obj, opt, str } from '@earendil-works/pi-schema'
 import type { Host } from './host'
-import type { Need } from './protocol'
+import type { Need, Plate, Printer } from './protocol'
 import { isLoginFailure } from './inference'
 import { textOf } from './transcript'
 import workflow from './workflow.md' with { type: 'text' }
@@ -244,6 +244,8 @@ export interface AgentHost {
   signedIn(conversation: number, task: string, provider: string, context: Context, after: number | undefined): Promise<void>
   /** How many times the provider's login was saved. */
   loginSaves(provider: string): Promise<number>
+  /** The printer chosen in the app, for a slice that starts now. */
+  printer(): Promise<Printer>
 }
 
 /**
@@ -264,7 +266,7 @@ function operation<T extends JsonValue>(api: ToolExecutionApi, context: Context)
 }
 
 /** The agent's tools, in the order the model is offered them. */
-export function agentTools({ host, projectOf, signedIn, loginSaves }: AgentHost) {
+export function agentTools({ host, projectOf, signedIn, loginSaves, printer }: AgentHost) {
   const read = createReadTool()
   const write = { ...createWriteTool(), replay: 'safe' as const }
   const edit = createEditTool()
@@ -312,25 +314,33 @@ export function agentTools({ host, projectOf, signedIn, loginSaves }: AgentHost)
   const slice = defineTool({
     name: 'slice',
     description:
-      'Slice STL files in the project folder to one print-ready 3MF for the Bambu Lab P2S (0.4 mm nozzle, 0.20 mm layers, ' +
-      'PETG) with the validated Bambu Studio. Paths are relative to the project folder; the output ends in .3mf.',
+      'Slice STL files in the project folder to one print-ready 3MF with the validated Bambu Studio, for the printer, ' +
+      'nozzle, layer height, filament, and plate chosen in the app. The answer names them. Paths are relative to the ' +
+      'project folder; the output ends in .3mf.',
     parameters: obj({ inputs: arr(str(), { minItems: 1 }), output: str() }),
     replay: 'safe',
     execute: async ({ inputs, output }, api, context) => {
-      type Sliced = { ok: true; parts: number; printSeconds: number; filamentGrams: number } | { ok: false; error: string }
+      // A receipt from before the printer could be chosen names neither the printer nor the plate.
+      type Sliced =
+        | { ok: true; parts: number; printSeconds: number; filamentGrams: number; used?: { printer: Printer; plate: Plate } }
+        | { ok: false; error: string }
       const op = operation<Sliced>(api, context)
       const project = await projectOf(api.conversationId)
       const sliced = await once<Sliced>(op.memo, op.receipt, async () => {
+        const chosen = await printer()
         try {
-          const { parts, printSeconds, filamentGrams } = await host.request('slice', { operation: op.id, project, inputs, output })
-          return { ok: true, parts, printSeconds, filamentGrams }
+          const { parts, printSeconds, filamentGrams, plate } = await host.request('slice', { operation: op.id, project, inputs, output, printer: chosen })
+          return { ok: true, parts, printSeconds, filamentGrams, used: { printer: chosen, plate } }
         } catch (error) {
           return { ok: false, error: error instanceof Error ? error.message : String(error) }
         }
       })
       if (!sliced.ok) return { output: text(`The slice failed: ${sliced.error}`), isError: true }
       const minutes = Math.round(sliced.printSeconds / 60)
-      return { output: text(`Wrote ${output}: ${sliced.parts} part(s), about ${minutes} min and ${sliced.filamentGrams.toFixed(1)} g of filament.`) }
+      const wrote = `Wrote ${output}: ${sliced.parts} part(s), about ${minutes} min and ${sliced.filamentGrams.toFixed(1)} g of filament.`
+      if (sliced.used === undefined) return { output: text(wrote) }
+      const { machine, process, filament } = sliced.used.printer
+      return { output: text(`${wrote} Sliced for ${machine}, ${process}, ${filament}, on the ${sliced.used.plate}.`) }
     },
   })
 
