@@ -58,7 +58,7 @@ Inspect the recordings before attaching them. Keep credentials and unrelated des
 
 ## Make and slice a part
 
-1. On the start screen, the readiness banner names what the agent lacks. Sign in through its own control, and install uv or a Python for it if the banner asks. Send stays off until nothing is missing. Record the provider you signed in to.
+1. The first launch opens setup. Press Start setup. Check your Mac names what the agent lacks. Sign in through its row, and install uv or a Python for it if the check asks. Continue stays off until nothing is missing, and then opens the start screen. Record the provider you signed in to.
 2. Send this exact request. Record the model ID that the chat shows.
 
    ```text

@@ -4,9 +4,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
 import { createModels, InMemoryCredentialStore } from '@earendil-works/pi-ai'
-import { createRegistry } from '@earendil-works/pi-durable'
+import { createRegistry, defineDoc } from '@earendil-works/pi-durable'
 import { registerStorageConformance } from '@earendil-works/pi-durable/testing'
-import { EXIT } from '../src/protocol'
+import { EXIT, type Setup } from '../src/protocol'
 import { DraftsDoc, openStorage, Store } from '../src/store'
 import { spawnSidecar } from './sidecar'
 
@@ -124,6 +124,49 @@ describe('app state', () => {
     mkdirSync(join(projects, `${first.project}-2`), { recursive: true })
     const second = await app.sendDraft('new', 'A knob')
     expect(second.project).toBe(`${first.project}-3`)
+    await app.quit()
+  })
+
+  test('a store from v0.3.0 counts as set up and still opens in v0.3.0, and a new store starts setup at Welcome', async () => {
+    const before = scratch()
+    const open = () =>
+      Store.open({
+        dataDir: before.data,
+        projectsDir: before.projects,
+        models: createModels({ credentials: new InMemoryCredentialStore() }),
+        registry: createRegistry(),
+        env: () => {
+          throw new Error('no conversation runs here')
+        },
+      })
+    // v0.3.0 wrote this document on every state read and never changed it.
+    const SetupBeforeSetup = defineDoc<Setup>({
+      kind: 'm3d.setup',
+      version: 1,
+      scope: 'conversation',
+      history: 'latest',
+      fork: 'initial',
+      initial: () => ({ step: 'welcome', done: false }),
+      checkpointWhen: () => true,
+    })
+    const readAsV030 = async () => {
+      const store = await open()
+      const setup = await store.harness.commit(async (tx) => ({ ...(await tx.doc(SetupBeforeSetup, store.root.id)) }), BACKGROUND_CONTEXT)
+      await store.close()
+      return setup
+    }
+    expect(await readAsV030()).toEqual({ step: 'welcome', done: false })
+
+    const updated = spawnSidecar(before.data, before.projects)
+    await updated.next()
+    expect(((await updated.call('state.get')) as { setup: Setup }).setup.done).toBe(true)
+    await updated.quit()
+    expect(await readAsV030()).toEqual({ step: 'welcome', done: false })
+
+    const fresh = scratch()
+    const app = spawnSidecar(fresh.data, fresh.projects)
+    await app.next()
+    expect(((await app.call('state.get')) as { setup: Setup }).setup).toEqual({ step: 'welcome', done: false })
     await app.quit()
   })
 

@@ -417,6 +417,12 @@
           "markdownDescription": "Enables the studio_save_bytes command without any pre-configured scope."
         },
         {
+          "description": "Enables the studio_slicer command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-studio-slicer",
+          "markdownDescription": "Enables the studio_slicer command without any pre-configured scope."
+        },
+        {
           "description": "Enables the update_check command without any pre-configured scope.",
           "type": "string",
           "const": "allow-update-check",
@@ -499,6 +505,12 @@
           "type": "string",
           "const": "deny-studio-save-bytes",
           "markdownDescription": "Denies the studio_save_bytes command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the studio_slicer command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-studio-slicer",
+          "markdownDescription": "Denies the studio_slicer command without any pre-configured scope."
         },
         {
           "description": "Denies the update_check command without any pre-configured scope.",

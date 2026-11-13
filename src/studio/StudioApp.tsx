@@ -1,12 +1,13 @@
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { type AppState, type Draft, type LoginEvent, type ModelChoice, type ModelOption, type Need, type Project, type ProjectStatus, START, type ChatView as View } from '../../sidecar/src/protocol'
+import { type AppState, type Draft, type LoginEvent, type ModelChoice, type ModelOption, type Need, type Project, type ProjectStatus, type Setup, START, type ChatView as View } from '../../sidecar/src/protocol'
 import { firstView, onQuitFlush, onSidecarEvent, panelFiles, sidecar, studio, viewOf, type PanelView, type ProjectFile } from './api'
 import { ChatView } from './Chat'
 import { Composer, releaseAttachment, savedAttachment, type PastedPicture } from './Composer'
 import ModelPicker from './ModelPicker'
 import RightPanel from './RightPanel'
+import SetupFlow from './Setup'
 import Start from './Start'
 import { buildChat } from './transcript'
 import Sidebar from './Sidebar'
@@ -23,6 +24,9 @@ const EMPTY: Draft = { text: '', attachments: [] }
 /** How often a quit tries to save a draft, and how long it waits between tries for the engine to come back. */
 const QUIT_SAVE_TRIES = 4
 const QUIT_RETRY_MS = 3000
+
+/** How long a failed first read of the saved state waits before it tries again. */
+const STATE_RETRY_MS = 3000
 
 /**
  * A screen's unsent message as the window holds it. The sidecar owns the draft and the send: the window only knows
@@ -85,6 +89,12 @@ export default function StudioApp() {
   const [engine, setEngine] = useState('Engine starting')
   /** What a sign-in needs from the person: the code to enter on its page, or an answer. */
   const [signIn, setSignIn] = useState<Extract<LoginEvent, { step: 'open' | 'ask' }> | null>(null)
+  const [signIns, setSignIns] = useState(0)
+  const [setup, setSetup] = useState<Setup | null>(null)
+  /** Counts setup's saves, so a state read that started before the newest save never puts back the setup it replaced. */
+  const setupSaves = useRef(0)
+  /** Whether the window took the saved state. Only the first answer to a startup read is taken. */
+  const stateTaken = useRef(false)
   /** What the agent needs before a send, from the sidecar's check. Null until the check answers, and Send waits. */
   const [needs, setNeeds] = useState<Need[] | null>(null)
   /** The folder the chats from before the store could not be read from, when macOS keeps it from the app. */
@@ -253,16 +263,32 @@ export default function StudioApp() {
   }
 
   useEffect(() => {
-    // The first read of the saved state. If the engine stopped before it answered, it is read again once the engine is
-    // back, so the projects and drafts still come.
-    let stateRead = false
-    const readState = () =>
-      sidecar('state.get', {})
-        .then((state) => {
-          stateRead = true
-          takeState(state)
-        })
+    // The first read of the saved state, which Send waits for. A read that fails is tried again after a pause, and at
+    // once when the engine is back. Only the first answer is taken. Every startup read began before a send could go,
+    // so a later answer would bring back what that send took. A read that ends after the window closed does nothing.
+    let stopped = false
+    let retry: number | undefined
+    const readState = () => {
+      const saves = setupSaves.current
+      return sidecar('state.get', {})
+        .then(
+          (state) => {
+            if (stopped || stateTaken.current) return
+            stateTaken.current = true
+            takeState(state)
+            if (saves === setupSaves.current) setSetup(state.setup)
+          },
+          (err: unknown) => {
+            if (stopped || stateTaken.current) return
+            setError(String(err))
+            window.clearTimeout(retry)
+            retry = window.setTimeout(() => {
+              if (!stateTaken.current) void readState()
+            }, STATE_RETRY_MS)
+          },
+        )
         .catch((err: unknown) => setError(String(err)))
+    }
     void readState()
     checkReady()
     loadModels()
@@ -278,7 +304,7 @@ export default function StudioApp() {
           checkReady()
           loadModels()
           for (const wake of readyWaiters.current.splice(0)) wake()
-          if (!stateRead) void readState()
+          if (!stateTaken.current) void readState()
           // An engine that started again holds what a crash cut off from the window, such as a turn's last entry, so
           // the open chat is read again. The changes that arrive meanwhile are kept, as when it first opened.
           const project = currentId.current
@@ -309,6 +335,7 @@ export default function StudioApp() {
           if (event.step === 'ask') setSignIn(event)
           if (event.step === 'done') {
             setSignIn(null)
+            setSignIns((count) => count + 1)
             checkReady()
             loadModels()
           }
@@ -324,6 +351,8 @@ export default function StudioApp() {
       .then(({ version }) => engineChanged || setEngine(`Engine ${version}`))
       .catch((err: unknown) => engineChanged || setEngine(String(err)))
     return () => {
+      stopped = true
+      window.clearTimeout(retry)
       void unlisten.then((stop) => stop())
     }
   }, [])
@@ -553,8 +582,9 @@ export default function StudioApp() {
     if (current) setSendErrors(({ [current.id]: _, ...rest }) => rest)
   }
 
-  // Send waits for the check, and stays off while the agent lacks a sign-in, uv, or Python.
-  const notReady = needs === null || needs.length > 0
+  // Send waits for the saved state, which says whether setup is done, and for the check. It stays off while the agent
+  // lacks a sign-in, uv, or Python.
+  const notReady = setup?.done !== true || needs === null || needs.length > 0
 
   /** The open project's own model, or the default for one from before the picker. On the start screen, the default. */
   const chosenModel = (current ? projects.find((p) => p.id === current.id)?.model : undefined) ?? defaultModel
@@ -609,6 +639,43 @@ export default function StudioApp() {
     </>
   )
 
+  const errorBar = shownError && (
+    <div className="error-bar" role="alert">
+      <span>{shownError}</span>
+      <button type="button" onClick={dismissError} aria-label="Dismiss">×</button>
+    </div>
+  )
+  const signInAsk = signIn && (
+    <SignInAsk
+      key={signIn.step === 'ask' ? signIn.message : signIn.url}
+      ask={signIn}
+      onAnswer={(answer) => {
+        setSignIn(null)
+        void sidecar('auth.answer', { provider: signIn.provider, text: answer }).catch((err: unknown) => setError(String(err)))
+      }}
+    />
+  )
+
+  if (setup !== null && !setup.done) {
+    return (
+      <SetupFlow
+        setup={setup}
+        onSaved={(state) => {
+          setupSaves.current += 1
+          setSetup(state.setup)
+          if (state.setup.done) {
+            checkReady()
+            loadModels()
+          }
+        }}
+        onError={setError}
+        error={errorBar}
+        signIn={signInAsk}
+        signIns={signIns}
+      />
+    )
+  }
+
   return (
     <div className={`studio ${current ? 'studio-work' : 'studio-start'}`}>
       <Sidebar
@@ -623,23 +690,9 @@ export default function StudioApp() {
 
       <main className="chat" aria-label="Chat">
         <UpdateBanner />
-        {shownError && (
-          <div className="error-bar" role="alert">
-            <span>{shownError}</span>
-            <button type="button" onClick={dismissError} aria-label="Dismiss">×</button>
-          </div>
-        )}
+        {errorBar}
         {importBlocked !== null && <ImportBlockedBanner folder={importBlocked} onRetry={retryImport} onError={setError} />}
-        {signIn && (
-          <SignInAsk
-            key={signIn.step === 'ask' ? signIn.message : signIn.url}
-            ask={signIn}
-            onAnswer={(answer) => {
-              setSignIn(null)
-              void sidecar('auth.answer', { provider: signIn.provider, text: answer }).catch((err: unknown) => setError(String(err)))
-            }}
-          />
-        )}
+        {signInAsk}
         {current ? (
           <>
             {view?.waiting && <WaitingBanner project={current.id} waiting={view.waiting} onError={setError} />}

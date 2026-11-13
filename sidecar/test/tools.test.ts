@@ -129,7 +129,9 @@ describe('the check before a send', () => {
   /** A uv on PATH that knows its version, and finds a Python only when `python` is true. */
   function toolchain(python: boolean) {
     const dir = mkdtempSync(join(tmpdir(), 'm3d-uv-'))
-    writeFileSync(join(dir, 'uv'), `#!/bin/sh\n[ "$1" = --version ] && { echo "uv 0.9.0"; exit 0; }\n[ "$1 $2" = "python find" ] && { ${python ? 'echo /usr/bin/python3; exit 0' : 'exit 2'}; }\nexit 1\n`)
+    writeFileSync(join(dir, 'python3'), '#!/bin/sh\n[ "$1" = --version ] && { echo "Python 3.12.1"; exit 0; }\nexit 1\n')
+    writeFileSync(join(dir, 'uv'), `#!/bin/sh\n[ "$1" = --version ] && { echo "uv 0.9.0 (abc123 2025-10-01)"; exit 0; }\n[ "$1 $2" = "python find" ] && { ${python ? 'echo "$(dirname "$0")/python3"; exit 0' : 'exit 2'}; }\nexit 1\n`)
+    chmodSync(join(dir, 'python3'), 0o755)
     chmodSync(join(dir, 'uv'), 0o755)
     return `${dir}:/usr/bin:/bin`
   }
@@ -191,6 +193,33 @@ describe('the check before a send', () => {
   test('has nothing to name when the sign-in, uv, and Python are all there', async () => {
     expect(await check(toolchain(true), true)).toEqual([])
   })
+
+  test("setup's check names the versions it found, and no Python while uv is missing", async () => {
+    const tools = async (path: string) => {
+      const dir = mkdtempSync(join(tmpdir(), 'm3d-check-'))
+      const app = spawnSidecar(join(dir, 'state'), join(dir, 'projects'), new Map(), { env: { PATH: path, HOME: mkdtempSync(join(tmpdir(), 'm3d-home-')) } })
+      await app.next()
+      const found = await app.call('setup.tools', {})
+      await app.quit()
+      return found
+    }
+    expect(await tools(toolchain(true))).toEqual({ uv: '0.9.0', python: '3.12.1' })
+    expect(await tools(toolchain(false))).toEqual({ uv: '0.9.0', python: null })
+    expect(await tools(mkdtempSync(join(tmpdir(), 'm3d-path-')))).toEqual({ uv: null })
+  })
+
+  test('a tool that leaves a process holding its output still answers at once', async () => {
+    const path = toolchain(true)
+    const dir = path.split(':')[0] ?? ''
+    writeFileSync(join(dir, 'uv'), `#!/bin/sh\n[ "$1" = --version ] && { sleep 30 & echo "uv 0.9.0"; exit 0; }\n[ "$1 $2" = "python find" ] && { echo "${dir}/python3"; exit 0; }\nexit 1\n`)
+    const state = mkdtempSync(join(tmpdir(), 'm3d-check-'))
+    const app = spawnSidecar(join(state, 'state'), join(state, 'projects'), new Map(), { env: { PATH: path, HOME: mkdtempSync(join(tmpdir(), 'm3d-home-')) } })
+    await app.next()
+    const started = Date.now()
+    expect(await app.call('setup.tools', {})).toEqual({ uv: '0.9.0', python: '3.12.1' })
+    expect(Date.now() - started).toBeLessThan(5_000)
+    await app.quit()
+  }, 30_000)
 })
 
 describe("a command's log", () => {

@@ -8,7 +8,7 @@ For installed macOS release acceptance, use [Verify the installed Mac app](../..
 
 - `$S/m3d.sh up` printed `m3d: ready`, and `$S/m3d.sh doctor` exits 0.
 - `$S/wd.ts session` is open, and `$S/m3d.sh close-inspector` reports a 1440x900 viewport.
-- The app opens on the [studio](./studio.md) start screen. Wait for `[data-testid=start-screen]`.
+- A fresh store opens on [setup](./setup.md). Pass it, then wait for the [studio](./studio.md) start screen, `[data-testid=start-screen]`.
 - `STORE` means `$(readlink -f "${M3D_RUNS:-$HOME/m3d-verify}/current")/xdg/data/com.aojdevstudio.materialize3d/state/store.sqlite`, the sidecar's store. `m3d.sh` keeps its runs under `M3D_RUNS` when that is set.
 
 ## Driving conventions
@@ -40,6 +40,7 @@ Each feature file has an H1 and one paragraph of user-visible behavior, followed
 
 ## Features
 
+- [Setup](./setup.md) is the first launch: Welcome, then Check your Mac, with a sign-in, Bambu Studio, uv, and Python.
 - [Studio](./studio.md) is the whole app: chat with the agent, pictures, the preview and Files panel, and Open in Bambu Studio. Its recipe starts at the start screen.
 - [Updater](./updater.md) covers the update banner at launch, Later, the wait for the agent's work, and the failed check and failed install states.
 - [Site](./site.md) covers the landing site's Playwright tests on Google Chrome. They do not use `wd.ts`.

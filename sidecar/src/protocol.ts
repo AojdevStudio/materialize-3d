@@ -124,6 +124,12 @@ export type StoredState = { setup: Setup; settings: Settings; projects: Project[
  */
 export type AppState = StoredState & { importBlocked: string | null }
 
+/**
+ * The versions of the build tools the agent's `run` tool uses, or null for one that is missing. uv finds the Python,
+ * so without uv there is no Python to name.
+ */
+export type Toolchain = { uv: null } | { uv: string; python: string | null }
+
 /** Something the agent needs before a message can go out, and the one thing that gives it. */
 export type Need =
   | { kind: 'login'; provider: ProviderId; name: string; fix: string }
@@ -146,6 +152,8 @@ export interface Methods {
    * uv, and a Python uv can run. Empty when ready.
    */
   'setup.check': { params: { project?: string }; result: Need[] }
+  /** The build tools setup's check shows. */
+  'setup.tools': { params: Record<string, never>; result: Toolchain }
   /** Imports the chats from before the store again, as after the person let the app read the projects folder. */
   'legacy.import': { params: Record<string, never>; result: { imported: number; blocked: string | null } }
   'auth.status': { params: Record<string, never>; result: Login[] }

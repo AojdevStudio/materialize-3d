@@ -33,8 +33,6 @@ export function WaitingBanner({ project, waiting, onError }: { project: string; 
 
 /** The ways to sign in to `provider`: its subscription sign-in, and a key or a proxy where it takes one. */
 function SignInControls({ provider, onError }: { provider: ProviderId; onError: (message: string) => void }) {
-  const [key, setKey] = useState('')
-  const [baseUrl, setBaseUrl] = useState('')
   const run = (work: Promise<unknown>) => void work.catch((err: unknown) => onError(String(err)))
   return (
     <>
@@ -43,23 +41,30 @@ function SignInControls({ provider, onError }: { provider: ProviderId; onError: 
           {OAUTH[provider]}
         </button>
       )}
-      {KEYS.includes(provider) && (
-        <form
-          onSubmit={(event) => {
-            event.preventDefault()
-            run(sidecar('auth.setKey', { provider, key, ...(baseUrl === '' ? {} : { baseUrl }) }))
-          }}
-        >
-          <input type="password" placeholder="API key or token" value={key} onChange={(e) => setKey(e.target.value)} aria-label="API key or token" />
-          {provider === 'anthropic' && (
-            <input placeholder="Proxy URL (optional)" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} aria-label="Proxy URL" />
-          )}
-          <button type="submit" disabled={key === ''}>
-            Save
-          </button>
-        </form>
-      )}
+      {KEYS.includes(provider) && <KeyForm provider={provider} onError={onError} />}
     </>
+  )
+}
+
+/** A sign-in with an API key or a proxy's token, and for Anthropic the proxy's URL. */
+export function KeyForm({ provider, onError }: { provider: ProviderId; onError: (message: string) => void }) {
+  const [key, setKey] = useState('')
+  const [baseUrl, setBaseUrl] = useState('')
+  return (
+    <form
+      onSubmit={(event) => {
+        event.preventDefault()
+        void sidecar('auth.setKey', { provider, key, ...(baseUrl === '' ? {} : { baseUrl }) }).catch((err: unknown) => onError(String(err)))
+      }}
+    >
+      <input type="password" placeholder="API key or token" value={key} onChange={(e) => setKey(e.target.value)} aria-label="API key or token" />
+      {provider === 'anthropic' && (
+        <input placeholder="Proxy URL (optional)" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} aria-label="Proxy URL" />
+      )}
+      <button type="submit" disabled={key === ''}>
+        Save
+      </button>
+    </form>
   )
 }
 
