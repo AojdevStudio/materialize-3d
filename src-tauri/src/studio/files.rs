@@ -169,10 +169,13 @@ pub fn studio_reveal(project: String, rel: String) -> Result<(), String> {
     }
 }
 
-/// Where projects live, for Settings to show and reveal.
+/// Where projects live, for Settings to show and reveal. It is made here when missing, since Reveal needs a folder
+/// that exists and the first project may not be made yet.
 #[tauri::command]
 pub fn studio_projects_folder() -> Result<String, String> {
-    Ok(projects_root()?.to_string_lossy().into_owned())
+    let root = projects_root()?;
+    std::fs::create_dir_all(&root).map_err(|e| format!("making {}: {e}", root.display()))?;
+    Ok(root.to_string_lossy().into_owned())
 }
 
 /// Opens a 3MF (or STL) in Bambu Studio.

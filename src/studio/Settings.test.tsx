@@ -1,11 +1,17 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 
-const { invokeMock, revealMock } = vi.hoisted(() => ({ invokeMock: vi.fn(), revealMock: vi.fn() }))
+type Listener = (event: { payload: unknown }) => void
+const { invokeMock, revealMock, listeners } = vi.hoisted(() => ({ invokeMock: vi.fn(), revealMock: vi.fn(), listeners: [] as Listener[] }))
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: invokeMock }))
-vi.mock('@tauri-apps/api/event', () => ({ listen: () => Promise.resolve(() => {}) }))
+vi.mock('@tauri-apps/api/event', () => ({
+  listen: (name: string, listener: Listener) => {
+    if (name === 'sidecar://event') listeners.push(listener)
+    return Promise.resolve(() => {})
+  },
+}))
 vi.mock('@tauri-apps/plugin-opener', () => ({ openUrl: () => Promise.resolve(), revealItemInDir: revealMock }))
 vi.mock('@tauri-apps/api/webview', () => ({ getCurrentWebview: () => ({ onDragDropEvent: () => Promise.resolve(() => {}) }) }))
 
@@ -19,7 +25,10 @@ afterEach(() => {
   cleanup()
   invokeMock.mockReset()
   revealMock.mockReset()
+  listeners.length = 0
 })
+
+const emit = (event: object) => act(async () => listeners.forEach((listener) => listener({ payload: event })))
 
 const claudeOnly: Login[] = [
   { provider: 'anthropic', name: 'Anthropic', login: 'oauth', kinds: ['oauth', 'api_key'] },
@@ -36,9 +45,10 @@ const project: Project = { id: '2026-11-12-clip', conversation: 1, title: 'Cable
 type Machine = { toolchain: Toolchain; slicer: SlicerCheck }
 const ready: Machine = { toolchain: { uv: '0.9.2', python: '3.12.1' }, slicer: { found: 'ready', version: '02.08.02.61' } }
 
-function mockApp(machine: Machine = ready, logins: Login[] = claudeOnly) {
+function mockApp(machine: Machine = ready, logins: Login[] = claudeOnly, waiting: object | null = null) {
   revealMock.mockResolvedValue(undefined)
-  const store: { settings: Settings } = {
+  const store: { settings: Settings; logins: Login[] } = {
+    logins,
     settings: {
       model: { provider: 'anthropic', modelId: 'claude-opus-5-5' },
       thinking: 'high',
@@ -54,12 +64,12 @@ function mockApp(machine: Machine = ready, logins: Login[] = claudeOnly) {
       return state()
     },
     'setup.tools': () => machine.toolchain,
-    'auth.status': () => logins,
+    'auth.status': () => store.logins,
     'setup.check': () => [],
     'models.list': () => models,
     'projects.status': () => ({}),
     'app.ping': () => ({ version: '1.2.3' }),
-    'chat.open': () => ({ project: project.id, entries: [], running: false, waiting: null, turn: null, seq: 0 }),
+    'chat.open': () => ({ project: project.id, entries: [], running: false, waiting, turn: null, seq: 0 }),
   }
   invokeMock.mockImplementation((command: string, args: { method: string; params: Record<string, unknown> }) => {
     if (command === 'studio_slicer') return Promise.resolve(machine.slicer)
@@ -146,6 +156,37 @@ describe('settings', () => {
     const astra = screen.getByRole('switch', { name: /Astra/ }) as HTMLInputElement
     expect(astra.checked).toBe(false)
     expect(astra.disabled).toBe(true)
+  })
+
+  it('reads the sign-ins again when one ends while Settings shows', async () => {
+    const store = mockApp()
+    render(<StudioApp />)
+    await openSettings()
+    const chatgpt = within(await screen.findByTestId('settings-chatgpt'))
+    expect(await chatgpt.findByText('Needs login')).toBeTruthy()
+    store.logins = bothIn
+    await emit({ type: 'login', provider: 'openai-codex', step: 'done' })
+    expect(await chatgpt.findByText('Ready')).toBeTruthy()
+    await waitFor(() => expect((screen.getByRole('switch', { name: /Astra/ }) as HTMLInputElement).disabled).toBe(false))
+  })
+
+  it('shows a running sign-in\'s question over Settings', async () => {
+    mockApp()
+    render(<StudioApp />)
+    await openSettings()
+    await emit({ type: 'login', provider: 'openai-codex', step: 'ask', kind: 'text', message: 'Paste the code from the browser' })
+    expect(await within(screen.getByTestId('settings')).findByTestId('sign-in')).toBeTruthy()
+  })
+
+  it('shows a sign-in a waiting turn was refused with as needing login', async () => {
+    mockApp(ready, claudeOnly, { kind: 'login', provider: 'anthropic', name: 'Anthropic', fix: 'Sign in to Anthropic. The message picks up where it stopped.' })
+    render(<StudioApp />)
+    fireEvent.click(await within(screen.getByRole('navigation', { name: 'Projects' })).findByText('Cable clip'))
+    expect(await screen.findByTestId('setup-needed')).toBeTruthy()
+    await openSettings()
+    const claude = within(await screen.findByTestId('settings-claude'))
+    expect(await claude.findByText('Needs login')).toBeTruthy()
+    expect(claude.getByRole('button', { name: 'Fix in setup' })).toBeTruthy()
   })
 
   it('shows Bambu Studio and the chosen printer, and Change opens setup, which Back leaves for Slicer and printer', async () => {

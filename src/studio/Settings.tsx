@@ -3,7 +3,7 @@ import { type ReactNode, useEffect, useState } from 'react'
 import type { AppState, Methods, ModelChoice, ModelOption, Settings as Saved, Setup } from '../../sidecar/src/protocol'
 import { checkSlicer, projectsFolder, sidecar } from './api'
 import { Mark } from './ModelPicker'
-import { agentRows, buildRows, type Found, type Row, slicerRow } from './SetupCheck'
+import { agentRows, buildRows, forgetRefused, type Found, type Row, slicerRow } from './SetupCheck'
 import { astraSignedIn } from './SetupModel'
 
 const ORDER = ['agents', 'slicer', 'tools', 'folder'] as const
@@ -28,43 +28,58 @@ type Props = {
   onClose: () => void
   onError: (message: string) => void
   error: ReactNode
+  /** A running sign-in's question, which a setup step's Back can leave unanswered. */
+  signIn: ReactNode
+  /** Counts finished sign-ins, so the sign-in rows read again after each. */
+  signIns: number
+  /** The provider a waiting turn needs a new sign-in to. */
+  refused?: string
 }
 
 const same = (a: ModelChoice, b: ModelChoice) => a.provider === b.provider && a.modelId === b.modelId
 
 /** Settings: each part setup checks, with its fix in setup, the default model, the printer, and the projects folder. */
-export default function Settings({ section, onSection, models, onSaved, onFix, onClose, onError, error }: Props) {
+export default function Settings({ section, onSection, models, onSaved, onFix, onClose, onError, error, signIn, signIns, refused }: Props) {
   const [found, setFound] = useState<Found>({})
   const [saved, setSaved] = useState<Saved | null>(null)
   const [folder, setFolder] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
 
+  const take = <T,>(answer: Promise<T>, put: (value: T) => void, current: () => boolean, failed?: () => void) =>
+    void answer.then(
+      (value) => current() && put(value),
+      (err: unknown) => {
+        if (!current()) return
+        failed?.()
+        onError(String(err))
+      },
+    )
+  const fill = <K extends keyof Found>(part: K, answer: Promise<Exclude<Found[K], 'failed' | undefined>>, current: () => boolean) =>
+    take(
+      answer,
+      (value) => setFound((now) => ({ ...now, [part]: value })),
+      current,
+      () => setFound((now) => ({ ...now, [part]: 'failed' })),
+    )
+
   useEffect(() => {
     let current = true
-    const take = <T,>(answer: Promise<T>, put: (value: T) => void, failed?: () => void) =>
-      void answer.then(
-        (value) => current && put(value),
-        (err: unknown) => {
-          if (!current) return
-          failed?.()
-          onError(String(err))
-        },
-      )
-    const fill = <K extends keyof Found>(part: K, answer: Promise<Exclude<Found[K], 'failed' | undefined>>) =>
-      take(
-        answer,
-        (value) => setFound((now) => ({ ...now, [part]: value })),
-        () => setFound((now) => ({ ...now, [part]: 'failed' })),
-      )
-    fill('logins', sidecar('auth.status', {}))
-    fill('toolchain', sidecar('setup.tools', {}))
-    fill('slicer', checkSlicer())
-    take(sidecar('state.get', {}), ({ settings }) => setSaved(settings))
-    take(projectsFolder(), setFolder)
+    fill('toolchain', sidecar('setup.tools', {}), () => current)
+    fill('slicer', checkSlicer(), () => current)
+    take(sidecar('state.get', {}), ({ settings }) => setSaved(settings), () => current)
+    take(projectsFolder(), setFolder, () => current)
     return () => {
       current = false
     }
   }, [])
+
+  useEffect(() => {
+    let current = true
+    fill('logins', sidecar('auth.status', {}), () => current)
+    return () => {
+      current = false
+    }
+  }, [signIns])
 
   const save = (change: Methods['settings.set']['params']) => {
     setSaving(true)
@@ -77,7 +92,8 @@ export default function Settings({ section, onSection, models, onSaved, onFix, o
       .finally(() => setSaving(false))
   }
 
-  const astra = Array.isArray(found.logins) && astraSignedIn(found.logins)
+  const shown = forgetRefused(found, refused)
+  const astra = Array.isArray(shown.logins) && astraSignedIn(shown.logins)
 
   const rows = (title: string, list: Row[]) => (
     <section className="setup-group" aria-label={title}>
@@ -109,7 +125,7 @@ export default function Settings({ section, onSection, models, onSaved, onFix, o
       case 'agents':
         return (
           <>
-            {rows('Sign-ins', agentRows(found.logins, undefined))}
+            {rows('Sign-ins', agentRows(shown.logins, refused))}
             <fieldset className="settings-models" disabled={saving}>
               <legend>Default model</legend>
               {models.length === 0 && <p className="setup-detail">Sign in to pick a model.</p>}
@@ -200,6 +216,7 @@ export default function Settings({ section, onSection, models, onSaved, onFix, o
       </nav>
       <main className="settings-main">
         {error}
+        {signIn}
         <div className="settings-close">
           <button type="button" onClick={onClose}>
             Close

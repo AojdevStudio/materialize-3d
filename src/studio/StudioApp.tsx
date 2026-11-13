@@ -736,6 +736,9 @@ export default function StudioApp() {
         onClose={() => setSettings(null)}
         onError={setError}
         error={errorBar}
+        signIn={signInAsk}
+        signIns={signIns}
+        refused={turnLogin?.provider}
       />
     )
   }

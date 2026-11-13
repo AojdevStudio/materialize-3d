@@ -1,14 +1,15 @@
 # Settings
 
-The gear in the sidebar footer opens Settings in place of the studio. Settings has its own nav on the left with four sections: Agents and models, Slicer and printer, Build tools, and Projects folder. It shows one section at a time. Agents and models shows each sign-in's state and the default model new projects start with. Slicer and printer shows Bambu Studio's state and the chosen printer with `Change`. Build tools shows uv and Python. Projects folder shows where projects live, with `Reveal`. A row that is not Ready has `Fix in setup`, which opens Check your Mac, as the [studio](./studio.md) banner does. `Change` opens setup's printer step. `Back` in setup returns to the same Settings section. `Close` returns to the screen Settings was opened from.
+The gear in the sidebar footer opens Settings in place of the studio. Settings has its own nav on the left with four sections: Agents and models, Slicer and printer, Build tools, and Projects folder. It shows one section at a time. Agents and models shows each sign-in's state, the default model new projects start with, and the Astra switch. Slicer and printer shows Bambu Studio's state and the chosen printer with `Change`. Build tools shows uv and Python. Projects folder shows where projects live, with `Reveal`. A row that is not Ready has `Fix in setup`, which opens Check your Mac, as the [studio](./studio.md) banner does. `Change` opens setup's printer step. `Back` in setup returns to the same Settings section. `Close` returns to the screen Settings was opened from.
 
 ## Sub-features
 
 - `settings-open` is the gear. `settings` is the whole screen. The nav is `nav[aria-label="Settings"]`, and its current section has `aria-current="page"`. The shown section is `section[aria-label="<section name>"]`.
 - `settings-claude`, `settings-chatgpt`, `settings-bambu`, `settings-uv`, and `settings-python` are the rows. They use setup's check rules, so `.setup-status` and `.setup-detail` read the same as in [setup](./setup.md).
-- The default model is a radio list, `input[name=settings-model]`. A pick saves at once through `settings.set`. The start screen's model button shows the new pick after `Close`.
-- `settings-printer` holds the printer preset name, its filament and process, and `Change`.
-- Projects folder shows the path in a `code` element. `Reveal` opens the file manager at the folder.
+- The default model is a radio list, `input[name=settings-model]`, each with its short name (`.setup-name`) and one line on what it suits. A pick saves at once through `settings.set`. The start screen's model button shows the new pick after `Close`.
+- `#settings-astra` is the Astra switch. It saves through `settings.set`. Without a ChatGPT sign-in it shows off, cannot change, and says `Needs a ChatGPT sign-in.`
+- `settings-printer` holds the printer preset name, its filament, process, and plate, and `Change`, which opens setup's printer step.
+- Projects folder shows the path in a `code` element. Opening it makes the folder when it is missing. `Reveal` opens the file manager at the folder.
 
 ## How to get to it (user POV)
 
@@ -21,7 +22,7 @@ $S/wd.ts wait '[data-testid=start-screen]' 30000
 $S/wd.ts click '[data-testid=settings-open]'
 $S/wd.ts wait '[data-testid=settings]'
 $S/wd.ts wait "xpath=//*[@data-testid='settings-claude']//*[normalize-space()='Ready']" 30000
-$S/wd.ts click "xpath=//label[contains(@class,'settings-option')][normalize-space()='Sonnet 5.5']/input"
+$S/wd.ts click "xpath=//label[contains(@class,'settings-option')][.//*[contains(@class,'setup-name')][normalize-space()='Sonnet 5.5']]/input"
 $S/wd.ts click "xpath=//nav[@aria-label='Settings']/button[normalize-space()='Slicer and printer']"
 $S/wd.ts click "xpath=//*[@data-testid='settings-printer']//button[normalize-space()='Change']"
 $S/wd.ts wait '[data-testid=setup]'
