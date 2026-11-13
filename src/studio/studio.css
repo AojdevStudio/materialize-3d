@@ -370,6 +370,10 @@ pre {
   gap: 8px;
 }
 
+.messages > :first-child {
+  margin-top: auto;
+}
+
 .msg-user {
   align-self: flex-end;
   max-width: 85%;
