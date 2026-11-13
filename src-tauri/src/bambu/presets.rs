@@ -2,7 +2,7 @@
 //! system preset's `inherits` chain and ordered `include` templates into one JSON file that
 //! Bambu Studio's CLI accepts via `--load-settings` / `--load-filaments`.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
@@ -147,6 +147,99 @@ impl Plates {
             Some(plate) => Ok(plate),
         }
     }
+
+    fn taken(&self) -> Vec<Plate> {
+        Plate::ALL.into_iter().filter(|plate| !self.unsupported.contains(plate)).collect()
+    }
+}
+
+/// A printer model as the printer step of setup offers it.
+#[derive(Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrinterChoice {
+    /// The printer model's name, as in `Bambu Lab P2S`.
+    pub printer: String,
+    /// The plates it takes, in the order of Bambu's `BedType`.
+    pub plates: Vec<Plate>,
+    pub default_plate: Plate,
+    /// One per printer preset of this model, smallest nozzle first.
+    pub nozzles: Vec<NozzleChoice>,
+}
+
+/// A printer preset, `<printer> <nozzle> nozzle`, with the qualities and filaments that fit it, and the ones Bambu
+/// Studio starts it with.
+#[derive(Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NozzleChoice {
+    /// The nozzle size in mm, as in `0.4`.
+    pub nozzle: String,
+    pub machine: String,
+    pub processes: Vec<String>,
+    pub process: String,
+    pub filaments: Vec<String>,
+    pub filament: String,
+}
+
+/// Every printer the profile tree can slice for, each with the presets [`resolve_presets`] accepts for it.
+pub fn printer_choices(profiles_dir: &Path) -> Result<Vec<PrinterChoice>> {
+    let mut resolver = Resolver::open(profiles_dir)?;
+    let processes = resolver.instantiated(PresetKind::Process)?;
+    let filaments = resolver.instantiated(PresetKind::Filament)?;
+    let mut printers: BTreeMap<String, PrinterChoice> = BTreeMap::new();
+    for (machine, resolved) in resolver.instantiated(PresetKind::Machine)? {
+        let config = &resolved.config;
+        validate_machine(config, &machine)?;
+        let fitting = |presets: &[(String, Rc<Resolved>)], kind: PresetKind, default: &str| -> Result<(Vec<String>, String)> {
+            let mut names = Vec::new();
+            for (name, preset) in presets {
+                let context = format!("{} {name:?} compatible_printers", kind.as_str());
+                if string_list(preset.config.get("compatible_printers"), &context)?.contains(&machine.as_str()) {
+                    names.push(name.clone());
+                }
+            }
+            if !names.iter().any(|name| name == default) {
+                return Err(preset_err(format!(
+                    "machine {machine:?} starts with {} {default:?}, which does not fit it",
+                    kind.as_str()
+                )));
+            }
+            Ok((names, default.to_owned()))
+        };
+        let (processes, process) = fitting(
+            &processes,
+            PresetKind::Process,
+            required_str(config.get("default_print_profile"), &format!("{machine} default_print_profile"))?,
+        )?;
+        let default_filaments = string_list(config.get("default_filament_profile"), &format!("{machine} default_filament_profile"))?;
+        let first_filament = default_filaments
+            .first()
+            .ok_or_else(|| preset_err(format!("machine {machine:?} names no default filament")))?;
+        let (filaments, filament) = fitting(&filaments, PresetKind::Filament, first_filament)?;
+        let nozzle = NozzleChoice {
+            nozzle: required_str(config.get("printer_variant"), &format!("{machine} printer_variant"))?.to_owned(),
+            machine: machine.clone(),
+            processes,
+            process,
+            filaments,
+            filament,
+        };
+        let model = required_str(config.get("printer_model"), &format!("{machine} printer_model"))?;
+        if let Some(printer) = printers.get_mut(model) {
+            printer.nozzles.push(nozzle);
+            continue;
+        }
+        let plates = resolver.plates(config, &machine)?;
+        printers.insert(
+            model.to_owned(),
+            PrinterChoice {
+                printer: model.to_owned(),
+                plates: plates.taken(),
+                default_plate: plates.default,
+                nozzles: vec![nozzle],
+            },
+        );
+    }
+    Ok(printers.into_values().collect())
 }
 
 /// Flattened machine, process, and per-slot filament presets, and the plates of the machine's
@@ -445,6 +538,19 @@ impl Resolver {
             default: plate(Plate::from_setting(default), "default_bed_type", default)?,
             unsupported,
         })
+    }
+
+    fn instantiated(&mut self, kind: PresetKind) -> Result<Vec<(String, Rc<Resolved>)>> {
+        let mut names: Vec<String> = self.index.keys().filter(|(listed, _)| *listed == kind).map(|(_, name)| name.clone()).collect();
+        names.sort();
+        let mut presets = Vec::new();
+        for name in names {
+            if self.raw(kind, &name)?.get("instantiation").and_then(Value::as_str) == Some("true") {
+                let resolved = self.resolve(kind, &name, &mut Vec::new())?;
+                presets.push((name, resolved));
+            }
+        }
+        Ok(presets)
     }
 
     fn raw(&mut self, kind: PresetKind, name: &str) -> Result<Rc<JsonMap>> {
@@ -950,6 +1056,57 @@ mod tests {
         );
         let err = resolve(profiles.path()).expect_err("a plate Bambu Studio 02.08.02.61 does not have");
         assert!(err.to_string().contains(r#"default_bed_type "Glass Plate" is not a build plate"#), "{err}");
+    }
+
+    #[test]
+    fn each_printer_lists_its_nozzles_with_the_presets_that_fit_and_its_plates() {
+        let profiles = fixture_profiles();
+        let mut leaf = read(&profiles.path().join("machine/leaf.json"));
+        leaf["default_print_profile"] = json!("Test Process");
+        leaf["default_filament_profile"] = json!(["Test Filament"]);
+        write(profiles.path(), "machine/leaf.json", leaf);
+        let mut other = read(&profiles.path().join("filament/leaf.json"));
+        other["name"] = json!("Other Filament");
+        other["compatible_printers"] = json!(["Other Printer 0.4 nozzle"]);
+        write(profiles.path(), "filament/other.json", other);
+        let mut manifest = read(&profiles.path().join("BBL.json"));
+        manifest["filament_list"]
+            .as_array_mut()
+            .expect("filament list")
+            .push(json!({ "name": "Other Filament", "sub_path": "filament/other.json" }));
+        write(profiles.path(), "BBL.json", manifest);
+
+        let printers = printer_choices(profiles.path()).expect("lists");
+        assert_eq!(
+            serde_json::to_value(printers).expect("json"),
+            json!([{
+                "printer": "Test Printer",
+                "plates": ["Engineering Plate", "Textured PEI Plate", "Supertack Plate"],
+                "defaultPlate": "Textured PEI Plate",
+                "nozzles": [{
+                    "nozzle": "0.6",
+                    "machine": "Test Printer 0.6 nozzle",
+                    "processes": ["Test Process"],
+                    "process": "Test Process",
+                    "filaments": ["Test Filament"],
+                    "filament": "Test Filament",
+                }],
+            }])
+        );
+    }
+
+    #[test]
+    fn a_printer_whose_default_filament_does_not_fit_it_fails_the_list() {
+        let profiles = fixture_profiles();
+        let mut leaf = read(&profiles.path().join("machine/leaf.json"));
+        leaf["default_print_profile"] = json!("Test Process");
+        leaf["default_filament_profile"] = json!(["Base Filament"]);
+        write(profiles.path(), "machine/leaf.json", leaf);
+        let err = printer_choices(profiles.path()).expect_err("a default the printer step cannot offer");
+        assert_eq!(
+            err.to_string(),
+            r#"machine "Test Printer 0.6 nozzle" starts with filament "Base Filament", which does not fit it"#
+        );
     }
 
     #[test]

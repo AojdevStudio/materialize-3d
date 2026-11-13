@@ -411,6 +411,12 @@
           "markdownDescription": "Enables the studio_pop_out command without any pre-configured scope."
         },
         {
+          "description": "Enables the studio_printers command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-studio-printers",
+          "markdownDescription": "Enables the studio_printers command without any pre-configured scope."
+        },
+        {
           "description": "Enables the studio_reveal command without any pre-configured scope.",
           "type": "string",
           "const": "allow-studio-reveal",
@@ -505,6 +511,12 @@
           "type": "string",
           "const": "deny-studio-pop-out",
           "markdownDescription": "Denies the studio_pop_out command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the studio_printers command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-studio-printers",
+          "markdownDescription": "Denies the studio_printers command without any pre-configured scope."
         },
         {
           "description": "Denies the studio_reveal command without any pre-configured scope.",

@@ -58,7 +58,7 @@ Inspect the recordings before attaching them. Keep credentials and unrelated des
 
 ## Make and slice a part
 
-1. The first launch opens setup. Press Start setup. Check your Mac names what the agent lacks. Sign in through its row, and install uv or a Python for it if the check asks. Continue stays off until nothing is missing. Pick a model, press Continue, then Start a project on Ready to open the start screen. Record the provider you signed in to and the model you picked.
+1. The first launch opens setup. Press Start setup. Check your Mac names what the agent lacks. Sign in through its row, and install uv or a Python for it if the check asks. Continue stays off until nothing is missing. Pick a model and press Continue. On Your printer, make it the P2S with a 0.4 mm nozzle: press Looks right if it shows that printer, or Change and pick it, then Save. Press Start a project on Ready to open the start screen. Record the provider you signed in to, the model you picked, and the Printer line on Ready.
 2. Send this exact request. Record the model ID that the chat shows.
 
    ```text
