@@ -8,7 +8,7 @@
 
 export type ModelChoice = { provider: string; modelId: string }
 
-/** A model the picker offers: one of a signed-in provider's models, with the name the provider gives it. */
+/** A model the picker offers, with the short name the app shows. */
 export type ModelOption = ModelChoice & { name: string }
 export type Thinking = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 

@@ -40,11 +40,11 @@ const projectA = { id: '2026-11-06-a', conversation: 2, title: 'Project A', crea
 const projectB = { id: '2026-11-06-b', conversation: 3, title: 'Project B', createdMs: 1 }
 const view = (project: string, more: object = {}) => ({ project, entries: [], running: false, waiting: null, turn: null, seq: 1, ...more })
 const settings = { model: { provider: 'anthropic', modelId: 'claude-opus-5-5' }, thinking: 'high', printer: {} }
-/** The models the mocked sidecar lists, as the signed-in providers name them. */
+/** The models the mocked sidecar lists for the signed-in providers, by short name. */
 const models = [
-  { provider: 'anthropic', modelId: 'claude-opus-5-5', name: 'Claude Opus 5.5' },
-  { provider: 'anthropic', modelId: 'claude-sonnet-5-5', name: 'Claude Sonnet 5.5' },
-  { provider: 'openai-codex', modelId: 'gpt-6.1-sol', name: 'GPT-6.1 Sol' },
+  { provider: 'anthropic', modelId: 'claude-opus-5-5', name: 'Opus 5.5' },
+  { provider: 'anthropic', modelId: 'claude-sonnet-5-5', name: 'Sonnet 5.5' },
+  { provider: 'openai-codex', modelId: 'gpt-6.1-sol', name: 'GPT 6.1 Sol' },
 ]
 
 afterEach(() => {
@@ -779,10 +779,10 @@ describe('StudioApp', () => {
     let checks = 0
     mockSidecar({ 'setup.check': (params, real) => (checks++ === 0 ? first.call(params, () => Promise.resolve([login])) : real()) })
     render(<StudioApp />)
-    await waitFor(() => expect(screen.getByTestId('model-picker').textContent).toBe('Claude Opus 5.5'))
+    await waitFor(() => expect(screen.getByTestId('model-picker').textContent).toBe('Opus 5.5'))
     type('A clip')
     fireEvent.click(screen.getByTestId('model-picker'))
-    fireEvent.click(within(screen.getByRole('menu', { name: 'Models' })).getByText('GPT-6.1 Sol'))
+    fireEvent.click(within(screen.getByRole('menu', { name: 'Models' })).getByText('GPT 6.1 Sol'))
     await waitFor(() => expect((screen.getByTestId('send') as HTMLButtonElement).disabled).toBe(false))
     await first.release()
     await pause(50)
@@ -1929,38 +1929,62 @@ describe('StudioApp', () => {
     const store = mockSidecar({}, [projectA, projectB])
     render(<StudioApp />)
     const picked = () => screen.getByTestId('model-picker').textContent
-    await waitFor(() => expect(picked()).toBe('Claude Opus 5.5'))
+    await waitFor(() => expect(picked()).toBe('Opus 5.5'))
 
     fireEvent.click(await projectList().findByText('Project A'))
     await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project A'))
     fireEvent.click(screen.getByTestId('model-picker'))
     const items = within(screen.getByRole('menu', { name: 'Models' })).getAllByRole('menuitemradio')
     expect(items.map((item) => [item.textContent, item.getAttribute('aria-checked')])).toEqual([
-      ['Claude Opus 5.5', 'true'],
-      ['Claude Sonnet 5.5', 'false'],
-      ['GPT-6.1 Sol', 'false'],
+      ['Opus 5.5', 'true'],
+      ['Sonnet 5.5', 'false'],
+      ['GPT 6.1 Sol', 'false'],
     ])
     // The Claude mark in its own color, and the OpenAI mark in the text color.
     expect(items.map((item) => item.querySelector('.model-mark svg')?.getAttribute('fill'))).toEqual(['#D97757', '#D97757', 'currentColor'])
     fireEvent.click(items[2])
     await waitFor(() => expect(sidecarCalls('projects.setModel')).toEqual([{ project: projectA.id, model: { provider: 'openai-codex', modelId: 'gpt-6.1-sol' } }]))
-    await waitFor(() => expect(picked()).toBe('GPT-6.1 Sol'))
+    await waitFor(() => expect(picked()).toBe('GPT 6.1 Sol'))
     // Send waits for the sign-in of the project's own model, so the check asks about this project.
     await waitFor(() => expect(last(sidecarCalls('setup.check'))).toEqual({ project: projectA.id }))
 
     fireEvent.click(projectList().getByText('Project B'))
     await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project B'))
-    expect(picked()).toBe('Claude Opus 5.5')
+    expect(picked()).toBe('Opus 5.5')
     fireEvent.click(projectList().getByText('Project A'))
     await waitFor(() => expect(screen.getByRole('banner').textContent).toBe('Project A'))
-    expect(picked()).toBe('GPT-6.1 Sol')
+    expect(picked()).toBe('GPT 6.1 Sol')
 
     // On the start screen, a pick is the model the next project starts with.
     fireEvent.click(screen.getByTestId('new-project'))
     fireEvent.click(screen.getByTestId('model-picker'))
-    fireEvent.click(within(screen.getByRole('menu', { name: 'Models' })).getByText('Claude Sonnet 5.5'))
-    await waitFor(() => expect(picked()).toBe('Claude Sonnet 5.5'))
+    fireEvent.click(within(screen.getByRole('menu', { name: 'Models' })).getByText('Sonnet 5.5'))
+    await waitFor(() => expect(picked()).toBe('Sonnet 5.5'))
     expect(sidecarCalls('settings.set')).toEqual([{ model: { provider: 'anthropic', modelId: 'claude-sonnet-5-5' } }])
     expect(store.model).toEqual({ provider: 'anthropic', modelId: 'claude-sonnet-5-5' })
+  })
+
+  it("shows the chosen model's short name and mark before any sign-in", async () => {
+    mockSidecar({ 'models.list': () => Promise.resolve([]) })
+    render(<StudioApp />)
+    const button = screen.getByTestId('model-picker')
+    await waitFor(() => expect(button.textContent).toBe('Opus 5.5'))
+    expect(button.querySelector('.model-mark svg')?.getAttribute('fill')).toBe('#D97757')
+  })
+
+  it('shows a saved model the short list does not name by its id and its maker\'s mark, and offers the short list', async () => {
+    mockSidecar({}, [{ ...projectA, model: { provider: 'anthropic', modelId: 'claude-opus-4-8' } }])
+    render(<StudioApp />)
+    fireEvent.click(await projectList().findByText('Project A'))
+    const button = screen.getByTestId('model-picker')
+    await waitFor(() => expect(button.textContent).toBe('claude-opus-4-8'))
+    expect(button.querySelector('.model-mark svg')?.getAttribute('fill')).toBe('#D97757')
+    fireEvent.click(button)
+    const items = within(screen.getByRole('menu', { name: 'Models' })).getAllByRole('menuitemradio')
+    expect(items.map((item) => [item.textContent, item.getAttribute('aria-checked')])).toEqual([
+      ['Opus 5.5', 'false'],
+      ['Sonnet 5.5', 'false'],
+      ['GPT 6.1 Sol', 'false'],
+    ])
   })
 })
