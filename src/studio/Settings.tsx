@@ -1,6 +1,6 @@
 import { revealItemInDir } from '@tauri-apps/plugin-opener'
 import { type ReactNode, useEffect, useState } from 'react'
-import type { AppState, ModelChoice, ModelOption, Settings as Saved, Setup } from '../../sidecar/src/protocol'
+import type { AppState, Methods, ModelChoice, ModelOption, Settings as Saved, Setup } from '../../sidecar/src/protocol'
 import { checkSlicer, projectsFolder, sidecar } from './api'
 import { Mark } from './ModelPicker'
 import { agentRows, buildRows, type Found, type Row, slicerRow } from './SetupCheck'
@@ -65,7 +65,7 @@ export default function Settings({ section, onSection, models, onSaved, onFix, o
     }
   }, [])
 
-  const save = (change: Partial<Saved>) => {
+  const save = (change: Methods['settings.set']['params']) => {
     setSaving(true)
     void sidecar('settings.set', change)
       .then((state) => {
