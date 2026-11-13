@@ -128,7 +128,7 @@ await runSidecar({
       ),
     )
     models.setProvider(faux.provider)
-    const astra = fauxProvider({ provider: 'openai-codex', models: [{ id: 'gpt-6-astra' }] })
+    const astra = fauxProvider({ provider: 'openai-codex', models: [{ id: 'gpt-6-astra' }, { id: 'gpt-6.1-sol' }] })
     // Astra runs a command of its own first, in the project folder it shares. The provider refuses the key `refused`,
     // and with M3D_ASTRA_GATE set, it holds that request open until the test writes `release` there.
     const gate = process.env.M3D_ASTRA_GATE

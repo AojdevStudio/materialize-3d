@@ -158,7 +158,7 @@ describe('the model', () => {
     ]
     expect(await app.call('models.list')).toEqual(anthropic)
     await app.call('auth.setKey', { provider: 'openai-codex', key: 'sk-test-dummy-0000' })
-    expect(await app.call('models.list')).toEqual(anthropic)
+    expect(await app.call('models.list')).toEqual([...anthropic, { provider: 'openai-codex', modelId: 'gpt-6.1-sol', name: 'GPT 6.1 Sol' }])
     await app.quit()
   }, 30_000)
 })
