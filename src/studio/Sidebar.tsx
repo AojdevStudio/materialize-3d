@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Printer, Project, ProjectStatus } from '../../sidecar/src/protocol'
 import { onSidecarEvent, sidecar } from './api'
 import { ago, detail, type Group, groupProjects, lastActivity, printerName } from './sidebarGroups'
@@ -20,7 +20,20 @@ const HEADERS: Record<Group, { name: string; icon: string }> = {
 }
 
 /** An outline icon from `src/assets/icons`, drawn in the text color. */
-const Icon = ({ svg }: { svg: string }) => <span className="side-icon" aria-hidden="true" dangerouslySetInnerHTML={{ __html: svg }} />
+export const Icon = ({ svg }: { svg: string }) => <span className="side-icon" aria-hidden="true" dangerouslySetInnerHTML={{ __html: svg }} />
+
+/** The top row of a sidebar: the Materialize 3D mark and name, with any controls at its end. */
+export function BrandRow({ children }: { children?: ReactNode }) {
+  return (
+    <div className="side-header">
+      <div className="brand" data-testid="brand">
+        <img src={mark} alt="" width={20} height={20} />
+        Materialize 3D
+      </div>
+      {children}
+    </div>
+  )
+}
 
 /** A row's status mark: a blue ring while working, a green check when ready, a gray check when printed. */
 function StatusMark({ group }: { group: Group }) {
@@ -208,13 +221,7 @@ export default function Sidebar({ projects, current, engine, printer, onOpen, on
 
   return (
     <nav className="sessions" aria-label="Projects">
-      <div className="side-header">
-        <div className="brand" data-testid="brand">
-          <img src={mark} alt="" width={20} height={20} />
-          Materialize 3D
-        </div>
-        {panelToggle}
-      </div>
+      <BrandRow>{panelToggle}</BrandRow>
       <div className="side-actions">
         <button type="button" className="new-project primary" onClick={onNew} data-testid="new-project">
           <span aria-hidden="true">+</span>
