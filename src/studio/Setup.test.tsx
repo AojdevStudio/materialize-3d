@@ -140,25 +140,27 @@ const summary = (name: string) => screen.getByTestId(`ready-${name}`).querySelec
 const emit = (event: object) => act(async () => listeners.forEach((listener) => listener({ payload: event })))
 
 describe('setup', () => {
+  // The other tests find each heading and button here by role. This one checks the order, so it finds them by text. In jsdom
+  // a role query reads a fresh style for each element it checks, and that took most of this test's time.
   it('goes Welcome, Check your Mac, Pick a model, Your printer, Ready, and Start a project opens the start screen', async () => {
     mockApp({ step: 'welcome', done: false }, ready)
     render(<StudioApp />)
-    fireEvent.click(await screen.findByRole('button', { name: 'Start setup' }))
-    expect(await screen.findByRole('heading', { name: 'Your Mac is ready' })).toBeTruthy()
+    fireEvent.click(await screen.findByText('Start setup'))
+    expect(await screen.findByText('Your Mac is ready')).toBeTruthy()
     expect(screen.queryByTestId('start-screen')).toBeNull()
     expect(screen.queryByTestId('setup-needed')).toBeNull()
     expect(screen.getByRole('listitem', { current: 'step' }).textContent).toBe('1 Check your Mac')
-    fireEvent.click(button('Continue'))
-    expect(await screen.findByRole('heading', { name: 'Pick your default model' })).toBeTruthy()
+    fireEvent.click(screen.getByText('Continue'))
+    expect(await screen.findByText('Pick your default model')).toBeTruthy()
     expect(screen.getByRole('listitem', { current: 'step' }).textContent).toBe('2 Pick a model')
-    await screen.findByRole('radio', { name: /^Opus 5.5/ })
-    fireEvent.click(button('Continue'))
-    expect(await screen.findByRole('heading', { name: 'Is this your printer?' })).toBeTruthy()
+    await screen.findByText('Opus 5.5')
+    fireEvent.click(screen.getByText('Continue'))
+    expect(await screen.findByText('Is this your printer?')).toBeTruthy()
     expect(screen.getByRole('listitem', { current: 'step' }).textContent).toBe('3 Your printer')
-    fireEvent.click(button('Looks right'))
-    expect(await screen.findByRole('heading', { name: 'You’re set up' })).toBeTruthy()
+    fireEvent.click(screen.getByText('Looks right'))
+    expect(await screen.findByText('You’re set up')).toBeTruthy()
     expect(screen.queryByRole('listitem', { current: 'step' })).toBeNull()
-    fireEvent.click(button('Start a project'))
+    fireEvent.click(screen.getByText('Start a project'))
     expect(await screen.findByTestId('start-screen')).toBeTruthy()
     expect(saved()).toEqual([
       { step: 'check', done: false },
