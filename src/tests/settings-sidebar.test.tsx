@@ -84,6 +84,9 @@ describe('Settings sidebar', () => {
     fireEvent.mouseOut(item)
     expect(screen.getByRole('region', { name })).toBeTruthy()
     const items = within(nav).getAllByRole('button')
+    // The role query leaves out hidden buttons, so all four items, the clicked one among them, must still be listed.
+    expect(items).toHaveLength(4)
+    expect(items).toContain(item)
     expect(items.map((each) => looks(each, row))).toEqual(items.map((each) => (each === item ? open : closed)))
   })
 })
