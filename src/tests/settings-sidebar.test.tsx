@@ -39,6 +39,18 @@ const icon: (keyof CSSStyleDeclaration)[] = ['display', 'width', 'height', 'flex
 // jsdom keeps the gap shorthand whole and leaves columnGap empty, so the row reads gap.
 const iconRow: (keyof CSSStyleDeclaration)[] = ['display', 'gap', 'paddingLeft']
 
+/** How an icon sits in its row, with one style read for the icon and one for the row. */
+const placed = (iconElement: Element) => {
+  const iconStyle = getComputedStyle(iconElement)
+  const rowStyle = getComputedStyle(iconElement.parentElement as Element)
+  return {
+    icon: icon.map((prop) => iconStyle[prop]),
+    row: iconRow.map((prop) => rowStyle[prop]),
+    // An icon with no align-self of its own takes its row's align-items. jsdom reports that unset value as ''.
+    align: iconStyle.alignSelf === '' || iconStyle.alignSelf === 'auto' ? rowStyle.alignItems : iconStyle.alignSelf,
+  }
+}
+
 beforeAll(() => {
   const style = document.createElement('style')
   style.textContent = readFileSync(`${import.meta.dirname}/../studio/studio.css`, 'utf8')
@@ -128,8 +140,7 @@ describe('Settings sidebar', () => {
   it('puts an icon before each item, set like the main sidebar icons', () => {
     const { main, nav } = realSidebars()
     const projectsRow = within(main).getByTestId('projects-row')
-    const mainIcon = looks(projectsRow.firstElementChild as Element, icon)
-    const mainRow = looks(projectsRow, iconRow)
+    const mainIcon = placed(projectsRow.firstElementChild as Element)
     const items = within(nav).getAllByRole('button')
     expect(items.map((item) => item.textContent?.trim())).toEqual(['Agents and models', 'Slicer and printer', 'Build tools', 'Projects folder'])
     for (const item of items) {
@@ -137,8 +148,7 @@ describe('Settings sidebar', () => {
       expect(item.firstChild).toBe(first)
       expect(first.getAttribute('aria-hidden')).toBe('true')
       expect(first.querySelector('svg')).not.toBeNull()
-      expect(looks(first, icon)).toEqual(mainIcon)
-      expect(looks(item, iconRow)).toEqual(mainRow)
+      expect(placed(first)).toEqual(mainIcon)
     }
   })
 })
