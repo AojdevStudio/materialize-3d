@@ -75,15 +75,15 @@ describe('Settings sidebar', () => {
     { from: 'folder', name: 'Agents and models' },
   ] as const)('$name opens its section, and only it has the selected fill', ({ from, name }) => {
     const { main, nav } = sidebars(from)
-    // A role query checks that each button shows, with a fresh style per button. The style reads here check these buttons
-    // already, so the lists skip that check and the item is found by its text.
+    // A role query reads a fresh style for each button it checks, and a click throws those away. So the reference rows,
+    // which this test draws itself, skip the check that they show. The Settings items get it once, after the click.
     const [open, closed] = within(main).getAllByRole('button', { hidden: true }).map((each) => looks(each, row))
-    const items = within(nav).getAllByRole('button', { hidden: true })
     const item = within(nav).getByText(name)
     fireEvent.click(item)
     // jsdom counts the last clicked element as hovered, so the pointer leaves before the selected fill is read.
     fireEvent.mouseOut(item)
     expect(screen.getByRole('region', { name })).toBeTruthy()
+    const items = within(nav).getAllByRole('button')
     expect(items.map((each) => looks(each, row))).toEqual(items.map((each) => (each === item ? open : closed)))
   })
 })
