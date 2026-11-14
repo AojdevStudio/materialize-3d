@@ -134,7 +134,7 @@ describe('settings', () => {
     render(<StudioApp />)
     await openSettings()
     const nav = within(screen.getByRole('navigation', { name: 'Settings' }))
-    expect(nav.getAllByRole('button').map((item) => item.textContent)).toEqual(['Agents and models', 'Slicer and printer', 'Build tools', 'Projects folder'])
+    expect(nav.getAllByRole('button').map((item) => item.textContent?.trim())).toEqual(['Agents and models', 'Slicer and printer', 'Build tools', 'Projects folder'])
     expect(nav.getByRole('button', { name: 'Agents and models' }).getAttribute('aria-current')).toBe('page')
     expect(screen.queryByText(/Agent tools/)).toBeNull()
     expect(screen.queryByTestId('start-screen')).toBeNull()

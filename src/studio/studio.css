@@ -141,6 +141,8 @@ pre {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  /* The height the panel button gives it, so a brand row without that button sits at the same place. */
+  min-height: 40px;
   padding: 0 0 10px;
 }
 
@@ -272,6 +274,11 @@ pre {
 .row-open[aria-current='true'],
 .row-open[aria-current='page'] {
   background: var(--s-soft);
+}
+
+/* A row holds its content at the top, so a one-line row centers its icon on the text, as the group headers do. */
+.row-open > .side-icon {
+  align-self: center;
 }
 
 .mark {
