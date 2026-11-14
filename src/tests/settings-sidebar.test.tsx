@@ -36,7 +36,8 @@ const panel: (keyof CSSStyleDeclaration)[] = ['width', 'paddingTop', 'paddingRig
 const row: (keyof CSSStyleDeclaration)[] = ['paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft', 'fontSize', 'fontWeight', 'background']
 const header: (keyof CSSStyleDeclaration)[] = ['display', 'alignItems', 'minHeight', 'paddingBottom']
 const icon: (keyof CSSStyleDeclaration)[] = ['display', 'width', 'height', 'flexShrink']
-const iconRow: (keyof CSSStyleDeclaration)[] = ['display', 'columnGap', 'paddingLeft']
+// jsdom keeps the gap shorthand whole and leaves columnGap empty, so the row reads gap.
+const iconRow: (keyof CSSStyleDeclaration)[] = ['display', 'gap', 'paddingLeft']
 
 beforeAll(() => {
   const style = document.createElement('style')
@@ -61,6 +62,27 @@ function sidebars(from: Section) {
         </button>
       </nav>
       <Open from={from} />
+    </>,
+  )
+  return { main: screen.getByRole('navigation', { name: 'Projects' }), nav: screen.getByRole('navigation', { name: 'Settings' }) }
+}
+
+/** The real main sidebar beside Settings. */
+function realSidebars() {
+  render(
+    <>
+      <Sidebar
+        projects={[]}
+        current={null}
+        engine=""
+        printer={null}
+        onOpen={() => {}}
+        onNew={() => {}}
+        onSettings={() => {}}
+        onError={() => {}}
+        onStatus={() => {}}
+      />
+      <Open from="agents" />
     </>,
   )
   return { main: screen.getByRole('navigation', { name: 'Projects' }), nav: screen.getByRole('navigation', { name: 'Settings' }) }
@@ -95,40 +117,28 @@ describe('Settings sidebar', () => {
     expect(items.map((each) => looks(each, row))).toEqual(items.map((each) => (each === item ? open : closed)))
   })
 
-  it('has the main sidebar brand row, and an icon before each item set like the main sidebar icons', () => {
-    render(
-      <>
-        <Sidebar
-          projects={[]}
-          current={null}
-          engine=""
-          printer={null}
-          onOpen={() => {}}
-          onNew={() => {}}
-          onSettings={() => {}}
-          onError={() => {}}
-          onStatus={() => {}}
-        />
-        <Open from="agents" />
-      </>,
-    )
-    const main = screen.getByRole('navigation', { name: 'Projects' })
-    const nav = screen.getByRole('navigation', { name: 'Settings' })
+  it('has the main sidebar brand row', () => {
+    const { main, nav } = realSidebars()
     const brand = within(main).getByTestId('brand')
     const settingsBrand = within(nav).getByTestId('brand')
     expect(settingsBrand.outerHTML).toBe(brand.outerHTML)
     expect(looks(settingsBrand.parentElement as Element, header)).toEqual(looks(brand.parentElement as Element, header))
+  })
 
+  it('puts an icon before each item, set like the main sidebar icons', () => {
+    const { main, nav } = realSidebars()
     const projectsRow = within(main).getByTestId('projects-row')
-    const mainIcon = projectsRow.firstElementChild as Element
+    const mainIcon = looks(projectsRow.firstElementChild as Element, icon)
+    const mainRow = looks(projectsRow, iconRow)
     const items = within(nav).getAllByRole('button')
     expect(items.map((item) => item.textContent?.trim())).toEqual(['Agents and models', 'Slicer and printer', 'Build tools', 'Projects folder'])
     for (const item of items) {
       const first = item.firstElementChild as Element
+      expect(item.firstChild).toBe(first)
       expect(first.getAttribute('aria-hidden')).toBe('true')
       expect(first.querySelector('svg')).not.toBeNull()
-      expect(looks(first, icon)).toEqual(looks(mainIcon, icon))
-      expect(looks(item, iconRow)).toEqual(looks(projectsRow, iconRow))
+      expect(looks(first, icon)).toEqual(mainIcon)
+      expect(looks(item, iconRow)).toEqual(mainRow)
     }
   })
 })
