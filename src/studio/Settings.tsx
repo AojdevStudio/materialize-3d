@@ -5,15 +5,20 @@ import { checkSlicer, projectsFolder, sidecar } from './api'
 import { Mark } from './ModelPicker'
 import { agentRows, buildRows, forgetRefused, type Found, type Row, slicerRow } from './SetupCheck'
 import { astraSignedIn } from './SetupModel'
+import { BrandRow, Icon } from './Sidebar'
+import chat from '../assets/icons/message-square.svg?raw'
+import layers from '../assets/icons/layers.svg?raw'
+import blocks from '../assets/icons/module-three.svg?raw'
+import terminal from '../assets/icons/terminal.svg?raw'
 
 const ORDER = ['agents', 'slicer', 'tools', 'folder'] as const
 export type Section = (typeof ORDER)[number]
 
-const SECTIONS: Record<Section, { name: string; about: string }> = {
-  agents: { name: 'Agents and models', about: 'Who does the work, and the model new projects start with.' },
-  slicer: { name: 'Slicer and printer', about: 'What makes the print-ready 3MF, and the printer it slices for.' },
-  tools: { name: 'Build tools', about: 'What the agent builds and checks your parts with.' },
-  folder: { name: 'Projects folder', about: 'Each project is a folder here, with its parts, guides, and print files.' },
+const SECTIONS: Record<Section, { name: string; about: string; icon: string }> = {
+  agents: { name: 'Agents and models', about: 'Who does the work, and the model new projects start with.', icon: chat },
+  slicer: { name: 'Slicer and printer', about: 'What makes the print-ready 3MF, and the printer it slices for.', icon: layers },
+  tools: { name: 'Build tools', about: 'What the agent builds and checks your parts with.', icon: terminal },
+  folder: { name: 'Projects folder', about: 'Each project is a folder here, with its parts, guides, and print files.', icon: blocks },
 }
 
 type Props = {
@@ -208,8 +213,10 @@ export default function Settings({ section, onSection, models, onSaved, onFix, o
   return (
     <div className="settings" data-testid="settings">
       <nav className="sessions" aria-label="Settings">
+        <BrandRow />
         {ORDER.map((id) => (
           <button key={id} type="button" className="row-open" aria-current={id === section ? 'page' : undefined} onClick={() => onSection(id)}>
+            <Icon svg={SECTIONS[id].icon} />
             {SECTIONS[id].name}
           </button>
         ))}
