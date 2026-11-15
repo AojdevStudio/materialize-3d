@@ -24,13 +24,13 @@ export type Release = {
 };
 
 export const release: Release = {
-  version: "0.3.1",
+  version: "0.3.2",
   repoUrl: "https://github.com/AojdevStudio/materialize-3d",
   releasesUrl: "https://github.com/AojdevStudio/materialize-3d/releases",
   docsUrl: "https://github.com/AojdevStudio/materialize-3d#readme",
   dmgUrl:
-    "https://github.com/AojdevStudio/materialize-3d/releases/download/v0.3.1/Materialize-3D-0.3.1-macos-arm64.dmg",
-  sha256: "47a28b08545ecd64a51585084fd19b14b088f0012bd8ca6ed9411dfd9c0b7aee",
+    "https://github.com/AojdevStudio/materialize-3d/releases/download/v0.3.2/Materialize-3D-0.3.2-macos-arm64.dmg",
+  sha256: "5f883a5f5f88983da486c895ff059a72b1628847194be5e352b2f564c2f8b06a",
   signed: true,
   notarized: true,
   testedMacOS: "macOS 26.7.2",
