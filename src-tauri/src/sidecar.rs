@@ -542,7 +542,7 @@ pub(crate) mod tests {
         folders: Folders,
         env: Vec<String>,
         exit: Exit,
-        engine_states: Vec<String>,
+        engine_events: Vec<Value>,
         host_requests: Vec<String>,
         pub(crate) keychain_prefix: String,
         pub(crate) providers: Vec<String>,
@@ -618,8 +618,11 @@ pub(crate) mod tests {
         assert_eq!(STORE_FOLDER, contract.folders.store);
         assert_eq!(["PATH"].into_iter().chain(PASSED_ENV).collect::<Vec<_>>(), contract.env);
         assert_eq!([EXIT_DONE, EXIT_STORE_IN_USE], [contract.exit.done, contract.exit.store_in_use]);
-        let states = [EngineState::Restarting, EngineState::Stopped].map(|state| serde_json::to_value(state).expect("json"));
-        assert_eq!(states.to_vec(), contract.engine_states.iter().map(|state| json!(state)).collect::<Vec<_>>());
+        let samples = &contract.engine_events;
+        let detail = |i: usize| samples[i]["detail"].as_str().expect("a detail").to_owned();
+        let events = [EngineEvent { state: EngineState::Restarting, detail: detail(0) }, EngineEvent { state: EngineState::Stopped, detail: detail(1) }]
+            .map(|event| serde_json::to_value(event).expect("json"));
+        assert_eq!(events.to_vec(), *samples);
     }
 
     #[test]

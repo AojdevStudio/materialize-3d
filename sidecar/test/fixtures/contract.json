@@ -15,7 +15,10 @@
   "folders": { "store": "state", "pictures": "pictures" },
   "env": ["PATH", "HOME", "USER", "LANG", "TMPDIR"],
   "exit": { "done": 0, "storeInUse": 75 },
-  "engineStates": ["restarting", "stopped"],
+  "engineEvents": [
+    { "type": "engine", "state": "restarting", "detail": "the engine exited with exit status: 1" },
+    { "type": "engine", "state": "stopped", "detail": "Another copy of Materialize 3D is open. Quit it, then open this one again." }
+  ],
   "hostRequests": ["keychain.get", "keychain.set", "keychain.delete", "printer.check", "slice", "busy"],
   "keychainPrefix": "inference.",
   "providers": ["anthropic", "openai-codex", "opencode-go"],

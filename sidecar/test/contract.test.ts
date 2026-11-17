@@ -9,7 +9,6 @@ import { Host } from '../src/host'
 import { legacyProjects } from '../src/legacy'
 import { handlers, type Services } from '../src/methods'
 import {
-  ENGINE_STATES,
   EXIT,
   FLAGS,
   type HostRequest,
@@ -19,6 +18,7 @@ import {
   PLATES,
   PROVIDERS,
   SKIPPED,
+  type SidecarEvent,
 } from '../src/protocol'
 import { skipped, Store } from '../src/store'
 import contract from './fixtures/contract.json'
@@ -40,11 +40,18 @@ describe('the contract with Rust', () => {
     expect(contract.folders.pictures).toBe(PICTURES_FOLDER)
     expect(contract.env).toEqual([...KEPT_ENV])
     expect(contract.exit).toEqual(EXIT)
-    expect(contract.engineStates).toEqual([...ENGINE_STATES])
     expect(contract.providers).toEqual([...PROVIDERS])
     expect(contract.metaDir).toBe(META_DIR)
     expect(contract.skipped.names).toEqual([...SKIPPED])
     expect(contract.plates).toEqual([...PLATES])
+  })
+
+  test('holds the engine events Rust sends the window', () => {
+    const events: Extract<SidecarEvent, { type: 'engine' }>[] = [
+      { type: 'engine', state: 'restarting', detail: 'the engine exited with exit status: 1' },
+      { type: 'engine', state: 'stopped', detail: 'Another copy of Materialize 3D is open. Quit it, then open this one again.' },
+    ]
+    expect(contract.engineEvents).toEqual(events)
   })
 
   test('skips the names the file list skips', () => {
