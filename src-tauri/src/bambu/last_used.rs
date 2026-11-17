@@ -7,8 +7,10 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use super::preset_name::bambu_lab_printer;
 use super::presets::PresetKind;
 use super::{io_err, parse_json_object, BambuError, Plate, Result};
+use crate::studio::folder::{inside, Refused};
 
 /// The printer, nozzle, quality, filament, and plate Bambu Studio last had selected. Bambu Studio always records a
 /// printer once one is chosen. The process, the filament, and the plate can each be missing.
@@ -60,19 +62,13 @@ struct Selected {
 }
 
 /// Bambu Studio's config folder: `~/Library/Application Support/BambuStudio` on macOS, `~/.config/BambuStudio` on Linux.
-fn config_dir() -> Option<PathBuf> {
+pub fn config_dir() -> Option<PathBuf> {
     dirs::config_dir().map(|dir| dir.join("BambuStudio"))
 }
 
-/// What Bambu Studio last used on this computer, for the printer step of setup. Nothing when Bambu Studio has never
-/// run here, or when its last printer is not named as Bambu Lab's printer presets are.
-#[tauri::command]
-pub async fn bambu_last_used() -> Result<Option<LastUsed>, String> {
-    let dir = config_dir().ok_or("this computer has no config folder")?;
-    read(&dir).map_err(|e| e.to_string())
-}
-
-fn read(dir: &Path) -> Result<Option<LastUsed>> {
+/// What Bambu Studio last used, read from its config folder `dir`. Nothing when Bambu Studio has never run here, or
+/// when its last printer is not named as Bambu Lab's printer presets are.
+pub fn read(dir: &Path) -> Result<Option<LastUsed>> {
     let path = dir.join("BambuStudio.conf");
     let text = match fs::read_to_string(&path) {
         Ok(text) => text,
@@ -88,7 +84,7 @@ fn read(dir: &Path) -> Result<Option<LastUsed>> {
     let Some(machine) = chosen(presets.machine).map(|name| preset(PresetKind::Machine, name)).transpose()? else {
         return Ok(None);
     };
-    let Some((printer, nozzle)) = machine.system.as_deref().and_then(printer_and_nozzle) else {
+    let Some((printer, nozzle)) = machine.system.as_deref().and_then(bambu_lab_printer) else {
         return Ok(None);
     };
     Ok(Some(LastUsed {
@@ -101,29 +97,26 @@ fn read(dir: &Path) -> Result<Option<LastUsed>> {
     }))
 }
 
-/// The two parts of a Bambu Lab printer preset's name, `Bambu Lab <model> <nozzle> nozzle`. Bambu Studio ships
-/// printers of other makers named the same way, such as `Prusa MK3S 0.4 nozzle`, and the slice step cannot use them.
-fn printer_and_nozzle(machine: &str) -> Option<(&str, &str)> {
-    if !machine.starts_with("Bambu Lab ") {
-        return None;
-    }
-    machine.strip_suffix(" nozzle")?.rsplit_once(' ')
-}
-
 /// A preset Bambu Studio names, with the system preset under it. A preset the person made is a file of that name in
-/// their preset folder, whose `inherits` names the system preset it was made from.
+/// their preset folder, whose `inherits` names the system preset it was made from. A name with no file is a system
+/// preset.
 fn preset(dir: &Path, folder: &str, kind: PresetKind, name: String) -> Result<Preset> {
-    let made = dir.join("user").join(folder).join(kind.as_str()).join(format!("{name}.json"));
-    // The file is read where it really is, so a name or a link that leads out of the config folder is refused.
-    let real = match made.canonicalize() {
+    let rel = Path::new("user").join(folder).join(kind.as_str()).join(format!("{name}.json"));
+    let made = dir.join(&rel);
+    let system = |name: String| Ok(Preset { system: Some(name.clone()), name });
+    let real = match inside(dir, &rel) {
         Ok(real) => real,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Preset { system: Some(name.clone()), name }),
-        Err(e) => return Err(io_err(&made)(e)),
+        Err(Refused::Unreadable(e)) if e.kind() == io::ErrorKind::NotFound => return system(name),
+        Err(Refused::Unreadable(e)) => return Err(io_err(&made)(e)),
+        Err(Refused::NotAName | Refused::LeadsOutside) => {
+            return Err(BambuError::Preset(format!("{} leads outside Bambu Studio's config folder", made.display())))
+        }
     };
-    if !real.starts_with(dir.canonicalize().map_err(io_err(dir))?) {
-        return Err(BambuError::Preset(format!("{} leads outside Bambu Studio's config folder", made.display())));
-    }
-    let text = fs::read_to_string(&real).map_err(io_err(&real))?;
+    let text = match fs::read_to_string(&real) {
+        Ok(text) => text,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return system(name),
+        Err(e) => return Err(io_err(&real)(e)),
+    };
     let system = match parse_json_object(&text, &made)?.remove("inherits") {
         None => None,
         // Bambu Studio writes an empty name for a preset made from nothing.
@@ -213,23 +206,6 @@ mod tests {
         assert!(err.to_string().contains("leads outside Bambu Studio's config folder"), "{err}");
     }
 
-    #[test]
-    fn a_printer_preset_name_splits_into_the_printer_and_its_nozzle() {
-        for (machine, parts) in [
-            ("Bambu Lab P2S 0.4 nozzle", Some(("Bambu Lab P2S", "0.4"))),
-            ("Bambu Lab A1 mini 0.2 nozzle", Some(("Bambu Lab A1 mini", "0.2"))),
-            ("Bambu Lab X1 Carbon 0.6 nozzle", Some(("Bambu Lab X1 Carbon", "0.6"))),
-            ("Bambu Lab P2S nozzle", Some(("Bambu Lab", "P2S"))),
-            ("Bambu Lab P2S", None),
-            ("Bambu Lab P2S 0.4 nozzle - mine", None),
-            ("Prusa MK3S 0.4 nozzle", None),
-            ("Bambu PETG Basic @BBL P2S 0.4 nozzle", None),
-            ("0.20mm Standard @BBL P2S", None),
-        ] {
-            assert_eq!(printer_and_nozzle(machine), parts, "{machine}");
-        }
-    }
-
     #[cfg(unix)]
     #[test]
     fn a_preset_name_is_read_where_it_really_leads_and_a_missing_file_is_a_system_preset() {
@@ -250,8 +226,8 @@ mod tests {
         refused("Linked");
         refused("../../../../outside");
         refused(&config.around.path().join("outside").display().to_string());
-        assert_eq!(read("../../../../nothing"), Ok(system("../../../../nothing")));
-        assert_eq!(read("/u1-nothing/here"), Ok(system("/u1-nothing/here")));
+        refused("../../../../nothing");
+        refused("/u1-nothing/here");
     }
 
     #[test]

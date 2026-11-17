@@ -2,15 +2,14 @@
 //! sliced by the validated Bambu Studio build with its own system presets merged in full.
 
 use std::fs::File;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use serde::{Deserialize, Serialize};
 
+use super::folder::{inside, Refused};
 use super::print_info::{parse_slice_info, SliceInfo};
-use crate::bambu::{
-    printer_choices, resolve_presets, BambuError, BambuStudio, Plate, PresetSelection, PrinterChoice, ResolvedPresets, VALIDATED_VERSIONS,
-};
+use crate::bambu::{resolve_presets, BambuStudio, Plate, PresetSelection, ResolvedPresets};
 
 /// The printer a slice runs for: three Bambu Lab system presets by name, and the plate. With no plate, the slice
 /// uses the default plate of the printer's model.
@@ -63,17 +62,6 @@ pub fn check(printer: &Printer, cache_root: &Path) -> Result<(), String> {
     presets_for(&studio, printer, cache_root).map(|_| ())
 }
 
-/// The printers the validated Bambu Studio can slice for, for the printer step of setup to pick from.
-#[tauri::command]
-pub async fn studio_printers() -> Result<Vec<PrinterChoice>, String> {
-    tauri::async_runtime::spawn_blocking(|| {
-        let studio = BambuStudio::locate().map_err(|e| e.to_string())?;
-        printer_choices(&studio.profiles_dir).map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| e.to_string())?
-}
-
 fn presets_for(studio: &BambuStudio, printer: &Printer, cache_root: &Path) -> Result<(ResolvedPresets, Plate), String> {
     let selection = PresetSelection { machine: printer.machine.clone(), process: printer.process.clone(), filament: printer.filament.clone() };
     std::fs::create_dir_all(cache_root).map_err(|e| format!("{}: {e}", cache_root.display()))?;
@@ -82,50 +70,8 @@ fn presets_for(studio: &BambuStudio, printer: &Printer, cache_root: &Path) -> Re
     Ok((presets, plate))
 }
 
-/// What setup's check shows for the slicer: the Bambu Studio the slice step would use.
-#[derive(Debug, Serialize)]
-#[cfg_attr(test, derive(ts_rs::TS))]
-#[serde(tag = "found", rename_all = "camelCase")]
-pub enum SlicerCheck {
-    Ready { version: String },
-    None,
-    Other { detail: String },
-}
-
-/// Looks for the Bambu Studio the slice step uses. Each candidate answers `--help`, which can take seconds, so the
-/// search runs off the main thread.
-#[tauri::command]
-pub async fn studio_slicer() -> Result<SlicerCheck, String> {
-    let located = tauri::async_runtime::spawn_blocking(BambuStudio::locate).await.map_err(|e| e.to_string())?;
-    Ok(slicer_check(located))
-}
-
-fn slicer_check(located: crate::bambu::Result<BambuStudio>) -> SlicerCheck {
-    match located {
-        Ok(studio) => SlicerCheck::Ready { version: studio.version.to_string() },
-        Err(BambuError::StudioNotFound { .. }) => SlicerCheck::None,
-        Err(BambuError::UnvalidatedStudio { found }) => SlicerCheck::Other {
-            detail: format!(
-                "Bambu Studio {} is installed. The app slices with version {}.",
-                found.iter().map(|build| build.version.as_ref().map_or("of an unknown version", |v| v.as_str())).collect::<Vec<_>>().join(", "),
-                VALIDATED_VERSIONS.join(" or "),
-            ),
-        },
-        Err(other) => SlicerCheck::Other { detail: other.to_string() },
-    }
-}
-
-/// A path the agent named, which must stay inside its project folder.
-fn inside(dir: &Path, rel: &str) -> Result<PathBuf, String> {
-    let path = Path::new(rel);
-    if rel.is_empty() || !path.components().all(|c| matches!(c, Component::Normal(_))) {
-        return Err(format!("{rel:?} is not a path inside the project folder"));
-    }
-    Ok(dir.join(path))
-}
-
-/// The real paths of the inputs and the output. A path is read and written where it really is, so one that leads
-/// out of the project through a symbolic link is refused like one that names a place outside it.
+/// The real paths of the inputs and the output. The output's folder is made when it is missing. The output's own
+/// name is not followed, so a link there is replaced by the 3MF and nothing is written where it leads.
 fn resolve(dir: &Path, inputs: &[String], output: &str) -> Result<(Vec<PathBuf>, PathBuf), String> {
     if inputs.is_empty() {
         return Err("name at least one STL file to slice".to_owned());
@@ -134,27 +80,28 @@ fn resolve(dir: &Path, inputs: &[String], output: &str) -> Result<(Vec<PathBuf>,
         return Err(format!("{output:?} must end in .3mf"));
     }
     let root = dir.canonicalize().map_err(|e| format!("{}: {e}", dir.display()))?;
-    let real = |path: &Path, rel: &str| -> Result<PathBuf, String> {
-        let path = path.canonicalize().map_err(|_| format!("{rel} does not exist"))?;
-        if path.starts_with(&root) { Ok(path) } else { Err(format!("{rel} leads outside the project folder")) }
+    let real = |path: &Path, named: &str| {
+        inside(&root, path).map_err(|refused| match refused {
+            Refused::NotAName => format!("{named:?} is not a path inside the project folder"),
+            Refused::LeadsOutside => format!("{named} leads outside the project folder"),
+            Refused::Unreadable(_) => format!("{named} does not exist"),
+        })
     };
-    let inputs = inputs.iter().map(|rel| real(&inside(dir, rel)?, rel)).collect::<Result<Vec<_>, _>>()?;
-    let target = inside(dir, output)?;
-    // The output's folder is made one level at a time, and each level that exists is checked where it really is
-    // first, so no folder is ever made outside the project.
-    let mut folder = root.clone();
-    for part in Path::new(output).parent().map_or_else(Vec::new, |parent| parent.components().collect()) {
-        let next = folder.join(part);
-        match std::fs::symlink_metadata(&next) {
-            Ok(_) => folder = real(&next, output)?,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                std::fs::create_dir(&next).map_err(|e| format!("{}: {e}", next.display()))?;
-                folder = next;
-            }
-            Err(e) => return Err(format!("{}: {e}", next.display())),
-        }
+    let inputs = inputs
+        .iter()
+        .map(|rel| real(Path::new(rel), rel).and_then(|path| if path.exists() { Ok(path) } else { Err(format!("{rel} does not exist")) }))
+        .collect::<Result<Vec<_>, _>>()?;
+    let output_path = Path::new(output);
+    let folder = match output_path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
+        Some(parent) => real(parent, output)?,
+        None => root,
+    };
+    // Each missing level is made on its own, so one that appears meanwhile fails the make instead of being followed.
+    let missing: Vec<&Path> = folder.ancestors().take_while(|level| !level.exists()).collect();
+    for level in missing.into_iter().rev() {
+        std::fs::create_dir(level).map_err(|e| format!("{}: {e}", level.display()))?;
     }
-    Ok((inputs, folder.join(target.file_name().expect("a path inside the project names a file"))))
+    Ok((inputs, folder.join(output_path.file_name().expect("a name that ends in .3mf"))))
 }
 
 fn slice_in(studio: &BambuStudio, dir: &Path, inputs: &[String], output: &str, printer: &Printer, cache_root: &Path) -> Result<Sliced, String> {
@@ -225,6 +172,7 @@ fn slice_info(path: &Path) -> Result<SliceInfo, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bambu::printer_choices;
 
     #[cfg(unix)]
     #[test]
@@ -246,15 +194,6 @@ mod tests {
         let (inputs, target) = resolve(project.path(), &["cube.stl".to_owned()], "out/cube.3mf").expect("inside");
         let root = project.path().canonicalize().expect("root");
         assert_eq!((inputs, target), (vec![root.join("cube.stl")], root.join("out/cube.3mf")));
-    }
-
-    #[test]
-    fn the_agent_can_name_only_paths_inside_its_project() {
-        let dir = Path::new("/projects/clip");
-        assert_eq!(inside(dir, "print/clip.3mf").expect("inside"), dir.join("print/clip.3mf"));
-        for bad in ["", "/etc/passwd", "../other/a.stl", "print/../../x.3mf", "./a.stl"] {
-            assert!(inside(dir, bad).is_err(), "{bad:?} must be refused");
-        }
     }
 
     #[cfg(unix)]
@@ -282,33 +221,6 @@ mod tests {
     }
 
     #[test]
-    fn the_slicer_check_says_which_bambu_studio_it_found() {
-        let version = |v: &str| serde_json::from_value(serde_json::json!(v)).expect("a version");
-        let validated = PathBuf::from("/opt/validated");
-        let build = |path: &str, version| crate::bambu::FoundBuild { path: PathBuf::from(path), version };
-        let found = [
-            Ok(BambuStudio { exe: validated.clone(), profiles_dir: PathBuf::from("/opt/profiles"), version: version("02.08.02.61") }),
-            Err(BambuError::StudioNotFound { searched: vec![PathBuf::from("/opt/missing")] }),
-            Err(BambuError::UnvalidatedStudio { found: vec![build("/opt/older", Some(version("01.10.00.00")))] }),
-            Err(BambuError::UnvalidatedStudio { found: vec![build("/opt/silent", None)] }),
-            Err(BambuError::ProfilesNotFound { exe: validated.clone() }),
-        ]
-        .map(|located| serde_json::to_value(slicer_check(located)).expect("json"));
-
-        let other = |detail: String| serde_json::json!({ "found": "other", "detail": detail });
-        assert_eq!(
-            found,
-            [
-                serde_json::json!({ "found": "ready", "version": "02.08.02.61" }),
-                serde_json::json!({ "found": "none" }),
-                other("Bambu Studio 01.10.00.00 is installed. The app slices with version 02.08.02.61.".to_owned()),
-                other("Bambu Studio of an unknown version is installed. The app slices with version 02.08.02.61.".to_owned()),
-                other(format!("no Bambu profile directory found next to {}", validated.display())),
-            ]
-        );
-    }
-
-    #[test]
     fn the_printer_takes_the_shape_the_sidecar_sends() {
         let contract = crate::sidecar::tests::contract();
         for printer in &contract.printers {
@@ -323,7 +235,7 @@ mod tests {
         assert_eq!(plates.iter().map(|plate| plate.setting()).collect::<Vec<_>>(), contract.plates);
     }
 
-    /// A 20 mm cube as an ASCII STL, outward normals, twelve facets.
+    /// A cube `size` mm on a side as an ASCII STL, twelve facets.
     fn cube_stl(size: f64) -> String {
         let v = |x: u8, y: u8, z: u8| [f64::from(x) * size, f64::from(y) * size, f64::from(z) * size];
         let quads: [[[u8; 3]; 4]; 6] = [

@@ -8,6 +8,8 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+use crate::bambu::preset_name;
+
 /// The print a 3MF holds, for the print files bar. A field the file does not hold stays empty.
 #[derive(Debug, Default, Clone, PartialEq, Serialize)]
 #[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
@@ -132,15 +134,14 @@ fn parse(slice_info: Option<&str>, project_settings: Option<&str>) -> PrintInfo 
     let mut filaments: Vec<String> = Vec::new();
     if let (Some(slice), Some(settings)) = (&slice, &settings) {
         for preset in slice.filament_slots.iter().filter_map(|slot| settings.filament_settings_id.get(slot.checked_sub(1)?)) {
-            let name = preset.split_once(" @").map_or(preset.as_str(), |(name, _)| name);
-            let name = name.strip_prefix("Bambu ").unwrap_or(name);
+            let name = preset_name::filament(preset);
             if !filaments.iter().any(|known| known == name) {
                 filaments.push(name.to_owned());
             }
         }
     }
     PrintInfo {
-        printer: settings.as_ref().and_then(|s| s.printer_model.as_deref()).map(|model| model.strip_prefix("Bambu Lab ").unwrap_or(model).to_owned()),
+        printer: settings.as_ref().and_then(|s| s.printer_model.as_deref()).map(|model| preset_name::model(model).to_owned()),
         filaments,
         layer_height_mm: settings.as_ref().and_then(|s| measure(s.layer_height.as_deref()?)),
         print_seconds: slice.as_ref().and_then(|s| s.print_seconds),

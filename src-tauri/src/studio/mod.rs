@@ -1,10 +1,13 @@
 //! The chat studio's native edges: the project folders the agent works in, the
-//! files it writes, the preview's navigation guard, and the slice step. The
-//! chats themselves live in the sidecar's store (`crate::sidecar`).
+//! files it writes, the preview's navigation guard, the slice step, and what
+//! setup asks about the slicer. The chats themselves live in the sidecar's
+//! store (`crate::sidecar`).
 
 pub mod files;
+pub(crate) mod folder;
 pub mod print_info;
 pub mod quit;
+pub mod setup;
 pub mod slice;
 pub mod window;
 

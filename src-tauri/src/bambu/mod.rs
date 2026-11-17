@@ -1,10 +1,13 @@
 //! The validated Bambu Studio and its system presets, for the agent's slice step
 //! (`crate::studio::slice`): [`BambuStudio::locate`] finds the build, and
 //! [`resolve_presets`] flattens the named presets into files its CLI loads.
+//! [`last_used`] reads what the person last chose in Bambu Studio, and [`preset_name`]
+//! reads the parts of a preset's name.
 
 pub mod last_used;
+mod locate;
+pub mod preset_name;
 mod presets;
-mod studio;
 
 use std::fs::{self, File};
 use std::io::{self, Write};
@@ -13,7 +16,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 pub use presets::{printer_choices, resolve_presets, PrinterChoice, ResolvedPresets};
-pub use studio::{BambuStudio, FoundBuild, VALIDATED_VERSIONS};
+pub use locate::{BambuStudio, FoundBuild, VALIDATED_VERSIONS};
 
 pub type Result<T, E = BambuError> = std::result::Result<T, E>;
 
@@ -210,7 +213,6 @@ fn write_atomic(path: &Path, data: &[u8]) -> Result<()> {
     })
 }
 
-/// Matches the wrapper's `JSON.stringify(value, null, 2) + "\n"`.
 fn write_json_atomic(path: &Path, value: &impl Serialize) -> Result<()> {
     let mut text = serde_json::to_string_pretty(value).map_err(|source| BambuError::Json {
         path: path.to_path_buf(),

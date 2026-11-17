@@ -1,3 +1,5 @@
+//! Finds the validated Bambu Studio build and the profiles it ships.
+
 use std::env;
 use std::fmt;
 use std::fs::File;
@@ -27,7 +29,7 @@ impl BambuVersion {
         VALIDATED_VERSIONS.contains(&self.0.as_str())
     }
 
-    /// Extracts the version the way the reference wrapper does: `BambuStudio-([^:\s]+)`.
+    /// The version in the banner of `--help`: the text after `BambuStudio-` up to a colon or a space.
     fn from_help(output: &str) -> Option<Self> {
         let (_, rest) = output.split_once("BambuStudio-")?;
         let end = rest
@@ -122,7 +124,7 @@ impl Sources {
         let candidates = discover();
         if candidates.is_empty() {
             return Err(BambuError::StudioNotFound {
-                searched: search_roots(),
+                searched: installs().into_iter().map(|(place, _)| place).collect(),
             });
         }
         select(candidates.into_iter().map(Probed::of).collect())
@@ -248,48 +250,46 @@ fn select(mut probed: Vec<Probed>) -> Result<BambuStudio> {
     })
 }
 
-fn search_roots() -> Vec<PathBuf> {
+/// Where Bambu Studio installs on this platform, in the order discovery tries them: each place, and the executables
+/// inside it, or none when the place is the executable. A folder name that ends in `*` stands for each folder whose
+/// name starts with the rest. The not-found error names these places.
+fn installs() -> Vec<(PathBuf, &'static [&'static str])> {
     let home = dirs::home_dir().unwrap_or_default();
     if cfg!(target_os = "macos") {
+        const APP: &[&str] = &["Contents/MacOS/BambuStudio"];
         vec![
-            PathBuf::from("/Applications/BambuStudio.app"),
-            home.join("Applications/BambuStudio.app"),
-            home.join("Applications/*/BambuStudio.app"),
+            (PathBuf::from("/Applications/BambuStudio.app"), APP),
+            (home.join("Applications/BambuStudio.app"), APP),
+            (home.join("Applications/*/BambuStudio.app"), APP),
         ]
     } else {
         vec![
-            PathBuf::from("/usr/bin/bambu-studio"),
-            PathBuf::from("/opt/bambu-studio*"),
-            home.join("opt/bambu-studio*/squashfs-root/AppRun"),
+            (PathBuf::from("/usr/bin/bambu-studio"), &[]),
+            (PathBuf::from("/opt/bambu-studio*"), &["squashfs-root/AppRun", "AppRun", "bin/bambu-studio"]),
+            (home.join("opt/bambu-studio*/squashfs-root/AppRun"), &[]),
         ]
     }
 }
 
-fn discover_candidates() -> Vec<Candidate> {
-    let home = dirs::home_dir().unwrap_or_default();
-    let exes: Vec<PathBuf> = if cfg!(target_os = "macos") {
-        let mut apps = vec![
-            PathBuf::from("/Applications/BambuStudio.app"),
-            home.join("Applications/BambuStudio.app"),
-        ];
-        apps.extend(subdirs(&home.join("Applications")).map(|d| d.join("BambuStudio.app")));
-        apps.into_iter()
-            .map(|app| app.join("Contents/MacOS/BambuStudio"))
-            .collect()
-    } else {
-        let mut exes = vec![PathBuf::from("/usr/bin/bambu-studio")];
-        for dir in prefixed_subdirs(Path::new("/opt"), "bambu-studio") {
-            exes.extend(
-                ["squashfs-root/AppRun", "AppRun", "bin/bambu-studio"].map(|rel| dir.join(rel)),
-            );
+/// Each path `place` names, with a folder name that ends in `*` standing for each folder whose name starts with the rest.
+fn expand(place: &Path) -> Vec<PathBuf> {
+    place.components().fold(vec![PathBuf::new()], |found, part| {
+        match part.as_os_str().to_str().and_then(|name| name.strip_suffix('*')) {
+            Some(start) => found.iter().flat_map(|dir| prefixed_subdirs(dir, start)).collect(),
+            None => found.into_iter().map(|dir| dir.join(part)).collect(),
         }
-        exes.extend(
-            prefixed_subdirs(&home.join("opt"), "bambu-studio")
-                .map(|dir| dir.join("squashfs-root/AppRun")),
-        );
-        exes
-    };
-    exes.into_iter()
+    })
+}
+
+fn discover_candidates() -> Vec<Candidate> {
+    installs()
+        .into_iter()
+        .flat_map(|(place, exes)| {
+            expand(&place).into_iter().flat_map(move |found| match exes {
+                [] => vec![found],
+                exes => exes.iter().map(|exe| found.join(exe)).collect(),
+            })
+        })
         .filter(|exe| exe.is_file())
         .map(|exe| Candidate {
             exe,
@@ -311,7 +311,7 @@ fn subdirs(dir: &Path) -> impl Iterator<Item = PathBuf> {
     found.into_iter()
 }
 
-fn prefixed_subdirs(dir: &Path, prefix: &'static str) -> impl Iterator<Item = PathBuf> {
+fn prefixed_subdirs<'a>(dir: &Path, prefix: &'a str) -> impl Iterator<Item = PathBuf> + 'a {
     subdirs(dir).filter(move |path| {
         path.file_name()
             .and_then(|name| name.to_str())
@@ -478,6 +478,25 @@ mod tests {
             profiles_dir: Some(profiles.to_path_buf()),
             version: Ok(version.map(|v| BambuVersion(v.to_owned()))),
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_star_stands_for_each_folder_whose_name_starts_with_the_rest() {
+        let root = tempfile::tempdir().expect("tempdir");
+        for dir in ["bambu-studio-2", "bambu-studio-1/squashfs-root", "orca", "bambu-studio-file"] {
+            std::fs::create_dir_all(root.path().join(dir)).expect("dir");
+        }
+        std::fs::remove_dir(root.path().join("bambu-studio-file")).expect("rmdir");
+        std::fs::write(root.path().join("bambu-studio-file"), "").expect("a file, not a folder");
+        let found = |place: &str| expand(&root.path().join(place));
+        assert_eq!(found("bambu-studio*"), [root.path().join("bambu-studio-1"), root.path().join("bambu-studio-2")]);
+        assert_eq!(found("bambu-studio*/squashfs-root/AppRun"), [
+            root.path().join("bambu-studio-1/squashfs-root/AppRun"),
+            root.path().join("bambu-studio-2/squashfs-root/AppRun"),
+        ]);
+        assert_eq!(found("*"), ["bambu-studio-1", "bambu-studio-2", "orca"].map(|dir| root.path().join(dir)));
+        assert_eq!(found("orca/x"), [root.path().join("orca/x")], "a place with no star is itself");
     }
 
     #[test]

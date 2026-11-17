@@ -1,6 +1,6 @@
-//! Port of the reference wrapper's `resolvePresets` (fusion-cad `bambu-cli.ts`): flatten a
-//! system preset's `inherits` chain and ordered `include` templates into one JSON file that
-//! Bambu Studio's CLI accepts via `--load-settings` / `--load-filaments`.
+//! Bambu Lab's system presets as Bambu Studio's CLI loads them. A preset's `inherits` chain and
+//! its ordered `include` templates flatten into one JSON file that `--load-settings` and
+//! `--load-filaments` accept. The printer step's lists come from the same profile tree.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
@@ -13,10 +13,12 @@ use serde::Serialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+use super::preset_name::printer_and_nozzle;
 use super::{
     hex, io_err, parse_json_object, read_json_object, write_atomic, write_json_atomic, BambuError,
     BambuStudio, JsonMap, Plate, PresetSelection, Result,
 };
+use crate::studio::folder::{inside, Refused};
 
 /// Bump when resolution semantics or the compiled-defaults probe changes; it keys the cache.
 pub const RESOLVER_SCHEMA_VERSION: u32 = 2;
@@ -255,8 +257,8 @@ pub fn resolve_presets(
     resolver.resolve_selection(defaults, selection, cache_dir)
 }
 
-/// Same as [`resolve_presets`] with the compiled defaults supplied by the caller (the
-/// wrapper's `--defaults-file`), so no Bambu binary is needed.
+/// Same as [`resolve_presets`] with the compiled defaults supplied by the caller, so no
+/// Bambu binary is needed.
 #[cfg(test)]
 fn resolve_presets_with_defaults(
     profiles_dir: &Path,
@@ -323,7 +325,8 @@ fn includes_list<'a>(value: Option<&'a Value>, context: &str) -> Result<Vec<&'a 
     }
 }
 
-/// Parses `^[+-]?(\d+(\.\d*)?|\.\d+)%?$` as a number, like the wrapper's `numericText`.
+/// A number as a profile spells one in text, `^[+-]?(\d+(\.\d*)?|\.\d+)%?$`. Other text that
+/// Rust would parse, such as `1e3`, is no number here.
 fn numeric_text(value: &str) -> Option<f64> {
     let body = value.strip_suffix('%').unwrap_or(value);
     let unsigned = body.strip_prefix(['+', '-']).unwrap_or(body);
@@ -344,7 +347,6 @@ fn numeric_text(value: &str) -> Option<f64> {
 /// True when the values differ only in how equal numbers are spelled ("0.5" vs "0.50"),
 /// which the include-vs-default comparison cannot decide safely.
 fn has_numeric_text_drift(left: &Value, right: &Value) -> bool {
-    // (comparable, drift) for one pair of strings.
     let compare = |a: &str, b: &str| -> (bool, bool) {
         if a == b {
             return (true, false);
@@ -389,13 +391,15 @@ fn sanitize_segment(value: &str) -> String {
     }
 }
 
+/// The file a preset is cached in: a readable stem and the start of the name's SHA-256, so two
+/// names with the same stem never share a file.
 fn preset_filename(name: &str) -> String {
     let hash = hex(&Sha256::digest(name.as_bytes()));
     let stem: String = sanitize_segment(name).chars().take(80).collect();
     format!("{stem}-{}.json", &hash[..10])
 }
 
-/// Lexical `path.resolve`: absolute, with `.` and `..` folded, symlinks untouched.
+/// The absolute path, with `.` and `..` folded by name. Links are not followed.
 fn lexical_absolute(path: &Path) -> Result<PathBuf> {
     let absolute = std::path::absolute(path).map_err(io_err(path))?;
     let mut out = PathBuf::new();
@@ -486,14 +490,14 @@ impl Resolver {
     }
 
     fn profile_path(&self, sub_path: &str) -> Result<PathBuf> {
-        let source = lexical_absolute(&self.profiles_dir.join(sub_path))?;
-        if !source.starts_with(&self.profiles_dir) {
-            return Err(preset_err(format!(
+        let named = self.profiles_dir.join(sub_path);
+        inside(&self.profiles_dir, sub_path).map_err(|refused| match refused {
+            Refused::Unreadable(e) => io_err(&named)(e),
+            Refused::NotAName | Refused::LeadsOutside => preset_err(format!(
                 "profile path escapes vendor root: {}",
-                source.display()
-            )));
-        }
-        Ok(source)
+                named.display()
+            )),
+        })
     }
 
     fn plates(&self, machine: &JsonMap, name: &str) -> Result<Plates> {
@@ -656,8 +660,8 @@ impl Resolver {
         self.defaults = defaults;
         let machine_name = selection.machine.as_str();
 
-        // Load and check every raw preset before resolving any, as the wrapper does, so a
-        // missing or template-only selection fails before partial work.
+        // Load and check every raw preset before resolving any, so a missing or template-only
+        // selection fails before partial work.
         let machine_raw = self.raw(PresetKind::Machine, machine_name)?;
         let process_raw = self.raw(PresetKind::Process, &selection.process)?;
         let filament_raw = self.raw(PresetKind::Filament, &selection.filament)?;
@@ -755,7 +759,7 @@ fn validate_machine(config: &JsonMap, name: &str) -> Result<()> {
             "machine {name:?} printer_variant {variant} is absent from nozzle_diameter"
         )));
     }
-    if !name.contains(&format!("{variant} nozzle")) {
+    if printer_and_nozzle(name).is_none_or(|(_, nozzle)| nozzle != variant) {
         return Err(preset_err(format!(
             "machine {name:?} does not identify its {variant} nozzle variant"
         )));
@@ -1134,7 +1138,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn a_profile_path_is_checked_by_name_only() {
+    fn a_profile_path_stays_in_the_profile_folder() {
         let root = tempfile::tempdir().expect("profiles");
         let outside = tempfile::tempdir().expect("outside");
         write(
@@ -1144,12 +1148,10 @@ mod tests {
         );
         std::os::unix::fs::symlink(outside.path(), root.path().join("linked")).expect("link");
         let resolver = Resolver::open(root.path()).expect("open");
-        let base = lexical_absolute(root.path()).expect("absolute");
+        let base = root.path().canonicalize().expect("real");
 
         assert_eq!(resolver.profile_path("machine/a.json").expect("inside"), base.join("machine/a.json"));
-        assert_eq!(resolver.profile_path("machine/../a.json").expect("folded"), base.join("a.json"));
-        assert_eq!(resolver.profile_path("linked/x.json").expect("a link out is not followed"), base.join("linked/x.json"));
-        for escaping in ["../x.json", "machine/../../x.json", "/etc/passwd"] {
+        for escaping in ["../x.json", "machine/../../x.json", "/etc/passwd", "machine/../a.json", "linked/x.json"] {
             let err = resolver.profile_path(escaping).expect_err(escaping).to_string();
             assert!(err.starts_with("profile path escapes vendor root: "), "{escaping}: {err}");
         }
@@ -1167,8 +1169,8 @@ mod tests {
         let config = config.as_object().expect("object");
         for (name, holds) in [
             ("Bambu Lab P2S 0.4 nozzle", true),
-            ("Bambu Lab P2S 0.4 nozzle - mine", true),
-            ("Bambu Lab P2S 10.4 nozzle", true),
+            ("Bambu Lab P2S 0.4 nozzle - mine", false),
+            ("Bambu Lab P2S 10.4 nozzle", false),
             ("Prusa MK3S 0.4 nozzle", true),
             ("Bambu Lab P2S 0.6 nozzle", false),
             ("Bambu Lab P2S 0.4", false),
@@ -1183,7 +1185,7 @@ mod tests {
     }
 
     #[test]
-    fn numeric_text_matches_the_wrapper_grammar() {
+    fn numeric_text_takes_only_plain_decimals() {
         assert_eq!(numeric_text("0.50"), Some(0.5));
         assert_eq!(numeric_text("+.5%"), Some(0.5));
         assert_eq!(numeric_text("1."), Some(1.0));
@@ -1193,8 +1195,7 @@ mod tests {
     }
 
     #[test]
-    fn preset_filenames_match_the_wrapper() {
-        // Values taken from the wrapper's resolved cache for the proven P2S run.
+    fn a_cached_preset_file_is_named_for_its_preset() {
         assert_eq!(
             preset_filename("Bambu PLA Basic @BBL P2S"),
             "Bambu-PLA-Basic-BBL-P2S-97639ee51f.json"

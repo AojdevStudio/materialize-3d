@@ -40,13 +40,13 @@ pub fn run() {
             studio::files::studio_pop_out,
             studio::files::studio_file_version,
             studio::files::studio_projects_folder,
-            studio::slice::studio_slicer,
+            studio::files::studio_open_files_privacy,
+            studio::setup::studio_slicer,
+            studio::setup::bambu_last_used,
+            studio::setup::studio_printers,
             studio::quit::studio_flush_started,
             studio::quit::studio_flush_failed,
             studio::quit::studio_flushed,
-            studio::quit::studio_open_files_privacy,
-            bambu::last_used::bambu_last_used,
-            studio::slice::studio_printers,
             sidecar::sidecar,
         ])
         .setup(|app| {

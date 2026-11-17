@@ -83,7 +83,7 @@ pub(crate) mod tests {
         // The window's numbers are JavaScript numbers. A file's size or time in milliseconds stays far below 2^53.
         let cfg = Config::new().with_large_int("number");
         let mut decls = Decls { cfg: &cfg, out: BTreeMap::new() };
-        decls.visit::<super::super::slice::SlicerCheck>();
+        decls.visit::<super::super::setup::SlicerCheck>();
         decls.visit::<super::super::files::ProjectFile>();
         decls.visit::<crate::bambu::last_used::LastUsed>();
         decls.visit::<crate::bambu::PrinterChoice>();
