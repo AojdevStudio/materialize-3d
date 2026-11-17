@@ -97,7 +97,11 @@ pub enum SlicerCheck {
 #[tauri::command]
 pub async fn studio_slicer() -> Result<SlicerCheck, String> {
     let located = tauri::async_runtime::spawn_blocking(BambuStudio::locate).await.map_err(|e| e.to_string())?;
-    Ok(match located {
+    Ok(slicer_check(located))
+}
+
+fn slicer_check(located: crate::bambu::Result<BambuStudio>) -> SlicerCheck {
+    match located {
         Ok(studio) => SlicerCheck::Ready { version: studio.version.to_string() },
         Err(BambuError::StudioNotFound { .. }) => SlicerCheck::None,
         Err(BambuError::UnvalidatedStudio { found }) => SlicerCheck::Other {
@@ -108,7 +112,7 @@ pub async fn studio_slicer() -> Result<SlicerCheck, String> {
             ),
         },
         Err(other) => SlicerCheck::Other { detail: other.to_string() },
-    })
+    }
 }
 
 /// A path the agent named, which must stay inside its project folder.
@@ -277,55 +281,46 @@ mod tests {
         assert_eq!(resolve(project.path(), &[], "out.3mf"), Err("name at least one STL file to slice".to_owned()));
     }
 
-    #[cfg(unix)]
     #[test]
     fn the_slicer_check_says_which_bambu_studio_it_found() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let profiles = tempfile::tempdir().expect("profiles");
-        let script = |name: &str, help: &str| {
-            let path = dir.path().join(name);
-            crate::write_test_script(&path, &format!("#!/bin/sh\necho '{help}'\n"));
-            path
-        };
-        let validated = script("validated", "BambuStudio-02.08.02.61: usage");
-        let older = script("older", "BambuStudio-01.10.00.00: usage");
-        let silent = script("silent", "usage");
-
-        // The check reads the slicer from the environment, as the app does. No other test that runs by default reads it.
-        let saved = ["BAMBU_STUDIO_CLI", "BAMBU_STUDIO_PROFILES"].map(|key| (key, std::env::var_os(key)));
-        let check = |cli: &Path, profiles: Option<&Path>| {
-            std::env::set_var("BAMBU_STUDIO_CLI", cli);
-            match profiles {
-                Some(dir) => std::env::set_var("BAMBU_STUDIO_PROFILES", dir),
-                None => std::env::remove_var("BAMBU_STUDIO_PROFILES"),
-            }
-            tauri::async_runtime::block_on(studio_slicer()).map(|found| serde_json::to_value(found).expect("json"))
-        };
+        let version = |v: &str| serde_json::from_value(serde_json::json!(v)).expect("a version");
+        let validated = PathBuf::from("/opt/validated");
+        let build = |path: &str, version| crate::bambu::FoundBuild { path: PathBuf::from(path), version };
         let found = [
-            check(&validated, Some(profiles.path())),
-            check(&dir.path().join("missing"), None),
-            check(&older, None),
-            check(&silent, None),
-            check(&validated, None),
-        ];
-        for (key, value) in saved {
-            match value {
-                Some(value) => std::env::set_var(key, value),
-                None => std::env::remove_var(key),
-            }
-        }
+            Ok(BambuStudio { exe: validated.clone(), profiles_dir: PathBuf::from("/opt/profiles"), version: version("02.08.02.61") }),
+            Err(BambuError::StudioNotFound { searched: vec![PathBuf::from("/opt/missing")] }),
+            Err(BambuError::UnvalidatedStudio { found: vec![build("/opt/older", Some(version("01.10.00.00")))] }),
+            Err(BambuError::UnvalidatedStudio { found: vec![build("/opt/silent", None)] }),
+            Err(BambuError::ProfilesNotFound { exe: validated.clone() }),
+        ]
+        .map(|located| serde_json::to_value(slicer_check(located)).expect("json"));
 
-        let other = |detail: String| Ok(serde_json::json!({ "found": "other", "detail": detail }));
+        let other = |detail: String| serde_json::json!({ "found": "other", "detail": detail });
         assert_eq!(
             found,
             [
-                Ok(serde_json::json!({ "found": "ready", "version": "02.08.02.61" })),
-                Ok(serde_json::json!({ "found": "none" })),
+                serde_json::json!({ "found": "ready", "version": "02.08.02.61" }),
+                serde_json::json!({ "found": "none" }),
                 other("Bambu Studio 01.10.00.00 is installed. The app slices with version 02.08.02.61.".to_owned()),
                 other("Bambu Studio of an unknown version is installed. The app slices with version 02.08.02.61.".to_owned()),
                 other(format!("no Bambu profile directory found next to {}", validated.display())),
             ]
         );
+    }
+
+    #[test]
+    fn the_printer_takes_the_shape_the_sidecar_sends() {
+        let contract = crate::sidecar::tests::contract();
+        for printer in &contract.printers {
+            serde_json::from_value::<Printer>(printer.clone()).unwrap_or_else(|e| panic!("{printer}: {e}"));
+            for field in ["machine", "process", "filament"] {
+                let mut missing = printer.clone();
+                missing.as_object_mut().expect("a printer is an object").remove(field);
+                assert!(serde_json::from_value::<Printer>(missing).is_err(), "a printer needs its {field}");
+            }
+        }
+        let plates: Vec<Plate> = contract.plates.iter().map(|name| serde_json::from_value(serde_json::json!(name)).expect("a plate")).collect();
+        assert_eq!(plates.iter().map(|plate| plate.setting()).collect::<Vec<_>>(), contract.plates);
     }
 
     /// A 20 mm cube as an ASCII STL, outward normals, twelve facets.
