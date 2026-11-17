@@ -1192,6 +1192,56 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn a_profile_path_is_checked_by_name_only() {
+        let root = tempfile::tempdir().expect("profiles");
+        let outside = tempfile::tempdir().expect("outside");
+        write(
+            root.path(),
+            "BBL.json",
+            json!({ "version": "1.0.0", "machine_list": [], "process_list": [], "filament_list": [], "machine_model_list": [] }),
+        );
+        std::os::unix::fs::symlink(outside.path(), root.path().join("linked")).expect("link");
+        let resolver = Resolver::open(root.path()).expect("open");
+        let base = lexical_absolute(root.path()).expect("absolute");
+
+        assert_eq!(resolver.profile_path("machine/a.json").expect("inside"), base.join("machine/a.json"));
+        assert_eq!(resolver.profile_path("machine/../a.json").expect("folded"), base.join("a.json"));
+        assert_eq!(resolver.profile_path("linked/x.json").expect("a link out is not followed"), base.join("linked/x.json"));
+        for escaping in ["../x.json", "machine/../../x.json", "/etc/passwd"] {
+            let err = resolver.profile_path(escaping).expect_err(escaping).to_string();
+            assert!(err.starts_with("profile path escapes vendor root: "), "{escaping}: {err}");
+        }
+    }
+
+    #[test]
+    fn a_machine_preset_name_must_hold_its_nozzle_variant() {
+        let config = json!({
+            "printer_variant": "0.4",
+            "nozzle_diameter": ["0.4"],
+            "printable_area": ["0x0"],
+            "printable_height": "250",
+            "machine_start_gcode": ";",
+        });
+        let config = config.as_object().expect("object");
+        for (name, holds) in [
+            ("Bambu Lab P2S 0.4 nozzle", true),
+            ("Bambu Lab P2S 0.4 nozzle - mine", true),
+            ("Bambu Lab P2S 10.4 nozzle", true),
+            ("Prusa MK3S 0.4 nozzle", true),
+            ("Bambu Lab P2S 0.6 nozzle", false),
+            ("Bambu Lab P2S 0.4", false),
+            ("Bambu Lab P2S", false),
+        ] {
+            assert_eq!(validate_machine(config, name).is_ok(), holds, "{name}");
+        }
+        assert_eq!(
+            validate_machine(config, "Bambu Lab P2S 0.6 nozzle").expect_err("refused").to_string(),
+            r#"machine "Bambu Lab P2S 0.6 nozzle" does not identify its 0.4 nozzle variant"#
+        );
+    }
+
     #[test]
     fn numeric_text_matches_the_wrapper_grammar() {
         assert_eq!(numeric_text("0.50"), Some(0.5));

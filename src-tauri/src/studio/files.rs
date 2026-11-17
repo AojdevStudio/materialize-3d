@@ -349,4 +349,99 @@ mod tests {
         let (_, odd) = create_ref(dir.path(), "..").expect("name");
         assert_eq!(odd, "refs/picture.png");
     }
+
+    /// Writes an empty file in `dir`, last changed `seconds` after 1970.
+    fn put(dir: &Path, rel: &str, seconds: u64) {
+        let path = dir.join(rel);
+        std::fs::create_dir_all(path.parent().expect("a folder")).expect("mkdir");
+        let file = std::fs::File::create(&path).expect("create");
+        file.set_modified(UNIX_EPOCH + std::time::Duration::from_secs(seconds)).expect("mtime");
+    }
+
+    #[test]
+    fn the_list_is_newest_first_and_skips_hidden_and_tool_folders_and_links() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        put(dir.path(), "refs/photo.png", 1_000);
+        put(dir.path(), "notes.txt", 2_000);
+        put(dir.path(), "parts/arm.stl", 3_000);
+        put(dir.path(), "print/arm.3mf", 4_000);
+        for skipped in [".m3d/chat.json", ".hidden", "__pycache__/a.pyc", "node_modules/b.js", "venv/bin/python", "parts/.cache/c.stl"] {
+            put(dir.path(), skipped, 9_000);
+        }
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(dir.path().join("notes.txt"), dir.path().join("linked.txt")).expect("link");
+
+        let files = list(dir.path()).expect("list");
+        let shown: Vec<_> = files.iter().map(|f| (f.rel.as_str(), f.modified_ms)).collect();
+        assert_eq!(shown, [("print/arm.3mf", 4_000_000), ("parts/arm.stl", 3_000_000), ("notes.txt", 2_000_000), ("refs/photo.png", 1_000_000)]);
+        assert_eq!(files[0].print, Some(PrintInfo::default()), "a 3MF that is not a zip holds nothing to show");
+        assert!(files[1..].iter().all(|f| f.print.is_none()));
+        assert_eq!(serde_json::to_value(&files[2]).expect("json"), serde_json::json!({ "rel": "notes.txt", "size": 0, "modifiedMs": 2_000_000 }));
+
+        let missing = list(&dir.path().join("gone")).expect_err("no folder");
+        assert!(missing.starts_with(&format!("listing {}: ", dir.path().join("gone").display())), "{missing}");
+    }
+
+    /// A project id no machine has, so each path stops at the check under test or at the missing folder.
+    const NOT_MADE: &str = "2026-11-17-u1-not-made";
+
+    #[test]
+    fn a_file_path_must_name_a_plain_path_inside_the_project_and_not_its_records() {
+        for rel in ["..", "../other/guide.html", "print/../guide.html", "/etc/passwd", "./guide.html", ".m3d", ".m3d/chat.json"] {
+            assert_eq!(resolve(NOT_MADE, rel), Err(format!("bad file path {rel:?}")));
+        }
+        assert_eq!(resolve("../etc", "guide.html"), Err(r#"bad project id "../etc""#.to_owned()));
+        // These pass the check by name and fail only because the project folder is missing.
+        for rel in ["guide.html", "print/./guide.html", ".m3dx/guide.html", ""] {
+            let missing = resolve(NOT_MADE, rel).expect_err("no project folder");
+            assert!(missing.starts_with(&format!("{rel}: ")), "{rel:?}: {missing}");
+        }
+    }
+
+    fn served(uri: &str, origin: Option<&str>) -> Response<Vec<u8>> {
+        let mut request = tauri::http::Request::builder().uri(uri);
+        if let Some(origin) = origin {
+            request = request.header(header::ORIGIN, origin);
+        }
+        serve(&request.body(Vec::new()).expect("request"))
+    }
+
+    /// The preview policy as the app sends it today, written out so a change to it fails here.
+    const CSP: &str = "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; form-action 'none'; base-uri 'self'";
+
+    #[test]
+    fn every_served_answer_carries_the_preview_policy_and_only_app_pages_may_read_across_projects() {
+        let no_project = served("m3dfile://localhost/guide.html", Some("tauri://localhost"));
+        assert_eq!(no_project.status(), StatusCode::NOT_FOUND);
+        assert_eq!(no_project.body(), b"no project");
+        let headers = no_project.headers();
+        assert_eq!(headers[header::CONTENT_TYPE], "text/plain");
+        assert_eq!(headers[header::CACHE_CONTROL], "no-store");
+        assert_eq!(headers[header::CONTENT_SECURITY_POLICY], CSP);
+        assert_eq!(headers[header::ACCESS_CONTROL_ALLOW_ORIGIN], "tauri://localhost");
+
+        let record = format!("m3dfile://{NOT_MADE}/.m3d/chat.json");
+        let allowed = |origin: Option<&str>| {
+            served(&record, origin).headers().get(header::ACCESS_CONTROL_ALLOW_ORIGIN).map(|v| v.to_str().expect("ascii").to_owned())
+        };
+        assert_eq!(allowed(Some("http://localhost:1420")).as_deref(), Some("http://localhost:1420"));
+        assert_eq!(allowed(Some("m3dfile://2026-11-17-other")), None);
+        assert_eq!(allowed(Some("https://example.com")), None);
+        assert_eq!(allowed(None), None);
+
+        for (uri, body) in [
+            (record.clone(), r#"bad file path ".m3d/chat.json""#),
+            (format!("m3dfile://{NOT_MADE}/../2026-11-17-other/guide.html"), r#"bad file path "../2026-11-17-other/guide.html""#),
+            (format!("m3dfile://{NOT_MADE}/%2e%2e/guide.html"), r#"bad file path "../guide.html""#),
+        ] {
+            let refused = served(&uri, None);
+            assert_eq!(refused.status(), StatusCode::NOT_FOUND, "{uri}");
+            assert_eq!(String::from_utf8_lossy(refused.body()), body, "{uri}");
+            assert_eq!(refused.headers()[header::CONTENT_SECURITY_POLICY], CSP);
+        }
+
+        let missing = served(&format!("m3dfile://{NOT_MADE}/guide.html"), None);
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+        assert!(String::from_utf8_lossy(missing.body()).starts_with("guide.html: "));
+    }
 }

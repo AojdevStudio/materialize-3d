@@ -252,6 +252,81 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn slice_paths_are_checked_by_name_then_where_they_really_lead() {
+        let outside = tempfile::tempdir().expect("outside");
+        let project = tempfile::tempdir().expect("project");
+        std::fs::write(outside.path().join("secret.stl"), "solid x\nendsolid x\n").expect("stl");
+        std::fs::create_dir(project.path().join("parts")).expect("parts");
+        std::fs::write(project.path().join("parts/arm.stl"), "solid x\nendsolid x\n").expect("stl");
+        std::os::unix::fs::symlink(project.path().join("parts"), project.path().join("inner")).expect("link");
+        std::os::unix::fs::symlink(outside.path().join("secret.stl"), project.path().join("away.stl")).expect("link");
+        let root = project.path().canonicalize().expect("root");
+        let absolute = outside.path().join("secret.stl").display().to_string();
+        let slice = |input: &str, output: &str| resolve(project.path(), &[input.to_owned()], output);
+
+        assert_eq!(slice("inner/arm.stl", "out.3mf"), Ok((vec![root.join("parts/arm.stl")], root.join("out.3mf"))));
+        assert_eq!(slice("away.stl", "out.3mf"), Err("away.stl leads outside the project folder".to_owned()));
+        assert_eq!(slice(&absolute, "out.3mf"), Err(format!("{absolute:?} is not a path inside the project folder")));
+        assert_eq!(slice("parts/../parts/arm.stl", "out.3mf"), Err(r#""parts/../parts/arm.stl" is not a path inside the project folder"#.to_owned()));
+        assert_eq!(slice("gone.stl", "out.3mf"), Err("gone.stl does not exist".to_owned()));
+        assert_eq!(slice("parts/arm.stl", "../out.3mf"), Err(r#""../out.3mf" is not a path inside the project folder"#.to_owned()));
+        assert_eq!(slice("parts/arm.stl", "OUT.3MF"), Err(r#""OUT.3MF" must end in .3mf"#.to_owned()));
+        assert_eq!(resolve(project.path(), &[], "out.3mf"), Err("name at least one STL file to slice".to_owned()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_slicer_check_says_which_bambu_studio_it_found() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let profiles = tempfile::tempdir().expect("profiles");
+        let script = |name: &str, help: &str| {
+            let path = dir.path().join(name);
+            crate::write_test_script(&path, &format!("#!/bin/sh\necho '{help}'\n"));
+            path
+        };
+        let validated = script("validated", "BambuStudio-02.08.02.61: usage");
+        let older = script("older", "BambuStudio-01.10.00.00: usage");
+        let silent = script("silent", "usage");
+
+        // The check reads the slicer from the environment, as the app does. No other test that runs by default reads it.
+        let saved = ["BAMBU_STUDIO_CLI", "BAMBU_STUDIO_PROFILES"].map(|key| (key, std::env::var_os(key)));
+        let check = |cli: &Path, profiles: Option<&Path>| {
+            std::env::set_var("BAMBU_STUDIO_CLI", cli);
+            match profiles {
+                Some(dir) => std::env::set_var("BAMBU_STUDIO_PROFILES", dir),
+                None => std::env::remove_var("BAMBU_STUDIO_PROFILES"),
+            }
+            tauri::async_runtime::block_on(studio_slicer()).map(|found| serde_json::to_value(found).expect("json"))
+        };
+        let found = [
+            check(&validated, Some(profiles.path())),
+            check(&dir.path().join("missing"), None),
+            check(&older, None),
+            check(&silent, None),
+            check(&validated, None),
+        ];
+        for (key, value) in saved {
+            match value {
+                Some(value) => std::env::set_var(key, value),
+                None => std::env::remove_var(key),
+            }
+        }
+
+        let other = |detail: String| Ok(serde_json::json!({ "found": "other", "detail": detail }));
+        assert_eq!(
+            found,
+            [
+                Ok(serde_json::json!({ "found": "ready", "version": "02.08.02.61" })),
+                Ok(serde_json::json!({ "found": "none" })),
+                other("Bambu Studio 01.10.00.00 is installed. The app slices with version 02.08.02.61.".to_owned()),
+                other("Bambu Studio of an unknown version is installed. The app slices with version 02.08.02.61.".to_owned()),
+                other(format!("no Bambu profile directory found next to {}", validated.display())),
+            ]
+        );
+    }
+
     /// A 20 mm cube as an ASCII STL, outward normals, twelve facets.
     fn cube_stl(size: f64) -> String {
         let v = |x: u8, y: u8, z: u8| [f64::from(x) * size, f64::from(y) * size, f64::from(z) * size];

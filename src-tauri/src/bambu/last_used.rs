@@ -212,6 +212,47 @@ mod tests {
     }
 
     #[test]
+    fn a_printer_preset_name_splits_into_the_printer_and_its_nozzle() {
+        for (machine, parts) in [
+            ("Bambu Lab P2S 0.4 nozzle", Some(("Bambu Lab P2S", "0.4"))),
+            ("Bambu Lab A1 mini 0.2 nozzle", Some(("Bambu Lab A1 mini", "0.2"))),
+            ("Bambu Lab X1 Carbon 0.6 nozzle", Some(("Bambu Lab X1 Carbon", "0.6"))),
+            ("Bambu Lab P2S nozzle", Some(("Bambu Lab", "P2S"))),
+            ("Bambu Lab P2S", None),
+            ("Bambu Lab P2S 0.4 nozzle - mine", None),
+            ("Prusa MK3S 0.4 nozzle", None),
+            ("Bambu PETG Basic @BBL P2S 0.4 nozzle", None),
+            ("0.20mm Standard @BBL P2S", None),
+        ] {
+            assert_eq!(printer_and_nozzle(machine), parts, "{machine}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_preset_name_is_read_where_it_really_leads_and_a_missing_file_is_a_system_preset() {
+        let config = config_with(|_| {});
+        let dir = config.path();
+        let outside = config.around.path().join("outside.json");
+        fs::write(&outside, r#"{ "inherits": "Bambu PLA Basic @BBL P2S" }"#).expect("write");
+        std::os::unix::fs::symlink(&outside, dir.join("user/1234567890/filament/Linked.json")).expect("link");
+        let read = |name: &str| preset(&dir, "1234567890", PresetKind::Filament, name.to_owned()).map_err(|e| e.to_string());
+        let refused = |name: &str| {
+            let err = read(name).expect_err(name);
+            assert!(err.ends_with(" leads outside Bambu Studio's config folder"), "{name}: {err}");
+        };
+
+        let made = "Bambu PLA Basic @BBL P2S - SuperTack 45C";
+        assert_eq!(read(made), Ok(Preset { name: made.to_owned(), system: Some("Bambu PLA Basic @BBL P2S".to_owned()) }));
+        assert_eq!(read("Bambu PETG Basic @BBL P2S"), Ok(system("Bambu PETG Basic @BBL P2S")));
+        refused("Linked");
+        refused("../../../../outside");
+        refused(&config.around.path().join("outside").display().to_string());
+        assert_eq!(read("../../../../nothing"), Ok(system("../../../../nothing")));
+        assert_eq!(read("/u1-nothing/here"), Ok(system("/u1-nothing/here")));
+    }
+
+    #[test]
     fn nothing_when_bambu_studio_never_ran_or_has_no_bambu_lab_printer() {
         let empty = tempfile::tempdir().expect("tempdir");
         assert_eq!(read(empty.path()).expect("no config"), None);
