@@ -76,6 +76,8 @@ export type LoginKind = 'api_key' | 'oauth'
 /** The providers the app signs in to, in the order the app lists them. */
 export const PROVIDERS = ['anthropic', 'openai-codex', 'opencode-go'] as const
 export type ProviderId = (typeof PROVIDERS)[number]
+/** The provider a chat with no turn yet counts as, such as one imported from before the store. */
+export const DEFAULT_PROVIDER = 'anthropic' satisfies ProviderId
 
 /** A provider the app offers, how it can be signed in to, and how it is now. */
 export type Login = { provider: ProviderId; name: string; login: LoginKind | null; kinds: LoginKind[] }

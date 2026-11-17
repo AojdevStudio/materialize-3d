@@ -103,7 +103,7 @@ describe('subscription sign-ins', () => {
     const oauth: OAuthAuth = { name: 'Anthropic (scripted)', login, refresh: async (c) => c, toAuth: async (c) => ({ apiKey: c.access }) }
     models.setProvider({ ...anthropic, auth: { ...anthropic.auth, oauth } })
     const events: LoginEvent[] = []
-    return { logins: new Logins(models, credentials, (event) => events.push(event)), credentials, events }
+    return { logins: new Logins(models, credentials, (event) => events.push(event), () => {}), credentials, events }
   }
   const settle = () => Bun.sleep(20)
 
@@ -112,7 +112,7 @@ describe('subscription sign-ins', () => {
     const oauth = { type: 'oauth' as const, refresh: 'r', access: 'a', expires: Date.now() + 60_000 }
     await credentials.modify('openai-codex', async () => oauth)
     const events: LoginEvent[] = []
-    const logins = new Logins(inferenceModels(credentials), credentials, (event) => events.push(event))
+    const logins = new Logins(inferenceModels(credentials), credentials, (event) => events.push(event), () => {})
     await expect(logins.setKey('openai-codex', 'sk-not-for-codex', undefined)).rejects.toThrow('takes its own sign-in, not a key')
     expect(await credentials.read('openai-codex')).toEqual(oauth)
     expect(events).toEqual([])

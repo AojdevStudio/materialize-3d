@@ -1,11 +1,10 @@
-import { mkdirSync, writeFileSync } from 'node:fs'
-import { basename, join } from 'node:path'
 import type { Models } from '@earendil-works/pi-ai'
 import { arr, bool, compile, int, lit, obj, opt, str, union } from '@earendil-works/pi-schema'
 import { toolchain, toolchainNeeds } from './agent'
 import type { Chats } from './chat'
 import type { Handlers, Host } from './host'
 import type { Logins } from './inference'
+import { savePicture } from './pictures'
 import { type AppState, PLATES, PROVIDERS, SETUP_STEPS, THINKING } from './protocol'
 import type { Store } from './store'
 
@@ -71,15 +70,7 @@ export function handlers({ host, store, models, logins, chats, version, legacy, 
     'legacy.import': { params: compile(obj({})), run: () => legacy.retry() },
     'drafts.picture': {
       params: compile(obj({ name: str({ minLength: 1 }), data: str() })),
-      run: async ({ name, data }) => {
-        // Only a plain file name: the picture's folder is the sidecar's, not one the window names.
-        if (basename(name) !== name || name.startsWith('.')) throw new Error(`${name} is not a picture's file name`)
-        const folder = join(pictures, crypto.randomUUID())
-        mkdirSync(folder, { recursive: true })
-        const path = join(folder, name)
-        writeFileSync(path, Buffer.from(data, 'base64'))
-        return path
-      },
+      run: async ({ name, data }) => savePicture(pictures, name, data),
     },
     'drafts.set': {
       params: compile(obj({ key: str(), text: str(), attachments: arr(str()) })),
