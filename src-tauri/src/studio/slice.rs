@@ -279,14 +279,11 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn the_slicer_check_says_which_bambu_studio_it_found() {
-        use std::os::unix::fs::PermissionsExt;
-
         let dir = tempfile::tempdir().expect("tempdir");
         let profiles = tempfile::tempdir().expect("profiles");
         let script = |name: &str, help: &str| {
             let path = dir.path().join(name);
-            std::fs::write(&path, format!("#!/bin/sh\necho '{help}'\n")).expect("script");
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("mode");
+            crate::write_test_script(&path, &format!("#!/bin/sh\necho '{help}'\n"));
             path
         };
         let validated = script("validated", "BambuStudio-02.08.02.61: usage");
