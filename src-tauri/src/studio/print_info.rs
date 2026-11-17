@@ -197,6 +197,27 @@ mod tests {
     }
 
     #[test]
+    fn preset_and_printer_names_shorten_as_the_print_files_bar_shows_them() {
+        let slice = r#"<config><plate><filament id="1" used_g="1.0"/></plate></config>"#;
+        let filament = |preset: &str| parse(Some(slice), Some(&serde_json::json!({ "filament_settings_id": [preset] }).to_string())).filaments;
+        for (preset, shown) in [
+            ("Bambu PETG Basic @BBL P2S", "PETG Basic"),
+            ("Bambu PETG Basic @BBL P2S 0.4 nozzle", "PETG Basic"),
+            ("Bambu PLA Basic @BBL P2S - SuperTack 45C", "PLA Basic"),
+            ("Generic PLA @BBL P2S", "Generic PLA"),
+            ("My PETG", "My PETG"),
+            ("0.20mm Standard @BBL P2S", "0.20mm Standard"),
+            ("Bambu Lab P2S 0.4 nozzle", "Lab P2S 0.4 nozzle"),
+        ] {
+            assert_eq!(filament(preset), [shown], "{preset}");
+        }
+        let printer = |model: &str| parse(None, Some(&serde_json::json!({ "printer_model": model }).to_string())).printer;
+        for (model, shown) in [("Bambu Lab P2S", "P2S"), ("Bambu Lab A1 mini", "A1 mini"), ("Bambu Lab P2S 0.4 nozzle", "P2S 0.4 nozzle"), ("Prusa MK3S", "Prusa MK3S")] {
+            assert_eq!(printer(model).as_deref(), Some(shown), "{model}");
+        }
+    }
+
+    #[test]
     fn a_metadata_entry_past_the_size_limit_is_not_read() {
         let dir = tempfile::tempdir().expect("tempdir");
         let bomb = dir.path().join("bomb.3mf");
