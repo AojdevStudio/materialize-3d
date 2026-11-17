@@ -7,7 +7,7 @@ use std::process::{Command, Stdio};
 
 use serde::{Deserialize, Serialize};
 
-use super::folder::{inside, make_folder, Refused};
+use super::folder::{inside, make_folder, NotMade, Refused};
 use super::print_info::{parse_slice_info, SliceInfo};
 use crate::bambu::{resolve_presets, BambuStudio, Plate, PresetSelection, ResolvedPresets};
 
@@ -83,21 +83,15 @@ fn resolve(dir: &Path, inputs: &[String], output: &str) -> Result<(Vec<PathBuf>,
     let refused = |named: &str, refused: Refused| match refused {
         Refused::NotAName => format!("{named:?} is not a path inside the project folder"),
         Refused::LeadsOutside => format!("{named} leads outside the project folder"),
-        Refused::Unreadable(_, e) if e.kind() == std::io::ErrorKind::NotFound => format!("{named} does not exist"),
-        Refused::Unreadable(at, e) => format!("{}: {e}", at.display()),
+        Refused::Unreadable(_) => format!("{named} does not exist"),
     };
-    let inputs = inputs
-        .iter()
-        .map(|rel| {
-            inside(&root, rel).map_err(|e| match e {
-                Refused::Unreadable(..) => format!("{rel} does not exist"),
-                other => refused(rel, other),
-            })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    let inputs = inputs.iter().map(|rel| inside(&root, rel).map_err(|e| refused(rel, e))).collect::<Result<Vec<_>, _>>()?;
     let target = Path::new(output);
     let folder = match target.parent().filter(|parent| !parent.as_os_str().is_empty()) {
-        Some(parent) => make_folder(&root, parent).map_err(|e| refused(output, e))?,
+        Some(parent) => make_folder(&root, parent).map_err(|e| match e {
+            NotMade::Refused(e) => refused(output, e),
+            NotMade::Failed(at, e) => format!("{}: {e}", at.display()),
+        })?,
         None => root,
     };
     Ok((inputs, folder.join(target.file_name().expect("a name that ends in .3mf"))))
@@ -217,6 +211,10 @@ mod tests {
         assert_eq!(slice("parts/arm.stl", "../out.3mf"), Err(r#""../out.3mf" is not a path inside the project folder"#.to_owned()));
         assert_eq!(slice("parts/arm.stl", "OUT.3MF"), Err(r#""OUT.3MF" must end in .3mf"#.to_owned()));
         assert_eq!(resolve(project.path(), &[], "out.3mf"), Err("name at least one STL file to slice".to_owned()));
+        std::os::unix::fs::symlink(project.path().join("loop"), project.path().join("loop")).expect("a link to itself");
+        assert_eq!(slice("parts/arm.stl", "loop/out.3mf"), Err("loop/out.3mf does not exist".to_owned()));
+        let under_a_file = slice("parts/arm.stl", "parts/arm.stl/sub/out.3mf").expect_err("a file is no folder");
+        assert!(under_a_file.starts_with(&format!("{}: ", root.join("parts/arm.stl/sub").display())), "{under_a_file}");
     }
 
     #[test]

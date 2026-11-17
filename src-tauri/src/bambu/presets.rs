@@ -492,7 +492,7 @@ impl Resolver {
     fn profile_path(&self, sub_path: &str) -> Result<PathBuf> {
         let named = lexical_absolute(&self.profiles_dir.join(sub_path))?;
         inside(&self.profiles_dir, sub_path).map_err(|refused| match refused {
-            Refused::Unreadable(_, e) => io_err(&named)(e),
+            Refused::Unreadable(e) => io_err(&named)(e),
             Refused::NotAName | Refused::LeadsOutside => preset_err(format!(
                 "profile path escapes vendor root: {}",
                 named.display()

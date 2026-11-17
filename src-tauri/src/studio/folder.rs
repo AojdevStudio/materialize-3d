@@ -14,7 +14,21 @@ pub(crate) enum Refused {
     /// The name leads out of the folder through a symbolic link.
     LeadsOutside,
     /// The path, or the folder, is not there or could not be read.
-    Unreadable(PathBuf, io::Error),
+    Unreadable(io::Error),
+}
+
+/// Why [`make_folder`] made no folder.
+#[derive(Debug)]
+pub(crate) enum NotMade {
+    Refused(Refused),
+    /// A level that was not there could not be made.
+    Failed(PathBuf, io::Error),
+}
+
+impl From<Refused> for NotMade {
+    fn from(refused: Refused) -> Self {
+        Self::Refused(refused)
+    }
 }
 
 fn named(rel: &Path) -> Result<&Path, Refused> {
@@ -24,8 +38,8 @@ fn named(rel: &Path) -> Result<&Path, Refused> {
     Ok(rel)
 }
 
-fn real(path: PathBuf) -> Result<PathBuf, Refused> {
-    path.canonicalize().map_err(|e| Refused::Unreadable(path, e))
+fn real(path: &Path) -> Result<PathBuf, Refused> {
+    path.canonicalize().map_err(Refused::Unreadable)
 }
 
 fn contained(root: &Path, path: PathBuf) -> Result<PathBuf, Refused> {
@@ -37,24 +51,24 @@ fn contained(root: &Path, path: PathBuf) -> Result<PathBuf, Refused> {
 /// so a caller reads or serves what was checked.
 pub(crate) fn inside(root: &Path, rel: impl AsRef<Path>) -> Result<PathBuf, Refused> {
     let rel = named(rel.as_ref())?;
-    let root = real(root.to_owned())?;
-    let path = real(root.join(rel))?;
+    let root = real(root)?;
+    let path = real(&root.join(rel))?;
     contained(&root, path)
 }
 
 /// Makes the folder `rel` inside `root` one level at a time, and gives where it really is. A level that is there is
 /// checked where it leads before the next level goes in it. A level is made only where none is, so a link that
 /// appears meanwhile fails the make instead of being followed.
-pub(crate) fn make_folder(root: &Path, rel: impl AsRef<Path>) -> Result<PathBuf, Refused> {
+pub(crate) fn make_folder(root: &Path, rel: impl AsRef<Path>) -> Result<PathBuf, NotMade> {
     let rel = named(rel.as_ref())?;
-    let root = real(root.to_owned())?;
+    let root = real(root)?;
     let mut folder = root.clone();
     for part in rel.components() {
         let next = folder.join(part);
         folder = match std::fs::create_dir(&next) {
             Ok(()) => next,
-            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => contained(&root, real(next)?)?,
-            Err(e) => return Err(Refused::Unreadable(next, e)),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => contained(&root, real(&next)?)?,
+            Err(e) => return Err(NotMade::Failed(next, e)),
         };
     }
     Ok(folder)
@@ -68,8 +82,16 @@ mod tests {
         result.map_err(|refused| match refused {
             Refused::NotAName => "not a name",
             Refused::LeadsOutside => "leads outside",
-            Refused::Unreadable(..) => "unreadable",
+            Refused::Unreadable(_) => "unreadable",
         })
+    }
+
+    fn made(result: Result<PathBuf, NotMade>) -> Result<PathBuf, &'static str> {
+        match result {
+            Err(NotMade::Refused(refused)) => kind(Err(refused)),
+            Err(NotMade::Failed(..)) => Err("not made"),
+            Ok(path) => Ok(path),
+        }
     }
 
     struct Tree {
@@ -124,7 +146,7 @@ mod tests {
     #[test]
     fn a_folder_is_made_only_inside_and_each_level_there_is_checked_first() {
         let Tree { around, root, real } = tree();
-        let make = |rel: &str| kind(make_folder(&root, rel));
+        let make = |rel: &str| made(make_folder(&root, rel));
 
         assert_eq!(make("parts"), Ok(real.join("parts")));
         assert_eq!(make("in/new"), Ok(real.join("parts/new")), "a level made through a link in");
@@ -137,6 +159,8 @@ mod tests {
         assert!(!around.path().join("new").exists(), "no folder was made outside");
         assert_eq!(make("dangling/new"), Err("unreadable"));
         assert!(!around.path().join("gone").exists(), "no folder was made where a dangling link leads");
-        assert_eq!(make("parts/arm.stl/new"), Err("unreadable"), "a file is no folder");
+        assert_eq!(make("parts/arm.stl/new"), Err("not made"), "a file is no folder");
+        std::os::unix::fs::symlink(root.join("loop"), root.join("loop")).expect("a link to itself");
+        assert_eq!(make("loop/new"), Err("unreadable"), "a level there that leads nowhere is not made through");
     }
 }

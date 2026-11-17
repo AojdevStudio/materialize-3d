@@ -105,8 +105,8 @@ fn preset(dir: &Path, folder: &str, kind: PresetKind, name: String) -> Result<Pr
     let made = dir.join(&rel);
     let real = match inside(dir, &rel) {
         Ok(real) => real,
-        Err(Refused::Unreadable(_, e)) if e.kind() == io::ErrorKind::NotFound => return Ok(Preset { system: Some(name.clone()), name }),
-        Err(Refused::Unreadable(_, e)) => return Err(io_err(&made)(e)),
+        Err(Refused::Unreadable(e)) if e.kind() == io::ErrorKind::NotFound => return Ok(Preset { system: Some(name.clone()), name }),
+        Err(Refused::Unreadable(e)) => return Err(io_err(&made)(e)),
         Err(Refused::NotAName | Refused::LeadsOutside) => {
             return Err(BambuError::Preset(format!("{} leads outside Bambu Studio's config folder", made.display())))
         }

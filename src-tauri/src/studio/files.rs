@@ -84,10 +84,12 @@ fn resolve(project: &str, rel: &str) -> Result<PathBuf, String> {
         Ok(full) => full,
         Err(Refused::NotAName) => return Err(format!("bad file path {rel:?}")),
         Err(Refused::LeadsOutside) => return Err(format!("{rel} is outside the project")),
-        Err(Refused::Unreadable(_, e)) => return Err(format!("{rel}: {e}")),
+        Err(Refused::Unreadable(e)) => return Err(format!("{rel}: {e}")),
     };
-    let records = dir.canonicalize().map_err(|e| format!("{}: {e}", dir.display()))?.join(META_DIR);
-    if full.starts_with(records) {
+    // The records check needs the project's real place. Both checks below use this one value, so a project folder that
+    // is a link and moves after `inside` cannot pass one check against the old place and the other against the new.
+    let root = dir.canonicalize().map_err(|e| format!("{}: {e}", dir.display()))?;
+    if !full.starts_with(&root) || full.starts_with(root.join(META_DIR)) {
         return Err(format!("{rel} is outside the project"));
     }
     Ok(full)
