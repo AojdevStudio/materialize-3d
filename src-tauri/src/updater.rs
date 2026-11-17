@@ -27,6 +27,7 @@ pub struct PendingUpdate(tokio::sync::Mutex<Option<Update>>);
 
 /// What a check found, as the UI reads it.
 #[derive(Debug, PartialEq, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(tag = "status", rename_all = "camelCase")]
 pub enum UpdateCheck {
     #[serde(rename_all = "camelCase")]
@@ -44,7 +45,8 @@ pub enum UpdateCheck {
 pub const PROGRESS_EVENT: &str = "update:progress";
 
 #[derive(Clone, Serialize)]
-struct Progress {
+#[cfg_attr(test, derive(ts_rs::TS), ts(rename = "UpdateProgress"))]
+pub(crate) struct Progress {
     downloaded: u64,
     total: Option<u64>,
 }

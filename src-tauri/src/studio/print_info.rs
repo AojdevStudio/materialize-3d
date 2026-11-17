@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 
 /// The print a 3MF holds, for the print files bar. A field the file does not hold stays empty.
 #[derive(Debug, Default, Clone, PartialEq, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
 #[serde(rename_all = "camelCase")]
 pub struct PrintInfo {
     /// The printer model without the maker's name, as in `P2S`.

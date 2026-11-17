@@ -84,6 +84,7 @@ fn presets_for(studio: &BambuStudio, printer: &Printer, cache_root: &Path) -> Re
 
 /// What setup's check shows for the slicer: the Bambu Studio the slice step would use.
 #[derive(Debug, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(tag = "found", rename_all = "camelCase")]
 pub enum SlicerCheck {
     Ready { version: String },

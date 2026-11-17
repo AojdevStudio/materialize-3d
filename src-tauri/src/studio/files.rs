@@ -10,9 +10,11 @@ use serde::Serialize;
 use tauri::http::{header, Response, StatusCode};
 
 use super::print_info::{self, PrintInfo};
+use super::window::{DEV_ORIGIN, FILE_SCHEME, POP_OUT_KEYS, POP_OUT_PREFIX};
 use super::{project_dir, projects_root, META_DIR};
 
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectFile {
     /// Path inside the project, `/`-separated.
@@ -139,9 +141,10 @@ pub fn studio_open_in_bambu(project: String, rel: String) -> Result<(), String> 
 pub async fn studio_pop_out(app: tauri::AppHandle, project: String, rel: String, version: u64) -> Result<(), String> {
     let path = resolve(&project, &rel)?;
     static NEXT: AtomicU64 = AtomicU64::new(1);
-    let label = format!("pop-out-{}", NEXT.fetch_add(1, Ordering::Relaxed));
+    let label = format!("{POP_OUT_PREFIX}{}", NEXT.fetch_add(1, Ordering::Relaxed));
     let query = |value: &str| percent_encoding::utf8_percent_encode(value, percent_encoding::NON_ALPHANUMERIC).to_string();
-    let page = format!("index.html?project={}&rel={}&v={version}", query(&project), query(&rel));
+    let [project_key, rel_key, version_key] = POP_OUT_KEYS;
+    let page = format!("index.html?{project_key}={}&{rel_key}={}&{version_key}={version}", query(&project), query(&rel));
     let title = path.file_name().map_or_else(|| rel.clone(), |name| name.to_string_lossy().into_owned());
     tauri::WebviewWindowBuilder::new(&app, label, tauri::WebviewUrl::App(page.into()))
         .title(title)
@@ -179,7 +182,7 @@ fn content_type(path: &Path) -> &'static str {
 }
 
 /// The app's own pages: the bundled UI and the dev server. Only these may read across projects.
-const APP_ORIGINS: &[&str] = &["tauri://localhost", "http://localhost:1420"];
+const APP_ORIGINS: &[&str] = &["tauri://localhost", DEV_ORIGIN];
 
 /// What a preview page may load: its own project, inline code, and data it makes. No network.
 const PREVIEW_CSP: &str = "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; form-action 'none'; base-uri 'self'";
@@ -223,7 +226,7 @@ fn serve(request: &tauri::http::Request<Vec<u8>>) -> Response<Vec<u8>> {
 }
 
 pub fn register_protocol<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> {
-    builder.register_asynchronous_uri_scheme_protocol("m3dfile", |_ctx, request, responder| {
+    builder.register_asynchronous_uri_scheme_protocol(FILE_SCHEME, |_ctx, request, responder| {
         std::thread::spawn(move || responder.respond(serve(&request)));
     })
 }

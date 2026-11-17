@@ -6,7 +6,7 @@ const unlistenMock = vi.fn()
 
 vi.mock('@tauri-apps/api/event', () => ({ listen: listenMock }))
 
-const { useTauriEvent } = await import('../hooks/useTauriEvent')
+const { useTauriEvent } = await import('../update/useTauriEvent')
 
 function Listener({ name }: { name: string }) {
   useTauriEvent(name, () => {})

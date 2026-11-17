@@ -12,7 +12,7 @@ use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 use tokio::sync::Notify;
 
 /// The event that asks the window to save its draft now.
-const FLUSH: &str = "studio://flush";
+pub(crate) const FLUSH: &str = "studio://flush";
 
 /// How long a quit waits for the window to answer. A window that does not answer, as one that is gone, never holds it
 /// longer.

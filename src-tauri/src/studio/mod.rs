@@ -6,6 +6,7 @@ pub mod files;
 pub mod print_info;
 pub mod quit;
 pub mod slice;
+pub mod window;
 
 use std::path::PathBuf;
 
@@ -20,7 +21,7 @@ const META_DIR: &str = ".m3d";
 /// preview page cannot carry project data out by navigating its frame there.
 pub fn may_navigate(url: &url::Url) -> bool {
     let local = match url.scheme() {
-        "tauri" | "m3dfile" | "about" | "data" | "blob" => true,
+        "tauri" | window::FILE_SCHEME | "about" | "data" | "blob" => true,
         "http" | "https" => matches!(url.host_str(), Some("localhost" | "tauri.localhost" | "127.0.0.1")),
         _ => false,
     };

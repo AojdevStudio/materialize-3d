@@ -143,6 +143,7 @@ impl Plates {
 
 /// A printer model as the printer step of setup offers it.
 #[derive(Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct PrinterChoice {
     /// The printer model's name, as in `Bambu Lab P2S`.
@@ -157,6 +158,7 @@ pub struct PrinterChoice {
 /// A printer preset, `<printer> <nozzle> nozzle`, with the qualities and filaments that fit it, and the ones Bambu
 /// Studio starts it with.
 #[derive(Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct NozzleChoice {
     /// The nozzle size in mm, as in `0.4`.
@@ -376,7 +378,6 @@ fn sanitize_segment(value: &str) -> String {
         if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
             out.push(c);
         } else if !out.ends_with('-') {
-            // Collapse each run of disallowed characters into a single dash.
             out.push('-');
         }
     }

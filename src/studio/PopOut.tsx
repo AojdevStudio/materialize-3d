@@ -8,12 +8,15 @@ const CHECK_MS = 2000
 
 type Shown = { project: string; rel: string; version: number }
 
+/** The query keys Rust opens a pop out with. A test in `src-tauri/src/studio/window.rs` checks them. */
+const KEYS = { project: 'project', rel: 'rel', version: 'v' } as const
+
 /** The file a pop out window shows, from the page address Rust opened it with. None in the main window. */
 export function popOutFile(search: string): Shown | null {
   const params = new URLSearchParams(search)
-  const project = params.get('project')
-  const rel = params.get('rel')
-  return project === null || rel === null ? null : { project, rel, version: Number(params.get('v')) }
+  const project = params.get(KEYS.project)
+  const rel = params.get(KEYS.rel)
+  return project === null || rel === null ? null : { project, rel, version: Number(params.get(KEYS.version)) }
 }
 
 /**
