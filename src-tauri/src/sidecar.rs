@@ -612,6 +612,37 @@ mod tests {
         assert_eq!(ask(&app, "nope", Value::Null).await, Err("no host request nope".to_owned()));
     }
 
+    /// A resumed turn's slice request waits for the first slice's result, and holds its own pass until it has it.
+    #[tokio::test]
+    async fn a_slice_request_holds_its_pass_until_its_slice_ends() {
+        const SETTLE: Duration = Duration::from_millis(50);
+        let app = mock_app();
+        let first = Arc::new(tokio::sync::OnceCell::new());
+        app.state::<Sidecar>().slices.lock().expect("slices").insert("abc".to_owned(), first.clone());
+        let (finish, finished) = oneshot::channel::<()>();
+        let slicing = tokio::spawn(async move {
+            first
+                .get_or_init(|| async {
+                    finished.await.expect("the test ends the slice");
+                    Ok(json!("sliced"))
+                })
+                .await
+                .clone()
+        });
+        tokio::time::sleep(SETTLE).await;
+        let printer = json!({ "machine": "Bambu Lab P2S 0.4 nozzle", "process": "0.20mm Standard @BBL P2S", "filament": "Bambu PETG Basic @BBL P2S 0.4 nozzle" });
+        let call = json!({ "operation": "abc", "project": "p", "inputs": ["a.stl"], "output": "out.3mf", "printer": printer });
+        let mut request = std::pin::pin!(ask(&app, "slice", call));
+        assert!(tokio::time::timeout(SETTLE, &mut request).await.is_err(), "the request waits for the first slice");
+        let gate = app.state::<Arc<BuildGate>>().inner().clone();
+        let mut close = std::pin::pin!(gate.close_when_idle(|_| {}));
+        assert!(tokio::time::timeout(SETTLE, &mut close).await.is_err(), "the update waits for the slice request");
+        finish.send(()).expect("the slice is still running");
+        assert_eq!(request.await, Ok(json!("sliced")));
+        assert_eq!(slicing.await.expect("the slice task"), Ok(json!("sliced")));
+        drop(tokio::time::timeout(SETTLE, &mut close).await.expect("the update goes ahead once the slice request ends"));
+    }
+
     #[tokio::test]
     async fn a_reply_settles_its_call() {
         let app = mock_app();
