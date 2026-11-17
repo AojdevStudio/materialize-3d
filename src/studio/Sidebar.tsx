@@ -1,9 +1,11 @@
-import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Printer, Project, ProjectStatus } from '../../sidecar/src/protocol'
 import { onSidecarEvent, sidecar } from './api'
-import { ago, detail, type Group, groupProjects, lastActivity, printerName } from './sidebarGroups'
+import { BrandRow, Icon, WorkingRing } from './marks'
+import { printerModel } from './presetNames'
+import { ago, detail, type Group, groupProjects, lastActivity } from './sidebarGroups'
 import { useTheme } from './theme'
-import mark from '../assets/brand/mark-small-32.svg'
+import { useDismiss } from './useDismiss'
 import bambuMark from '../assets/icons/bambulab.svg?raw'
 import blocks from '../assets/icons/module-three.svg?raw'
 import layers from '../assets/icons/layers-stacked.svg?raw'
@@ -19,32 +21,9 @@ const HEADERS: Record<Group, { name: string; icon: string }> = {
   drafts: { name: 'Drafts', icon: blocks },
 }
 
-/** An outline icon from `src/assets/icons`, drawn in the text color. */
-export const Icon = ({ svg }: { svg: string }) => <span className="side-icon" aria-hidden="true" dangerouslySetInnerHTML={{ __html: svg }} />
-
-/** The top row of a sidebar: the Materialize 3D mark and name, with any controls at its end. */
-export function BrandRow({ children }: { children?: ReactNode }) {
-  return (
-    <div className="side-header">
-      <div className="brand" data-testid="brand">
-        <img src={mark} alt="" width={20} height={20} />
-        Materialize 3D
-      </div>
-      {children}
-    </div>
-  )
-}
-
 /** A row's status mark: a blue ring while working, a green check when ready, a gray check when printed. */
 function StatusMark({ group }: { group: Group }) {
-  if (group === 'working') {
-    return (
-      <svg className="mark working" viewBox="0 0 16 16" width={14} height={14} aria-hidden="true">
-        <circle cx={8} cy={8} r={6} fill="none" stroke="currentColor" strokeOpacity={0.25} strokeWidth={2} />
-        <path d="M8 2a6 6 0 0 1 6 6" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" />
-      </svg>
-    )
-  }
+  if (group === 'working') return <WorkingRing className="mark working" size={14} />
   if (group === 'drafts') {
     return (
       <svg className="mark draft" viewBox="0 0 16 16" width={14} height={14} aria-hidden="true">
@@ -163,19 +142,7 @@ export default function Sidebar({ projects, current, engine, printer, onOpen, on
     return () => window.clearInterval(timer)
   }, [])
 
-  // The open menu closes on a click outside its row, or on Escape.
-  useEffect(() => {
-    if (menuFor === null) return
-    const close = (event: Event) => {
-      if (event instanceof KeyboardEvent ? event.key === 'Escape' : !menu.current?.contains(event.target as Node)) setMenuFor(null)
-    }
-    document.addEventListener('mousedown', close)
-    document.addEventListener('keydown', close)
-    return () => {
-      document.removeEventListener('mousedown', close)
-      document.removeEventListener('keydown', close)
-    }
-  }, [menuFor])
+  useDismiss(menuFor !== null, menu, () => setMenuFor(null))
 
   const markPrinted = (project: string) => {
     setMenuFor(null)
@@ -205,7 +172,7 @@ export default function Sidebar({ projects, current, engine, printer, onOpen, on
       onClick={() => setCollapsed(!collapsed)}
       data-testid="sidebar-toggle"
     >
-      <Icon svg={layoutLeft} />
+      <Icon className="side-icon" svg={layoutLeft} />
     </button>
   )
 
@@ -257,7 +224,7 @@ export default function Sidebar({ projects, current, engine, printer, onOpen, on
       )}
       <div className="groups">
         <h2 className="group-header" data-testid="projects-row">
-          <Icon svg={blocks} />
+          <Icon className="side-icon" svg={blocks} />
           <span className="group-name">Projects</span>
           <span className="group-count">{projects.length}</span>
         </h2>
@@ -265,7 +232,7 @@ export default function Sidebar({ projects, current, engine, printer, onOpen, on
         {groups.map(({ group, projects: rows }) => (
           <section key={group} className="group" data-testid={`group-${group}`} aria-label={HEADERS[group].name}>
             <h2 className="group-header">
-              <Icon svg={HEADERS[group].icon} />
+              <Icon className="side-icon" svg={HEADERS[group].icon} />
               <span className="group-name">{HEADERS[group].name}</span>
               <span className="group-count">{rows.length}</span>
             </h2>
@@ -314,7 +281,7 @@ export default function Sidebar({ projects, current, engine, printer, onOpen, on
       </div>
       <footer className="sessions-footer">
         <button type="button" className="icon-button" aria-label="Settings" onClick={onSettings} data-testid="settings-open">
-          <Icon svg={gear} />
+          <Icon className="side-icon" svg={gear} />
         </button>
         <ThemeToggle />
         <p className="engine" data-testid="engine" title={engine}>
@@ -322,8 +289,8 @@ export default function Sidebar({ projects, current, engine, printer, onOpen, on
         </p>
         {printer !== null && (
           <p className="printer" data-testid="printer" title={printer.machine}>
-            <span className="side-icon" aria-hidden="true" dangerouslySetInnerHTML={{ __html: bambuMark }} />
-            <span className="printer-name">{printerName(printer.machine)}</span>
+            <Icon className="side-icon" svg={bambuMark} />
+            <span className="printer-name">{printerModel(printer.machine)}</span>
           </p>
         )}
       </footer>

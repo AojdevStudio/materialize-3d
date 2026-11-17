@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { Plate, Printer } from '../../sidecar/src/protocol'
 import { checkSlicer, sidecar, studio, type BambuLastUsed, type PrinterChoice } from './api'
+import { withoutPrinter } from './presetNames'
 import type { StepProps } from './Setup'
 
 type Choice = Required<Printer>
@@ -18,9 +19,7 @@ const PLATE: Record<Plate, string> = {
   'Supertack Plate': 'SuperTack Plate',
 }
 
-/** A Bambu Lab preset's name without the printer it is for: `Bambu PETG Basic @BBL P2S 0.4 nozzle` is `Bambu PETG Basic`. */
-export const presetName = (name: string) => name.split(' @')[0]
-const quality = (process: string) => presetName(process).replace(/^([\d.]+)mm /, '$1 mm ')
+const quality = (process: string) => withoutPrinter(process).replace(/^([\d.]+)mm /, '$1 mm ')
 
 function fit(printers: PrinterChoice[], wanted: { machine: string | null | undefined; process?: string | null; filament?: string | null; plate?: Plate | null }): Fitted | undefined {
   for (const printer of printers) {
@@ -147,7 +146,7 @@ export default function SetupPrinter({ next, back }: StepProps) {
     const rows = [
       ['Printer', printer.printer],
       ['Nozzle', `${nozzle.nozzle} mm`],
-      ['Filament', presetName(choice.filament)],
+      ['Filament', withoutPrinter(choice.filament)],
       ['Plate', PLATE[choice.plate]],
       ['Quality', quality(choice.process)],
     ]
@@ -194,7 +193,7 @@ export default function SetupPrinter({ next, back }: StepProps) {
   const fields: { label: string; value: string; options: [string, string][]; onChange: (value: string) => void }[] = [
     { label: 'Printer', value: printer.printer, options: shown.printers.map((entry) => [entry.printer, entry.printer]), onChange: pickPrinter },
     { label: 'Nozzle', value: choice.machine, options: printer.nozzles.map((entry) => [entry.machine, `${entry.nozzle} mm`]), onChange: (machine) => pick({ machine }) },
-    { label: 'Filament', value: choice.filament, options: nozzle.filaments.map((name) => [name, presetName(name)]), onChange: (filament) => pick({ filament }) },
+    { label: 'Filament', value: choice.filament, options: nozzle.filaments.map((name) => [name, withoutPrinter(name)]), onChange: (filament) => pick({ filament }) },
     { label: 'Plate', value: choice.plate, options: printer.plates.map((plate) => [plate, PLATE[plate]]), onChange: (plate) => pick({ plate: printer.plates.find((entry) => entry === plate) }) },
     { label: 'Quality', value: choice.process, options: nozzle.processes.map((name) => [name, quality(name)]), onChange: (process) => pick({ process }) },
   ]

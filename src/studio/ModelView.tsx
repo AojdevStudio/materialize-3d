@@ -6,7 +6,10 @@ import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js'
 import { ThreeMFLoader } from 'three/examples/jsm/loaders/3MFLoader.js'
 import { useTheme, type Theme } from './theme'
 
-/** The scene's background and grid lines in each theme. Dark is true black, as the rest of the app. */
+/**
+ * The scene's background and grid lines in each theme. Dark is true black, the app's `--s-bg`. The light background is
+ * the scene's own color, which no `studio.css` token holds.
+ */
 const SCENE: Record<Theme, { background: number; axis: number; line: number }> = {
   light: { background: 0xf6f6f4, axis: 0xc9c6bf, line: 0xe2e0db },
   dark: { background: 0x000000, axis: 0x3d3d3d, line: 0x1f1f1f },

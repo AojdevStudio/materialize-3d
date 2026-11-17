@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react'
 import { modelName } from '../../sidecar/src/offered'
 import type { Settings, Toolchain } from '../../sidecar/src/protocol'
+import { AGENTS } from './agents'
 import { checkSlicer, sidecar, type SlicerCheck } from './api'
+import { filamentName, printerAndNozzle } from './presetNames'
 import type { StepProps } from './Setup'
-import { AGENTS } from './SetupCheck'
-import { presetName } from './SetupPrinter'
 
 const CHECKING = 'Checking…'
 
@@ -15,8 +15,9 @@ function agentLine({ model, astra }: Settings): string {
 }
 
 function printerLine({ printer }: Settings): string {
-  const machine = printer.machine.replace(/ (\S+) nozzle$/, ', $1 mm')
-  return `${machine}, ${presetName(printer.filament).replace(/^Bambu /, '')}`
+  const parts = printerAndNozzle(printer.machine)
+  const machine = parts === undefined ? printer.machine : `${parts[0]}, ${parts[1]} mm`
+  return `${machine}, ${filamentName(printer.filament)}`
 }
 
 function slicerLine(slicer: SlicerCheck): string {

@@ -7,7 +7,8 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke: invokeMock }))
 // jsdom draws no WebGL, so the model view names the file it was given.
 vi.mock('./ModelView', () => ({ default: ({ url }: { url: string }) => <div data-testid="model-view">{url}</div> }))
 
-import type { PanelView, ProjectFile } from './api'
+import type { ProjectFile } from './api'
+import type { PanelView } from './files'
 import RightPanel from './RightPanel'
 import { useTheme } from './theme'
 

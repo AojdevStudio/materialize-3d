@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 import { pickFile } from '../lib/fileDialog'
 import attachIcon from '../assets/icons/attach.svg?raw'
+import { fileName } from './files'
 
 /**
  * A file waiting to go with the next message: a file on disk, so a draft can keep it. A pasted picture is first kept
@@ -8,8 +9,7 @@ import attachIcon from '../assets/icons/attach.svg?raw'
  */
 export type Attachment = { name: string; path: string; previewUrl?: string }
 
-/** The file a draft keeps at `path`. */
-export const savedAttachment = (path: string): Attachment => ({ name: path.split(/[\\/]/).pop() ?? path, path })
+export const savedAttachment = (path: string): Attachment => ({ name: fileName(path), path })
 
 /** A picture pasted into the composer, before it is kept in a file. */
 export type PastedPicture = { name: string; file: File }

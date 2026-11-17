@@ -1,14 +1,11 @@
 import { useEffect, useState } from 'react'
-import type { Login, ModelChoice, ModelOption, Settings } from '../../sidecar/src/protocol'
+import type { ModelChoice, ModelOption, Settings } from '../../sidecar/src/protocol'
+import { AGENTS, astraSignedIn } from './agents'
 import { sidecar } from './api'
-import { Mark } from './ModelPicker'
+import { Mark } from './marks'
 import type { StepProps } from './Setup'
-import { AGENTS } from './SetupCheck'
 
 type Offer = { models: ModelOption[]; chatgptSignedIn: boolean; saved: Settings }
-
-/** Astra is GPT, so it needs a ChatGPT sign-in. */
-export const astraSignedIn = (logins: Login[]) => logins.some((login) => login.provider === 'openai-codex' && login.login !== null)
 
 const same = (a: ModelChoice, b: ModelChoice) => a.provider === b.provider && a.modelId === b.modelId
 

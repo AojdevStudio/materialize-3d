@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react'
 import { studio } from './api'
-import { FileBody } from './RightPanel'
+import FileBody from './FileBody'
+import { useWindowTheme } from './theme'
 import './studio.css'
 
-/** How long a pop out waits between checks of its file. */
 const CHECK_MS = 2000
 
 type Shown = { project: string; rel: string; version: number }
@@ -26,6 +26,7 @@ export function popOutFile(search: string): Shown | null {
 export default function PopOut({ project, rel, version: opened }: Shown) {
   const [version, setVersion] = useState(opened)
   const [error, setError] = useState<string | null>(null)
+  useWindowTheme()
   useEffect(() => {
     let live = true
     let timer = 0

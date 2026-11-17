@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import type { Project, ProjectStatus } from '../../sidecar/src/protocol'
-import { fileUrl, panelFiles, studio, type ProjectFile } from './api'
+import { fileUrl, studio, type ProjectFile } from './api'
+import { isAgentFile, panelFiles } from './files'
 import { groupOf, lastActivity, type Group } from './sidebarGroups'
 
 /** The suggestions under the prompt box. A click puts one in the box. */
@@ -15,9 +16,9 @@ const STATE: Record<Group, string> = { working: 'working', ready: '3MF ready', p
 /** What a recent chip shows once its folder is read: its newest render, and its state, none while its status has not come. */
 type Chip = { render: ProjectFile | undefined; line: string | undefined }
 
-/** The newest render in a project's folder: a PNG the agent made, not one of the person's own pictures in `refs/`. */
+/** The newest render in a project's folder: a PNG the agent made. */
 function newestRender(files: ProjectFile[]): ProjectFile | undefined {
-  return files.filter((f) => !f.rel.startsWith('refs/') && f.rel.toLowerCase().endsWith('.png')).sort((a, b) => b.modifiedMs - a.modifiedMs)[0]
+  return files.filter((f) => isAgentFile(f.rel) && f.rel.toLowerCase().endsWith('.png')).sort((a, b) => b.modifiedMs - a.modifiedMs)[0]
 }
 
 type Props = {

@@ -1,6 +1,9 @@
-import { useEffect, useRef, useState } from 'react'
+import { useRef, useState } from 'react'
 import bambuMark from '../assets/icons/bambulab.svg?raw'
-import { isMac, studio, type PrintInfo, type ProjectFile } from './api'
+import { studio, type PrintInfo, type ProjectFile } from './api'
+import { RevealButton, reporting } from './fileActions'
+import { fileName } from './files'
+import { useDismiss } from './useDismiss'
 
 type Props = {
   project: string
@@ -8,8 +11,6 @@ type Props = {
   prints: ProjectFile[]
   onError: (message: string) => void
 }
-
-const fileName = (rel: string) => rel.slice(rel.lastIndexOf('/') + 1)
 
 function duration(seconds: number) {
   const minutes = Math.round(seconds / 60)
@@ -53,21 +54,8 @@ function sharedSettings(prints: ProjectFile[]): string[] {
 export default function PrintFiles({ project, prints, onError }: Props) {
   const [open, setOpen] = useState(false)
   const box = useRef<HTMLDivElement>(null)
-  const run = (action: Promise<void>) => action.catch((err: unknown) => onError(String(err)))
-
-  // The open menu closes on a click outside it, or on Escape.
-  useEffect(() => {
-    if (!open) return
-    const close = (event: Event) => {
-      if (event instanceof KeyboardEvent ? event.key === 'Escape' : !box.current?.contains(event.target as Node)) setOpen(false)
-    }
-    document.addEventListener('mousedown', close)
-    document.addEventListener('keydown', close)
-    return () => {
-      document.removeEventListener('mousedown', close)
-      document.removeEventListener('keydown', close)
-    }
-  }, [open])
+  const run = reporting(onError)
+  useDismiss(open, box, () => setOpen(false))
 
   if (prints.length === 0) return null
   const newest = prints[0]
@@ -83,9 +71,7 @@ export default function PrintFiles({ project, prints, onError }: Props) {
           </span>
         )}
       </div>
-      <button type="button" onClick={() => run(studio.reveal(project, newest.rel))}>
-        {isMac ? 'Reveal in Finder' : 'Show in folder'}
-      </button>
+      <RevealButton project={project} rel={newest.rel} onError={onError} />
       <div className="print-open" ref={box}>
         {open && (
           <div className="print-menu" role="menu" aria-label="Print files">

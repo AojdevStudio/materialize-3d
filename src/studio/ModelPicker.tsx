@@ -1,21 +1,8 @@
-import { useEffect, useRef, useState } from 'react'
+import { useRef, useState } from 'react'
 import { modelName } from '../../sidecar/src/offered'
 import type { ModelChoice, ModelOption } from '../../sidecar/src/protocol'
-import claude from '../assets/icons/claude.svg?raw'
-import openai from '../assets/icons/openai.svg?raw'
-
-/** The maker's official mark for a model, by its id: the Claude mark for Anthropic's models, the OpenAI mark for GPT models. */
-function markOf(modelId: string): string | undefined {
-  if (modelId.startsWith('claude-')) return claude
-  if (modelId.startsWith('gpt-')) return openai
-  return undefined
-}
-
-/** A model's mark. A model with none keeps the space, so the names line up. */
-export function Mark({ modelId }: { modelId: string }) {
-  const svg = markOf(modelId)
-  return <span className="model-mark" aria-hidden="true" dangerouslySetInnerHTML={svg === undefined ? undefined : { __html: svg }} />
-}
+import { Mark } from './marks'
+import { useDismiss } from './useDismiss'
 
 type Props = {
   models: ModelOption[]
@@ -33,18 +20,7 @@ export default function ModelPicker({ models, chosen, onPick }: Props) {
   const box = useRef<HTMLDivElement>(null)
   const isChosen = (model: ModelChoice) => model.provider === chosen?.provider && model.modelId === chosen.modelId
 
-  useEffect(() => {
-    if (!open) return
-    const close = (event: Event) => {
-      if (event instanceof KeyboardEvent ? event.key === 'Escape' : !box.current?.contains(event.target as Node)) setOpen(false)
-    }
-    document.addEventListener('mousedown', close)
-    document.addEventListener('keydown', close)
-    return () => {
-      document.removeEventListener('mousedown', close)
-      document.removeEventListener('keydown', close)
-    }
-  }, [open])
+  useDismiss(open, box, () => setOpen(false))
 
   return (
     <div className="model-picker" ref={box}>

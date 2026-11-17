@@ -1,0 +1,6 @@
+{
+  "html": ["html", "htm"],
+  "model": ["stl", "3mf", "glb", "gltf"],
+  "image": ["png", "jpg", "jpeg", "webp", "gif", "svg"],
+  "text": ["json", "py", "txt", "md", "scad", "csv"]
+}
