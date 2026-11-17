@@ -18,7 +18,7 @@ struct Builds {
 pub struct BuildGate(watch::Sender<Builds>);
 
 /// Held by the updater from the idle check until the restart. Dropping it,
-/// when the install fails, lets builds start again.
+/// when the install fails, lets work start again.
 #[must_use]
 #[derive(Debug)]
 pub struct Closed<'a>(&'a BuildGate);
@@ -29,8 +29,7 @@ pub struct Closed<'a>(&'a BuildGate);
 pub struct OwnedRunning<G: std::ops::Deref<Target = BuildGate>>(G);
 
 impl BuildGate {
-    /// Lets work start, unless an update is installing. One send_if_modified:
-    /// it counts the work unless the gate is closed.
+    /// Lets work start, unless an update is installing.
     pub fn enter_owned<G: std::ops::Deref<Target = BuildGate>>(gate: G) -> Option<OwnedRunning<G>> {
         let admitted = gate.0.send_if_modified(|builds| {
             if builds.closed {

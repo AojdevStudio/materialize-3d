@@ -48,7 +48,7 @@ Exit 0 means every verdict matches the recorded one. Exit 1 means at least one d
 |---|---|---|
 | `split-close` | `close_when_idle` reads `running`, then closes the gate in a second send. | `gate-held-until-restart` |
 | `late-subscribe` | `borrow_and_update` moves after the idle check, so a build that ends in between is never heard. | `update-wakes` |
-| `ungated-slice` | The sidecar's `slice` request no longer runs under `with_own_pass`. | `no-build-cut-off` |
+| `ungated-slice` | The sidecar's `slice` request no longer takes its own pass with `take_pass`. | `no-build-cut-off` |
 | `ungated-turn` | A send no longer asks for the pass (`Busy.during` in `sidecar/src/busy.ts`). | `no-build-cut-off` |
 | `early-release` | The sidecar gives its pass back while a task is still live. | `no-build-cut-off` |
 | `guard-dropped` | `update_install` binds the `Closed` guard to `_`, which drops it before the restart. | `no-build-cut-off` |
@@ -67,7 +67,7 @@ Then read each covered function that changed. Also look for new code that reache
 
 | Model action | Code |
 |---|---|
-| `Enter`, `Leave` | `BuildGate::enter_owned` and `Drop for OwnedRunning` in `build_gate.rs`. For a slice, `take_pass` through `with_own_pass` in the `slice` request (`sidecar.rs`). For the sidecar's chat work, `take_pass` in `set_busy` (`sidecar.rs`), which `sidecar/src/busy.ts` asks for before a send commits (`Busy.during` in `sidecar/src/chat.ts`) and before work a crash cut off resumes (`busy.watch` in `sidecar/src/app.ts`), and `Drop for OwnedRunning` when it gives the pass back once no task is pending or running, after its last commit. A task that waits, sleeps, or holds a sign-in wait (`Busy.parked`) is not work: it resumes after a restart. `set_busy` refuses a request from a sidecar run that ended. A slice takes a pass of its own, since it can outlive the sidecar run that asked for it. A turn a sign-in lets go waits for the pass while an update installs (`Busy.duringWhenAllowed`). |
+| `Enter`, `Leave` | `BuildGate::enter_owned` and `Drop for OwnedRunning` in `build_gate.rs`. For a slice, `take_pass` in the `slice` request (`answer` in `sidecar.rs`), held while `slice_requests::slice` runs. For the sidecar's chat work, `take_pass` in `set_busy` (`sidecar.rs`), which `sidecar/src/busy.ts` asks for before a send commits (`Busy.during` in `sidecar/src/chat.ts`) and before work a crash cut off resumes (`busy.watch` in `sidecar/src/app.ts`), and `Drop for OwnedRunning` when it gives the pass back once no task is pending or running, after its last commit. A task that waits, sleeps, or holds a sign-in wait (`Busy.parked`) is not work: it resumes after a restart. `set_busy` refuses a request from a sidecar run that ended. A slice takes a pass of its own, since it can outlive the sidecar run that asked for it. A turn a sign-in lets go waits for the pass while an update installs (`Busy.duringWhenAllowed`). |
 | `Downloaded`, `Top`, `CheckAndClose`, `CheckBusy`, `Wake` | `BuildGate::close_when_idle`. Its `subscribe`, `borrow_and_update`, one `send_if_modified`, and `changed().await`. |
 | `Reopen` | `Drop for Closed`, on each error return of `install_when_idle`. |
 | `Click`, `DownloadFails`, `InstallOk`, `InstallFails`, `Exit` | `update_install` and `install_when_idle` in `updater.rs`, then Tauri's `AppHandle::restart`, which ends in `process::exit(0)`. |
@@ -94,4 +94,4 @@ Keep each model action one indivisible step in the code. When the code changes o
 ## Scope
 
 - Bounds: two tasks (a slice and a Studio turn), each holding at most one pass. Two update runs. `update-wakes` limits each task to two starts, so that work stops. It also assumes that each running task ends, and that the updater's wait loop keeps getting scheduled (the `Fairness` conjuncts in `UpdateRestart.tla`). The other checks have no limit on starts.
-- Not covered: the download and its signature check, writes to the sidecar's store after the install (the store survives an exit), and the UI in `src/stores/updates.ts`. The check of a printer setting (`printer.check` in `sidecar.rs`) holds no pass. A restart may cut it off, because the setting is saved only after it answers and its preset cache is written whole or not at all.
+- Not covered: the download and its signature check, writes to the sidecar's store after the install (the store survives an exit), and the UI in `src/stores/updates.ts`. The check of a printer setting (the `printer.check` request, `slice_requests::check`) holds no pass. A restart may cut it off, because the setting is saved only after it answers and its preset cache is written whole or not at all.

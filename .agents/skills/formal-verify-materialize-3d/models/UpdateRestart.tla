@@ -8,7 +8,7 @@
 (*   src-tauri/src/updater.rs                 update_install,              *)
 (*                                            install_when_idle            *)
 (*   src-tauri/src/sidecar.rs                 a slice takes its own pass   *)
-(*                                            (with_own_pass), and the     *)
+(*                                            (take_pass), and the         *)
 (*   sidecar/src/busy.ts                      sidecar's work takes a pass  *)
 (*   sidecar/src/chat.ts                      (set_busy) before a send's   *)
 (*   sidecar/src/app.ts                       first commit and before work *)
@@ -61,7 +61,7 @@ Init ==
 
 ----------------------------------------------------------------------------
 (* Builds. A slice Rust runs for the sidecar takes its own pass           *)
-(* (with_own_pass, through BuildGate::enter_owned) and holds it until it   *)
+(* (take_pass, through BuildGate::enter_owned) and holds it until it       *)
 (* returns. The sidecar asks for a pass (set_busy) before a send commits   *)
 (* and before work a crash cut off resumes, and gives it back once no task *)
 (* is pending or running, after its last commit. Turn is that work. A task *)

@@ -51,7 +51,7 @@ pub(crate) struct Progress {
     total: Option<u64>,
 }
 
-/// How many builds a downloaded update is waiting for, sent at each check. 0 means it installs now.
+/// How many passes a downloaded update is waiting for, sent at each check. 0 means it installs now.
 pub const WAITING_EVENT: &str = "update:waiting";
 
 /// Bytes between two progress events, so a large archive does not flood the UI.
@@ -99,7 +99,6 @@ pub async fn update_check(app: AppHandle, pending: State<'_, PendingUpdate>) -> 
     Ok(check)
 }
 
-/// Installs the update the last check found once no work holds the gate, then restarts.
 #[tauri::command]
 pub async fn update_install(
     app: AppHandle,
@@ -133,9 +132,9 @@ pub async fn update_install(
         .await
         .map_err(|e| format!("The update did not download or its signature did not verify: {e}"))?;
 
-    let waiting = |builds: usize| {
-        if let Err(e) = app.emit(WAITING_EVENT, builds) {
-            log::warn!("updater: could not report the builds it waits for: {e}");
+    let waiting = |passes: usize| {
+        if let Err(e) = app.emit(WAITING_EVENT, passes) {
+            log::warn!("updater: could not report the passes it waits for: {e}");
         }
     };
     let _closed = install_when_idle(&gate, waiting, || update.install(&bytes).map_err(|e| format!("The update did not install: {e}"))).await?;
