@@ -47,12 +47,17 @@ fn contained(root: &Path, path: PathBuf) -> Result<PathBuf, Refused> {
 }
 
 /// Where `rel`, a file or folder that is there, really is inside `root`. The whole path is read where it leads as `rel`
-/// spells it, so a trailing `/` after a file fails as it would for any reader. The path that comes back holds no link,
-/// so a caller reads or serves what was checked.
+/// spells it. A name that ends in `/` or `/.` must lead to a folder: macOS resolves a trailing `/` after a file, and
+/// Linux refuses it, so the rule says it once. The path that comes back holds no link, so a caller reads or serves what
+/// was checked.
 pub(crate) fn inside(root: &Path, rel: impl AsRef<Path>) -> Result<PathBuf, Refused> {
     let rel = named(rel.as_ref())?;
     let root = real(root)?;
     let path = real(&root.join(rel))?;
+    let spelled = rel.as_os_str().as_encoded_bytes();
+    if (spelled.ends_with(b"/") || spelled.ends_with(b"/.")) && !path.is_dir() {
+        return Err(Refused::Unreadable(io::Error::from(io::ErrorKind::NotADirectory)));
+    }
     contained(&root, path)
 }
 
