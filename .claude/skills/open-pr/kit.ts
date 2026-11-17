@@ -3,7 +3,7 @@
  * Installs the PR kit into a repo, so every agent that opens the repo carries it,
  * cloud sessions included. Run it again to update; a second run changes nothing.
  *
- *   bun kit.ts install <repo> [--runs-on <label>] [--layout skills|developer]
+ *   bun kit.ts install <repo> [--runs-on <label>] [--layout skills|developer] [--scorer homelab|hosted] [--scorer-label <label> | --scorer-runs-on <label>]
  *   bun kit.ts stamp    rewrite VERSION after a kit change, bumping its version by one (source folder only)
  *   bun kit.ts check    exit 1 when VERSION does not match the shipped files
  *
@@ -23,8 +23,12 @@
  *   .agents/skills/{open-pr,land-pr}                  symlinks for Codex and Cursor
  *   .claude/settings.json                             the PreToolUse gate hook
  *   .github/workflows/pr-kit.yml                      the PR body check in CI
- *   .github/workflows/merge-danger.yml                the merge-danger scorer, on the homelab Linux runners
- *   AGENTS.md (and CLAUDE.md when it does not load AGENTS.md)  the rule block
+ *   .github/workflows/merge-danger.yml                the merge-danger scorer, on the homelab Linux runners that carry
+ *                                                     the --scorer-label label (homelab-ci by default), on the one
+ *                                                     plain --scorer-runs-on label (a runner-up pool such as
+ *                                                     central-linux), or with --scorer hosted on a GitHub-hosted
+ *                                                     runner for a public repo
+ *   AGENTS.md (and CLAUDE.md unless it is only @ imports, one of them @AGENTS.md)  the rule block
  *   only the real one of AGENTS.md and CLAUDE.md when the other is a symlink whose text is exactly its name
  */
 
@@ -37,6 +41,27 @@ const LAYOUTS = [
   { name: "skills", directory: ".claude/skills" },
   { name: "developer", directory: ".dev/pr-kit" },
 ] as const;
+/** Each scorer mode's template for merge-danger.yml, and the step that turns the scorer on. */
+const SCORERS = [
+  { name: "homelab", template: "merge-danger.yml", next: (label: string) => `merge-danger needs a ${label} Linux runner and the repo Actions secret TYPESAFE_API_KEY, or the legacy key file (ROLLOUT.md, step 4a).` },
+  { name: "hosted", template: "merge-danger-hosted.yml", next: () => "merge-danger runs on a GitHub-hosted runner and posts an error status until the owner sets the repo Actions secret TYPESAFE_API_KEY (ROLLOUT.md, step 4b)." },
+] as const;
+/**
+ * The homelab scorer's third runner label: one plain label that YAML reads back as the same string,
+ * since it lands unquoted in a flow list. `true`, `123`, `null` or `-` would not, and a rerun would refuse.
+ */
+function plainLabel(label: string): boolean {
+  if (!/^[A-Za-z0-9._-]+$/.test(label)) return false;
+  try {
+    return Bun.deepEquals(Bun.YAML.parse(`[${label}]`), [label]);
+  } catch {
+    return false;
+  }
+}
+/** GitHub-hosted runner labels. The hosted scorer runs on one, so a plain homelab runner never may. */
+const GITHUB_HOSTED = /^(?:ubuntu|macos|windows)-/;
+/** The homelab template's runs-on value, replaced whole so the scorer can also take one plain label. */
+const SCORER_RUNS_ON = "[self-hosted, Linux, __SCORER_LABEL__]";
 const SOURCE = { "open-pr": import.meta.dir, "land-pr": join(import.meta.dir, "..", "land-pr") } satisfies Record<(typeof SKILLS)[number], string>;
 const MARKER = ".pr-kit";
 const VERSION = "VERSION";
@@ -97,8 +122,8 @@ function inSourceFolder(): boolean {
   return Bun.spawnSync(["git", "rev-parse", "--show-toplevel"], { cwd: dir, stdout: "ignore", stderr: "ignore" }).exitCode === 0;
 }
 
-const USAGE = "usage: bun kit.ts install <repo> [--runs-on <label>] [--layout skills|developer] | stamp | check";
-const { values, positionals } = parseArgs({ allowPositionals: true, options: { "runs-on": { type: "string" }, layout: { type: "string" }, help: { type: "boolean", short: "h" } } });
+const USAGE = "usage: bun kit.ts install <repo> [--runs-on <label>] [--layout skills|developer] [--scorer homelab|hosted] [--scorer-label <label> | --scorer-runs-on <label>] | stamp | check";
+const { values, positionals } = parseArgs({ allowPositionals: true, options: { "runs-on": { type: "string" }, layout: { type: "string" }, scorer: { type: "string" }, "scorer-label": { type: "string" }, "scorer-runs-on": { type: "string" }, help: { type: "boolean", short: "h" } } });
 if (values.help) {
   console.log(USAGE);
   process.exit(0);
@@ -140,6 +165,15 @@ const repo = resolve(target);
 if (!existsSync(join(repo, ".git"))) throw new Error(`${repo} is not a git checkout`);
 const requestedLayout = LAYOUTS.find((layout) => layout.name === values.layout);
 if (values.layout !== undefined && !requestedLayout) throw new Error("--layout must be skills or developer");
+const requestedScorer = SCORERS.find((scorer) => scorer.name === values.scorer);
+if (values.scorer !== undefined && !requestedScorer) throw new Error("--scorer must be homelab or hosted");
+const requestedScorerLabel = values["scorer-label"];
+if (requestedScorerLabel !== undefined && !plainLabel(requestedScorerLabel)) throw new Error("--scorer-label must be one runner label of letters, digits, dots, underscores, and hyphens");
+const requestedScorerRunsOn = values["scorer-runs-on"];
+if (requestedScorerRunsOn !== undefined && (!plainLabel(requestedScorerRunsOn) || GITHUB_HOSTED.test(requestedScorerRunsOn))) {
+  throw new Error("--scorer-runs-on must be one self-hosted runner label of letters, digits, dots, underscores, and hyphens, such as central-linux. Use --scorer hosted for a GitHub-hosted runner.");
+}
+if (requestedScorerLabel !== undefined && requestedScorerRunsOn !== undefined) throw new Error("Choose --scorer-label or --scorer-runs-on, not both");
 const installedLayouts = () => LAYOUTS.filter(({ directory }) => SKILLS.some((name) => existsSync(join(repo, directory, name, MARKER))));
 const installed = installedLayouts();
 if (installed.length > 1) throw new Error("PR kit markers exist in both layouts. Resolve the duplicate install before updating.");
@@ -306,6 +340,49 @@ function runnerLabel(): string {
   return best[0];
 }
 
+const INSTALLED_SCORER = join(repo, ".github", "workflows", "merge-danger.yml");
+
+/** The parsed score job, or undefined when the file is missing or does not parse. A comment that names the secret or a runner never counts. */
+function scoreJob(path: string): Record<string, unknown> | undefined {
+  let doc: unknown;
+  try {
+    doc = Bun.YAML.parse(readFileSync(path, "utf8"));
+  } catch {
+    return undefined;
+  }
+  const job = isObj(doc) && isObj(doc.jobs) ? doc.jobs.score : undefined;
+  return isObj(job) ? job : undefined;
+}
+
+/**
+ * The runner a homelab score job names: exactly [self-hosted, Linux, <label>], or one plain label that is
+ * not GitHub-hosted, such as the runner-up pool central-linux, which matches only a lone label.
+ */
+function homelabRunner(job: Record<string, unknown> | undefined): { label: string; plain: boolean } | undefined {
+  const runsOn = job?.["runs-on"];
+  if (typeof runsOn === "string") return plainLabel(runsOn) && !GITHUB_HOSTED.test(runsOn) ? { label: runsOn, plain: true } : undefined;
+  if (!Array.isArray(runsOn) || runsOn.length !== 3 || runsOn[0] !== "self-hosted" || runsOn[1] !== "Linux") return undefined;
+  const [, , label] = runsOn;
+  return typeof label === "string" && plainLabel(label) ? { label, plain: false } : undefined;
+}
+
+/**
+ * Both modes read the repo secret. The homelab runner labels take precedence, so adding the
+ * secret does not move a homelab install onto hosted minutes. Other runners keep hosted mode
+ * when the score step reads the secret. A file that matches neither refuses.
+ */
+function scorerMode(): (typeof SCORERS)[number] {
+  if (requestedScorer) return requestedScorer;
+  const [homelab, hosted] = SCORERS;
+  if (!existsSync(INSTALLED_SCORER)) return homelab;
+  const job = scoreJob(INSTALLED_SCORER);
+  if (homelabRunner(job)) return homelab;
+  const steps = Array.isArray(job?.steps) ? job.steps : [];
+  const usesKey = steps.some((s) => isObj(s) && isObj(s.env) && typeof s.env.TYPESAFE_API_KEY === "string" && /\$\{\{\s*secrets\.TYPESAFE_API_KEY\s*\}\}/.test(s.env.TYPESAFE_API_KEY));
+  if (usesKey) return hosted;
+  throw new Error(`${relative(repo, INSTALLED_SCORER)} matches neither scorer mode: it names no secrets.TYPESAFE_API_KEY and does not run on the homelab runners. Pass --scorer homelab or --scorer hosted.`);
+}
+
 /**
  * A step's `uses:` line pinned to a commit, with a comment that names its version: its indent and key, the pin and comment,
  * the quote, the action, and the version. A tag ref such as `@v7` is no pin, so the template's commit replaces it.
@@ -319,8 +396,8 @@ function newer(a: string, b: string): boolean {
 }
 
 /**
- * The workflows the kit installs. Only pr-kit.yml takes the runner label. merge-danger.yml names
- * the homelab Linux runners itself, since the label can name a Mac.
+ * The workflows the kit installs. Only pr-kit.yml takes the runner label. merge-danger.yml comes
+ * from the scorer mode's template, which names its runners itself, since the label can name a Mac.
  */
 const WORKFLOWS = ["pr-kit.yml", "merge-danger.yml"] as const;
 
@@ -328,8 +405,10 @@ const WORKFLOWS = ["pr-kit.yml", "merge-danger.yml"] as const;
 function writeWorkflow(file: (typeof WORKFLOWS)[number], label: string): void {
   const path = join(repo, ".github", "workflows", file);
   const installed = new Map(existsSync(path) ? [...readFileSync(path, "utf8").matchAll(PIN)].map((m) => [m[4], { pin: m[2], version: m[5] }] as const) : []);
-  const yml = readFileSync(join(SOURCE["open-pr"], file), "utf8")
-    .replace("__RUNS_ON__", label)
+  const template = readFileSync(join(SOURCE["open-pr"], file === "merge-danger.yml" ? scorer.template : file), "utf8");
+  if (file === "merge-danger.yml" && scorer.name === "homelab" && !template.includes(SCORER_RUNS_ON)) throw new Error(`${scorer.template} no longer holds ${SCORER_RUNS_ON}`);
+  // Each placeholder belongs to one template, so a runner label that spells the other one stays as written.
+  const yml = (file === "merge-danger.yml" ? template.replace(SCORER_RUNS_ON, scorerRunsOn) : template.replace("__RUNS_ON__", label))
     .replaceAll(".claude/skills/", `${layout.directory}/`)
     // Only the pin moves over, so the template keeps its own indent and step layout.
     .replace(PIN, (line, key: string, _pin: string, _quote: string, action: string, version: string) => {
@@ -391,12 +470,27 @@ function preflightDestinations(): InstructionWrite[] {
     if (file === "CLAUDE.md" && !existsSync(path)) return [];
     const text = existsSync(path) ? readFileSync(path, "utf8") : "";
     const next = replaceRuleBlock(text, path);
-    return file === "CLAUDE.md" && !alias && text.includes("AGENTS.md") ? [] : [{ path, text: next }];
+    if (file !== "CLAUDE.md" || alias) return [{ path, text: next }];
+    // Only a pure import shim skips the block: bare @paths of plain path characters, which no Markdown or HTML
+    // construct can hide. Mixed text would need Claude Code's parser, and a duplicate block is harmless.
+    const lines = text.split(/\r?\n/).filter((line) => line.trim());
+    const shim = lines.length > 0 && lines.every((line) => /^@[A-Za-z0-9_./~-]+\s*$/.test(line)) && lines.some((line) => /^@(?:\.\/)?AGENTS\.md\s*$/.test(line));
+    return shim ? [] : [{ path, text: next }];
   });
 }
 
 const label = runnerLabel();
 preflightDestinations();
+// After preflight, so a symlinked merge-danger.yml is refused before the mode lookup reads it.
+const scorer = scorerMode();
+if (scorer.name === "hosted" && requestedScorerLabel !== undefined) throw new Error("--scorer-label applies only to --scorer homelab");
+if (scorer.name === "hosted" && requestedScorerRunsOn !== undefined) throw new Error("--scorer-runs-on applies only to --scorer homelab");
+// A bare rerun keeps the runner the installed homelab scorer records, in its list or plain form.
+const scorerRunner = requestedScorerRunsOn !== undefined ? { label: requestedScorerRunsOn, plain: true }
+  : requestedScorerLabel !== undefined ? { label: requestedScorerLabel, plain: false }
+  : homelabRunner(scoreJob(INSTALLED_SCORER)) ?? { label: "homelab-ci", plain: false };
+const scorerLabel = scorerRunner.label;
+const scorerRunsOn = scorerRunner.plain ? scorerLabel : `[self-hosted, Linux, ${scorerLabel}]`;
 guardInstalled();
 const remote = sourceStamp();
 if ("why" in remote) console.log(`Remote version check skipped (this install was not compared with kits/pr): ${remote.why}.`);
@@ -418,4 +512,4 @@ for (const file of WORKFLOWS) writeWorkflow(file, label);
 for (const { path, text } of instructions) writeIfChanged(path, text);
 
 console.log(changes.length ? changes.map((c) => `- ${c}`).join("\n") : "PR kit already current.");
-console.log("Next: commit these files in their own PR, then make the pr-kit check required in the repo ruleset. merge-danger needs a homelab-ci Linux runner with Jev's key file (ROLLOUT.md, step 4a).");
+console.log(`Next: commit these files in their own PR, then make the pr-kit check required in the repo ruleset. ${scorer.next(scorerLabel)}`);
