@@ -1,4 +1,4 @@
-import type { Login, ProviderId } from '../../sidecar/src/protocol'
+import type { Login, ModelChoice, ProviderId } from '../../sidecar/src/protocol'
 import claude from '../assets/icons/claude.svg?raw'
 import openai from '../assets/icons/openai.svg?raw'
 
@@ -10,3 +10,5 @@ export const AGENTS: readonly { id: string; provider: ProviderId; name: string; 
 
 /** Astra is GPT, so it needs a ChatGPT sign-in. */
 export const astraSignedIn = (logins: Login[]) => logins.some((login) => login.provider === 'openai-codex' && login.login !== null)
+
+export const sameModel = (a: ModelChoice, b: ModelChoice) => a.provider === b.provider && a.modelId === b.modelId

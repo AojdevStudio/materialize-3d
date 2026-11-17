@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react'
 import { modelName } from '../../sidecar/src/offered'
 import type { ModelChoice, ModelOption } from '../../sidecar/src/protocol'
+import { sameModel } from './agents'
 import { Mark } from './marks'
 import { useDismiss } from './useDismiss'
 
@@ -11,14 +12,11 @@ type Props = {
   onPick: (model: ModelChoice) => void
 }
 
-/**
- * The model picker. The button shows the chosen model's mark and short name. The menu shows the short list for the
- * signed-in providers, with a check on the chosen model.
- */
+/** The menu offers the short list for the signed-in providers. */
 export default function ModelPicker({ models, chosen, onPick }: Props) {
   const [open, setOpen] = useState(false)
   const box = useRef<HTMLDivElement>(null)
-  const isChosen = (model: ModelChoice) => model.provider === chosen?.provider && model.modelId === chosen.modelId
+  const isChosen = (model: ModelChoice) => chosen !== null && sameModel(model, chosen)
 
   useDismiss(open, box, () => setOpen(false))
 

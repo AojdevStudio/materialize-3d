@@ -1,9 +1,10 @@
-import { type ReactNode, useEffect, useState } from 'react'
+import { useState } from 'react'
 import type { ProviderId } from '../../sidecar/src/protocol'
 import { AGENTS } from './agents'
-import { checkSlicer, sidecar } from './api'
-import { type Action, agentRows, buildRows, forgetRefused, type Found, type Row, signedIn, slicerRow } from './checkRows'
+import { sidecar } from './api'
+import { agentRows, buildRows, forgetRefused, type Found, type Row, signedIn, slicerRow } from './checkRows'
 import type { StepProps } from './Setup'
+import { CheckGroup, useFound } from './setupRows'
 
 const INSTALL_HINT = 'Paste the install command in Terminal, then press Check again.'
 
@@ -27,42 +28,11 @@ function verdictOf({ logins, toolchain, slicer }: Found): Verdict {
   return { title: 'Your Mac is ready', text: 'Everything the app needs is here.', go: 'ready' }
 }
 
-/** Setup's check of the Mac: a row for each sign-in, Bambu Studio, uv, and Python. */
 export default function SetupCheck({ next, onError, signIn, signIns, refused }: StepProps) {
-  const [found, setFound] = useState<Found>({})
   const [round, setRound] = useState(0)
   const [keyFormFor, setKeyFormFor] = useState<ProviderId | null>(null)
   const [copied, setCopied] = useState<string | null>(null)
-
-  /** Fills one part from its answer, or marks it failed, unless the check it belongs to was replaced. */
-  const fill = <K extends keyof Found>(part: K, answer: Promise<Exclude<Found[K], 'failed' | undefined>>, current: () => boolean) =>
-    void answer.then(
-      (value) => current() && setFound((now) => ({ ...now, [part]: value })),
-      (err: unknown) => {
-        if (!current()) return
-        setFound((now) => ({ ...now, [part]: 'failed' }))
-        onError(String(err))
-      },
-    )
-
-  useEffect(() => {
-    let current = true
-    setFound({})
-    setCopied(null)
-    fill('toolchain', sidecar('setup.tools', {}), () => current)
-    fill('slicer', checkSlicer(), () => current)
-    return () => {
-      current = false
-    }
-  }, [round])
-
-  useEffect(() => {
-    let current = true
-    fill('logins', sidecar('auth.status', {}), () => current)
-    return () => {
-      current = false
-    }
-  }, [round, signIns])
+  const found = useFound(onError, signIns, round)
 
   const withoutRefused = forgetRefused(found, refused)
   const verdict = verdictOf(withoutRefused)
@@ -72,7 +42,7 @@ export default function SetupCheck({ next, onError, signIn, signIns, refused }: 
       () => onError(`The command could not be copied. Run this in Terminal: ${command}`),
     )
 
-  const actionOf = (action: Action | undefined) => {
+  const act = ({ action }: Row) => {
     switch (action?.kind) {
       case undefined:
         return null
@@ -98,52 +68,34 @@ export default function SetupCheck({ next, onError, signIn, signIns, refused }: 
     }
   }
 
-  const group = (title: string, rows: Row[], after?: ReactNode) => (
-    <section className="setup-group" aria-label={title}>
-      <h2>{title}</h2>
-      <ul>
-        {rows.map((row) => (
-          <li key={row.id} className="setup-row" data-status={row.status} data-testid={`check-${row.id}`}>
-            <span className="setup-icon" aria-hidden="true" dangerouslySetInnerHTML={{ __html: row.icon }} />
-            <span className="setup-what">
-              <span className="setup-name">{row.name}</span>
-              <span className="setup-detail">{row.detail}</span>
-            </span>
-            <span className="setup-act">{actionOf(row.action)}</span>
-            <span className="setup-status">{row.label}</span>
-          </li>
-        ))}
-      </ul>
-      {after}
-    </section>
-  )
-
   return (
     <>
       <h1>{verdict.title}</h1>
       {verdict.text !== undefined && <p>{verdict.text}</p>}
-      {group(
-        'Agent that does the work (at least one)',
-        agentRows(withoutRefused.logins, refused),
-        <>
-          {keyFormFor !== null && Array.isArray(withoutRefused.logins) && !signedIn(withoutRefused.logins, keyFormFor) && (
-            <div className="setup-key">
-              <KeyForm provider={keyFormFor} onError={onError} />
-            </div>
-          )}
-          {signIn}
-        </>,
-      )}
-      {group('Slicer (makes the 3MF)', [slicerRow(found.slicer)])}
-      {group('Build tools (required)', buildRows(found.toolchain))}
+      <CheckGroup title="Agent that does the work (at least one)" rows={agentRows(withoutRefused.logins, refused)} testId="check" act={act}>
+        {keyFormFor !== null && Array.isArray(withoutRefused.logins) && !signedIn(withoutRefused.logins, keyFormFor) && (
+          <div className="setup-key">
+            <KeyForm provider={keyFormFor} onError={onError} />
+          </div>
+        )}
+        {signIn}
+      </CheckGroup>
+      <CheckGroup title="Slicer (makes the 3MF)" rows={[slicerRow(found.slicer)]} testId="check" act={act} />
+      <CheckGroup title="Build tools (required)" rows={buildRows(found.toolchain)} testId="check" act={act} />
       {verdict.hint !== undefined && <p className="setup-hint">{verdict.hint}</p>}
       <div className="setup-actions">
         {verdict.go !== 'wait' && (
-          <button type="button" onClick={() => setRound(round + 1)}>
+          <button
+            type="button"
+            onClick={() => {
+              setCopied(null)
+              setRound(round + 1)
+            }}
+          >
             Check again
           </button>
         )}
-        <button type="button" className="primary" disabled={verdict.go === 'wait' || verdict.go === 'blocked'} onClick={next}>
+        <button type="button" className="primary" disabled={verdict.go === 'wait' || verdict.go === 'blocked'} onClick={() => void next()}>
           {verdict.go === 'without-slicer' ? 'Continue without a slicer' : 'Continue'}
         </button>
       </div>

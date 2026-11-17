@@ -7,11 +7,12 @@ import SetupPrinter from './SetupPrinter'
 import SetupReady from './SetupReady'
 
 /**
- * What every step's screen gets. `signIn` is a running sign-in's question, and `signIns` counts finished sign-ins.
- * `refused` is the provider a waiting turn needs a new sign-in to.
+ * What every step's screen gets. A step that saved passes `next` the app state its save answered. `signIn` is a running
+ * sign-in's question, and `signIns` counts finished sign-ins. `refused` is the provider a waiting turn needs a new
+ * sign-in to.
  */
 export type StepProps = {
-  next: () => Promise<void>
+  next: (saved?: AppState) => Promise<void>
   back: () => Promise<void>
   onError: (message: string) => void
   signIn: ReactNode
@@ -58,8 +59,8 @@ export default function SetupFlow({ setup, onSaved, ...shared }: Shared & { setu
 }
 
 /** One step of setup opened again, as Fix in setup does. Going on, or Back, ends it there. The stored setup stays done. */
-export function SetupStep({ step, onDone, ...shared }: Shared & { step: Setup['step']; onDone: (wentOn: boolean) => void }) {
-  return <SetupCard at={indexOf(step)} next={async () => onDone(true)} back={async () => onDone(false)} reopened {...shared} />
+export function SetupStep({ step, onDone, ...shared }: Shared & { step: Setup['step']; onDone: (wentOn: boolean, saved?: AppState) => void }) {
+  return <SetupCard at={indexOf(step)} next={async (saved) => onDone(true, saved)} back={async () => onDone(false)} reopened {...shared} />
 }
 
 /** A reopened step gets a Back above the card, since the flow's own steps around it are done. */
@@ -101,7 +102,7 @@ function Welcome({ next }: StepProps) {
       </p>
       <p className="setup-note">Your projects stay on your Mac. Your messages go only to the AI model you sign in to.</p>
       <div className="setup-actions">
-        <button type="button" className="primary" onClick={next}>
+        <button type="button" className="primary" onClick={() => void next()}>
           Start setup
         </button>
       </div>

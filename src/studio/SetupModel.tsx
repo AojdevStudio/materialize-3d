@@ -1,13 +1,11 @@
 import { useEffect, useState } from 'react'
 import type { ModelChoice, ModelOption, Settings } from '../../sidecar/src/protocol'
-import { AGENTS, astraSignedIn } from './agents'
+import { AGENTS, astraSignedIn, sameModel } from './agents'
 import { sidecar } from './api'
-import { Mark } from './marks'
 import type { StepProps } from './Setup'
+import { AstraSwitch, ModelRow } from './setupRows'
 
 type Offer = { models: ModelOption[]; chatgptSignedIn: boolean; saved: Settings }
-
-const same = (a: ModelChoice, b: ModelChoice) => a.provider === b.provider && a.modelId === b.modelId
 
 /**
  * Setup's pick of the default model new projects take, and whether the main agent may ask Astra for drawings. Continue
@@ -38,7 +36,7 @@ export default function SetupModel({ next, back, onError, signIn, signIns }: Ste
   }, [signIns])
 
   const models = offer?.models ?? []
-  const offered = (wanted: ModelChoice | null | undefined) => wanted && models.find((row) => same(row, wanted))
+  const offered = (wanted: ModelChoice | null | undefined) => wanted && models.find((row) => sameModel(row, wanted))
   const model = offered(picked) ?? offered(offer?.saved.model) ?? models[0]
   const chatgptSignedIn = offer?.chatgptSignedIn ?? false
   const astra = chatgptSignedIn && (astraPicked ?? offer?.saved.astra ?? false)
@@ -67,41 +65,20 @@ export default function SetupModel({ next, back, onError, signIn, signIns }: Ste
             <fieldset key={id} className="setup-group" disabled={saving}>
               <legend>{name}</legend>
               {rows.map((row) => (
-                <label key={row.modelId} className="setup-model">
-                  <input
-                    type="radio"
-                    name="setup-model"
-                    checked={model !== undefined && same(row, model)}
-                    onChange={() => setPicked({ provider: row.provider, modelId: row.modelId })}
-                  />
-                  <Mark modelId={row.modelId} />
-                  <span className="setup-what">
-                    <span className="setup-name">{row.name}</span>
-                    <span className="setup-detail">{row.description}</span>
-                  </span>
-                </label>
+                <ModelRow
+                  key={row.modelId}
+                  model={row}
+                  className="setup-model"
+                  name="setup-model"
+                  checked={model !== undefined && sameModel(row, model)}
+                  onPick={() => setPicked({ provider: row.provider, modelId: row.modelId })}
+                />
               ))}
             </fieldset>
           )
         )
       })}
-      <div className="setup-switch">
-        <input
-          id="setup-astra"
-          type="checkbox"
-          role="switch"
-          checked={astra}
-          disabled={!chatgptSignedIn || saving}
-          aria-describedby={chatgptSignedIn ? undefined : 'setup-astra-needs'}
-          onChange={(event) => setAstraPicked(event.target.checked)}
-        />
-        <label htmlFor="setup-astra">Let the main agent ask GPT (Astra) for drawings</label>
-        {!chatgptSignedIn && (
-          <span id="setup-astra-needs" className="setup-detail">
-            Needs a ChatGPT sign-in.
-          </span>
-        )}
-      </div>
+      <AstraSwitch id="setup-astra" signedIn={chatgptSignedIn} on={astra} busy={saving} onChange={setAstraPicked} />
       {signIn}
       <div className="setup-actions">
         <button type="button" disabled={saving} onClick={goBack}>
