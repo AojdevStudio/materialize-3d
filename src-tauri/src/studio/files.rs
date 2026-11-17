@@ -84,9 +84,8 @@ fn resolve(project: &str, rel: &str) -> Result<PathBuf, String> {
         Ok(full) => full,
         Err(Refused::NotAName) => return Err(format!("bad file path {rel:?}")),
         Err(Refused::LeadsOutside) => return Err(format!("{rel} is outside the project")),
-        Err(Refused::Unreadable(e)) => return Err(format!("{rel}: {e}")),
+        Err(Refused::Unreadable(_, e)) => return Err(format!("{rel}: {e}")),
     };
-    std::fs::metadata(&full).map_err(|e| format!("{rel}: {e}"))?;
     let records = dir.canonicalize().map_err(|e| format!("{}: {e}", dir.display()))?.join(META_DIR);
     if full.starts_with(records) {
         return Err(format!("{rel} is outside the project"));

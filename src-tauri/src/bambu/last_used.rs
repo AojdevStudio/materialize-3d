@@ -103,20 +103,15 @@ pub fn read(dir: &Path) -> Result<Option<LastUsed>> {
 fn preset(dir: &Path, folder: &str, kind: PresetKind, name: String) -> Result<Preset> {
     let rel = Path::new("user").join(folder).join(kind.as_str()).join(format!("{name}.json"));
     let made = dir.join(&rel);
-    let system = |name: String| Ok(Preset { system: Some(name.clone()), name });
     let real = match inside(dir, &rel) {
         Ok(real) => real,
-        Err(Refused::Unreadable(e)) if e.kind() == io::ErrorKind::NotFound => return system(name),
-        Err(Refused::Unreadable(e)) => return Err(io_err(&made)(e)),
+        Err(Refused::Unreadable(_, e)) if e.kind() == io::ErrorKind::NotFound => return Ok(Preset { system: Some(name.clone()), name }),
+        Err(Refused::Unreadable(_, e)) => return Err(io_err(&made)(e)),
         Err(Refused::NotAName | Refused::LeadsOutside) => {
             return Err(BambuError::Preset(format!("{} leads outside Bambu Studio's config folder", made.display())))
         }
     };
-    let text = match fs::read_to_string(&real) {
-        Ok(text) => text,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return system(name),
-        Err(e) => return Err(io_err(&real)(e)),
-    };
+    let text = fs::read_to_string(&real).map_err(io_err(&real))?;
     let system = match parse_json_object(&text, &made)?.remove("inherits") {
         None => None,
         // Bambu Studio writes an empty name for a preset made from nothing.

@@ -7,7 +7,7 @@ use std::process::{Command, Stdio};
 
 use serde::{Deserialize, Serialize};
 
-use super::folder::{inside, Refused};
+use super::folder::{inside, make_folder, Refused};
 use super::print_info::{parse_slice_info, SliceInfo};
 use crate::bambu::{resolve_presets, BambuStudio, Plate, PresetSelection, ResolvedPresets};
 
@@ -80,28 +80,27 @@ fn resolve(dir: &Path, inputs: &[String], output: &str) -> Result<(Vec<PathBuf>,
         return Err(format!("{output:?} must end in .3mf"));
     }
     let root = dir.canonicalize().map_err(|e| format!("{}: {e}", dir.display()))?;
-    let real = |path: &Path, named: &str| {
-        inside(&root, path).map_err(|refused| match refused {
-            Refused::NotAName => format!("{named:?} is not a path inside the project folder"),
-            Refused::LeadsOutside => format!("{named} leads outside the project folder"),
-            Refused::Unreadable(_) => format!("{named} does not exist"),
-        })
+    let refused = |named: &str, refused: Refused| match refused {
+        Refused::NotAName => format!("{named:?} is not a path inside the project folder"),
+        Refused::LeadsOutside => format!("{named} leads outside the project folder"),
+        Refused::Unreadable(_, e) if e.kind() == std::io::ErrorKind::NotFound => format!("{named} does not exist"),
+        Refused::Unreadable(at, e) => format!("{}: {e}", at.display()),
     };
     let inputs = inputs
         .iter()
-        .map(|rel| real(Path::new(rel), rel).and_then(|path| if path.exists() { Ok(path) } else { Err(format!("{rel} does not exist")) }))
+        .map(|rel| {
+            inside(&root, rel).map_err(|e| match e {
+                Refused::Unreadable(..) => format!("{rel} does not exist"),
+                other => refused(rel, other),
+            })
+        })
         .collect::<Result<Vec<_>, _>>()?;
-    let output_path = Path::new(output);
-    let folder = match output_path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
-        Some(parent) => real(parent, output)?,
+    let target = Path::new(output);
+    let folder = match target.parent().filter(|parent| !parent.as_os_str().is_empty()) {
+        Some(parent) => make_folder(&root, parent).map_err(|e| refused(output, e))?,
         None => root,
     };
-    // Each missing level is made on its own, so one that appears meanwhile fails the make instead of being followed.
-    let missing: Vec<&Path> = folder.ancestors().take_while(|level| !level.exists()).collect();
-    for level in missing.into_iter().rev() {
-        std::fs::create_dir(level).map_err(|e| format!("{}: {e}", level.display()))?;
-    }
-    Ok((inputs, folder.join(output_path.file_name().expect("a name that ends in .3mf"))))
+    Ok((inputs, folder.join(target.file_name().expect("a name that ends in .3mf"))))
 }
 
 fn slice_in(studio: &BambuStudio, dir: &Path, inputs: &[String], output: &str, printer: &Printer, cache_root: &Path) -> Result<Sliced, String> {

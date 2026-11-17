@@ -490,9 +490,9 @@ impl Resolver {
     }
 
     fn profile_path(&self, sub_path: &str) -> Result<PathBuf> {
-        let named = self.profiles_dir.join(sub_path);
+        let named = lexical_absolute(&self.profiles_dir.join(sub_path))?;
         inside(&self.profiles_dir, sub_path).map_err(|refused| match refused {
-            Refused::Unreadable(e) => io_err(&named)(e),
+            Refused::Unreadable(_, e) => io_err(&named)(e),
             Refused::NotAName | Refused::LeadsOutside => preset_err(format!(
                 "profile path escapes vendor root: {}",
                 named.display()
@@ -1147,10 +1147,16 @@ mod tests {
             json!({ "version": "1.0.0", "machine_list": [], "process_list": [], "filament_list": [], "machine_model_list": [] }),
         );
         std::os::unix::fs::symlink(outside.path(), root.path().join("linked")).expect("link");
+        fs::create_dir(root.path().join("machine")).expect("machine");
+        for file in [root.path().join("machine/a.json"), root.path().join("a.json"), outside.path().join("x.json")] {
+            fs::write(file, "{}").expect("profile");
+        }
         let resolver = Resolver::open(root.path()).expect("open");
         let base = root.path().canonicalize().expect("real");
 
         assert_eq!(resolver.profile_path("machine/a.json").expect("inside"), base.join("machine/a.json"));
+        let missing = resolver.profile_path("machine/gone.json").expect_err("a file that is not there").to_string();
+        assert!(missing.starts_with(&format!("{}: ", root.path().join("machine/gone.json").display())), "{missing}");
         for escaping in ["../x.json", "machine/../../x.json", "/etc/passwd", "machine/../a.json", "linked/x.json"] {
             let err = resolver.profile_path(escaping).expect_err(escaping).to_string();
             assert!(err.starts_with("profile path escapes vendor root: "), "{escaping}: {err}");
