@@ -406,6 +406,9 @@ mod tests {
         serve(&request.body(Vec::new()).expect("request"))
     }
 
+    /// The preview policy as the app sends it today, written out so a change to it fails here.
+    const CSP: &str = "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; form-action 'none'; base-uri 'self'";
+
     #[test]
     fn every_served_answer_carries_the_preview_policy_and_only_app_pages_may_read_across_projects() {
         let no_project = served("m3dfile://localhost/guide.html", Some("tauri://localhost"));
@@ -414,7 +417,7 @@ mod tests {
         let headers = no_project.headers();
         assert_eq!(headers[header::CONTENT_TYPE], "text/plain");
         assert_eq!(headers[header::CACHE_CONTROL], "no-store");
-        assert_eq!(headers[header::CONTENT_SECURITY_POLICY], PREVIEW_CSP);
+        assert_eq!(headers[header::CONTENT_SECURITY_POLICY], CSP);
         assert_eq!(headers[header::ACCESS_CONTROL_ALLOW_ORIGIN], "tauri://localhost");
 
         let record = format!("m3dfile://{NOT_MADE}/.m3d/chat.json");
@@ -434,7 +437,7 @@ mod tests {
             let refused = served(&uri, None);
             assert_eq!(refused.status(), StatusCode::NOT_FOUND, "{uri}");
             assert_eq!(String::from_utf8_lossy(refused.body()), body, "{uri}");
-            assert_eq!(refused.headers()[header::CONTENT_SECURITY_POLICY], PREVIEW_CSP);
+            assert_eq!(refused.headers()[header::CONTENT_SECURITY_POLICY], CSP);
         }
 
         let missing = served(&format!("m3dfile://{NOT_MADE}/guide.html"), None);
