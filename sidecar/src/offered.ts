@@ -1,11 +1,12 @@
 /**
  * The short list the model picker offers. It holds the newest models of each provider the app signs in to. The rows
- * are in menu order, with the short name the app shows. This file imports only types, so the window can share it.
+ * are in menu order, with the short name the app shows. This file imports only the protocol, which imports nothing, so
+ * the window can share it.
  */
-import type { ModelChoice, ModelOption, ProviderId } from './protocol'
+import { DEFAULT_PROVIDER, type ModelChoice, type ModelOption, type ProviderId } from './protocol'
 
 /** The model a new install runs on. The short list marks it recommended. */
-export const DEFAULT_MODEL = { provider: 'anthropic', modelId: 'claude-opus-5-5' } as const satisfies ModelChoice
+export const DEFAULT_MODEL = { provider: DEFAULT_PROVIDER, modelId: 'claude-opus-5-5' } as const satisfies ModelChoice
 
 export const OFFERED: readonly (ModelOption & { provider: ProviderId })[] = [
   { ...DEFAULT_MODEL, name: 'Opus 5.5', description: 'Best for design and checks. Recommended.' },

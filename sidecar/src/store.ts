@@ -302,16 +302,27 @@ export class Store {
    */
   async send(tx: Tx, project: string, rev: number): Promise<{ model: ModelChoice; thinking: Thinking; astra: boolean; saves: number }> {
     const settings = await tx.doc(SettingsDoc, this.root.id)
-    // The project's own model, or the app's default for a project from before the picker.
-    const chosen = (await tx.doc(ProjectsDoc, this.root.id)).projects.find((p) => p.id === project)?.model ?? settings.model
+    const model = await this.modelIn(tx, project)
     const { drafts } = await tx.doc(DraftsDoc, this.root.id)
     if (holds(drafts[project], rev)) delete drafts[project]
-    return {
-      model: { provider: chosen.provider, modelId: chosen.modelId },
-      thinking: settings.thinking,
-      astra: settings.astra,
-      saves: await this.loginSavesIn(tx, chosen.provider),
-    }
+    return { model, thinking: settings.thinking, astra: settings.astra, saves: await this.loginSavesIn(tx, model.provider) }
+  }
+
+  /**
+   * The model the next turn of `project` runs on: the project's own, or the app's default for a project from before the
+   * picker. With no project, as on the start screen, the default.
+   */
+  async modelFor(project?: string): Promise<ModelChoice> {
+    return this.harness.commit((tx) => this.modelIn(tx, project), context)
+  }
+
+  /** `modelFor`, read in the commit `tx`. */
+  async modelIn(tx: Tx, project?: string): Promise<ModelChoice> {
+    const { model } = await tx.doc(SettingsDoc, this.root.id)
+    const own = project === undefined ? undefined : (await tx.doc(ProjectsDoc, this.root.id)).projects.find((p) => p.id === project)
+    if (project !== undefined && own === undefined) throw new Error(`no project ${project}`)
+    const { provider, modelId } = own?.model ?? model
+    return { provider, modelId }
   }
 
   async projects(): Promise<Project[]> {
