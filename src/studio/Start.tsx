@@ -23,7 +23,6 @@ function newestRender(files: ProjectFile[]): ProjectFile | undefined {
 
 type Props = {
   projects: Project[]
-  /** Each project's status, as the sidebar keeps it. */
   status: Record<string, ProjectStatus>
   /** The prompt box, with Attach, the model picker, and Start. */
   composer: ReactNode
