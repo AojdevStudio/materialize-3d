@@ -1,0 +1,59 @@
+{
+  "rules": {
+    "lines": "Each side writes one JSON object per line. The sidecar's are fromSidecar, Rust's are fromRust.",
+    "badLineFromSidecar": "Rust logs a line from the sidecar that is not a protocol line, drops it, and reads on.",
+    "badLineFromRust": "A line from Rust that is not a protocol line is a bug in Rust, so the sidecar fails and exits.",
+    "ready": "The sidecar sends its ready event once it owns its store and reads its input. Rust sends it no call before that.",
+    "exit": "The sidecar exits with done once its input closes, and with storeInUse when another process owns its store. Rust starts it again after any exit but storeInUse while the app is not quitting.",
+    "folders": "Rust passes the store folder <app data>/<store> as the data flag. The sidecar keeps pasted pictures in <app data>/<pictures>, beside it.",
+    "path": "Rust puts the login shell's PATH ahead of its own. The sidecar adds ~/.local/bin at the end for the commands its agent runs.",
+    "keychain": "Rust stores a provider's login as the Keychain item <keychainPrefix><provider id>, and refuses any other item.",
+    "skipped": "The file list and the sidebar's count skip each name that starts with a dot or is one of skipped.names, at any depth."
+  },
+  "binary": "materialize-sidecar",
+  "flags": { "appVersion": "--app-version", "data": "--data", "projects": "--projects" },
+  "folders": { "store": "state", "pictures": "pictures" },
+  "env": ["PATH", "HOME", "USER", "LANG", "TMPDIR"],
+  "exit": { "done": 0, "storeInUse": 75 },
+  "engineStates": ["restarting", "stopped"],
+  "hostRequests": ["keychain.get", "keychain.set", "keychain.delete", "printer.check", "slice", "busy"],
+  "keychainPrefix": "inference.",
+  "providers": ["anthropic", "openai-codex", "opencode-go"],
+  "metaDir": ".m3d",
+  "skipped": {
+    "names": ["__pycache__", "node_modules", "venv"],
+    "samples": { "skipped": [".m3d", ".git", ".DS_Store", "__pycache__", "node_modules", "venv"], "listed": ["refs", "build", "guide.html", "venv2", "my.venv", "_pycache_"] }
+  },
+  "projects": {
+    "made": [
+      { "title": "A wall clip", "slug": "a-wall-clip" },
+      { "title": "../../etc/passwd", "slug": "etc-passwd" },
+      { "title": ".hidden part", "slug": "hidden-part" },
+      { "title": "!!!", "slug": "project" }
+    ],
+    "imported": ["2026-11-06-a-wall-clip"],
+    "refused": ["", ".m3d", ".hidden", "../etc", "a/b", "a\\b"]
+  },
+  "plates": ["Cool Plate", "Engineering Plate", "High Temp Plate", "Textured PEI Plate", "Supertack Plate"],
+  "printers": [
+    { "machine": "Bambu Lab P2S 0.4 nozzle", "process": "0.20mm Standard @BBL P2S", "filament": "Bambu PETG Basic @BBL P2S 0.4 nozzle", "plate": "Textured PEI Plate" },
+    { "machine": "Bambu Lab P2S 0.4 nozzle", "process": "0.20mm Standard @BBL P2S", "filament": "Bambu PLA Basic @BBL P2S 0.4 nozzle" }
+  ],
+  "lines": {
+    "fromSidecar": [
+      "{\"kind\":\"event\",\"event\":{\"type\":\"ready\",\"version\":\"1.2.3\"}}",
+      "{\"kind\":\"event\",\"event\":{\"type\":\"login\",\"provider\":\"anthropic\",\"step\":\"done\"}}",
+      "{\"kind\":\"request\",\"id\":1,\"method\":\"keychain.get\",\"params\":{\"account\":\"anthropic\"}}",
+      "{\"kind\":\"request\",\"id\":2,\"method\":\"keychain.delete\",\"params\":{\"account\":\"anthropic\"}}",
+      "{\"kind\":\"reply\",\"id\":1,\"ok\":true,\"value\":{\"version\":\"1.2.3\"}}",
+      "{\"kind\":\"reply\",\"id\":2,\"ok\":false,\"error\":\"no method nope\"}"
+    ],
+    "fromRust": [
+      "{\"kind\":\"call\",\"id\":1,\"method\":\"app.ping\",\"params\":{}}",
+      "{\"kind\":\"call\",\"id\":2,\"method\":\"nope\",\"params\":{}}",
+      "{\"kind\":\"answer\",\"id\":1,\"ok\":true,\"value\":{\"secret\":null}}",
+      "{\"kind\":\"answer\",\"id\":2,\"ok\":false,\"error\":\"locked\"}"
+    ],
+    "bad": ["not a protocol line", "{\"kind\":\"mystery\"}"]
+  }
+}

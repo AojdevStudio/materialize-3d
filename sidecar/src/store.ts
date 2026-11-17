@@ -13,7 +13,7 @@ import { type Conversation, defineDoc, type HarnessOptions, Harness, type Regist
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node'
 import type { LegacyProject } from './legacy'
 import { DEFAULT_MODEL } from './offered'
-import { type Draft, type ModelChoice, type Printer, type Project, type SavedDraft, type Settings, type Setup, START, type StoredState, type Turn, type Waiting } from './protocol'
+import { type Draft, META_DIR, type ModelChoice, type Printer, type Project, type SavedDraft, type Settings, type Setup, SKIPPED, START, type StoredState, type Turn, type Waiting } from './protocol'
 import { guideTemplate } from './templates/guide' with { type: 'macro' }
 
 const context = BACKGROUND_CONTEXT
@@ -155,6 +155,9 @@ function own(dir: string): DatabaseSync {
   }
   return lock
 }
+
+/** Whether the file list skips a folder or file of this name. Rust's file list skips the same names. */
+export const skipped = (name: string) => name.startsWith('.') || SKIPPED.some((skip) => skip === name)
 
 function slug(title: string): string {
   const words = title.toLowerCase().match(/[a-z0-9]+/g) ?? []
@@ -413,7 +416,7 @@ export class Store {
         throw error
       }
       for (const entry of entries) {
-        if (entry.name.startsWith('.') || ['__pycache__', 'node_modules', 'venv'].includes(entry.name)) continue
+        if (skipped(entry.name)) continue
         const path = join(dir, entry.name)
         if (entry.isDirectory()) walk(path, refs || (dir === root && entry.name === 'refs'))
         else if (entry.isFile()) {
@@ -435,8 +438,8 @@ export class Store {
    */
   projectFolder(id: string): string {
     const dir = join(this.projectsDir, id)
-    mkdirSync(join(dir, '.m3d'), { recursive: true })
-    writeFileSync(join(dir, '.m3d', 'guide-template.html'), GUIDE_TEMPLATE)
+    mkdirSync(join(dir, META_DIR), { recursive: true })
+    writeFileSync(join(dir, META_DIR, 'guide-template.html'), GUIDE_TEMPLATE)
     return dir
   }
 

@@ -29,6 +29,7 @@ pub fn run() {
         .manage(Arc::new(build_gate::BuildGate::default()))
         .manage(updater::PendingUpdate::default())
         .manage(sidecar::Sidecar::default())
+        .manage(slice_requests::Slices::default())
         .manage(studio::quit::QuitFlush::default())
         .invoke_handler(tauri::generate_handler![
             updater::update_check,

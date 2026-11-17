@@ -26,9 +26,11 @@ pub struct ProjectFile {
     print: Option<PrintInfo>,
 }
 
-/// Folders a person never wants to see in the file list.
+/// Folders a person never wants to see in the file list, beside every name that starts with a dot.
+const SKIPPED: [&str; 3] = ["__pycache__", "node_modules", "venv"];
+
 fn skipped(name: &str) -> bool {
-    name.starts_with('.') || matches!(name, "__pycache__" | "node_modules" | "venv")
+    name.starts_with('.') || SKIPPED.contains(&name)
 }
 
 /// When a file last changed, in milliseconds since 1970: a file's version in the list and to a pop out.
@@ -234,6 +236,16 @@ pub fn register_protocol<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_file_list_skips_the_names_the_sidecar_skips() {
+        let contract = crate::sidecar::tests::contract();
+        assert_eq!(SKIPPED, contract.skipped.names.as_slice());
+        assert_eq!(META_DIR, contract.meta_dir);
+        let samples = &contract.skipped.samples;
+        assert!(samples.skipped.iter().all(|name| skipped(name)), "{:?}", samples.skipped);
+        assert!(!samples.listed.iter().any(|name| skipped(name)), "{:?}", samples.listed);
+    }
 
     #[test]
     fn settings_gets_a_projects_folder_that_exists_before_the_first_project() {

@@ -119,6 +119,15 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn each_provider_the_sidecar_signs_in_to_has_its_own_item() {
+        let contract = crate::sidecar::tests::contract();
+        assert_eq!(KEYCHAIN_PREFIX, contract.keychain_prefix);
+        for provider in contract.providers {
+            assert_eq!(keychain_item(&provider), Ok(format!("{KEYCHAIN_PREFIX}{provider}")));
+        }
+    }
+
+    #[test]
     fn the_sidecar_reaches_only_inference_items_in_the_keychain() {
         assert_eq!(keychain_item("anthropic").as_deref(), Ok("inference.anthropic"));
         assert_eq!(keychain_item("openai-codex").as_deref(), Ok("inference.openai-codex"));

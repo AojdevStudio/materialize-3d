@@ -14,7 +14,7 @@ pub use files::register_protocol;
 
 /// Hidden folder in each project for the app's own records: converted photos, and a chat from before the store.
 /// The preview and the file list never show it.
-const META_DIR: &str = ".m3d";
+pub(crate) const META_DIR: &str = ".m3d";
 
 /// Whether the main window, or a preview frame in it, may go to `url`. The
 /// app's own pages and project files may load. The internet may not, so a
@@ -31,12 +31,18 @@ pub fn may_navigate(url: &url::Url) -> bool {
     local
 }
 
+/// The data folder a verification run keeps everything in, in place of the app's own folders.
+#[cfg(feature = "e2e")]
+pub(crate) fn e2e_data_dir() -> Option<PathBuf> {
+    std::env::var_os("M3D_E2E_DATA_DIR").map(PathBuf::from)
+}
+
 /// Where projects live: `~/Documents/Materialize 3D`. A verification run keeps
 /// its projects in its own data folder.
 pub(crate) fn projects_root() -> Result<PathBuf, String> {
     #[cfg(feature = "e2e")]
-    if let Some(dir) = std::env::var_os("M3D_E2E_DATA_DIR") {
-        return Ok(PathBuf::from(dir).join("projects"));
+    if let Some(dir) = e2e_data_dir() {
+        return Ok(dir.join("projects"));
     }
     let docs = dirs::document_dir().or_else(dirs::home_dir).ok_or("no Documents or home folder")?;
     Ok(docs.join("Materialize 3D"))
@@ -64,6 +70,18 @@ mod tests {
         assert!(may("m3dfile://2026-11-06-clip/guide.html"));
         assert!(!may("https://example.com/?leak=1"));
         assert!(!may("http://192.168.1.5/"));
+    }
+
+    #[test]
+    fn the_ids_the_sidecar_makes_and_imports_are_project_folders() {
+        let contract = crate::sidecar::tests::contract();
+        let made = contract.projects.made.iter().flat_map(|made| [format!("2026-11-17-{}", made.slug), format!("2026-11-17-{}-2", made.slug)]);
+        for id in made.chain(contract.projects.imported) {
+            assert!(project_dir(&id).is_ok(), "{id:?}");
+        }
+        for id in contract.projects.refused {
+            assert!(project_dir(&id).is_err(), "{id:?}");
+        }
     }
 
     #[test]

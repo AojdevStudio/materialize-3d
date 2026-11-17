@@ -4,6 +4,7 @@
 //! forwards the window's calls to it, answers its requests for the Keychain and the Bambu
 //! slice step, and starts it again after a crash. Each side writes one JSON object per line
 //! (`sidecar/src/protocol.ts`). Rust never opens the sidecar's store: it only names its folder.
+//! `sidecar/test/fixtures/contract.json` holds the values both sides share, and each side's tests check them.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -13,19 +14,28 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde::de::DeserializeOwned;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::{mpsc, oneshot, watch, Notify};
 
 use crate::build_gate::{BuildGate, OwnedRunning};
-use crate::slice_requests::{self, SliceCall};
+use crate::slice_requests::{self, SliceCall, Slices};
 use crate::{credentials, login_shell, studio};
 
 /// The one event the window listens to. The sidecar's own events and the engine's state both arrive here.
 pub const EVENT: &str = "sidecar://event";
 const BINARY: &str = "materialize-sidecar";
+const APP_VERSION_FLAG: &str = "--app-version";
+const DATA_FLAG: &str = "--data";
+const PROJECTS_FLAG: &str = "--projects";
+/// The sidecar keeps its pasted pictures beside this folder, in the app's data folder.
+const STORE_FOLDER: &str = "state";
+/// The variables the sidecar gets as they are. Its PATH is the login shell's.
+const PASSED_ENV: [&str; 4] = ["HOME", "USER", "LANG", "TMPDIR"];
+/// The sidecar exits with this once its input closes.
+const EXIT_DONE: i32 = 0;
 /// The sidecar exits with this when another process owns its store. Starting it again cannot help.
 const EXIT_STORE_IN_USE: i32 = 75;
 /// Crashes in a row, each within a minute of its start, before Rust stops starting it again.
@@ -54,8 +64,6 @@ pub struct Sidecar {
     alive: watch::Sender<bool>,
     /// Ends the running sidecar through its process handle, which never signals a reused pid.
     kill: Notify,
-    /// Each slice by its operation id, running or done, for as long as the app runs.
-    slices: slice_requests::Operations,
     /// The update gate's pass, held while the sidecar has work in flight, and the sidecar run it belongs to.
     pass: Mutex<Pass>,
 }
@@ -85,14 +93,12 @@ impl Default for Sidecar {
             quitting: AtomicBool::new(false),
             alive: watch::Sender::new(false),
             kill: Notify::new(),
-            slices: Mutex::default(),
             pass: Mutex::default(),
         }
     }
 }
 
 impl Sidecar {
-    /// The run a sidecar process that starts now belongs to.
     fn run_started(&self) -> u64 {
         self.pass.lock().unwrap_or_else(|e| e.into_inner()).run
     }
@@ -116,7 +122,7 @@ impl Sidecar {
     fn stop(&self, app: &AppHandle, why: String) {
         log::error!("sidecar: stopped: {why}");
         self.link.send_replace(Link::Stopped(why.clone()));
-        let _ = app.emit(EVENT, json!({ "type": "engine", "state": "stopped", "detail": why }));
+        let _ = app.emit(EVENT, EngineEvent { state: EngineState::Stopped, detail: why });
     }
 
     /// Closes the sidecar's stdin, which tells it to finish its commits and exit, and waits up to five
@@ -153,6 +159,9 @@ pub fn start(app: AppHandle) {
                 return;
             }
             let why = match outcome {
+                // Rust closes the sidecar's input only to quit, which returned above. An input that closed any other
+                // way ends it like a crash.
+                Ok(status) if status.code() == Some(EXIT_DONE) => format!("the engine exited with {status}"),
                 Ok(status) if status.code() == Some(EXIT_STORE_IN_USE) => {
                     in_use += 1;
                     if in_use >= IN_USE_TRIES {
@@ -173,7 +182,7 @@ pub fn start(app: AppHandle) {
                 return;
             }
             log::error!("sidecar: {why}, starting it again");
-            let _ = app.emit(EVENT, json!({ "type": "engine", "state": "restarting", "detail": why }));
+            let _ = app.emit(EVENT, EngineEvent { state: EngineState::Restarting, detail: why });
             tokio::time::sleep(Duration::from_millis(500 * u64::from(crashes))).await;
         }
     });
@@ -190,7 +199,7 @@ fn binary_path() -> Result<PathBuf, String> {
 /// uv's cache. The person's agent and inference settings (`ANTHROPIC_API_KEY` and the like) stay out.
 fn kept_env() -> Vec<(&'static str, String)> {
     let mut env = vec![("PATH", login_shell::path().to_owned())];
-    for name in ["HOME", "USER", "LANG", "TMPDIR"] {
+    for name in PASSED_ENV {
         if let Ok(value) = std::env::var(name) {
             env.push((name, value));
         }
@@ -203,19 +212,18 @@ fn kept_env() -> Vec<(&'static str, String)> {
 fn folders(app: &AppHandle) -> Result<(PathBuf, PathBuf), String> {
     let data = app.path().app_data_dir().map_err(|e| format!("finding the app's data folder: {e}"))?;
     #[cfg(feature = "e2e")]
-    let data = std::env::var_os("M3D_E2E_DATA_DIR").map(PathBuf::from).unwrap_or(data);
-    Ok((data.join("state"), studio::projects_root()?))
+    let data = studio::e2e_data_dir().unwrap_or(data);
+    Ok((data.join(STORE_FOLDER), studio::projects_root()?))
 }
 
-/// One sidecar process, from its start until it exits.
 async fn run(app: &AppHandle) -> Result<std::process::ExitStatus, String> {
     let exe = binary_path()?;
     let (store, projects) = folders(app)?;
     let mut child = tokio::process::Command::new(&exe)
-        .args(["--app-version", &app.package_info().version.to_string()])
-        .arg("--data")
+        .args([APP_VERSION_FLAG, &app.package_info().version.to_string()])
+        .arg(DATA_FLAG)
         .arg(&store)
-        .arg("--projects")
+        .arg(PROJECTS_FLAG)
         .arg(&projects)
         .env_clear()
         .envs(kept_env())
@@ -314,6 +322,7 @@ async fn run(app: &AppHandle) -> Result<std::process::ExitStatus, String> {
     status
 }
 
+/// A line from the sidecar.
 #[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum Outbound {
@@ -333,6 +342,55 @@ enum Outbound {
     Event {
         event: Value,
     },
+}
+
+/// A line to the sidecar.
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum Inbound<'a> {
+    Call {
+        id: u64,
+        method: &'a str,
+        params: &'a Value,
+    },
+    Answer {
+        id: u64,
+        ok: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        value: Option<Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+}
+
+impl Inbound<'_> {
+    fn answer(id: u64, answer: Result<Value, String>) -> Self {
+        match answer {
+            Ok(value) => Self::Answer { id, ok: true, value: Some(value), error: None },
+            Err(error) => Self::Answer { id, ok: false, value: None, error: Some(error) },
+        }
+    }
+
+    fn line(&self) -> String {
+        let mut line = serde_json::to_string(self).expect("a line of plain JSON values");
+        line.push('\n');
+        line
+    }
+}
+
+/// The engine's state, which Rust tells the window on the sidecar's event channel.
+#[derive(Clone, Serialize)]
+#[serde(tag = "type", rename = "engine")]
+struct EngineEvent {
+    state: EngineState,
+    detail: String,
+}
+
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum EngineState {
+    Restarting,
+    Stopped,
 }
 
 /// Handles one line from the sidecar, and says whether it was the sidecar's ready event.
@@ -364,13 +422,10 @@ fn dispatch<R: Runtime>(app: &AppHandle<R>, run: u64, answers: &mpsc::WeakUnboun
             let app = app.clone();
             let answers = answers.clone();
             tauri::async_runtime::spawn(async move {
-                let answer = match answer(&app, run, &method, params).await {
-                    Ok(value) => json!({ "kind": "answer", "id": id, "ok": true, "value": value }),
-                    Err(error) => json!({ "kind": "answer", "id": id, "ok": false, "error": error }),
-                };
+                let line = Inbound::answer(id, answer(&app, run, &method, params).await).line();
                 // A sidecar that exited meanwhile has no one to read the answer.
                 if let Some(answers) = answers.upgrade() {
-                    let _ = answers.send(format!("{answer}\n"));
+                    let _ = answers.send(line);
                 }
             });
         }
@@ -444,7 +499,7 @@ async fn answer<R: Runtime>(app: &AppHandle<R>, run: u64, method: &str, params: 
             // own and not the run's. The pass comes before the slice, so a refusal while an update installs is not kept
             // as the operation's result, and the same slice can run once the gate opens.
             let _pass = take_pass(app.state::<Arc<BuildGate>>().inner().clone())?;
-            slice_requests::slice(&app.state::<Sidecar>().slices, call, cache).await
+            slice_requests::slice(&app.state::<Slices>(), call, cache).await
         }
         other => Err(format!("no host request {other}")),
     }
@@ -462,8 +517,7 @@ pub async fn sidecar(sidecar: State<'_, Sidecar>, method: String, params: Value)
     let id = sidecar.next_call.fetch_add(1, Ordering::Relaxed);
     let (reply, replied) = oneshot::channel();
     sidecar.calls.lock().unwrap_or_else(|e| e.into_inner()).insert(id, reply);
-    let line = json!({ "kind": "call", "id": id, "method": method, "params": params });
-    let queued = input.send(format!("{line}\n")).is_ok();
+    let queued = input.send(Inbound::Call { id, method: &method, params: &params }.line()).is_ok();
     // Holding the sender while the reply is awaited would keep stdin open after quit.
     drop(input);
     if !queued {
@@ -474,10 +528,154 @@ pub async fn sidecar(sidecar: State<'_, Sidecar>, method: String, params: Value)
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use tauri::Listener;
 
     use super::*;
+
+    /// `sidecar/test/fixtures/contract.json`, which the sidecar's tests check their side against.
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    pub(crate) struct Contract {
+        binary: String,
+        flags: Flags,
+        folders: Folders,
+        env: Vec<String>,
+        exit: Exit,
+        engine_states: Vec<String>,
+        host_requests: Vec<String>,
+        pub(crate) keychain_prefix: String,
+        pub(crate) providers: Vec<String>,
+        pub(crate) meta_dir: String,
+        pub(crate) skipped: Skipped,
+        pub(crate) projects: Projects,
+        pub(crate) plates: Vec<String>,
+        pub(crate) printers: Vec<Value>,
+        lines: Lines,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Flags {
+        app_version: String,
+        data: String,
+        projects: String,
+    }
+
+    #[derive(Deserialize)]
+    struct Folders {
+        store: String,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Exit {
+        done: i32,
+        store_in_use: i32,
+    }
+
+    #[derive(Deserialize)]
+    pub(crate) struct Skipped {
+        pub(crate) names: Vec<String>,
+        pub(crate) samples: SkipSamples,
+    }
+
+    #[derive(Deserialize)]
+    pub(crate) struct SkipSamples {
+        pub(crate) skipped: Vec<String>,
+        pub(crate) listed: Vec<String>,
+    }
+
+    #[derive(Deserialize)]
+    pub(crate) struct Projects {
+        pub(crate) made: Vec<Made>,
+        pub(crate) imported: Vec<String>,
+        pub(crate) refused: Vec<String>,
+    }
+
+    #[derive(Deserialize)]
+    pub(crate) struct Made {
+        pub(crate) slug: String,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Lines {
+        from_sidecar: Vec<String>,
+        from_rust: Vec<String>,
+        bad: Vec<String>,
+    }
+
+    pub(crate) fn contract() -> Contract {
+        serde_json::from_str(include_str!("../../sidecar/test/fixtures/contract.json")).expect("the contract fixture")
+    }
+
+    #[test]
+    fn rust_starts_the_sidecar_as_the_contract_says() {
+        let contract = contract();
+        assert_eq!(BINARY, contract.binary);
+        assert_eq!([APP_VERSION_FLAG, DATA_FLAG, PROJECTS_FLAG], [contract.flags.app_version, contract.flags.data, contract.flags.projects]);
+        assert_eq!(STORE_FOLDER, contract.folders.store);
+        assert_eq!(["PATH"].into_iter().chain(PASSED_ENV).collect::<Vec<_>>(), contract.env);
+        assert_eq!([EXIT_DONE, EXIT_STORE_IN_USE], [contract.exit.done, contract.exit.store_in_use]);
+        let states = [EngineState::Restarting, EngineState::Stopped].map(|state| serde_json::to_value(state).expect("json"));
+        assert_eq!(states.to_vec(), contract.engine_states.iter().map(|state| json!(state)).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn the_sidecars_binary_has_one_name_in_the_build_the_bundle_and_ci() {
+        let binary = contract().binary;
+        assert!(include_str!("../../scripts/build-sidecar.sh").contains(&format!("\"$root/src-tauri/binaries/{binary}-$triple\"")));
+        let config: Value = serde_json::from_str(include_str!("../tauri.conf.json")).expect("tauri.conf.json");
+        assert_eq!(config["bundle"]["externalBin"], json!([format!("binaries/{binary}")]));
+        assert!(include_str!("../../.github/workflows/ci.yml").contains(&format!("/Contents/MacOS/{binary}\"")));
+    }
+
+    #[test]
+    fn rust_writes_the_lines_the_sidecar_reads() {
+        let written = [
+            Inbound::Call { id: 1, method: "app.ping", params: &json!({}) }.line(),
+            Inbound::Call { id: 2, method: "nope", params: &json!({}) }.line(),
+            Inbound::answer(1, Ok(json!({ "secret": null }))).line(),
+            Inbound::answer(2, Err("locked".to_owned())).line(),
+        ];
+        let parse = |line: &str| serde_json::from_str::<Value>(line).expect("json");
+        assert!(written.iter().all(|line| line.ends_with('\n') && line.matches('\n').count() == 1), "{written:?}");
+        assert_eq!(written.map(|line| parse(&line)).to_vec(), contract().lines.from_rust.iter().map(|line| parse(line)).collect::<Vec<_>>());
+    }
+
+    #[tokio::test]
+    async fn rust_reads_every_line_the_sidecar_writes_and_drops_a_bad_one() {
+        let contract = contract();
+        let app = mock_app();
+        let (answers, _lines) = mpsc::unbounded_channel::<String>();
+        let (heard, mut events) = mpsc::unbounded_channel::<String>();
+        app.listen_any(EVENT, move |event| heard.send(event.payload().to_owned()).expect("the test listens"));
+        let mut ready = Vec::new();
+        for line in &contract.lines.from_sidecar {
+            let message = serde_json::from_str::<Outbound>(line).unwrap_or_else(|e| panic!("{line}: {e}"));
+            if matches!(message, Outbound::Event { .. }) {
+                ready.push(dispatch(app.handle(), 0, &answers.downgrade(), line));
+            }
+        }
+        assert_eq!(ready, [true, false], "only the first event is the ready one");
+        for line in &contract.lines.bad {
+            assert!(serde_json::from_str::<Outbound>(line).is_err(), "{line}");
+            assert!(!dispatch(app.handle(), 0, &answers.downgrade(), line), "{line}");
+        }
+        let mut next = async || serde_json::from_str::<Value>(&events.recv().await.expect("an event")).expect("json")["type"].clone();
+        assert_eq!([next().await, next().await], [json!("ready"), json!("login")]);
+        assert!(events.try_recv().is_err(), "a bad line reaches no one");
+    }
+
+    #[tokio::test]
+    async fn rust_answers_every_host_request_the_sidecar_makes() {
+        let app = mock_app();
+        for method in contract().host_requests {
+            let refused = ask(&app, &method, Value::Null).await.expect_err("no params");
+            assert!(refused.starts_with(&format!("bad params for {method}: ")), "{refused}");
+        }
+    }
 
     #[test]
     fn the_sidecar_starts_with_none_of_the_persons_agent_settings() {
@@ -549,6 +747,7 @@ mod tests {
         crate::credentials::tests::use_test_store();
         let app = tauri::test::mock_app();
         app.manage(Sidecar::default());
+        app.manage(Slices::default());
         app.manage(Arc::new(BuildGate::default()));
         app
     }
@@ -607,7 +806,7 @@ mod tests {
         let call = json!({ "operation": "abc", "project": "p", "inputs": ["a.stl"], "output": "out.3mf", "printer": printer });
         let refused = ask(&app, "slice", call).await.expect_err("no slice starts while an update installs");
         assert!(refused.contains("update is installing"), "{refused}");
-        assert!(!app.state::<Sidecar>().slices.lock().expect("slices").contains_key("abc"), "the refusal is not kept as the slice's result");
+        assert!(!app.state::<Slices>().0.lock().expect("slices").contains_key("abc"), "the refusal is not kept as the slice's result");
         drop(closed);
         assert_eq!(ask(&app, "nope", Value::Null).await, Err("no host request nope".to_owned()));
     }
@@ -618,7 +817,7 @@ mod tests {
         const SETTLE: Duration = Duration::from_millis(50);
         let app = mock_app();
         let first = Arc::new(tokio::sync::OnceCell::new());
-        app.state::<Sidecar>().slices.lock().expect("slices").insert("abc".to_owned(), first.clone());
+        app.state::<Slices>().0.lock().expect("slices").insert("abc".to_owned(), first.clone());
         let (finish, finished) = oneshot::channel::<()>();
         let slicing = tokio::spawn(async move {
             first

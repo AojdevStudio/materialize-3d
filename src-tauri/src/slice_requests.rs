@@ -14,7 +14,11 @@ use tokio::sync::OnceCell;
 use crate::studio;
 
 /// Outside work by operation id: one result each, shared by every request that names the id.
-pub type Operations = Mutex<HashMap<String, Arc<OnceCell<Result<Value, String>>>>>;
+type Operations = Mutex<HashMap<String, Arc<OnceCell<Result<Value, String>>>>>;
+
+/// Each slice by its operation id, running or done, for as long as the app runs.
+#[derive(Default)]
+pub struct Slices(pub(crate) Operations);
 
 /// A slice the agent asked for, under its tool call's operation id.
 #[derive(Deserialize)]
@@ -36,7 +40,7 @@ pub async fn check<R: Runtime>(app: &AppHandle<R>, printer: studio::slice::Print
     Ok(Value::Null)
 }
 
-pub async fn slice(operations: &Operations, SliceCall { operation, request }: SliceCall, cache: PathBuf) -> Result<Value, String> {
+pub async fn slice(Slices(operations): &Slices, SliceCall { operation, request }: SliceCall, cache: PathBuf) -> Result<Value, String> {
     once_per_operation(operations, operation, || async move {
         let sliced = tauri::async_runtime::spawn_blocking(move || studio::slice::slice(&request, &cache))
             .await

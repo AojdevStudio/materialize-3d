@@ -1,3 +1,5 @@
+import { FLAGS } from '../src/protocol'
+
 type Message = Record<string, unknown>
 
 /**
@@ -22,7 +24,7 @@ export function spawnSidecar(
 ) {
   const entry = options.script === undefined ? 'src/main.ts' : 'test/fixtures/scripted-sidecar.ts'
   // The bun running the tests, as a test may give the sidecar a PATH without one.
-  const child = Bun.spawn([process.execPath, entry, '--app-version', options.version ?? '9.9.9', '--data', dataDir, '--projects', projectsDir], {
+  const child = Bun.spawn([process.execPath, entry, `--${FLAGS.appVersion}`, options.version ?? '9.9.9', `--${FLAGS.data}`, dataDir, `--${FLAGS.projects}`, projectsDir], {
     cwd: `${import.meta.dir}/..`,
     env: { ...process.env, ...options.env, ...(options.script === undefined ? {} : { M3D_SCRIPT: options.script }) },
     stdin: 'pipe',

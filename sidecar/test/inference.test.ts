@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { InMemoryCredentialStore, type OAuthAuth } from '@earendil-works/pi-ai'
 import { inferenceModels, isLoginFailure, KeychainCredentials, keyCredential, Logins } from '../src/inference'
-import type { LoginEvent } from '../src/protocol'
+import { FLAGS, type LoginEvent } from '../src/protocol'
 import { spawnSidecar } from './sidecar'
 
 const TOKEN = 'sk-proxy-SENTINEL-7f3a9c'
@@ -193,7 +193,7 @@ describe('the compiled sidecar', () => {
       const bin = join(dir, 'materialize-sidecar')
       const built = Bun.spawnSync(['bun', 'build', '--compile', join(import.meta.dir, '..', 'src', 'main.ts'), '--outfile', bin])
       expect(built.exitCode).toBe(0)
-      const app = Bun.spawn([bin, '--app-version', '0.0.0', '--data', join(dir, 'state'), '--projects', join(dir, 'projects')], {
+      const app = Bun.spawn([bin, `--${FLAGS.appVersion}`, '0.0.0', `--${FLAGS.data}`, join(dir, 'state'), `--${FLAGS.projects}`, join(dir, 'projects')], {
         cwd: dir,
         env: { PATH: '/usr/bin:/bin', HOME: dir },
         stdin: 'pipe',

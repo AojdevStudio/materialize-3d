@@ -280,7 +280,9 @@ export type SidecarEvent =
   | { type: 'ready'; version: string }
   | LoginEvent
   | ({ type: 'chat' } & ChatView)
-  | { type: 'engine'; state: 'restarting' | 'stopped'; detail: string }
+  | { type: 'engine'; state: (typeof ENGINE_STATES)[number]; detail: string }
+
+export const ENGINE_STATES = ['restarting', 'stopped'] as const
 
 /** Rust to sidecar. */
 export type Inbound =
@@ -295,10 +297,30 @@ export type Outbound =
   | { kind: 'request'; id: number; method: HostRequest; params: unknown }
   | { kind: 'event'; event: SidecarEvent }
 
+/**
+ * The rest of the contract with Rust. `sidecar/test/fixtures/contract.json` holds each value and the rules between
+ * them, and both test suites check their own side against it.
+ */
+
 /** Exit codes Rust reads. Anything else is a crash, which Rust answers with a restart. */
 export const EXIT = {
-  /** Stdin closed: the app is quitting. */
+  /** Stdin closed, which Rust does only to quit. */
   done: 0,
   /** Another process owns the store. Rust must not restart. */
   storeInUse: 75,
 } as const
+
+/** The flags Rust starts the sidecar with, by their `parseArgs` names. */
+export const FLAGS = { appVersion: 'app-version', data: 'data', projects: 'projects' } as const
+
+/** Where pasted pictures go: a folder beside the store folder Rust passes as `--data`. */
+export const PICTURES_FOLDER = 'pictures'
+
+/** The only variables Rust gives the sidecar, and the only ones the sidecar gives a command its agent runs. */
+export const KEPT_ENV = ['PATH', 'HOME', 'USER', 'LANG', 'TMPDIR'] as const
+
+/** The app's own folder in each project. The preview and the file list never show it. */
+export const META_DIR = '.m3d'
+
+/** Names the file list skips at any depth, beside every name that starts with a dot. */
+export const SKIPPED = ['__pycache__', 'node_modules', 'venv'] as const
