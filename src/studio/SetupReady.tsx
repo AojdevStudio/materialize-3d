@@ -5,6 +5,7 @@ import { AGENTS } from './agents'
 import { checkSlicer, sidecar, type SlicerCheck } from './api'
 import { filamentName, printerAndNozzle } from './presetNames'
 import type { StepProps } from './Setup'
+import { useStudio } from './store'
 
 const CHECKING = 'Checking…'
 
@@ -37,9 +38,8 @@ function toolsLine(toolchain: Toolchain): string {
 }
 
 export default function SetupReady({ next, onError, signIn }: StepProps) {
-  const [agent, setAgent] = useState(CHECKING)
+  const saved = useStudio((s) => s.settings)
   const [slicer, setSlicer] = useState(CHECKING)
-  const [printer, setPrinter] = useState(CHECKING)
   const [tools, setTools] = useState(CHECKING)
 
   useEffect(() => {
@@ -49,9 +49,6 @@ export default function SetupReady({ next, onError, signIn }: StepProps) {
         (value) => current && set(line(value)),
         (err: unknown) => current && onError(String(err)),
       )
-    const state = sidecar('state.get', {})
-    fill(state, ({ settings }) => agentLine(settings), setAgent)
-    fill(state, ({ settings }) => printerLine(settings), setPrinter)
     fill(checkSlicer(), slicerLine, setSlicer)
     fill(sidecar('setup.tools', {}), toolsLine, setTools)
     return () => {
@@ -60,9 +57,9 @@ export default function SetupReady({ next, onError, signIn }: StepProps) {
   }, [])
 
   const rows = [
-    { id: 'agent', label: 'Agent', text: agent },
+    { id: 'agent', label: 'Agent', text: saved === null ? CHECKING : agentLine(saved) },
     { id: 'slicer', label: 'Slicer', text: slicer },
-    { id: 'printer', label: 'Printer', text: printer },
+    { id: 'printer', label: 'Printer', text: saved === null ? CHECKING : printerLine(saved) },
     { id: 'tools', label: 'Build tools', text: tools },
   ]
 

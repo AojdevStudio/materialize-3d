@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react'
 import type { Plate, Printer } from '../../sidecar/src/protocol'
-import { checkSlicer, sidecar, studio, type BambuLastUsed, type PrinterChoice } from './api'
+import { checkSlicer, studio, type BambuLastUsed, type PrinterChoice } from './api'
 import { withoutPrinter } from './presetNames'
 import type { StepProps } from './Setup'
+import { savePrinter, useStudio } from './store'
 
 type Choice = Required<Printer>
 type Nozzle = PrinterChoice['nozzles'][number]
@@ -36,12 +37,12 @@ function fit(printers: PrinterChoice[], wanted: { machine: string | null | undef
   }
 }
 
-function offer(printers: PrinterChoice[], first: Fitted, last: BambuLastUsed | null, saved: Printer): Offer {
+function offer(printers: PrinterChoice[], first: Fitted, last: BambuLastUsed | null, saved: Printer | undefined): Offer {
   const read = last && { machine: last.machine.system, process: last.process?.system, filament: last.filament?.system, plate: last.plate }
   const fromRead = read ? fit(printers, read) : undefined
   const confirmable = fromRead && read?.process === fromRead.choice.process && read.filament === fromRead.choice.filament ? fromRead : undefined
   const plateRead = confirmable !== undefined && read?.plate === confirmable.choice.plate
-  return { printers, confirmable, plateRead, start: fromRead ?? fit(printers, saved) ?? first }
+  return { printers, confirmable, plateRead, start: fromRead ?? (saved && fit(printers, saved)) ?? first }
 }
 
 /**
@@ -73,11 +74,11 @@ export default function SetupPrinter({ next, back }: StepProps) {
           if (current) setFailed('Setup could not move on.')
           return
         }
-        const [printers, last, { settings }] = await Promise.all([studio.printers(), lastUsed, sidecar('state.get', {})])
+        const [printers, last] = await Promise.all([studio.printers(), lastUsed])
         if (!current) return
         const first = fit(printers, { machine: printers[0]?.nozzles[0]?.machine })
         if (first === undefined) return setFailed('Bambu Studio lists no printer to pick.')
-        const made = offer(printers, first, last, settings.printer)
+        const made = offer(printers, first, last, useStudio.getState().settings?.printer)
         setShown(made)
         if (made.confirmable === undefined) setPicking(made.start)
       })
@@ -95,8 +96,8 @@ export default function SetupPrinter({ next, back }: StepProps) {
   const save = (choice: Choice) => {
     setSaving(true)
     setRefused(null)
-    void sidecar('printer.set', choice)
-      .then(next, (err: unknown) => setRefused(String(err)))
+    void savePrinter(choice)
+      .then(() => next(), (err: unknown) => setRefused(String(err)))
       .finally(() => setSaving(false))
   }
 

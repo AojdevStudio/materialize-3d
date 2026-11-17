@@ -1,8 +1,11 @@
+import { openUrl } from '@tauri-apps/plugin-opener'
 import { useEffect } from 'react'
 import { create } from 'zustand'
-import type { ChatView, Project, ProjectStatus, SidecarEvent } from '../../sidecar/src/protocol'
-import { onSidecarEvent, sidecar, studio, type ProjectFile } from './api'
+import type { AppState, ChatView, Login, LoginEvent, Methods, ModelOption, Need, Project, ProjectStatus, ProviderId, Settings, Setup, SidecarEvent } from '../../sidecar/src/protocol'
+import { checkSlicer, onSidecarEvent, sidecar, studio, type Listening, type ProjectFile } from './api'
 import { firstView, panelFiles, viewOf, type PanelView } from './files'
+
+const STATE_RETRY_MS = 3000
 
 type StudioState = {
   /** The project on screen. Null on the start screen. */
@@ -20,13 +23,52 @@ type StudioState = {
   /** Each project's status: the sidecar's last read, with whether its turn runs as this engine run's chat events said. */
   status: Record<string, ProjectStatus>
   error: string | null
+  /** The engine's version, or what it is doing while it does not run. */
+  engine: string
+  /** Null until the saved state is read. */
+  setup: Setup | null
+  /** Null until the saved state is read. */
+  settings: Settings | null
+  /** The folder the chats from before the store could not be read from, when macOS keeps it from the app. */
+  importBlocked: string | null
+  /** What the agent needs before a send from the open screen, from the sidecar's check. Null until the check answers, and Send waits. */
+  needs: Need[] | null
+  /** The models of the providers the person signed in to. */
+  models: ModelOption[]
+  /** The sign-ins, or `failed`. Undefined while a fresh read is on its way. */
+  logins: Login[] | 'failed' | undefined
+  /** What a running sign-in needs from the person: the code to enter on its page, or an answer. */
+  signIn: Extract<LoginEvent, { step: 'open' | 'ask' }> | null
+  /** Whether the newest look found the Bambu Studio the slice step uses. Null until a look answers. */
+  slicerFound: boolean | null
+  /** The person went on from setup's check, so a missing slicer gets no banner until the next launch. */
+  wentOnInSetup: boolean
 }
 
-const EMPTY: StudioState = { current: null, view: null, files: [], selected: null, panelView: null, status: {}, error: null }
+const EMPTY: StudioState = {
+  current: null,
+  view: null,
+  files: [],
+  selected: null,
+  panelView: null,
+  status: {},
+  error: null,
+  engine: 'Engine starting',
+  setup: null,
+  settings: null,
+  importBlocked: null,
+  needs: null,
+  models: [],
+  logins: undefined,
+  signIn: null,
+  slicerFound: null,
+  wentOnInSetup: false,
+}
 
 /**
- * The window's one store for chats and project status. Every chat event lands here once, ordered by `seq`, and the chat,
- * the sidebar, and the start screen read it. `useStudioEvents` feeds it while the window is open.
+ * The window's one store: chats, project status, the saved setup and settings, the sign-ins, and what the agent needs
+ * before a send. Every sidecar event lands here once, chat events ordered by `seq`, and the screens read it.
+ * `useStudioEvents` feeds it while the window is open.
  */
 export const useStudio = create<StudioState>()(() => EMPTY)
 
@@ -52,6 +94,12 @@ function merge(view: ChatView, change: ChatView): ChatView {
   return { ...view, entries, running: change.running, waiting: change.waiting, turn: change.turn, seq: change.seq }
 }
 
+/**
+ * The startup read of the saved state. Only its first answer is taken: every startup read began before a send could go,
+ * so a later answer would bring back what that send took.
+ */
+type SavedRead = { taken: boolean; retry?: number; take: (state: AppState) => void }
+
 /** What the store keeps outside its state: it changes as each event arrives, and nothing renders from it. */
 type Kept = {
   read: Record<string, ProjectStatus>
@@ -70,20 +118,50 @@ type Kept = {
    * the open project's files are first listed, which picks the view it opens on.
    */
   lastSeen: number | null
+  events: Listening | null
+  /** Whether an engine event came, so a version ping that answers late never hides it. */
+  engineChanged: boolean
+  /** What waits for the engine's next start, as a quit's save the engine refused while it restarted. */
+  readyWaiters: (() => void)[]
+  saved: SavedRead | null
+  /** Counts setup's saves, so a state read that started before the newest save never puts back the setup it replaced. */
+  setupSaves: number
+  savingSetup: boolean
 }
 
-const fresh = (): Kept => ({ read: {}, runs: {}, reading: { busy: false, again: false }, loaded: null, early: [], failedLoad: null, lastSeen: null })
+const fresh = (): Kept => ({
+  read: {},
+  runs: {},
+  reading: { busy: false, again: false },
+  loaded: null,
+  early: [],
+  failedLoad: null,
+  lastSeen: null,
+  events: null,
+  engineChanged: false,
+  readyWaiters: [],
+  saved: null,
+  setupSaves: 0,
+  savingSetup: false,
+})
 
 let kept = fresh()
 /** Bumped on every switch and every reset, so a slow load for a project already left is dropped. */
 let switches = 0
 
 function reset() {
+  window.clearTimeout(kept.saved?.retry)
   kept = fresh()
   switches += 1
 }
 /** Counts chat loads, so only the newest load of the open chat replaces its view, not an older one that answers late. */
 let loads = 0
+/** Counts readiness checks, so only the newest check's answer reaches the screen. */
+let checks = 0
+/** Counts looks for Bambu Studio, so an older look that answers late never replaces a newer one. */
+let looks = 0
+/** Counts sign-in reads, so an older read that answers late never replaces a newer one. */
+let loginReads = 0
 
 const withRuns = () =>
   Object.fromEntries(Object.entries(kept.read).map(([id, s]) => [id, { ...s, running: kept.runs[id]?.running ?? s.running }]))
@@ -116,6 +194,147 @@ export function markPrinted(project: string) {
   void sidecar('projects.markPrinted', { project })
     .then(readStatus)
     .catch((err: unknown) => setError(String(err)))
+}
+
+/**
+ * Asks the sidecar what the agent still needs before a send from the open screen, as its model's provider may differ
+ * from another screen's. Each change of screen, model, or sign-in asks again, so an older check's answer is about a
+ * screen or a model the person left, and it is dropped.
+ */
+export function checkReady() {
+  const check = ++checks
+  const project = get().current?.id
+  void sidecar('setup.check', project === undefined ? {} : { project })
+    .then((needs) => check === checks && set({ needs }))
+    .catch((err: unknown) => check === checks && setError(String(err)))
+}
+
+/** Reads the models the person can pick, which change with each sign-in. */
+export function loadModels() {
+  void sidecar('models.list', {})
+    .then((models) => set({ models }))
+    .catch((err: unknown) => setError(String(err)))
+}
+
+function findSlicer() {
+  const look = ++looks
+  void checkSlicer()
+    .then(({ found }) => look === looks && set({ slicerFound: found === 'ready' }))
+    .catch((err: unknown) => look === looks && setError(String(err)))
+}
+
+/** Reads the sign-ins. With `clear`, they show as being checked until it answers, as on a screen that opens. */
+export function readLogins(clear = false) {
+  const read = ++loginReads
+  if (clear) set({ logins: undefined })
+  void sidecar('auth.status', {}).then(
+    (logins) => read === loginReads && set({ logins }),
+    (err: unknown) => {
+      if (read !== loginReads) return
+      set({ logins: 'failed' })
+      setError(String(err))
+    },
+  )
+}
+
+/** Setup's check ended, by going on or by Back. What it can change is read again. */
+export function afterSetup(wentOn: boolean) {
+  if (wentOn) set({ wentOnInSetup: true })
+  checkReady()
+  loadModels()
+  findSlicer()
+}
+
+/** Each save answers the app's state, so the settings shown are the ones just saved. */
+function took(state: AppState) {
+  set({ settings: state.settings })
+  return state
+}
+
+export const saveSettings = (change: Methods['settings.set']['params']) => sidecar('settings.set', change).then(took)
+
+export const savePrinter = (choice: Methods['printer.set']['params']) => sidecar('printer.set', choice).then(took)
+
+/**
+ * Saves setup's step, one save at a time: a save asked for while one runs does nothing. The next step's screen can save
+ * as soon as it shows, so the save in flight ends before its answer moves setup on.
+ */
+export async function saveSetup(change: Setup) {
+  if (kept.savingSetup) return
+  kept.savingSetup = true
+  const state = await sidecar('setup.set', change).finally(() => {
+    kept.savingSetup = false
+  })
+  took(state)
+  kept.setupSaves += 1
+  set({ setup: state.setup })
+  if (state.setup.done) afterSetup(true)
+}
+
+export function answerSignIn(provider: ProviderId, text: string) {
+  set({ signIn: null })
+  void sidecar('auth.answer', { provider, text }).catch((err: unknown) => setError(String(err)))
+}
+
+export function onNextReady(wake: () => void) {
+  kept.readyWaiters.push(wake)
+}
+
+function readState(saved: SavedRead) {
+  const saves = kept.setupSaves
+  void sidecar('state.get', {})
+    .then(
+      (state) => {
+        if (saved !== kept.saved || saved.taken) return
+        saved.taken = true
+        set({ settings: state.settings, importBlocked: state.importBlocked, ...(saves === kept.setupSaves ? { setup: state.setup } : {}) })
+        saved.take(state)
+      },
+      (err: unknown) => {
+        if (saved !== kept.saved || saved.taken) return
+        setError(String(err))
+        window.clearTimeout(saved.retry)
+        saved.retry = window.setTimeout(() => {
+          if (!saved.taken) readState(saved)
+        }, STATE_RETRY_MS)
+      },
+    )
+    .catch((err: unknown) => setError(String(err)))
+}
+
+/**
+ * Reads what the window starts from: the saved state, which Send waits for, what the agent needs, the models, Bambu
+ * Studio, and the engine's version. A state read that fails is tried again after a pause, and at once when the engine
+ * is back. Answers the saved state the window took, for the drafts and the project list.
+ */
+export function start(): Promise<AppState> {
+  const taken = new Promise<AppState>((take) => {
+    const saved: SavedRead = { taken: false, take }
+    kept.saved = saved
+    readState(saved)
+  })
+  checkReady()
+  loadModels()
+  findSlicer()
+  // The listener is in place before the ping, so no engine change is missed, and a ping that answers late never hides
+  // one.
+  const at = kept
+  void at.events?.ready
+    .then(() => sidecar('app.ping', {}))
+    .then(({ version }) => at === kept && !at.engineChanged && set({ engine: `Engine ${version}` }))
+    .catch((err: unknown) => at === kept && !at.engineChanged && set({ engine: String(err) }))
+  return taken
+}
+
+/**
+ * An import retry brings old chats in as projects. Answers the saved state read after it, for its projects. That read
+ * may come before a send the person makes meanwhile, so it brings no drafts.
+ */
+export async function importAgain() {
+  await sidecar('legacy.import', {})
+  const state = await sidecar('state.get', {})
+  set({ importBlocked: state.importBlocked })
+  return state
 }
 
 /** Shows a project, or the start screen with null, from a clean slate. `load` reads the project's chat. */
@@ -158,7 +377,6 @@ export async function load() {
   }
 }
 
-/** Opens a file in the panel's view for it. Null goes back to the list of files. */
 export const openFile = (rel: string | null) => set(rel === null ? { selected: null } : { selected: rel, panelView: viewOf(rel) })
 
 export const setPanelView = (panelView: PanelView) => set({ panelView })
@@ -179,22 +397,28 @@ async function refreshFiles(project: string) {
   }
 }
 
-function hear(event: SidecarEvent) {
-  if (event.type === 'ready') {
-    // An engine that started again holds its own turns, so its status read replaces what the old run's events said. It
-    // also holds what a crash cut off from the window, such as a turn's last entry, so the open chat is read again. The
-    // changes that arrive meanwhile are kept, as when it first opened.
-    kept.runs = {}
-    set({ status: withRuns() })
-    readStatus()
-    if (get().current !== null) {
-      kept.loaded = null
-      kept.early = []
-      void load()
-    }
-    return
+function heardReady(version: string) {
+  // An engine that started again holds its own turns, so its status read replaces what the old run's events said. It
+  // also holds what a crash cut off from the window, such as a turn's last entry, so the open chat is read again. The
+  // changes that arrive meanwhile are kept, as when it first opened.
+  kept.runs = {}
+  set({ status: withRuns() })
+  readStatus()
+  if (get().current !== null) {
+    kept.loaded = null
+    kept.early = []
+    void load()
   }
-  if (event.type !== 'chat') return
+  kept.engineChanged = true
+  set({ engine: `Engine ${version}` })
+  // A check that failed while the engine started again is asked again, so Send does not stay off.
+  checkReady()
+  loadModels()
+  for (const wake of kept.readyWaiters.splice(0)) wake()
+  if (kept.saved !== null && !kept.saved.taken) readState(kept.saved)
+}
+
+function heardChat(event: ChatView) {
   const before = kept.runs[event.project]
   if (newer(before, event.seq)) {
     kept.runs = { ...kept.runs, [event.project]: { running: event.running, seq: event.seq } }
@@ -210,8 +434,44 @@ function hear(event: SidecarEvent) {
   else set(({ view }) => ({ view: view && merge(view, event) }))
 }
 
+function heardLogin(event: LoginEvent) {
+  switch (event.step) {
+    case 'open':
+      void openUrl(event.url).catch((err: unknown) => setError(String(err)))
+      set({ signIn: event.code === undefined ? null : event })
+      break
+    case 'ask':
+      set({ signIn: event })
+      break
+    case 'done':
+      set({ signIn: null })
+      checkReady()
+      loadModels()
+      readLogins()
+      break
+    case 'failed':
+      set({ signIn: null })
+      setError(event.detail)
+      break
+  }
+}
+
+function hear(event: SidecarEvent) {
+  switch (event.type) {
+    case 'ready':
+      return heardReady(event.version)
+    case 'engine':
+      kept.engineChanged = true
+      return set({ engine: event.state === 'stopped' ? event.detail : 'Engine restarting' })
+    case 'login':
+      return heardLogin(event)
+    case 'chat':
+      return heardChat(event)
+  }
+}
+
 /**
- * Feeds the store while the window is open: chat events, a status read each time `projects` changes, and the open
+ * Feeds the store while the window is open: sidecar events, a status read each time `projects` changes, and the open
  * project's files. A window that opens again starts from a clean store.
  */
 export function useStudioEvents(projects: Project[]) {
@@ -219,6 +479,7 @@ export function useStudioEvents(projects: Project[]) {
     reset()
     set(EMPTY)
     const events = onSidecarEvent(hear)
+    kept.events = events
     return () => {
       events.stop()
       reset()

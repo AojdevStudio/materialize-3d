@@ -1,51 +1,38 @@
-import { useEffect, useState } from 'react'
-import type { ModelChoice, ModelOption, Settings } from '../../sidecar/src/protocol'
+import { useLayoutEffect, useState } from 'react'
+import type { ModelChoice } from '../../sidecar/src/protocol'
 import { AGENTS, astraSignedIn, sameModel } from './agents'
-import { sidecar } from './api'
 import type { StepProps } from './Setup'
 import { AstraSwitch, ModelRow } from './setupRows'
-
-type Offer = { models: ModelOption[]; chatgptSignedIn: boolean; saved: Settings }
+import { readLogins, saveSettings, useStudio } from './store'
 
 /**
  * Setup's pick of the default model new projects take, and whether the main agent may ask Astra for drawings. Continue
  * saves both as shown, so a person without ChatGPT saves Astra off. A sign-in that ends here offers its models at once,
  * and the person's own picks stay.
  */
-export default function SetupModel({ next, back, onError, signIn, signIns }: StepProps) {
-  const [offer, setOffer] = useState<Offer | null>(null)
+export default function SetupModel({ next, back, onError, signIn }: StepProps) {
+  const listed = useStudio((s) => s.models)
+  const logins = useStudio((s) => s.logins)
+  const saved = useStudio((s) => s.settings)
   const [picked, setPicked] = useState<ModelChoice | null>(null)
   const [astraPicked, setAstraPicked] = useState<boolean | null>(null)
   const [saving, setSaving] = useState(false)
 
-  useEffect(() => {
-    let current = true
-    void Promise.all([sidecar('models.list', {}), sidecar('auth.status', {}), sidecar('state.get', {})]).then(
-      ([listed, logins, { settings }]) =>
-        current &&
-        setOffer({
-          models: listed.filter((model) => AGENTS.some((agent) => agent.provider === model.provider)),
-          chatgptSignedIn: astraSignedIn(logins),
-          saved: settings,
-        }),
-      (err: unknown) => current && onError(String(err)),
-    )
-    return () => {
-      current = false
-    }
-  }, [signIns])
+  // Before the screen paints, so it offers nothing until it knows the sign-ins as they are now.
+  useLayoutEffect(() => readLogins(true), [])
 
-  const models = offer?.models ?? []
+  const known = Array.isArray(logins) && saved !== null
+  const models = known ? listed.filter((model) => AGENTS.some((agent) => agent.provider === model.provider)) : []
   const offered = (wanted: ModelChoice | null | undefined) => wanted && models.find((row) => sameModel(row, wanted))
-  const model = offered(picked) ?? offered(offer?.saved.model) ?? models[0]
-  const chatgptSignedIn = offer?.chatgptSignedIn ?? false
-  const astra = chatgptSignedIn && (astraPicked ?? offer?.saved.astra ?? false)
+  const model = offered(picked) ?? offered(saved?.model) ?? models[0]
+  const chatgptSignedIn = known && astraSignedIn(logins)
+  const astra = chatgptSignedIn && (astraPicked ?? saved?.astra ?? false)
 
   const save = () => {
     if (model === undefined) return
     setSaving(true)
-    void sidecar('settings.set', { model: { provider: model.provider, modelId: model.modelId }, astra })
-      .then(next, (err: unknown) => onError(String(err)))
+    void saveSettings({ model: { provider: model.provider, modelId: model.modelId }, astra })
+      .then(() => next(), (err: unknown) => onError(String(err)))
       .finally(() => setSaving(false))
   }
 

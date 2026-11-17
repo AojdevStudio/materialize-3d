@@ -1,11 +1,12 @@
 import { revealItemInDir } from '@tauri-apps/plugin-opener'
 import { type ReactNode, useEffect, useState } from 'react'
-import type { AppState, Methods, ModelOption, Settings as Saved, Setup } from '../../sidecar/src/protocol'
+import type { Methods, Setup } from '../../sidecar/src/protocol'
 import { astraSignedIn, sameModel } from './agents'
-import { projectsFolder, sidecar } from './api'
+import { projectsFolder } from './api'
 import { agentRows, buildRows, forgetRefused, type Row, slicerRow } from './checkRows'
 import { BrandRow, Icon } from './marks'
 import { AstraSwitch, CheckGroup, ModelRow, useFound } from './setupRows'
+import { checkReady, saveSettings, useStudio } from './store'
 import chat from '../assets/icons/message-square.svg?raw'
 import layers from '../assets/icons/layers.svg?raw'
 import blocks from '../assets/icons/module-three.svg?raw'
@@ -24,10 +25,6 @@ const SECTIONS: Record<Section, { name: string; about: string; icon: string }> =
 type Props = {
   section: Section
   onSection: (section: Section) => void
-  /** The app reads these again after each sign-in. */
-  models: ModelOption[]
-  /** The app's state after a change saves, so the composer's picker shows the new default. */
-  onSaved: (state: AppState) => void
   /** Opens the setup step that owns a fix. Settings shows again when it ends. */
   onFix: (step: Setup['step']) => void
   onClose: () => void
@@ -35,28 +32,24 @@ type Props = {
   error: ReactNode
   /** A sign-in question still open. Back in a setup step can leave one, so Settings shows it too. */
   signIn: ReactNode
-  /** Counts finished sign-ins, so the sign-in rows read again after each. */
-  signIns: number
   /** The provider a waiting turn needs a new sign-in to. */
   refused?: string
 }
 
 /** Shows what setup checked and saved. Each fix opens its setup step. */
-export default function Settings({ section, onSection, models, onSaved, onFix, onClose, onError, error, signIn, signIns, refused }: Props) {
-  const found = useFound(onError, signIns)
-  const [saved, setSaved] = useState<Saved | null>(null)
+export default function Settings({ section, onSection, onFix, onClose, onError, error, signIn, refused }: Props) {
+  const found = useFound(onError)
+  const models = useStudio((s) => s.models)
+  const saved = useStudio((s) => s.settings)
   const [folder, setFolder] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
 
   useEffect(() => {
     let current = true
-    const take = <T,>(answer: Promise<T>, put: (value: T) => void) =>
-      void answer.then(
-        (value) => current && put(value),
-        (err: unknown) => current && onError(String(err)),
-      )
-    take(sidecar('state.get', {}), ({ settings }) => setSaved(settings))
-    take(projectsFolder(), setFolder)
+    void projectsFolder().then(
+      (value) => current && setFolder(value),
+      (err: unknown) => current && onError(String(err)),
+    )
     return () => {
       current = false
     }
@@ -64,11 +57,8 @@ export default function Settings({ section, onSection, models, onSaved, onFix, o
 
   const save = (change: Methods['settings.set']['params']) => {
     setSaving(true)
-    void sidecar('settings.set', change)
-      .then((state) => {
-        setSaved(state.settings)
-        onSaved(state)
-      })
+    void saveSettings(change)
+      .then(() => checkReady())
       .catch((err: unknown) => onError(String(err)))
       .finally(() => setSaving(false))
   }
