@@ -20,7 +20,8 @@ import {
   SKIPPED,
   type SidecarEvent,
 } from '../src/protocol'
-import { skipped, Store } from '../src/store'
+import { skipped } from '../src/folder'
+import { Store } from '../src/store'
 import contract from './fixtures/contract.json'
 
 // `src-tauri` checks Rust's side against the same file.

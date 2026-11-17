@@ -3,11 +3,11 @@
  * nothing on screen can vanish after a crash.
  */
 import type { EntryRecord } from '@earendil-works/pi-durable'
-import type { ChatEntry, ImportedEntry } from './protocol'
+import { Imported, UserMessage } from './entries'
+import type { ChatEntry } from './protocol'
 
 type Content = string | readonly ({ type: string; text?: string } | { type: 'toolCall'; id: string; name: string; arguments: unknown })[]
 
-/** The text of a message, whether it is a string or blocks. */
 export function textOf(content: Content | undefined): string {
   if (content === undefined) return ''
   if (typeof content === 'string') return content
@@ -16,15 +16,13 @@ export function textOf(content: Content | undefined): string {
 
 /** One committed entry as the chat shows it, or nothing for entries only the model reads. */
 export function chatEntry(entry: EntryRecord): ChatEntry | undefined {
+  if (Imported.is(entry)) return { id: entry.id, kind: 'imported', ...entry.data }
+  if (UserMessage.is(entry)) {
+    const { text, images, files } = entry.data
+    return { id: entry.id, kind: 'user', text, images, files: files ?? [] }
+  }
   const message = entry.model?.[0]
   switch (entry.kind) {
-    case 'm3d.imported':
-      return { id: entry.id, kind: 'imported', ...(entry.data as ImportedEntry) }
-    case 'm3d.user': {
-      // A message from before files could be attached holds pictures only.
-      const data = entry.data as { text: string; images: string[]; files?: string[] }
-      return { id: entry.id, kind: 'user', text: data.text, images: data.images, files: data.files ?? [] }
-    }
     case 'pi.assistant': {
       if (message?.role !== 'assistant') return undefined
       const calls = message.content.flatMap((block) =>
