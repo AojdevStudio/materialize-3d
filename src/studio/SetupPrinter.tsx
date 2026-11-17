@@ -37,12 +37,12 @@ function fit(printers: PrinterChoice[], wanted: { machine: string | null | undef
   }
 }
 
-function offer(printers: PrinterChoice[], first: Fitted, last: BambuLastUsed | null, saved: Printer | undefined): Offer {
+function offer(printers: PrinterChoice[], first: Fitted, last: BambuLastUsed | null, saved: Printer): Offer {
   const read = last && { machine: last.machine.system, process: last.process?.system, filament: last.filament?.system, plate: last.plate }
   const fromRead = read ? fit(printers, read) : undefined
   const confirmable = fromRead && read?.process === fromRead.choice.process && read.filament === fromRead.choice.filament ? fromRead : undefined
   const plateRead = confirmable !== undefined && read?.plate === confirmable.choice.plate
-  return { printers, confirmable, plateRead, start: fromRead ?? (saved && fit(printers, saved)) ?? first }
+  return { printers, confirmable, plateRead, start: fromRead ?? fit(printers, saved) ?? first }
 }
 
 /**
@@ -58,8 +58,12 @@ export default function SetupPrinter({ next, back }: StepProps) {
   const [unread, setUnread] = useState<string | null>(null)
   const [failed, setFailed] = useState<string | null>(null)
   const [attempt, setAttempt] = useState(0)
+  // The pick starts on the saved printer, so the step waits for the saved state.
+  const settingsRead = useStudio((s) => s.settings !== null)
 
   useEffect(() => {
+    const saved = useStudio.getState().settings
+    if (saved === null) return
     let current = true
     const lastUsed = studio.bambuLastUsed().catch((err: unknown) => {
       if (current) setUnread(String(err))
@@ -78,7 +82,7 @@ export default function SetupPrinter({ next, back }: StepProps) {
         if (!current) return
         const first = fit(printers, { machine: printers[0]?.nozzles[0]?.machine })
         if (first === undefined) return setFailed('Bambu Studio lists no printer to pick.')
-        const made = offer(printers, first, last, useStudio.getState().settings?.printer)
+        const made = offer(printers, first, last, saved.printer)
         setShown(made)
         if (made.confirmable === undefined) setPicking(made.start)
       })
@@ -86,7 +90,7 @@ export default function SetupPrinter({ next, back }: StepProps) {
     return () => {
       current = false
     }
-  }, [attempt])
+  }, [attempt, settingsRead])
 
   const leave = () => {
     setSaving(true)

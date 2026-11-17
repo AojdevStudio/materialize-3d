@@ -6,8 +6,8 @@ const { invokeMock } = vi.hoisted(() => ({ invokeMock: vi.fn() }))
 vi.mock('@tauri-apps/api/core', () => ({ invoke: invokeMock }))
 vi.mock('@tauri-apps/api/event', () => ({ listen: () => Promise.resolve(() => {}) }))
 
-import type { ChatView, Project } from '../../sidecar/src/protocol'
-import { load, show, useStudio, useStudioEvents } from './store'
+import type { AppState, ChatView, Printer, Project } from '../../sidecar/src/protocol'
+import { load, savePrinter, saveSettings, show, useStudio, useStudioEvents } from './store'
 
 afterEach(() => {
   cleanup()
@@ -40,4 +40,36 @@ it('drops a chat load that answers after the window opened again', async () => {
     await loading
   })
   expect(useStudio.getState().view).toBeNull()
+})
+
+it('takes saves that answer the app state in the order they were made, so a late answer never puts back an older printer', async () => {
+  const p2s: Printer = { machine: 'Bambu Lab P2S 0.4 nozzle', process: '0.20mm Standard @BBL P2S', filament: 'Bambu PLA Basic @BBL P2S' }
+  const a1: Printer = { machine: 'Bambu Lab A1 mini 0.4 nozzle', process: '0.20mm Standard @BBL A1M', filament: 'Bambu PLA Basic @BBL A1M' }
+  const state = (printer: Printer): AppState => ({
+    setup: { step: 'ready', done: true },
+    settings: { model: { provider: 'anthropic', modelId: 'claude-opus-5-5' }, thinking: 'high', printer, astra: false },
+    projects: [],
+    drafts: {},
+    importBlocked: null,
+  })
+  let answerSettings: (value: AppState) => void = () => {}
+  const methods: string[] = []
+  invokeMock.mockImplementation((command: string, { method }: { method?: string } = {}) => {
+    if (command === 'sidecar' && method !== undefined) methods.push(method)
+    if (command === 'sidecar' && method === 'settings.set') return new Promise((resolve) => (answerSettings = resolve))
+    if (command === 'sidecar' && method === 'printer.set') return Promise.resolve(state(a1))
+    if (command === 'sidecar' && method === 'projects.status') return Promise.resolve({})
+    return Promise.resolve([])
+  })
+  render(<Window />)
+
+  const settings = saveSettings({ astra: false })
+  const printer = savePrinter({ ...a1, plate: 'Textured PEI Plate' })
+  await act(async () => {})
+  expect(methods).not.toContain('printer.set')
+  await act(async () => {
+    answerSettings(state(p2s))
+    await Promise.all([settings, printer])
+  })
+  expect(useStudio.getState().settings?.printer).toEqual(a1)
 })

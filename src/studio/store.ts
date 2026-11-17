@@ -127,6 +127,8 @@ type Kept = {
   /** Counts setup's saves, so a state read that started before the newest save never puts back the setup it replaced. */
   setupSaves: number
   savingSetup: boolean
+  /** The newest save that answers the app's state, while it runs. The next save waits for it. */
+  saving: Promise<AppState> | null
 }
 
 const fresh = (): Kept => ({
@@ -143,6 +145,7 @@ const fresh = (): Kept => ({
   saved: null,
   setupSaves: 0,
   savingSetup: false,
+  saving: null,
 })
 
 let kept = fresh()
@@ -245,28 +248,44 @@ export function afterSetup(wentOn: boolean) {
   findSlicer()
 }
 
-/** Each save answers the app's state, so the settings shown are the ones just saved. */
-function took(state: AppState) {
-  set({ settings: state.settings })
-  return state
+/**
+ * Runs a save that answers the app's state once the save before it ended, and takes the settings it answers. One at a
+ * time, so an older answer never lands after a newer one and puts back what that one changed.
+ */
+function saveState(call: () => Promise<AppState>) {
+  const save = () =>
+    call().then((state) => {
+      set({ settings: state.settings })
+      return state
+    })
+  const at = kept
+  const turn = at.saving === null ? save() : at.saving.then(save, save)
+  at.saving = turn
+  const ended = () => {
+    if (at.saving === turn) at.saving = null
+  }
+  void turn.then(ended, ended)
+  return turn
 }
 
-export const saveSettings = (change: Methods['settings.set']['params']) => sidecar('settings.set', change).then(took)
+export const saveSettings = (change: Methods['settings.set']['params']) => saveState(() => sidecar('settings.set', change))
 
-export const savePrinter = (choice: Methods['printer.set']['params']) => sidecar('printer.set', choice).then(took)
+export const savePrinter = (choice: Methods['printer.set']['params']) => saveState(() => sidecar('printer.set', choice))
 
 /**
  * Saves setup's step, one save at a time: a save asked for while one runs does nothing. The next step's screen can save
- * as soon as it shows, so the save in flight ends before its answer moves setup on.
+ * as soon as it shows, so the save in flight ends before its answer moves setup on. An answer for a window that closed
+ * meanwhile moves nothing.
  */
 export async function saveSetup(change: Setup) {
-  if (kept.savingSetup) return
-  kept.savingSetup = true
-  const state = await sidecar('setup.set', change).finally(() => {
-    kept.savingSetup = false
+  const at = kept
+  if (at.savingSetup) return
+  at.savingSetup = true
+  const state = await saveState(() => sidecar('setup.set', change)).finally(() => {
+    at.savingSetup = false
   })
-  took(state)
-  kept.setupSaves += 1
+  if (at !== kept) return
+  at.setupSaves += 1
   set({ setup: state.setup })
   if (state.setup.done) afterSetup(true)
 }

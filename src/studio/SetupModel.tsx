@@ -3,7 +3,7 @@ import type { ModelChoice } from '../../sidecar/src/protocol'
 import { AGENTS, astraSignedIn, sameModel } from './agents'
 import type { StepProps } from './Setup'
 import { AstraSwitch, ModelRow } from './setupRows'
-import { readLogins, saveSettings, useStudio } from './store'
+import { loadModels, readLogins, saveSettings, useStudio } from './store'
 
 /**
  * Setup's pick of the default model new projects take, and whether the main agent may ask Astra for drawings. Continue
@@ -18,8 +18,12 @@ export default function SetupModel({ next, back, onError, signIn }: StepProps) {
   const [astraPicked, setAstraPicked] = useState<boolean | null>(null)
   const [saving, setSaving] = useState(false)
 
-  // Before the screen paints, so it offers nothing until it knows the sign-ins as they are now.
-  useLayoutEffect(() => readLogins(true), [])
+  // Before the screen paints, so it offers nothing until it knows the sign-ins as they are now. The models are read
+  // first, so they answer before the sign-ins that show them.
+  useLayoutEffect(() => {
+    loadModels()
+    readLogins(true)
+  }, [])
 
   const known = Array.isArray(logins) && saved !== null
   const models = known ? listed.filter((model) => AGENTS.some((agent) => agent.provider === model.provider)) : []
