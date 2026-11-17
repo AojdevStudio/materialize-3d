@@ -38,6 +38,8 @@ export const useTheme = create<ThemeState>()((set, get) => ({
  */
 export function useWindowTheme() {
   useEffect(() => {
+    // Another window may have saved a choice after this module loaded and before this listener starts.
+    useTheme.setState({ theme: parse(window.localStorage.getItem(KEY)) })
     const root = document.documentElement
     root.dataset.theme = useTheme.getState().theme
     const unsubscribe = useTheme.subscribe(({ theme }) => {

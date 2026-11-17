@@ -27,6 +27,14 @@ describe('theme', () => {
     expect(await start()).toBe('dark')
     expect(document.documentElement.dataset.theme).toBe('dark')
   })
+
+  it('takes a choice another window saved after the app loaded and before the window started', async () => {
+    const { useTheme, useWindowTheme } = await import('./theme')
+    window.localStorage.setItem('materialize-3d.theme', 'dark')
+    renderHook(useWindowTheme)
+    expect(useTheme.getState().theme).toBe('dark')
+    expect(document.documentElement.dataset.theme).toBe('dark')
+  })
 })
 
 describe('the theme contract', () => {
