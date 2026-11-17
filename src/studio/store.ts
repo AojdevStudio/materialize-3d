@@ -250,15 +250,16 @@ export function afterSetup(wentOn: boolean) {
 
 /**
  * Runs a save that answers the app's state once the save before it ended, and takes the settings it answers. One at a
- * time, so an older answer never lands after a newer one and puts back what that one changed.
+ * time, so an older answer never lands after a newer one and puts back what that one changed. An answer for a window
+ * that closed meanwhile is not taken.
  */
 function saveState(call: () => Promise<AppState>) {
+  const at = kept
   const save = () =>
     call().then((state) => {
-      set({ settings: state.settings })
+      if (at === kept) set({ settings: state.settings })
       return state
     })
-  const at = kept
   const turn = at.saving === null ? save() : at.saving.then(save, save)
   at.saving = turn
   const ended = () => {
