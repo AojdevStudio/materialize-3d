@@ -12,6 +12,7 @@ import type { Models } from '@earendil-works/pi-ai'
 import { type Conversation, defineDoc, type HarnessOptions, Harness, type Registry } from '@earendil-works/pi-durable'
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node'
 import type { LegacyProject } from './legacy'
+import { DEFAULT_MODEL } from './offered'
 import { type Draft, type ModelChoice, type Printer, type Project, type SavedDraft, type Settings, type Setup, START, type StoredState, type Turn, type Waiting } from './protocol'
 import { guideTemplate } from './templates/guide' with { type: 'macro' }
 
@@ -53,7 +54,7 @@ export const SettingsDoc = defineDoc<Settings>({
   history: 'latest',
   fork: 'initial',
   initial: () => ({
-    model: { provider: 'anthropic', modelId: 'claude-opus-5-5' },
+    model: { ...DEFAULT_MODEL },
     thinking: 'high',
     printer: {
       machine: 'Bambu Lab P2S 0.4 nozzle',
@@ -377,7 +378,6 @@ export class Store {
     return imported
   }
 
-  /** Saves the model the project's next turn runs on. */
   async setModel(id: string, model: ModelChoice): Promise<void> {
     await this.harness.commit(async (tx) => {
       const project = (await tx.doc(ProjectsDoc, this.root.id)).projects.find((p) => p.id === id)

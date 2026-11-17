@@ -1,4 +1,4 @@
-import type { ChatEntry, ModelChoice } from '../../sidecar/src/protocol'
+import { ASTRA, type ChatEntry, type ModelChoice, RUN_PROGRAM, STEP_LINES, type ToolArgs, type ToolName } from '../../sidecar/src/protocol'
 
 /** What a step does, which picks its icon. */
 export type Action = 'read' | 'write' | 'run' | 'slice' | 'helper' | 'other'
@@ -44,24 +44,33 @@ export const STOPPED = 'It stopped before it finished.'
 
 const str = (value: unknown) => (typeof value === 'string' ? value : '')
 
+/** A committed call's args by the names `ToolArgs` gives them. The model sent them, so any can be missing or wrong. */
+type SentArgs<T extends ToolName> = { [K in keyof ToolArgs[T]]?: unknown }
+
 /** One line for a tool step: what it did, and the file or command it did it with. */
 function describe(name: string, args: Record<string, unknown>): Omit<ToolItem, 'kind' | 'id' | 'state'> {
-  const path = str(args.path)
   switch (name) {
     case 'read':
-      return { action: 'read', label: 'Read', doing: 'Reading', summary: path, detail: path }
     case 'write':
-      return { action: 'write', label: 'Wrote', doing: 'Writing', summary: path, detail: path }
-    case 'edit':
-      return { action: 'write', label: 'Edited', doing: 'Editing', summary: path, detail: path }
-    case 'run': {
-      const command = ['uv', ...(Array.isArray(args.args) ? args.args.map(str) : [])].join(' ')
-      return { action: 'run', label: 'Ran', doing: 'Running', summary: command, detail: command }
+    case 'edit': {
+      const sent: SentArgs<typeof name> = args
+      const path = str(sent.path)
+      return { action: name === 'read' ? 'read' : 'write', ...STEP_LINES[name], summary: path, detail: path }
     }
-    case 'slice':
-      return { action: 'slice', label: 'Sliced', doing: 'Slicing', summary: str(args.output), detail: JSON.stringify(args, null, 2) }
-    case 'astra':
-      return { action: 'helper', label: 'Asked Astra (GPT)', doing: 'Asking Astra (GPT)', summary: str(args.task).split('\n')[0] ?? '', detail: str(args.task) }
+    case 'run': {
+      const sent: SentArgs<'run'> = args
+      const command = [RUN_PROGRAM, ...(Array.isArray(sent.args) ? sent.args.map(str) : [])].join(' ')
+      return { action: 'run', ...STEP_LINES.run, summary: command, detail: command }
+    }
+    case 'slice': {
+      const sent: SentArgs<'slice'> = args
+      return { action: 'slice', ...STEP_LINES.slice, summary: str(sent.output), detail: JSON.stringify(args, null, 2) }
+    }
+    case ASTRA: {
+      const sent: SentArgs<typeof ASTRA> = args
+      const task = str(sent.task)
+      return { action: 'helper', ...STEP_LINES.astra, summary: task.split('\n')[0] ?? '', detail: task }
+    }
     default:
       return { action: 'other', label: name, doing: name, summary: '', detail: JSON.stringify(args, null, 2) }
   }

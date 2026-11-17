@@ -25,7 +25,7 @@ import { NodeExecutionEnv } from '@earendil-works/pi-durable/env/node'
 import { createEditTool, createReadTool, createWriteTool } from '@earendil-works/pi-durable/tools'
 import { arr, int, obj, opt, str } from '@earendil-works/pi-schema'
 import type { Host } from './host'
-import type { Need, Plate, Printer, Toolchain } from './protocol'
+import { ASTRA, type Need, type Plate, type Printer, RUN_PROGRAM, type Toolchain } from './protocol'
 import { isLoginFailure } from './inference'
 import { textOf } from './transcript'
 import workflow from './workflow.md' with { type: 'text' }
@@ -281,7 +281,7 @@ function operation<T extends JsonValue>(api: ToolExecutionApi, context: Context)
   return { env, id, memo, receipt: join(env.cwd, '.m3d', 'ops', `${id}.json`) }
 }
 
-/** The agent's tools, in the order the model is offered them. */
+/** The agent's tools, in the order the model is offered them, with the args `ToolArgs` names. */
 export function agentTools({ host, projectOf, signedIn, loginSaves, printer }: AgentHost) {
   const read = createReadTool()
   const write = { ...createWriteTool(), replay: 'safe' as const }
@@ -315,7 +315,7 @@ export function agentTools({ host, projectOf, signedIn, loginSaves, printer }: A
         }
         const poll = setInterval(show, LOG_POLL_MS)
         const ran = await env
-          .exec(['/bin/sh', '-c', GUARD, 'm3d-run', String(process.pid), log, exited, 'uv', ...args], { env: vars, inheritEnv: false, timeout: timeoutSeconds ?? 600 }, context)
+          .exec(['/bin/sh', '-c', GUARD, 'm3d-run', String(process.pid), log, exited, RUN_PROGRAM, ...args], { env: vars, inheritEnv: false, timeout: timeoutSeconds ?? 600 }, context)
           .finally(() => clearInterval(poll))
         show()
         // A quit or a stop cut the command off before it finished, so it has no result to keep. Pi takes the throw as
@@ -361,7 +361,7 @@ export function agentTools({ host, projectOf, signedIn, loginSaves, printer }: A
   })
 
   const astra = defineTool({
-    name: 'astra',
+    name: ASTRA,
     description:
       'Hand a task to Astra, the GPT helper, who works in this project folder with the same file tools and `run`. ' +
       'Astra cannot see this chat, so say everything: what to do, the files to read, and the file to write.',
