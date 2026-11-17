@@ -58,8 +58,11 @@ pub(crate) mod tests {
     #[test]
     fn the_window_builds_file_addresses_and_reads_pop_out_pages_by_the_same_names() {
         assert!(API_TS.contains(&format!("const FILE_SCHEME = '{FILE_SCHEME}'")), "src/studio/api.ts FILE_SCHEME");
-        let keys = quoted(block(include_str!("../../../src/studio/PopOut.tsx"), "const KEYS = {", "}"), '\'');
-        assert_eq!(keys, POP_OUT_KEYS.map(str::to_owned).into(), "src/studio/PopOut.tsx KEYS");
+        let keys = block(include_str!("../../../src/studio/PopOut.tsx"), "const KEYS = {", "}");
+        let [project, rel, version] = POP_OUT_KEYS;
+        for field in [format!("project: '{project}'"), format!("rel: '{rel}'"), format!("version: '{version}'")] {
+            assert!(keys.contains(&field), "src/studio/PopOut.tsx KEYS has no {field}");
+        }
     }
 
     /// Every type the window reads from a command or event, with the types it names. `Plate` declares none, as the
