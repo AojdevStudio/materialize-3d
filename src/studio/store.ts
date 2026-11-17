@@ -75,8 +75,13 @@ type Kept = {
 const fresh = (): Kept => ({ read: {}, runs: {}, reading: { busy: false, again: false }, loaded: null, early: [], failedLoad: null, lastSeen: null })
 
 let kept = fresh()
-/** Bumped on every switch, so a slow load for a project already left is dropped. */
+/** Bumped on every switch and every reset, so a slow load for a project already left is dropped. */
 let switches = 0
+
+function reset() {
+  kept = fresh()
+  switches += 1
+}
 /** Counts chat loads, so only the newest load of the open chat replaces its view, not an older one that answers late. */
 let loads = 0
 
@@ -211,12 +216,12 @@ function hear(event: SidecarEvent) {
  */
 export function useStudioEvents(projects: Project[]) {
   useEffect(() => {
-    kept = fresh()
+    reset()
     set(EMPTY)
     const events = onSidecarEvent(hear)
     return () => {
       events.stop()
-      kept = fresh()
+      reset()
     }
   }, [])
 
