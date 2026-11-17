@@ -25,7 +25,7 @@ import { NodeExecutionEnv } from '@earendil-works/pi-durable/env/node'
 import { createEditTool, createReadTool, createWriteTool } from '@earendil-works/pi-durable/tools'
 import { arr, int, obj, opt, str } from '@earendil-works/pi-schema'
 import type { Host } from './host'
-import { ASTRA, KEPT_ENV, META_DIR, type Need, type Plate, type Printer, RUN_PROGRAM, type Toolchain } from './protocol'
+import { ASTRA, ASTRA_MODEL, KEPT_ENV, META_DIR, type Need, type Plate, type Printer, RUN_PROGRAM, type Toolchain } from './protocol'
 import { isLoginFailure } from './inference'
 import { textOf } from './transcript'
 import workflow from './workflow.md' with { type: 'text' }
@@ -33,9 +33,6 @@ import workflow from './workflow.md' with { type: 'text' }
 /** The instructions every turn runs with, and the version a turn records. */
 export const WORKFLOW = workflow
 export const WORKFLOW_VERSION = createHash('sha256').update(workflow).digest('hex').slice(0, 12)
-
-/** Astra, the GPT helper: OpenAI's model on the person's ChatGPT plan. */
-export const ASTRA_MODEL = { provider: 'openai-codex', modelId: 'gpt-6-astra' } as const
 
 /** How much of a command's output the model gets back: the end, where errors are. */
 const OUTPUT_TAIL = 20_000
