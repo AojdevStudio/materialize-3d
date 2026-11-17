@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::{mpsc, oneshot, watch, Notify, OnceCell};
 
@@ -461,7 +461,7 @@ enum Outbound {
 }
 
 /// Handles one line from the sidecar, and says whether it was the sidecar's ready event.
-fn dispatch(app: &AppHandle, run: u64, answers: &mpsc::WeakUnboundedSender<String>, line: &str) -> bool {
+fn dispatch<R: Runtime>(app: &AppHandle<R>, run: u64, answers: &mpsc::WeakUnboundedSender<String>, line: &str) -> bool {
     let message = match serde_json::from_str::<Outbound>(line) {
         Ok(message) => message,
         Err(e) => {
@@ -558,12 +558,12 @@ fn keychain_item(account: &str) -> Result<String, String> {
     }
 }
 
-fn preset_cache(app: &AppHandle) -> Result<PathBuf, String> {
+fn preset_cache<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
     Ok(app.path().app_cache_dir().map_err(|e| format!("finding the app's cache folder: {e}"))?.join("bambu-presets"))
 }
 
 /// Answers one request from the sidecar run `run`. Errors name what failed and never carry a secret.
-async fn answer(app: &AppHandle, run: u64, method: &str, params: Value) -> Result<Value, String> {
+async fn answer<R: Runtime>(app: &AppHandle<R>, run: u64, method: &str, params: Value) -> Result<Value, String> {
     match method {
         "keychain.get" => {
             let Account { account } = parse(method, params)?;
@@ -639,6 +639,8 @@ pub async fn sidecar(sidecar: State<'_, Sidecar>, method: String, params: Value)
 
 #[cfg(test)]
 mod tests {
+    use tauri::Listener;
+
     use super::*;
 
     #[cfg(unix)]
@@ -804,6 +806,181 @@ printf '__M3D_PATH__/opt/tools/bin__M3D_PATH__'
         set_busy(&sidecar, &gate, exited, true).expect_err("the exited sidecar's request is refused");
         let close = gate.close_when_idle(|_| {});
         let _closed = tokio::time::timeout(Duration::from_millis(50), close).await.expect("the update goes ahead");
+    }
+
+    fn mock_app() -> tauri::App<tauri::test::MockRuntime> {
+        crate::credentials::tests::use_test_store();
+        let app = tauri::test::mock_app();
+        app.manage(Sidecar::default());
+        app.manage(Arc::new(BuildGate::default()));
+        app
+    }
+
+    async fn ask(app: &tauri::App<tauri::test::MockRuntime>, method: &str, params: Value) -> Result<Value, String> {
+        let run = app.state::<Sidecar>().run_started();
+        answer(app.handle(), run, method, params).await
+    }
+
+    /// The test store keeps a secret only in the entry that set it, so a get after a set finds nothing.
+    #[tokio::test]
+    async fn the_host_answers_keychain_requests_for_inference_items_only() {
+        let app = mock_app();
+        assert_eq!(ask(&app, "keychain.set", json!({ "account": "anthropic", "secret": "s" })).await, Ok(Value::Null));
+        assert_eq!(ask(&app, "keychain.get", json!({ "account": "anthropic" })).await, Ok(json!({ "secret": null })));
+        assert_eq!(ask(&app, "keychain.delete", json!({ "account": "anthropic" })).await, Ok(Value::Null));
+        assert_eq!(ask(&app, "keychain.get", json!({ "account": "../printer" })).await, Err(r#""../printer" is not a provider account"#.to_owned()));
+        assert_eq!(ask(&app, "keychain.delete", json!({ "account": "Anthropic" })).await, Err(r#""Anthropic" is not a provider account"#.to_owned()));
+        let locked = keyring::Error::PlatformFailure("locked".into());
+        assert_eq!(
+            ask(&app, "keychain.get", json!({ "account": "fails.call" })).await,
+            Err(format!("keyring get_password error for key=inference.fails.call: {locked}"))
+        );
+        let refused = ask(&app, "keychain.set", json!({ "account": "anthropic" })).await.expect_err("a set needs its secret");
+        assert!(refused.starts_with("bad params for keychain.set: "), "{refused}");
+    }
+
+    #[tokio::test]
+    async fn the_host_holds_the_update_pass_while_the_sidecar_says_it_is_busy() {
+        const SETTLE: Duration = Duration::from_millis(50);
+        let app = mock_app();
+        let gate = app.state::<Arc<BuildGate>>().inner().clone();
+        assert_eq!(ask(&app, "busy", json!({ "busy": true })).await, Ok(Value::Null));
+        let mut close = std::pin::pin!(gate.close_when_idle(|_| {}));
+        assert!(tokio::time::timeout(SETTLE, &mut close).await.is_err(), "the update waits while the sidecar is busy");
+        assert_eq!(ask(&app, "busy", json!({ "busy": false })).await, Ok(Value::Null));
+        drop(tokio::time::timeout(SETTLE, &mut close).await.expect("the update goes ahead once the sidecar is idle"));
+        let refused = ask(&app, "busy", json!({ "busy": "yes" })).await.expect_err("busy is a bool");
+        assert!(refused.starts_with("bad params for busy: "), "{refused}");
+        let ended = app.state::<Sidecar>().run_started();
+        app.state::<Sidecar>().run_ended();
+        assert_eq!(answer(app.handle(), ended, "busy", json!({ "busy": true })).await, Err("This engine has exited.".to_owned()));
+    }
+
+    #[tokio::test]
+    async fn the_host_reads_slice_params_before_the_pass_and_keeps_no_result_for_a_refused_slice() {
+        let app = mock_app();
+        let printer = json!({ "machine": "Bambu Lab P2S 0.4 nozzle", "process": "0.20mm Standard @BBL P2S", "filament": "Bambu PETG Basic @BBL P2S 0.4 nozzle" });
+        let refused = ask(&app, "printer.check", json!({ "machine": 1 })).await.expect_err("a check needs a printer");
+        assert!(refused.starts_with("bad params for printer.check: "), "{refused}");
+        let gate = app.state::<Arc<BuildGate>>().inner().clone();
+        let closed = gate.close_when_idle(|_| {}).await;
+        let unnamed = json!({ "project": "p", "inputs": ["a.stl"], "output": "out.3mf", "printer": printer });
+        let refused = ask(&app, "slice", unnamed).await.expect_err("a slice needs its operation id");
+        assert!(refused.starts_with("bad params for slice: "), "{refused}");
+        let call = json!({ "operation": "abc", "project": "p", "inputs": ["a.stl"], "output": "out.3mf", "printer": printer });
+        let refused = ask(&app, "slice", call).await.expect_err("no slice starts while an update installs");
+        assert!(refused.contains("update is installing"), "{refused}");
+        assert!(!app.state::<Sidecar>().slices.lock().expect("slices").contains_key("abc"), "the refusal is not kept as the slice's result");
+        drop(closed);
+        assert_eq!(ask(&app, "nope", Value::Null).await, Err("no host request nope".to_owned()));
+    }
+
+    #[tokio::test]
+    async fn a_reply_settles_its_call() {
+        let app = mock_app();
+        let (answers, _lines) = mpsc::unbounded_channel::<String>();
+        let call = |id| {
+            let (reply, replied) = oneshot::channel();
+            app.state::<Sidecar>().calls.lock().expect("calls").insert(id, reply);
+            replied
+        };
+        let (listed, refused, bare) = (call(1), call(2), call(3));
+        for line in [
+            r#"{"kind":"reply","id":1,"ok":true,"value":{"chats":[]}}"#,
+            r#"{"kind":"reply","id":2,"ok":false,"error":"no method x"}"#,
+            r#"{"kind":"reply","id":3,"ok":false}"#,
+            r#"{"kind":"reply","id":9,"ok":true}"#,
+        ] {
+            assert!(!dispatch(app.handle(), 0, &answers.downgrade(), line), "{line}");
+        }
+        assert_eq!(listed.await.expect("replied"), Ok(json!({ "chats": [] })));
+        assert_eq!(refused.await.expect("replied"), Err("no method x".to_owned()));
+        assert_eq!(bare.await.expect("replied"), Err("The engine refused the call.".to_owned()));
+        assert!(app.state::<Sidecar>().calls.lock().expect("calls").is_empty());
+    }
+
+    #[tokio::test]
+    async fn events_reach_the_window_and_only_ready_says_the_sidecar_is_ready() {
+        let app = mock_app();
+        let (answers, _lines) = mpsc::unbounded_channel::<String>();
+        let (heard, mut events) = mpsc::unbounded_channel::<String>();
+        app.listen_any(EVENT, move |event| heard.send(event.payload().to_owned()).expect("the test listens"));
+        assert!(dispatch(app.handle(), 0, &answers.downgrade(), r#"{"kind":"event","event":{"type":"ready"}}"#));
+        assert!(!dispatch(app.handle(), 0, &answers.downgrade(), r#"{"kind":"event","event":{"type":"chat","seq":2}}"#));
+        assert!(!dispatch(app.handle(), 0, &answers.downgrade(), "not a protocol line"));
+        assert!(!dispatch(app.handle(), 0, &answers.downgrade(), r#"{"kind":"mystery"}"#));
+        let mut next = async || serde_json::from_str::<Value>(&events.recv().await.expect("an event")).expect("json");
+        assert_eq!(next().await, json!({ "type": "ready" }));
+        assert_eq!(next().await, json!({ "type": "chat", "seq": 2 }));
+    }
+
+    #[tokio::test]
+    async fn a_request_is_answered_on_the_sidecars_input() {
+        let app = mock_app();
+        let (answers, mut lines) = mpsc::unbounded_channel::<String>();
+        let run = app.state::<Sidecar>().run_started();
+        assert!(!dispatch(app.handle(), run, &answers.downgrade(), r#"{"kind":"request","id":7,"method":"busy","params":{"busy":false}}"#));
+        assert!(!dispatch(app.handle(), run, &answers.downgrade(), r#"{"kind":"request","id":8,"method":"nope","params":null}"#));
+        let mut got = Vec::new();
+        for _ in 0..2 {
+            let line = lines.recv().await.expect("an answer");
+            got.push(serde_json::from_str::<Value>(line.strip_suffix('\n').expect("one line")).expect("json"));
+        }
+        got.sort_by_key(|answer| answer["id"].as_u64());
+        assert_eq!(
+            got,
+            [
+                json!({ "kind": "answer", "id": 7, "ok": true, "value": null }),
+                json!({ "kind": "answer", "id": 8, "ok": false, "error": "no host request nope" }),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_call_from_the_window_goes_out_as_one_line_and_its_reply_comes_back() {
+        let app = mock_app();
+        let (input, mut lines) = mpsc::unbounded_channel::<String>();
+        let answers = input.downgrade();
+        app.state::<Sidecar>().link.send_replace(Link::Up(input));
+        let reply = async {
+            let line = lines.recv().await.expect("the call's line");
+            let call: Value = serde_json::from_str(line.strip_suffix('\n').expect("one line")).expect("json");
+            assert_eq!((&call["kind"], &call["method"], &call["params"]), (&json!("call"), &json!("chats.list"), &json!({ "all": true })));
+            assert!(!dispatch(app.handle(), 0, &answers, &json!({ "kind": "reply", "id": call["id"], "ok": true, "value": [1] }).to_string()));
+        };
+        let (value, ()) = tokio::join!(super::sidecar(app.state(), "chats.list".to_owned(), json!({ "all": true })), reply);
+        assert_eq!(value, Ok(json!([1])));
+    }
+
+    #[tokio::test]
+    async fn a_call_the_engine_never_answers_fails_and_asks_to_try_again() {
+        let restarted = Err::<Value, String>("The engine restarted before it answered. Try again.".to_owned());
+        let app = mock_app();
+        let (input, lines) = mpsc::unbounded_channel::<String>();
+        drop(lines);
+        app.state::<Sidecar>().link.send_replace(Link::Up(input));
+        assert_eq!(super::sidecar(app.state(), "chats.list".to_owned(), Value::Null).await, restarted, "the line could not be queued");
+        assert!(app.state::<Sidecar>().calls.lock().expect("calls").is_empty());
+
+        let (input, mut lines) = mpsc::unbounded_channel::<String>();
+        app.state::<Sidecar>().link.send_replace(Link::Up(input));
+        let exit = async {
+            lines.recv().await.expect("the call's line");
+            app.state::<Sidecar>().drop_calls();
+        };
+        let (value, ()) = tokio::join!(super::sidecar(app.state(), "chats.list".to_owned(), Value::Null), exit);
+        assert_eq!(value, restarted, "the sidecar exited before it answered");
+
+        app.state::<Sidecar>().link.send_replace(Link::Stopped("Materialize 3D is quitting.".to_owned()));
+        assert_eq!(super::sidecar(app.state(), "chats.list".to_owned(), Value::Null).await, Err("Materialize 3D is quitting.".to_owned()));
+    }
+
+    #[test]
+    fn the_sidecar_keeps_the_persons_path_and_home() {
+        let env: HashMap<&str, String> = kept_env().into_iter().collect();
+        let current = std::env::var("PATH").expect("the test has a PATH");
+        assert!(env["PATH"].ends_with(&current), "the login shell's folders come first: {}", env["PATH"]);
+        assert_eq!(env.get("HOME"), std::env::var("HOME").ok().as_ref());
     }
 
     #[test]

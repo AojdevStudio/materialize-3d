@@ -60,8 +60,58 @@ pub async fn delete_credential(key: &str) -> Result<(), String> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    /// keyring's mock store. An item whose name ends in `fails.entry` cannot be made, and one that ends in
+    /// `fails.call` fails its first call, the way a locked Keychain does.
+    struct TestStore;
+
+    impl keyring::credential::CredentialBuilderApi for TestStore {
+        fn build(&self, _target: Option<&str>, _service: &str, user: &str) -> keyring::Result<Box<keyring::credential::Credential>> {
+            if user.ends_with("fails.entry") {
+                return Err(keyring::Error::Invalid("user".to_owned(), "refused by the test store".to_owned()));
+            }
+            let credential = keyring::mock::MockCredential::default();
+            if user.ends_with("fails.call") {
+                credential.set_error(keyring::Error::PlatformFailure("locked".into()));
+            }
+            Ok(Box::new(credential))
+        }
+
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+    }
+
+    /// Every entry made from here on lives in keyring's mock store, which keeps a secret only in the entry that set
+    /// it. Nothing reaches the machine's own store.
+    pub(crate) fn use_test_store() {
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| keyring::set_default_credential_builder(Box::new(TestStore)));
+    }
+
+    #[tokio::test]
+    async fn a_secret_is_stored_and_a_missing_one_reads_as_none_and_counts_as_deleted() {
+        use_test_store();
+        assert_eq!(store_credential("inference.anthropic", "secret").await, Ok(()));
+        assert_eq!(get_credential("inference.anthropic").await, Ok(None));
+        assert_eq!(delete_credential("inference.anthropic").await, Ok(()));
+    }
+
+    #[tokio::test]
+    async fn a_store_failure_names_the_call_and_the_item_but_not_the_secret() {
+        use_test_store();
+        let locked = keyring::Error::PlatformFailure("locked".into());
+        assert_eq!(store_credential("fails.call", "secret").await, Err(format!("keyring set_password error for key=fails.call: {locked}")));
+        assert_eq!(get_credential("fails.call").await, Err(format!("keyring get_password error for key=fails.call: {locked}")));
+        assert_eq!(delete_credential("fails.call").await, Err(format!("keyring delete_credential error for key=fails.call: {locked}")));
+        let refused = keyring::Error::Invalid("user".to_owned(), "refused by the test store".to_owned());
+        let expected = Err(format!("keyring entry error for key=fails.entry: {refused}"));
+        assert_eq!(store_credential("fails.entry", "secret").await, expected);
+        assert_eq!(get_credential("fails.entry").await.map(|_| ()), expected);
+        assert_eq!(delete_credential("fails.entry").await, expected);
+    }
 
     #[test]
     fn service_name_is_correct() {
