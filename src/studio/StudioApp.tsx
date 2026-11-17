@@ -655,6 +655,7 @@ export default function StudioApp() {
         setAttachments(draftOf(openKey()).attachments.filter((_, i) => i !== index))
       }}
       onSend={() => void send()}
+      onError={setError}
       onStop={current ? () => void sidecar('chat.stop', { project: current.id }).catch((err: unknown) => setError(String(err))) : undefined}
       busy={sending || running || notReady}
       running={running}
