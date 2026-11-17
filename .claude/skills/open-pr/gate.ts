@@ -4,7 +4,8 @@
  *
  * - create and edit: the body must pass the contract in contract.ts.
  * - merge: the PR body must pass, and the review bot must have passed the exact head
- *   (land-pr/merge.ts).
+ *   (land-pr/merge.ts). A repo with the pass signal off on purpose needs a clean merge state,
+ *   every check on the head green, and a blast radius of medium or lower instead.
  *
  * - graphql: a PR create, update, or merge through `gh api graphql` is refused, and so
  *   is any GraphQL call whose query this gate cannot read.
@@ -26,7 +27,7 @@ import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { checkPullRequest, formatViolations, titleViolation, type PullRequest } from "./contract";
 import { atSource, findPrCommands, graphqlRisk, type BodySource, type FieldValue, type HeadMatch, type PrCommand } from "./command";
-import { botExempt, CODERABBIT_CHECK, decideMerge, PASS_SIGNAL, reviewBotOf, type CheckRun, type Evidence, type Review, type Thread } from "../land-pr/merge";
+import { agentRisk, botExempt, CODERABBIT_CHECK, decideMerge, PASS_SIGNAL, pullfrogOff, reviewBotOf, type CheckRun, type Evidence, type Review, type Status, type Thread } from "../land-pr/merge";
 
 interface HookInput {
   tool: string;
@@ -217,9 +218,11 @@ function optional<T>(obj: Json, key: string, guard: (v: unknown) => v is T): T |
   return obj[key];
 }
 
-function contract(pr: PullRequest): void {
+/** Refuses a PR that breaks the contract, and returns its blast radius. */
+function contract(pr: PullRequest): string {
   const verdict = checkPullRequest(pr);
   if (!verdict.ok) throw new Refusal(`the PR body breaks the contract:\n${formatViolations(verdict.violations)}`);
+  return verdict.blastRadius;
 }
 
 function checkFields(write: "create" | "edit", fields: PrFields, fill?: Extract<PrCommand, { kind: "create" }>["fill"]): void {
@@ -227,9 +230,13 @@ function checkFields(write: "create" | "edit", fields: PrFields, fill?: Extract<
     if (fields.convertsIssue) throw new Refusal("the request converts issue into a PR, and GitHub then takes the title and body from the issue, so this gate cannot check them. Drop `issue`, and pass the title and body the open-pr skill writes.");
     if (fields.body === undefined) throw new Refusal(NO_BODY);
     if (fill && fields.title === undefined) throw new Refusal(`--${fill} has gh build the title from commits, so this gate cannot check it. Write the title with the open-pr skill and pass --title "<title>".`);
-    return contract({ title: fields.title, draft: fields.draft, body: fields.body });
+    contract({ title: fields.title, draft: fields.draft, body: fields.body });
+    return;
   }
-  if (fields.body !== undefined) return contract({ title: fields.title, body: fields.body });
+  if (fields.body !== undefined) {
+    contract({ title: fields.title, body: fields.body });
+    return;
+  }
   const title = fields.title === undefined ? null : titleViolation(fields.title);
   if (title) throw new Refusal(`the PR title breaks the contract:\n${formatViolations([title])}`);
 }
@@ -334,7 +341,8 @@ function allPages(path: string, what: string, cwd: string): unknown[] {
 }
 
 /** What the repo's review bot left on the head, read from GitHub. */
-function evidenceFor(repo: string, pull: RestPull, cwd: string): Evidence {
+function evidenceFor(repo: string, pull: RestPull, rating: string, cwd: string): Evidence {
+  if (pullfrogOff(pull.baseRepo)) return checksFor(repo, pull, rating, cwd);
   if (reviewBotOf(pull.baseRepo) === "coderabbit") {
     const files = allPages(`repos/${repo}/pulls/${pull.number}/files`, "file list", cwd);
     const changed = field(ghJson(`repos/${repo}/pulls/${pull.number}`, cwd), "changed_files", isNum, "a PR");
@@ -351,6 +359,24 @@ function evidenceFor(repo: string, pull: RestPull, cwd: string): Evidence {
     };
   }
   return { bot: "pullfrog", runs: latestRuns(repo, pull.headSha, PASS_SIGNAL, cwd) };
+}
+
+/** Every latest check-run and commit status on the head, and the merge state, for a repo with the pass signal off. */
+function checksFor(repo: string, pull: RestPull, firstRating: string, cwd: string): Evidence {
+  const fresh = ghJson(`repos/${repo}/pulls/${pull.number}`, cwd);
+  const now = parsePull(fresh);
+  if (now.headSha !== pull.headSha) throw new Refusal(`the PR head moved from ${pull.headSha} to ${now.headSha} while the gate read it. Check the new head and pin it.`);
+  // The body can change between the two reads, so a rating above medium in either one counts.
+  const ratings = [firstRating, contract({ title: now.title, body: now.body ?? "", draft: now.draft })];
+  const rating = ratings.find((r) => !agentRisk(r)) ?? ratings[1];
+  const runs = ghJson(`repos/${repo}/commits/${pull.headSha}/check-runs?filter=latest&per_page=100`, cwd);
+  const runList = field(runs, "check_runs", isArr, "a check-run list").map(parseRun);
+  const combined = ghJson(`repos/${repo}/commits/${pull.headSha}/status?per_page=100`, cwd);
+  const statuses = field(combined, "statuses", isArr, "a combined status").map((s): Status => ({ context: field(s, "context", isStr, "a commit status"), state: field(s, "state", isStr, "a commit status"), description: field(s, "description", isStrOrNull, "a commit status") }));
+  for (const [what, total, read] of [["check-runs", field(runs, "total_count", isNum, "a check-run list"), runList.length], ["commit statuses", field(combined, "total_count", isNum, "a combined status"), statuses.length]] as const) {
+    if (total !== read) throw new Refusal(`GitHub listed ${read} of the head's ${total} ${what}, so this gate cannot prove every check is green.`);
+  }
+  return { bot: "none", mergeState: field(fresh, "mergeable_state", isStr, "a PR"), runs: runList, statuses, blastRadius: rating };
 }
 
 function latestRuns(repo: string, sha: string, name: string, cwd: string): CheckRun[] {
@@ -410,7 +436,7 @@ function checkMerge(cmd: Extract<PrCommand, { kind: "merge" }>, cwd: string): vo
     throw new Refusal(`the merge names the GitHub host ${host}, but this gate reads PRs and review verdicts on ${DEFAULT_HOST} only, so it cannot check this merge. Name no host, or merge on ${DEFAULT_HOST}.`);
   }
   const { repo, pull } = resolvePull(cmd, cwd);
-  contract({ title: pull.title, body: pull.body ?? "", draft: pull.draft });
+  const rating = contract({ title: pull.title, body: pull.body ?? "", draft: pull.draft });
   const sha = pull.headSha;
   const named = cmd.match && namedHead(cmd.match, cmd, cwd);
   if (named !== undefined && named.toLowerCase() !== sha.toLowerCase()) {
@@ -421,7 +447,7 @@ function checkMerge(cmd: Extract<PrCommand, { kind: "merge" }>, cwd: string): vo
     throw new Refusal(`pin the approved head ${sha} with --match-head-commit for gh pr merge, or the sha field for the REST merge endpoint. Otherwise a concurrent push can change the head that merges.`);
   }
   if (botExempt(pull.baseRepo) && cmd.pinned) return;
-  const verdict = decideMerge({ repo: pull.baseRepo, pinned: cmd.pinned, sha, evidence: evidenceFor(repo, pull, cwd) });
+  const verdict = decideMerge({ repo: pull.baseRepo, pinned: cmd.pinned, sha, evidence: evidenceFor(repo, pull, rating, cwd) });
   if (!verdict.ok) throw new Refusal(`${repo}#${pull.number} cannot merge: ${verdict.reason} Follow the land-pr skill.`);
 }
 

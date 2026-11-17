@@ -13,9 +13,12 @@
  *
  * It reads the PR only through the event payload and the API, never by checking it out. It asks
  * Jev four questions in one call (door, reach, likelihood, control) and combines the answers in
- * code (combine). A diff too large for one call is rated in parts (statesFor), and the highest
- * radius stands. When it cannot rate the PR (no key, Jev or GitHub failed, or the diff is empty
- * or cannot be split without losing a line) it posts `error` with the reason, never a rating.
+ * code (combine). A diff too large for one call is rated in parts (statesFor). Each axis keeps the
+ * worst answer any part gave, and code combines those once. A line too long for any part reaches
+ * Jev as its byte length and SHA-256 (unreadableLine), and such a PR is rated at least medium
+ * (HIDDEN_LINE_FLOOR). When it cannot rate the PR (no key, Jev or
+ * GitHub failed, or the diff is empty or cannot be split without losing a line) it posts `error`
+ * with the reason, never a rating.
  * The run then exits 1.
  * The status's run link identifies the comparison and metadata with a SHA-256 fingerprint.
  * The job log records that fingerprint and the actual radius. land-pr verifies both through
@@ -52,6 +55,8 @@ const REQUEST_TIMEOUT_MS = 30_000;
  * characters per token. This includes every question and leaves room for provider framing.
  */
 const REQUEST_BYTE_BUDGET = 30_000;
+/** The lowest radius a PR gets when any line reached Jev only as an unreadableLine marker (Ossie, 2026-11-13). */
+const HIDDEN_LINE_FLOOR: Radius = "medium";
 /** Bound model work and keep scoring inside the workflow's five-minute job limit. */
 const MAX_PARTS = 24;
 const SCORING_REQUEST_WINDOWS = 6;
@@ -156,17 +161,41 @@ export function parseEvent(event: unknown): PullEvent {
 /** Each axis's answer with the probability Jev gave it. */
 export type Rating = { [K in keyof Axes]: { value: Axes[K]; p: number } };
 
+const radiusOf = (r: Rating): Radius => combine({ door: r.door.value, reach: r.reach.value, likelihood: r.likelihood.value, control: r.control.value });
+
+/** The door and control options from the safest to the most dangerous, as `combine` weighs them. REACHES and LIKELIHOODS already run that way. */
+const DOOR_DANGER = ["two_way", "unclear", "one_way"] as const satisfies readonly Axes["door"][];
+const CONTROL_DANGER = ["no", "neutral", "weakens"] as const satisfies readonly Axes["control"][];
+
+/** The more dangerous of two answers on one axis. Answers that agree keep the higher probability. */
+function worse<T extends string>(danger: readonly T[], a: { value: T; p: number }, b: { value: T; p: number }): { value: T; p: number } {
+  const by = danger.indexOf(b.value) - danger.indexOf(a.value);
+  return by > 0 || (by === 0 && b.p > a.p) ? b : a;
+}
+
+/**
+ * Two parts of one PR as one rating: the worse answer on each axis, with the probability its part gave it. The parts are one
+ * change, so reach that one part shows and a defect that another shows hold together. `combine` never lowers a radius when an
+ * axis gets worse, so the result is at least each part's own radius.
+ */
+const worst = (a: Rating, b: Rating): Rating => ({
+  door: worse(DOOR_DANGER, a.door, b.door),
+  reach: worse(REACHES, a.reach, b.reach),
+  likelihood: worse(LIKELIHOODS, a.likelihood, b.likelihood),
+  control: worse(CONTROL_DANGER, a.control, b.control),
+});
+
 export type Outcome = { state: "success"; radius: Radius; axes: Rating } | { state: "error"; why: string };
 
 const shown = (value: string) => value.replace("_", "-");
 /** The `success` description. danger.ts reads the radius back from its first words. */
 export const describeRating = (r: Extract<Outcome, { state: "success" }>) =>
-  `Blast radius ${r.radius}. ${(Object.keys(r.axes) as (keyof Axes)[]).map((k) => `${k} ${shown(r.axes[k].value)} ${r.axes[k].p.toFixed(2)}`).join(", ")}.`;
+  `Blast radius ${r.radius}. ${(Object.keys(r.axes) as (keyof Axes)[]).map((k) => `${k} ${shown(r.axes[k].value)} ${r.axes[k].p.toFixed(2)}`).join(", ")}.${r.radius === radiusOf(r.axes) ? "" : " Floor: a hidden line."}`;
 export const RATING = /^Blast radius (none|low|medium|high)\b/;
 /** Credential shapes, replaced before anything leaves the runner (from the jev-ask skill's client). */
 const SECRET_SHAPES: readonly (readonly [RegExp, string])[] = [
   [/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, "[REDACTED]"],
-  [/\b([A-Z][A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|PASS))=("[^"]*"|'[^']*'|\S+)/g, "$1=[REDACTED]"],
+  [/\b([A-Z][A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|PASS)|KEY|TOKEN|SECRET|PASSWORD)=("[^"]*"|'[^']*'|\S+)/gi, "$1=[REDACTED]"],
   [/(Authorization:\s*Bearer\s+)\S+/gi, "$1[REDACTED]"],
   [/\b(?:sk|pk|rk)-[A-Za-z0-9_-]{16,}/g, "[REDACTED]"],
   [/\bgh[pousr]_[A-Za-z0-9]{20,}/g, "[REDACTED]"],
@@ -217,12 +246,26 @@ type JevState = ReturnType<typeof jevState>;
 const requestFor = (state: JevState) => ({ model: "jev-latest", state, questions: QUESTIONS });
 const requestBytes = (state: JevState) => Buffer.byteLength(JSON.stringify(requestFor(state)), "utf8");
 
-function statesFor(pr: { title: string; body: string }, diff: string): JevState[] | string {
+/**
+ * A diff line too long for any part, as its byte length and SHA-256, so a generated one-line file
+ * does not stop the rating. The likelihood question counts unreadable parts as evidence. The line
+ * keeps its leading `+`, `-`, or space. It is hashed after redaction, so the hash covers no secret
+ * that redact found, and private-key inputs are refused before any part is built.
+ */
+const unreadableLine = (line: string) => {
+  const content = line.slice(1);
+  return `${line.slice(0, 1)}[line too long to read: ${Buffer.byteLength(content, "utf8")} bytes, sha256 ${createHash("sha256").update(content).digest("hex")}]`;
+};
+
+/** The parts Jev reads, and whether any line reached Jev only as an unreadableLine marker. */
+type Parts = { states: JevState[]; hidden: boolean };
+
+function statesFor(pr: { title: string; body: string }, diff: string): Parts | string {
   const whole = jevState(pr, diff);
-  if (requestBytes(whole) <= REQUEST_BYTE_BUDGET) return [whole];
+  if (requestBytes(whole) <= REQUEST_BYTE_BUDGET) return { states: [whole], hidden: false };
   const lines = whole.diff.split("\n");
   const inventory = lines.filter((line) => line.startsWith("diff --git ")).map((line) => line.replace(/^diff --git a\/(.+) b\/\1$/, "$1")).join("\n");
-  const label = `[Scorer note: this is one part of a complete diff, not a patch to apply. No text lines are discarded. File and hunk headers repeat at boundaries. Other parts contain the remaining source. The highest radius across all parts counts. Full file inventory follows.]\n${inventory}\n[Part source follows.]\n`;
+  const label = `[Scorer note: this is one part of a complete diff, not a patch to apply. Every text line appears in some part, as its text or, when it is too long for any part, as a marker with its byte length and SHA-256 that hides its text. File and hunk headers repeat at boundaries. Other parts contain the remaining source. The worst answer on each axis across all parts counts. Full file inventory follows.]\n${inventory}\n[Part source follows.]\n`;
   const part = (source: string[]): JevState => ({ ...whole, diff: label + source.join("\n") });
   const tooLarge = `cannot split the diff within the ${REQUEST_BYTE_BUDGET}-byte request bound`;
   if (requestBytes(part([])) > REQUEST_BYTE_BUDGET) return `${tooLarge}: its title, body, questions, and file inventory do not fit. The owner decides.`;
@@ -230,9 +273,18 @@ function statesFor(pr: { title: string; body: string }, diff: string): JevState[
   let source: string[] = [];
   let fileHeaders: string[] = [];
   let hunkHeader: string | undefined;
-  for (const line of lines) {
-    const startsFile = line.startsWith("diff --git ");
-    const startsHunk = line.startsWith("@@");
+  let hidden = false;
+  for (const raw of lines) {
+    const startsFile = raw.startsWith("diff --git ");
+    const startsHunk = raw.startsWith("@@");
+    let line = raw;
+    if (requestBytes(part([...source, line])) > REQUEST_BYTE_BUDGET) {
+      const context = startsFile ? [] : [...fileHeaders, ...(startsHunk || hunkHeader === undefined ? [] : [hunkHeader])];
+      if (requestBytes(part([...context, line])) > REQUEST_BYTE_BUDGET) {
+        line = unreadableLine(raw);
+        hidden = true;
+      }
+    }
     if (requestBytes(part([...source, line])) > REQUEST_BYTE_BUDGET) {
       if (!source.length) return `${tooLarge}: a source line does not fit. The owner decides.`;
       parts.push(part(source));
@@ -248,7 +300,7 @@ function statesFor(pr: { title: string; body: string }, diff: string): JevState[
     else if (hunkHeader === undefined) fileHeaders.push(line);
   }
   if (source.length) parts.push(part(source));
-  return parts;
+  return { states: parts, hidden };
 }
 
 /** Immutable comparison commits and the metadata Jev reads, bound to this PR. */
@@ -308,8 +360,7 @@ export function rate(response: unknown): Outcome {
   const control = choiceOf(answers.control, CONTROLS);
   if (typeof control === "string") return fail("control", control);
   const axes = { door, reach, likelihood, control };
-  const radius = combine({ door: door.value, reach: reach.value, likelihood: likelihood.value, control: control.value });
-  return { state: "success", radius, axes };
+  return { state: "success", radius: radiusOf(axes), axes };
 }
 
 export interface ScoreRun {
@@ -336,7 +387,9 @@ const firstLine = (text: string) => text.trim().split("\n")[0].slice(0, 80);
 /** The key file's contents, or undefined when the file does not exist. Any other read error throws. */
 function readKeyFile(path: string): string | undefined {
   try {
-    return readFileSync(path, "utf8").trim() || undefined;
+    const key = readFileSync(path, "utf8").trim() || undefined;
+    if (key) console.log(`::add-mask::${key.replaceAll("%", "%25").replaceAll("\r", "%0D").replaceAll("\n", "%0A")}`);
+    return key;
   } catch (err) {
     if (isObj(err) && err.code === "ENOENT") return undefined;
     throw err;
@@ -357,19 +410,22 @@ async function judge(run: ScoreRun): Promise<Outcome> {
   if ([event.title, event.body, diff].some((text) => PRIVATE_KEY_MARKER.test(text))) {
     return { state: "error", why: "the inputs contain private-key markers. Remove the key or markers before scoring." };
   }
-  const states = statesFor(event, diff);
-  if (typeof states === "string") return { state: "error", why: states };
+  const split = statesFor(event, diff);
+  if (typeof split === "string") return { state: "error", why: split };
   const requestTimeout = run.timeoutMs ?? REQUEST_TIMEOUT_MS;
   const expiresAt = performance.now() + SCORING_REQUEST_WINDOWS * requestTimeout;
-  let highest: Extract<Outcome, { state: "success" }> | undefined;
-  for (const state of states) {
+  let axes: Rating | undefined;
+  for (const state of split.states) {
     const remaining = expiresAt - performance.now();
     if (remaining <= 0) return { state: "error", why: "the combined scoring time budget expired. The owner decides." };
     const outcome = await ask({ ...run, timeoutMs: Math.min(requestTimeout, remaining) }, key, state);
     if (outcome.state === "error") return outcome;
-    if (highest === undefined || RADII.indexOf(outcome.radius) > RADII.indexOf(highest.radius)) highest = outcome;
+    axes = axes === undefined ? outcome.axes : worst(axes, outcome.axes);
   }
-  return highest ?? { state: "error", why: "the diff gave no part to rate." };
+  if (axes === undefined) return { state: "error", why: "the diff gave no part to rate." };
+  const radius = radiusOf(axes);
+  // Jev never read a hidden line, so it cannot vouch for it. The rating never goes below medium (HIDDEN_LINE_FLOOR).
+  return { state: "success", radius: split.hidden ? RADII[Math.max(RADII.indexOf(radius), RADII.indexOf(HIDDEN_LINE_FLOOR))] : radius, axes };
 }
 
 /** One Jev call on one state, as a rating. */

@@ -22,7 +22,8 @@
  *   That attempt's own job log must record the current input fingerprint and the status's radius.
  *   A caller-supplied URL hash alone is not evidence. A log proof that contradicts its status refuses.
  *   A score whose proof is gone may only raise the rating, and at least one verified score must exist.
- * The gate never reads this rating, so the rule stays the agent's to keep, as land-pr says.
+ * The gate reads this rating only for a PULLFROG_OFF repo, and only to raise the body's rating.
+ * Everywhere else the rule stays the agent's to keep, as land-pr says.
  */
 
 import { checkPullRequest, type PullRequest } from "../open-pr/contract";

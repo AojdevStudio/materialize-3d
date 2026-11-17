@@ -39,8 +39,10 @@ export function findSkills(tracked: string[]): VerifySkill[] {
     if (!m) continue;
     const [, prefix, name] = m;
     let scope: Scope;
-    if (prefix) scope = { kind: "app", root: prefix };
-    else {
+    if (prefix) {
+      const [parent, app] = prefix.split("/");
+      scope = APP_PARENTS.has(parent) && app ? { kind: "app", root: `${parent}/${app}` } : { kind: "repo" };
+    } else {
       const app = name.slice("verify-".length);
       const roots = [...dirs].filter((d) => APP_PARENTS.has(d.split("/")[0]) && d.split("/")[1] === app);
       if (roots.length > 1) throw new Error(`${name} matches more than one app folder: ${roots.join(", ")}. Move the skill into its app folder.`);

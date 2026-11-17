@@ -3,8 +3,8 @@ name: merge-danger
 # Scores every same-repo PR's merge danger the same way, whoever wrote it, and posts the
 # `merge-danger` commit status on the exact head. land-pr reads that status at merge time.
 # pull_request_target runs this workflow and score.ts from the default branch, so a PR cannot
-# change its own score. The job reads Jev's key from /etc/merge-danger/typesafe_api_key on the
-# runner (ROLLOUT.md), not from a repo secret, and holds a token that writes statuses. So it
+# change its own score. The score step reads Jev's key from the repo Actions secret TYPESAFE_API_KEY,
+# with the runner key file as a fallback (ROLLOUT.md), and holds a token that writes statuses. So it
 # checks out the default branch only and reads the PR through the event payload and the API.
 # Never check out or run the PR's code here.
 on:
@@ -29,7 +29,7 @@ jobs:
       github.event.pull_request.user.login != 'dependabot[bot]'
     # The homelab Linux runners, never the Mac minis. This job does not take the pr-kit label,
     # which can name any self-hosted runner.
-    runs-on: [self-hosted, Linux, homelab-ci]
+    runs-on: [self-hosted, Linux, __SCORER_LABEL__]
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -44,3 +44,4 @@ jobs:
       - run: bun .claude/skills/open-pr/score.ts --event "$GITHUB_EVENT_PATH"
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
