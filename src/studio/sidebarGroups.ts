@@ -3,7 +3,7 @@ import type { Project, ProjectStatus } from '../../sidecar/src/protocol'
 export type Group = 'working' | 'ready' | 'printed' | 'drafts'
 
 /** The groups in the order the sidebar shows them. */
-export const GROUPS: readonly Group[] = ['working', 'ready', 'printed', 'drafts']
+const GROUPS: readonly Group[] = ['working', 'ready', 'printed', 'drafts']
 
 /**
  * The group a project belongs to. A running turn wins. A project the person marked printed stays printed. A project

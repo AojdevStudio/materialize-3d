@@ -114,18 +114,6 @@ impl PresetKind {
     }
 }
 
-/// One flattened preset written to the cache. Serializes (without `config`) to the same
-/// shape as the wrapper's manifest entries.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ResolvedPreset {
-    pub name: String,
-    pub path: PathBuf,
-    pub source_path: PathBuf,
-    #[serde(skip)]
-    pub config: JsonMap,
-}
-
 /// The plates a printer model takes: the one Bambu Studio starts it with, and the ones it cannot use.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Plates {
@@ -242,21 +230,14 @@ pub fn printer_choices(profiles_dir: &Path) -> Result<Vec<PrinterChoice>> {
     Ok(printers.into_values().collect())
 }
 
-/// Flattened machine, process, and per-slot filament presets, and the plates of the machine's
-/// printer model. Serializes to the wrapper's `manifest.json` shape, which has no plates.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
+/// What a slice loads: the flattened machine and filament files Bambu Studio's CLI reads, the flattened process
+/// settings, which the slice writes with its plate, and the plates of the machine's printer model.
+#[derive(Debug, Clone)]
 pub struct ResolvedPresets {
-    pub app_version: String,
-    pub cache_dir: PathBuf,
-    pub filaments: Vec<ResolvedPreset>,
-    pub machine: ResolvedPreset,
-    #[serde(skip)]
+    pub machine: PathBuf,
+    pub process: JsonMap,
+    pub filament: PathBuf,
     pub plates: Plates,
-    pub process: ResolvedPreset,
-    pub profile_manifest: PathBuf,
-    pub profile_version: String,
-    pub resolver_schema_version: u32,
 }
 
 /// Resolves the selection against the studio's profile tree, probing the studio for its
@@ -269,7 +250,7 @@ pub fn resolve_presets(
     let resolver = Resolver::open(&studio.profiles_dir)?;
     let cache_dir = resolver.cache_dir(cache_root, studio.version.as_str())?;
     let defaults = probe_defaults(&studio.exe, &cache_dir)?;
-    resolver.resolve_selection(studio.version.as_str(), defaults, selection, cache_dir)
+    resolver.resolve_selection(defaults, selection, cache_dir)
 }
 
 /// Same as [`resolve_presets`] with the compiled defaults supplied by the caller (the
@@ -284,7 +265,7 @@ fn resolve_presets_with_defaults(
 ) -> Result<ResolvedPresets> {
     let resolver = Resolver::open(profiles_dir)?;
     let cache_dir = resolver.cache_dir(cache_root, app_version)?;
-    resolver.resolve_selection(app_version, defaults, selection, cache_dir)
+    resolver.resolve_selection(defaults, selection, cache_dir)
 }
 
 type PresetKey = (PresetKind, String);
@@ -292,12 +273,10 @@ type PresetKey = (PresetKind, String);
 struct Resolved {
     config: JsonMap,
     explicit_keys: BTreeSet<String>,
-    source_path: PathBuf,
 }
 
 struct Resolver {
     profiles_dir: PathBuf,
-    manifest_path: PathBuf,
     profile_version: String,
     index: HashMap<PresetKey, String>,
     model_sub_paths: HashMap<String, String>,
@@ -478,7 +457,6 @@ impl Resolver {
             .collect();
         Ok(Self {
             profiles_dir: root,
-            manifest_path,
             profile_version,
             index,
             model_sub_paths,
@@ -599,7 +577,6 @@ impl Resolver {
                 .collect();
             return Err(preset_err(format!("preset cycle: {}", chain.join(" -> "))));
         }
-        let source_path = self.source_path(kind, name)?;
         let raw = self.raw(kind, name)?;
 
         stack.push(key.clone());
@@ -610,7 +587,6 @@ impl Resolver {
         let resolved = Rc::new(Resolved {
             config,
             explicit_keys,
-            source_path,
         });
         self.resolved.insert(key, Rc::clone(&resolved));
         Ok(resolved)
@@ -672,7 +648,6 @@ impl Resolver {
 
     fn resolve_selection(
         mut self,
-        app_version: &str,
         defaults: JsonMap,
         selection: &PresetSelection,
         cache_dir: PathBuf,
@@ -684,25 +659,15 @@ impl Resolver {
         // missing or template-only selection fails before partial work.
         let machine_raw = self.raw(PresetKind::Machine, machine_name)?;
         let process_raw = self.raw(PresetKind::Process, &selection.process)?;
-        let filament_raws = selection
-            .filaments
-            .iter()
-            .map(|name| self.raw(PresetKind::Filament, name))
-            .collect::<Result<Vec<_>>>()?;
+        let filament_raw = self.raw(PresetKind::Filament, &selection.filament)?;
         require_instantiated(&machine_raw, PresetKind::Machine, machine_name)?;
         require_instantiated(&process_raw, PresetKind::Process, &selection.process)?;
-        for (raw, name) in filament_raws.iter().zip(&selection.filaments) {
-            require_instantiated(raw, PresetKind::Filament, name)?;
-        }
+        require_instantiated(&filament_raw, PresetKind::Filament, &selection.filament)?;
 
         let mut stack = Vec::new();
         let machine = self.resolve(PresetKind::Machine, machine_name, &mut stack)?;
         let process = self.resolve(PresetKind::Process, &selection.process, &mut stack)?;
-        let filaments = selection
-            .filaments
-            .iter()
-            .map(|name| self.resolve(PresetKind::Filament, name, &mut stack))
-            .collect::<Result<Vec<_>>>()?;
+        let filament = self.resolve(PresetKind::Filament, &selection.filament, &mut stack)?;
         validate_machine(&machine.config, machine_name)?;
         let plates = self.plates(&machine.config, machine_name)?;
         require_compatible(
@@ -711,36 +676,24 @@ impl Resolver {
             &selection.process,
             machine_name,
         )?;
-        for (filament, name) in filaments.iter().zip(&selection.filaments) {
-            require_compatible(&filament.config, PresetKind::Filament, name, machine_name)?;
-        }
-
-        let machine = write_preset(&cache_dir, PresetKind::Machine, machine_name, &machine)?;
-        let process = write_preset(
-            &cache_dir,
-            PresetKind::Process,
-            &selection.process,
-            &process,
+        require_compatible(
+            &filament.config,
+            PresetKind::Filament,
+            &selection.filament,
+            machine_name,
         )?;
-        let filaments = filaments
-            .iter()
-            .zip(&selection.filaments)
-            .map(|(filament, name)| write_preset(&cache_dir, PresetKind::Filament, name, filament))
-            .collect::<Result<Vec<_>>>()?;
 
-        let presets = ResolvedPresets {
-            app_version: app_version.to_owned(),
-            cache_dir,
-            filaments,
-            machine,
+        Ok(ResolvedPresets {
+            machine: write_preset(&cache_dir, PresetKind::Machine, machine_name, &machine.config)?,
+            process: process.config.clone(),
+            filament: write_preset(
+                &cache_dir,
+                PresetKind::Filament,
+                &selection.filament,
+                &filament.config,
+            )?,
             plates,
-            process,
-            profile_manifest: self.manifest_path,
-            profile_version: self.profile_version,
-            resolver_schema_version: RESOLVER_SCHEMA_VERSION,
-        };
-        write_json_atomic(&presets.cache_dir.join("manifest.json"), &presets)?;
-        Ok(presets)
+        })
     }
 }
 
@@ -821,20 +774,10 @@ fn validate_machine(config: &JsonMap, name: &str) -> Result<()> {
     Ok(())
 }
 
-fn write_preset(
-    cache_dir: &Path,
-    kind: PresetKind,
-    name: &str,
-    resolved: &Resolved,
-) -> Result<ResolvedPreset> {
+fn write_preset(cache_dir: &Path, kind: PresetKind, name: &str, config: &JsonMap) -> Result<PathBuf> {
     let path = cache_dir.join(kind.as_str()).join(preset_filename(name));
-    write_json_atomic(&path, &resolved.config)?;
-    Ok(ResolvedPreset {
-        name: name.to_owned(),
-        path,
-        source_path: resolved.source_path.clone(),
-        config: resolved.config.clone(),
-    })
+    write_json_atomic(&path, config)?;
+    Ok(path)
 }
 
 /// Asks the studio for its compiled defaults by slicing a tiny probe with near-empty
@@ -968,7 +911,7 @@ mod tests {
         PresetSelection {
             machine: "Test Printer 0.6 nozzle".into(),
             process: "Test Process".into(),
-            filaments: vec!["Test Filament".into()],
+            filament: "Test Filament".into(),
         }
     }
 
@@ -992,8 +935,8 @@ mod tests {
         let profiles = fixture_profiles();
         let presets = resolve(profiles.path()).expect("resolves");
 
-        assert!(presets.cache_dir.ends_with("v2-9.8.7-1.2.3"));
-        let machine = read(&presets.machine.path);
+        assert!(presets.machine.starts_with(profiles.path().join("cache/v2-9.8.7-1.2.3")));
+        let machine = read(&presets.machine);
         let expected = json!({
             "type": "machine",
             "name": "Test Printer 0.6 nozzle",
@@ -1016,24 +959,20 @@ mod tests {
             "machine preset is exactly the flattened chain"
         );
 
-        let process = read(&presets.process.path);
+        let process = Value::Object(presets.process);
         assert_eq!(process["layer_height"], "0.24");
         assert_eq!(
             process["compatible_printers"],
             json!(["Test Printer 0.6 nozzle"])
         );
 
-        let filament = read(&presets.filaments[0].path);
+        let filament = read(&presets.filament);
         assert_eq!(filament["filament_id"], "GFTEST");
         assert_eq!(filament["filament_type"], json!(["PLA"]));
         assert_eq!(
             filament["filament_extruder_variant"],
             json!(["Direct Drive Standard", "Direct Drive High Flow"])
         );
-
-        let manifest = read(&presets.cache_dir.join("manifest.json"));
-        assert_eq!(manifest["machine"]["name"], "Test Printer 0.6 nozzle");
-        assert_eq!(manifest["resolverSchemaVersion"], 2);
     }
 
     #[test]

@@ -1,13 +1,13 @@
 import { create } from 'zustand'
 import { invoke } from '@tauri-apps/api/core'
-import useTauriEvent from '../hooks/useTauriEvent'
+import { useTauriEvent } from '../hooks/useTauriEvent'
 
 /** What `update_check` returns. Mirrors `UpdateCheck` in `src-tauri/src/updater.rs`. */
 export type UpdateCheck =
   | { status: 'upToDate'; currentVersion: string }
   | { status: 'available'; currentVersion: string; version: string; notes: string | null; date: string | null }
 
-export type AvailableUpdate = Extract<UpdateCheck, { status: 'available' }>
+type AvailableUpdate = Extract<UpdateCheck, { status: 'available' }>
 
 export interface UpdateProgress {
   downloaded: number
@@ -19,7 +19,7 @@ export interface UpdateProgress {
  * last check's answer. installing: Update now was clicked; the app restarts when
  * it succeeds. error: the last check or install failed and the app runs on.
  */
-export type UpdatePhase = 'idle' | 'checking' | 'upToDate' | 'available' | 'installing' | 'error'
+type UpdatePhase = 'idle' | 'checking' | 'upToDate' | 'available' | 'installing' | 'error'
 
 interface UpdateState {
   phase: UpdatePhase

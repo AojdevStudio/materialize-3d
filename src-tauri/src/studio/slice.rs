@@ -75,7 +75,7 @@ pub async fn studio_printers() -> Result<Vec<PrinterChoice>, String> {
 }
 
 fn presets_for(studio: &BambuStudio, printer: &Printer, cache_root: &Path) -> Result<(ResolvedPresets, Plate), String> {
-    let selection = PresetSelection { machine: printer.machine.clone(), process: printer.process.clone(), filaments: vec![printer.filament.clone()] };
+    let selection = PresetSelection { machine: printer.machine.clone(), process: printer.process.clone(), filament: printer.filament.clone() };
     std::fs::create_dir_all(cache_root).map_err(|e| format!("{}: {e}", cache_root.display()))?;
     let presets = resolve_presets(studio, &selection, cache_root).map_err(|e| e.to_string())?;
     let plate = presets.plates.choose(printer.plate).map_err(|e| e.to_string())?;
@@ -163,16 +163,16 @@ fn slice_in(studio: &BambuStudio, dir: &Path, inputs: &[String], output: &str, p
     let staged = staging.path().join("out.3mf");
     let log = staging.path().join("bambu.log");
     // An STL carries no plate, and Bambu's own default is one most of its printers cannot use.
-    let mut process = presets.process.config.clone();
+    let mut process = presets.process;
     process.insert("curr_bed_type".to_owned(), plate.setting().into());
     let process_path = staging.path().join("process.json");
     std::fs::write(&process_path, serde_json::to_vec(&process).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
     let status = Command::new(&studio.exe)
         .args(&inputs)
         .arg("--load-settings")
-        .arg(format!("{};{}", process_path.display(), presets.machine.path.display()))
+        .arg(format!("{};{}", process_path.display(), presets.machine.display()))
         .arg("--load-filaments")
-        .arg(&presets.filaments[0].path)
+        .arg(&presets.filament)
         // The 3MF goes by its bare name: Bambu joins it to the output folder, and on macOS a full path
         // there fails to export (-13).
         .args(["--arrange", "1", "--orient", "0", "--slice", "0", "--export-3mf", "out.3mf", "--outputdir"])

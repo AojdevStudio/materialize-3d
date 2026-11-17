@@ -101,8 +101,6 @@ export const studio = {
   /** Fails when the validated Bambu Studio is not installed. */
   printers: () => invoke<PrinterChoice[]>('studio_printers'),
   files: (project: string) => invoke<ProjectFile[]>('studio_files', { project }),
-  saveBytes: (project: string, name: string, bytes: Uint8Array) =>
-    invoke<string>('studio_save_bytes', bytes, { headers: { 'm3d-project': project, 'm3d-name': encodeURIComponent(name) } }),
   reveal: (project: string, rel: string) => invoke<void>('studio_reveal', { project, rel }),
   openInBambu: (project: string, rel: string) => invoke<void>('studio_open_in_bambu', { project, rel }),
   popOut: (project: string, rel: string, version: number) => invoke<void>('studio_pop_out', { project, rel, version }),

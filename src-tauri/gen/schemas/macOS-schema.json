@@ -375,12 +375,6 @@
           "markdownDescription": "Enables the studio_flushed command without any pre-configured scope."
         },
         {
-          "description": "Enables the studio_import_file command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-studio-import-file",
-          "markdownDescription": "Enables the studio_import_file command without any pre-configured scope."
-        },
-        {
           "description": "Enables the studio_open_files_privacy command without any pre-configured scope.",
           "type": "string",
           "const": "allow-studio-open-files-privacy",
@@ -397,12 +391,6 @@
           "type": "string",
           "const": "allow-studio-reveal",
           "markdownDescription": "Enables the studio_reveal command without any pre-configured scope."
-        },
-        {
-          "description": "Enables the studio_save_bytes command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-studio-save-bytes",
-          "markdownDescription": "Enables the studio_save_bytes command without any pre-configured scope."
         },
         {
           "description": "Enables the update_check command without any pre-configured scope.",
@@ -447,12 +435,6 @@
           "markdownDescription": "Denies the studio_flushed command without any pre-configured scope."
         },
         {
-          "description": "Denies the studio_import_file command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-studio-import-file",
-          "markdownDescription": "Denies the studio_import_file command without any pre-configured scope."
-        },
-        {
           "description": "Denies the studio_open_files_privacy command without any pre-configured scope.",
           "type": "string",
           "const": "deny-studio-open-files-privacy",
@@ -469,12 +451,6 @@
           "type": "string",
           "const": "deny-studio-reveal",
           "markdownDescription": "Denies the studio_reveal command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the studio_save_bytes command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-studio-save-bytes",
-          "markdownDescription": "Denies the studio_save_bytes command without any pre-configured scope."
         },
         {
           "description": "Denies the update_check command without any pre-configured scope.",

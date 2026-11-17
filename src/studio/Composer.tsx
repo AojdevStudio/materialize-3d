@@ -64,7 +64,7 @@ export function Composer({ text, onText, attachments, onAttach, onPaste, onRemov
 
   // Any file: a photo, a PDF, a 3MF, an STL, or anything else the agent can read.
   const pick = async () => {
-    const path = await pickFile({})
+    const path = await pickFile()
     if (path) onAttach([savedAttachment(path)])
   }
 

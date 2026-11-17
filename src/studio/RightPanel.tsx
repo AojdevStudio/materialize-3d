@@ -18,7 +18,7 @@ interface Props {
   onError: (message: string) => void
 }
 
-export function FileActions({ project, rel, onError }: { project: string; rel: string; onError: (message: string) => void }) {
+function FileActions({ project, rel, onError }: { project: string; rel: string; onError: (message: string) => void }) {
   const run = (action: Promise<void>) => action.catch((err: unknown) => onError(String(err)))
   return (
     <>

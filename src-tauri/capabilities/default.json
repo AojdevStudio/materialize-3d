@@ -13,8 +13,6 @@
     "allow-update-check",
     "allow-update-install",
     "allow-studio-files",
-    "allow-studio-import-file",
-    "allow-studio-save-bytes",
     "allow-studio-reveal",
     "allow-studio-open-in-bambu",
     "allow-studio-pop-out",
