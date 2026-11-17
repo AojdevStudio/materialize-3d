@@ -299,7 +299,7 @@ describe('app state', () => {
     await app.quit()
   })
 
-  test('projects saved before the first start screen send still take one', async () => {
+  test('a store an earlier version left without seq and madeFor still saves drafts and makes projects', async () => {
     const { data, projects } = scratch()
     const old = await Store.open({
       dataDir: data,
@@ -310,7 +310,7 @@ describe('app state', () => {
         throw new Error('no conversation runs here')
       },
     })
-    // The projects document as an earlier version left it before its first start screen send.
+    // The documents as an earlier version left them before its first draft save and its first start screen send.
     const ProjectsBefore = defineDoc<{ projects: never[]; madeFor?: Record<string, never> }>({
       kind: 'm3d.projects',
       version: 1,
@@ -320,8 +320,18 @@ describe('app state', () => {
       initial: () => ({ projects: [] }),
       checkpointWhen: () => true,
     })
+    const DraftsBefore = defineDoc<{ drafts: Record<string, never>; seq?: number }>({
+      kind: 'm3d.drafts',
+      version: 1,
+      scope: 'conversation',
+      history: 'latest',
+      fork: 'initial',
+      initial: () => ({ drafts: {} }),
+      checkpointWhen: () => true,
+    })
     await old.harness.commit(async (tx) => {
       delete (await tx.doc(ProjectsBefore, old.root.id)).madeFor
+      delete (await tx.doc(DraftsBefore, old.root.id)).seq
     }, BACKGROUND_CONTEXT)
     await old.close()
 
