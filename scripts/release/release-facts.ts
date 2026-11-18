@@ -15,6 +15,7 @@
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { type Release, release } from "../../site/src/release";
 
 export type Read = (file: string) => string;
 
@@ -33,25 +34,22 @@ function sourceValue(read: Read, file: string, pattern: RegExp): string {
 
 const bambuBuild = /(\d{2}\.\d{2}\.\d{2}\.\d{2})/g;
 const orLater = /macOS (\d+(?:\.\d+)*) or later/g;
-/** The docs and the site spell the version placeholder their own way. */
-const placeholder = (text: string) => text.replace(/<version>|\$V\b|\$\{version\}/g, "$version");
+/** The docs spell the version placeholder their own way. */
+const placeholder = (text: string) => text.replace(/<version>|\$V\b/g, "$version");
 const site = "site/src/release.ts";
 const bambuSource = "src-tauri/src/bambu/studio.rs";
 const conf = "src-tauri/tauri.conf.json";
 const validatedBambu = (read: Read) => sourceValue(read, bambuSource, /VALIDATED_VERSIONS: &\[&str\] = &\["([^"]+)"\];/);
 const minimumMacOS = (read: Read) => sourceValue(read, conf, /"minimumSystemVersion": "([^"]+)"/);
 
-function siteRelease(read: Read) {
-  return {
-    version: sourceValue(read, site, /^const version = "([^"]+)";$/m),
-    repoUrl: sourceValue(read, site, /repoUrl: "([^"]+)"/),
-    dmgUrl: placeholder(sourceValue(read, site, /dmgUrl: `([^`]+)`/)),
-    bambu: sourceValue(read, site, /^const bambuStudio = "([^"]+)";$/m),
-    minimumMacOS: sourceValue(read, site, /minimumMacOS: "([^"]+)"/),
-  };
+/** The DMG file the site links, or undefined when the link is not one file on the site version's release. */
+function siteDmg(offered: Release): string | undefined {
+  const download = `${offered.repoUrl}/releases/download/v${offered.version}/`;
+  const file = offered.dmgUrl.slice(download.length);
+  return offered.dmgUrl.startsWith(download) && /^[^/]+\.dmg$/.test(file) ? file : undefined;
 }
 
-function facts(read: Read): Fact[] {
+function facts(read: Read, offered: Release): Fact[] {
   const bunSource = ".github/actions/setup-bun/action.yml";
   return [
     {
@@ -81,7 +79,7 @@ function facts(read: Read): Fact[] {
     {
       name: "site Bambu Studio build",
       source: site,
-      value: siteRelease(read).bambu,
+      value: offered.bambuStudio.version,
       copies: [{ file: "site/index.html", pattern: bambuBuild }],
     },
     {
@@ -128,9 +126,9 @@ function facts(read: Read): Fact[] {
   ];
 }
 
-export function check(read: Read): string[] {
+export function check(read: Read, offered: Release = release): string[] {
   const problems: string[] = [];
-  for (const fact of facts(read)) {
+  for (const fact of facts(read, offered)) {
     for (const { file, pattern, normalize = (text: string) => text } of fact.copies) {
       const found = new Set([...read(file).matchAll(pattern)].map((match) => normalize(match[1] ?? match[0])));
       if (found.size === 0) problems.push(`${fact.name}: ${file} no longer names it. Update its pattern in scripts/release/release-facts.ts.`);
@@ -144,14 +142,12 @@ export function check(read: Read): string[] {
   if (tauriVersion !== "../package.json") {
     problems.push(`app version: src-tauri/tauri.conf.json sets "${tauriVersion}" instead of reading "../package.json"`);
   }
-  const { version, repoUrl, dmgUrl } = siteRelease(read);
-  const download = `${repoUrl}/releases/download/v$version/`;
-  if (!dmgUrl.startsWith(download) || !dmgUrl.endsWith(".dmg")) {
-    problems.push(`site DMG: ${site} links ${dmgUrl}, not a .dmg on the release it offers, ${download}`);
+  if (siteDmg(offered) === undefined) {
+    problems.push(`site DMG: ${site} links ${offered.dmgUrl}, not one .dmg file on the v${offered.version} release`);
   }
   const appVersion = sourceValue(read, "package.json", /"version": "([^"]+)"/);
-  if (Bun.semver.order(version, appVersion) > 0) {
-    problems.push(`site version: ${site} offers ${version}, newer than package.json ${appVersion}`);
+  if (Bun.semver.order(offered.version, appVersion) > 0) {
+    problems.push(`site version: ${site} offers ${offered.version}, newer than package.json ${appVersion}`);
   }
   return problems;
 }
@@ -159,19 +155,18 @@ export function check(read: Read): string[] {
 export type Published = { tag: string; assets: readonly string[]; atTag: Read };
 
 /** The site's facts against the published release: its tag, its files, and the source the tag was built from. */
-export function checkPublished(read: Read, latest: Published): string[] {
-  const offered = siteRelease(read);
+export function checkPublished(latest: Published, offered: Release = release): string[] {
   if (`v${offered.version}` !== latest.tag) {
     return [`site version: ${site} offers v${offered.version}, but the Latest release is ${latest.tag}`];
   }
   const problems: string[] = [];
-  const dmg = offered.dmgUrl.slice(offered.dmgUrl.lastIndexOf("/") + 1).replaceAll("$version", offered.version);
-  if (!latest.assets.includes(dmg)) {
-    problems.push(`site DMG: ${site} links ${dmg}, but ${latest.tag} holds ${latest.assets.join(", ")}`);
+  const dmg = siteDmg(offered);
+  if (dmg === undefined || !latest.assets.includes(dmg)) {
+    problems.push(`site DMG: ${site} links ${offered.dmgUrl}, but ${latest.tag} holds ${latest.assets.join(", ")}`);
   }
   const bambu = validatedBambu(latest.atTag);
-  if (offered.bambu !== bambu) {
-    problems.push(`site Bambu Studio build: ${site} says ${offered.bambu}, but ${bambuSource} at ${latest.tag} says ${bambu}`);
+  if (offered.bambuStudio.version !== bambu) {
+    problems.push(`site Bambu Studio build: ${site} says ${offered.bambuStudio.version}, but ${bambuSource} at ${latest.tag} says ${bambu}`);
   }
   const macos = minimumMacOS(latest.atTag);
   if (offered.minimumMacOS !== macos) {
@@ -198,7 +193,7 @@ function latestPublished(): Published {
 
 if (import.meta.main) {
   const problems = check(readRepo);
-  if (process.argv.includes("--published")) problems.push(...checkPublished(readRepo, latestPublished()));
+  if (process.argv.includes("--published")) problems.push(...checkPublished(latestPublished()));
   for (const problem of problems) console.error(`release facts: ${problem}`);
   if (problems.length > 0) process.exit(1);
   console.log("release facts: every copy matches its source");

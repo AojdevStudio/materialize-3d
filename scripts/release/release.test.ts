@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { type Release, release } from "../../site/src/release";
 import { updateNotes } from "./latest-json";
 import { check, checkPublished, type Published, readRepo, type Read } from "./release-facts";
 
@@ -18,18 +19,19 @@ const bambu = today("src-tauri/src/bambu/studio.rs", /VALIDATED_VERSIONS: &\[&st
 const bun = today(".github/actions/setup-bun/action.yml", /bun-version: "([^"]+)"/);
 const macos = today("src-tauri/tauri.conf.json", /"minimumSystemVersion": "([^"]+)"/);
 const identifier = today("src-tauri/tauri.conf.json", /"identifier": "([^"]+)"/);
-const siteVersion = today("site/src/release.ts", /^const version = "([^"]+)";$/m);
-const siteBambu = today("site/src/release.ts", /^const bambuStudio = "([^"]+)";$/m);
-const siteMacOS = today("site/src/release.ts", /minimumMacOS: "([^"]+)"/);
+
+const download = `${release.repoUrl}/releases/download/v${release.version}/`;
+const dmg = release.dmgUrl.slice(download.length);
+const offering = (change: Partial<Release>): Release => ({ ...release, ...change });
 
 /** A Latest release that matches the site, built from source that names the site's Bambu build and minimum macOS. */
-const published = (tagSource: { bambu?: string; macos?: string } = {}, tag = `v${siteVersion}`): Published => ({
+const published = (tagSource: { bambu?: string; macos?: string } = {}, tag = `v${release.version}`): Published => ({
   tag,
-  assets: ["latest.json", `Materialize-3D-${siteVersion}-macos-arm64.dmg`],
+  assets: ["latest.json", dmg],
   atTag: (file) =>
     ({
-      "src-tauri/src/bambu/studio.rs": `pub const VALIDATED_VERSIONS: &[&str] = &["${tagSource.bambu ?? siteBambu}"];`,
-      "src-tauri/tauri.conf.json": `"minimumSystemVersion": "${tagSource.macos ?? siteMacOS}"`,
+      "src-tauri/src/bambu/studio.rs": `pub const VALIDATED_VERSIONS: &[&str] = &["${tagSource.bambu ?? release.bambuStudio.version}"];`,
+      "src-tauri/tauri.conf.json": `"minimumSystemVersion": "${tagSource.macos ?? release.minimumMacOS}"`,
     })[file] ?? "",
 });
 
@@ -39,14 +41,11 @@ describe("release facts", () => {
   });
 
   test.each([
-    ["site/index.html", bambu, "99.99.99.99", "Bambu Studio build: site/index.html says 99.99.99.99"],
+    ["site/index.html", release.bambuStudio.version, "99.99.99.99", "site Bambu Studio build: site/index.html says 99.99.99.99"],
     ["src-tauri/Cargo.toml", `version = "${version}"`, 'version = "99.0.0"', "app version: src-tauri/Cargo.toml says 99.0.0"],
     ["docs/install-macos.md", `macOS ${macos} or later`, "macOS 99.0 or later", "minimum macOS: docs/install-macos.md says 99.0"],
     ["sidecar/package.json", `"@types/bun": "${bun}"`, '"@types/bun": "99.0.0"', "Bun version: sidecar/package.json says 99.0.0"],
     ["docs/install-macos.md", identifier, `${identifier}.other`, `bundle id: docs/install-macos.md says ${identifier}.other`],
-    ["site/src/release.ts", "-macos-arm64.dmg`", "-macos-arm64.dmg.zip`", "site DMG: site/src/release.ts links"],
-    ["site/src/release.ts", "/download/v${version}/", "/download/${version}/", "site DMG: site/src/release.ts links"],
-    ["site/src/release.ts", /^const version = "[^"]+";$/m, 'const version = "99.0.0";', `site version: site/src/release.ts offers 99.0.0, newer than package.json ${version}`],
     ["src-tauri/tauri.conf.json", '"version": "../package.json"', `"version": "${version}"`, `tauri.conf.json sets "${version}"`],
   ] as const)("a changed copy in %s fails", (file, from, to, problem) => {
     const problems = check(changing(file, from, to));
@@ -54,27 +53,39 @@ describe("release facts", () => {
     expect(problems[0]).toContain(problem);
   });
 
+  test.each([
+    ["a Bambu build index.html does not name", { bambuStudio: { ...release.bambuStudio, version: "99.99.99.99" } }, "site Bambu Studio build: site/index.html says"],
+    ["a DMG link with a .zip suffix", { dmgUrl: `${release.dmgUrl}.zip` }, "site DMG: site/src/release.ts links"],
+    ["a DMG link without the tag's v", { dmgUrl: release.dmgUrl.replace(`/v${release.version}/`, `/${release.version}/`) }, "site DMG: site/src/release.ts links"],
+    ["a DMG link in a folder under the release", { dmgUrl: `${download}folder/${dmg}` }, "site DMG: site/src/release.ts links"],
+    ["a version newer than package.json", { version: "99.0.0", dmgUrl: release.dmgUrl.replaceAll(release.version, "99.0.0") }, `site version: site/src/release.ts offers 99.0.0, newer than package.json ${version}`],
+  ] as const)("the site offering %s fails", (_, change, problem) => {
+    const problems = check(readRepo, offering(change));
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain(problem);
+  });
+
   test("the source moves to a new Bambu build and minimum macOS while the site still offers the published release", () => {
     const next = (text: string) =>
       text
-        .replaceAll(bambu, "02.08.02.62")
-        .replaceAll(`macOS ${macos} or later`, "macOS 27.0 or later")
-        .replace(`"minimumSystemVersion": "${macos}"`, '"minimumSystemVersion": "27.0"')
-        .replace(`--minimum-deployment-target ${macos}`, "--minimum-deployment-target 27.0");
+        .replaceAll(bambu, "99.99.99.99")
+        .replaceAll(`macOS ${macos} or later`, "macOS 99.0 or later")
+        .replace(`"minimumSystemVersion": "${macos}"`, '"minimumSystemVersion": "99.0"')
+        .replace(`--minimum-deployment-target ${macos}`, "--minimum-deployment-target 99.0");
     expect(check((path) => (path.startsWith("site/") ? readRepo(path) : next(readRepo(path))))).toEqual([]);
   });
 
   test("the site describes the Latest release and the source at its tag", () => {
-    expect(checkPublished(readRepo, published())).toEqual([]);
+    expect(checkPublished(published())).toEqual([]);
   });
 
   test.each([
-    ["the tag validates another Bambu build", readRepo, published({ bambu: "99.99.99.99" }), "site Bambu Studio build: site/src/release.ts says"],
-    ["the tag needs a newer macOS", readRepo, published({ macos: "99.0" }), "site minimum macOS: site/src/release.ts says"],
-    ["the site links a DMG the release lacks", changing("site/src/release.ts", "-macos-arm64.dmg", "-mac.dmg"), published(), "site DMG: site/src/release.ts links"],
-    ["a newer release is Latest", readRepo, published({}, "v99.0.0"), "site version: site/src/release.ts offers"],
-  ] as const)("--published fails when %s", (_, read, latest, problem) => {
-    const problems = checkPublished(read, latest);
+    ["the tag validates another Bambu build", published({ bambu: "99.99.99.99" }), release, "site Bambu Studio build: site/src/release.ts says"],
+    ["the tag needs a newer macOS", published({ macos: "99.0" }), release, "site minimum macOS: site/src/release.ts says"],
+    ["the site links a DMG the release lacks", published(), offering({ dmgUrl: release.dmgUrl.replace(".dmg", "-mac.dmg") }), "site DMG: site/src/release.ts links"],
+    ["a newer release is Latest", published({}, "v99.0.0"), release, "site version: site/src/release.ts offers"],
+  ] as const)("--published fails when %s", (_, latest, offered, problem) => {
+    const problems = checkPublished(latest, offered);
     expect(problems).toHaveLength(1);
     expect(problems[0]).toContain(problem);
   });

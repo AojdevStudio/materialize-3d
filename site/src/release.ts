@@ -1,10 +1,10 @@
 /**
  * Every release fact the page states lives here, with the off-site links the page may
- * render. After a release is published and checked, edit `version` and the release's
- * `sha256` only (docs/releasing.md, step 7). The page renders the honest state for whatever
- * these values are (pending checksum, unsigned, unnotarized).
- * They describe the published download, not the source on main. `bun scripts/release/release-facts.ts
- * --published` checks them against the Latest release and the source at its tag.
+ * render. They describe the published download, not the source on main. After a release is
+ * published and checked, edit them as docs/releasing.md step 7 says. The page renders the
+ * honest state for whatever these values are (pending checksum, unsigned, unnotarized).
+ * `bun scripts/release/release-facts.ts --published` checks them against the Latest release
+ * and the source at its tag.
  */
 export type Release = {
   version: string;
