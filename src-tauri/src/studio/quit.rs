@@ -46,7 +46,6 @@ pub struct QuitFlush {
     failed: Notify,
 }
 
-/// What the window answered.
 enum Answer {
     Started,
     Saved,
@@ -125,23 +124,6 @@ pub fn studio_flush_failed(flush: State<'_, QuitFlush>) {
 #[tauri::command]
 pub fn studio_flushed(flush: State<'_, QuitFlush>) {
     flush.saved.notify_one();
-}
-
-/// Opens the Files and Folders pane of macOS Privacy settings, where the person lets the app read Documents.
-#[tauri::command]
-pub fn studio_open_files_privacy() -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    {
-        std::process::Command::new("/usr/bin/open")
-            .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_FilesAndFolders")
-            .status()
-            .map_err(|e| format!("opening Privacy settings: {e}"))
-            .and_then(|status| if status.success() { Ok(()) } else { Err(format!("opening Privacy settings ended with {status}")) })
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        Err("Privacy settings for folders are a macOS setting.".to_owned())
-    }
 }
 
 #[cfg(test)]

@@ -1,14 +1,15 @@
 //! The files in a project folder: the list, the `m3dfile://` protocol the
-//! preview panel loads them through, the two hand-offs to the operating
-//! system, and the pop out window.
+//! preview panel loads them through, the hand-offs to the operating system,
+//! and the pop out window.
 
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::UNIX_EPOCH;
 
 use serde::Serialize;
 use tauri::http::{header, Response, StatusCode};
 
+use super::folder::{inside, Refused};
 use super::print_info::{self, PrintInfo};
 use super::window::{DEV_ORIGIN, FILE_SCHEME, POP_OUT_KEYS, POP_OUT_PREFIX};
 use super::{project_dir, projects_root, META_DIR};
@@ -18,9 +19,9 @@ use super::{project_dir, projects_root, META_DIR};
 #[serde(rename_all = "camelCase")]
 pub struct ProjectFile {
     /// Path inside the project, `/`-separated.
-    pub(super) rel: String,
+    rel: String,
     size: u64,
-    pub(super) modified_ms: u64,
+    modified_ms: u64,
     /// What a 3MF says about its print. Other files have none.
     #[serde(skip_serializing_if = "Option::is_none")]
     print: Option<PrintInfo>,
@@ -60,7 +61,7 @@ fn walk(root: &Path, dir: &Path, out: &mut Vec<ProjectFile>) -> std::io::Result<
     Ok(())
 }
 
-pub(super) fn list(dir: &Path) -> Result<Vec<ProjectFile>, String> {
+fn list(dir: &Path) -> Result<Vec<ProjectFile>, String> {
     let mut out = Vec::new();
     walk(dir, dir, &mut out).map_err(|e| format!("listing {}: {e}", dir.display()))?;
     out.sort_by(|a, b| b.modified_ms.cmp(&a.modified_ms));
@@ -73,15 +74,20 @@ pub fn studio_files(project: String) -> Result<Vec<ProjectFile>, String> {
     list(&project_dir(&project)?)
 }
 
-/// Resolves a path inside a project. Refuses anything that would leave the folder,
-/// including through a symlink, and the app's own records.
+/// A file in a project, where it really is. The app's own records stay hidden, by name and where a link leads.
 fn resolve(project: &str, rel: &str) -> Result<PathBuf, String> {
     let dir = project_dir(project)?;
-    let rel_path = Path::new(rel);
-    if !rel_path.components().all(|c| matches!(c, Component::Normal(_))) || rel_path.starts_with(META_DIR) {
+    if Path::new(rel).starts_with(META_DIR) {
         return Err(format!("bad file path {rel:?}"));
     }
-    let full = dir.join(rel_path).canonicalize().map_err(|e| format!("{rel}: {e}"))?;
+    let full = match inside(&dir, rel) {
+        Ok(full) => full,
+        Err(Refused::NotAName) => return Err(format!("bad file path {rel:?}")),
+        Err(Refused::LeadsOutside) => return Err(format!("{rel} is outside the project")),
+        Err(Refused::Unreadable(e)) => return Err(format!("{rel}: {e}")),
+    };
+    // The records check needs the project's real place. Both checks below use this one value, so a project folder that
+    // is a link and moves after `inside` cannot pass one check against the old place and the other against the new.
     let root = dir.canonicalize().map_err(|e| format!("{}: {e}", dir.display()))?;
     if !full.starts_with(&root) || full.starts_with(root.join(META_DIR)) {
         return Err(format!("{rel} is outside the project"));
@@ -115,6 +121,23 @@ pub fn studio_projects_folder() -> Result<String, String> {
 fn made(root: PathBuf) -> Result<String, String> {
     std::fs::create_dir_all(&root).map_err(|e| format!("making {}: {e}", root.display()))?;
     Ok(root.to_string_lossy().into_owned())
+}
+
+/// Opens the Files and Folders pane of macOS Privacy settings, where the person lets the app read Documents.
+#[tauri::command]
+pub fn studio_open_files_privacy() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("/usr/bin/open")
+            .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_FilesAndFolders")
+            .status()
+            .map_err(|e| format!("opening Privacy settings: {e}"))
+            .and_then(|status| if status.success() { Ok(()) } else { Err(format!("opening Privacy settings ended with {status}")) })
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err("Privacy settings for folders are a macOS setting.".to_owned())
+    }
 }
 
 /// Opens a 3MF (or STL) in Bambu Studio.
@@ -300,12 +323,12 @@ mod tests {
 
     #[test]
     fn a_file_path_must_name_a_plain_path_inside_the_project_and_not_its_records() {
-        for rel in ["..", "../other/guide.html", "print/../guide.html", "/etc/passwd", "./guide.html", ".m3d", ".m3d/chat.json"] {
+        for rel in ["..", "../other/guide.html", "print/../guide.html", "/etc/passwd", "./guide.html", ".m3d", ".m3d/chat.json", ""] {
             assert_eq!(resolve(NOT_MADE, rel), Err(format!("bad file path {rel:?}")));
         }
         assert_eq!(resolve("../etc", "guide.html"), Err(r#"bad project id "../etc""#.to_owned()));
         // These pass the check by name and fail only because the project folder is missing.
-        for rel in ["guide.html", "print/./guide.html", ".m3dx/guide.html", ""] {
+        for rel in ["guide.html", "print/./guide.html", ".m3dx/guide.html"] {
             let missing = resolve(NOT_MADE, rel).expect_err("no project folder");
             assert!(missing.starts_with(&format!("{rel}: ")), "{rel:?}: {missing}");
         }
@@ -356,5 +379,19 @@ mod tests {
         let missing = served(&format!("m3dfile://{NOT_MADE}/guide.html"), None);
         assert_eq!(missing.status(), StatusCode::NOT_FOUND);
         assert!(String::from_utf8_lossy(missing.body()).starts_with("guide.html: "));
+    }
+
+    /// The navigation guard and the file server answer different questions. The guard keeps the window off the
+    /// internet, so a preview frame may still go to any server on this computer. The file server lets only the app's own
+    /// pages read across projects, so a page on another local port reads nothing it could not read from the disk.
+    #[test]
+    fn a_preview_may_go_to_any_local_port_but_only_the_app_reads_across_projects() {
+        let guide = format!("m3dfile://{NOT_MADE}/guide.html");
+        let reads = |origin: &str| served(&guide, Some(origin)).headers().contains_key(header::ACCESS_CONTROL_ALLOW_ORIGIN);
+        assert!(reads(DEV_ORIGIN) && reads("tauri://localhost"));
+        for local in ["http://localhost:5173", "https://127.0.0.1:8443", "http://tauri.localhost"] {
+            assert!(super::super::may_navigate(&local.parse().expect("url")), "{local}");
+            assert!(!reads(local), "{local}");
+        }
     }
 }

@@ -37,9 +37,12 @@ const orLater = /macOS (\d+(?:\.\d+)*) or later/g;
 /** The docs spell the version placeholder their own way. */
 const placeholder = (text: string) => text.replace(/<version>|\$V\b/g, "$version");
 const site = "site/src/release.ts";
-const bambuSource = "src-tauri/src/bambu/studio.rs";
+const bambuSource = "src-tauri/src/bambu/locate.rs";
 const conf = "src-tauri/tauri.conf.json";
-const validatedBambu = (read: Read) => sourceValue(read, bambuSource, /VALIDATED_VERSIONS: &\[&str\] = &\["([^"]+)"\];/);
+const validatedPattern = /VALIDATED_VERSIONS: &\[&str\] = &\["([^"]+)"\];/;
+const validatedBambu = (read: Read) => sourceValue(read, bambuSource, validatedPattern);
+/** Release tags up to v0.3.2 keep the validated build in the file's old place. Drop it once the Latest tag has locate.rs. */
+const bambuSourceBefore = "src-tauri/src/bambu/studio.rs";
 const minimumMacOS = (read: Read) => sourceValue(read, conf, /"minimumSystemVersion": "([^"]+)"/);
 
 /** The DMG file the site links, or undefined when the link is not one file on the site version's release. */
@@ -164,9 +167,18 @@ export function checkPublished(latest: Published, offered: Release = release): s
   if (dmg === undefined || !latest.assets.includes(dmg)) {
     problems.push(`site DMG: ${site} links ${offered.dmgUrl}, but ${latest.tag} holds ${latest.assets.join(", ")}`);
   }
-  const bambu = validatedBambu(latest.atTag);
+  const holds = (file: string) => {
+    try {
+      return validatedPattern.test(latest.atTag(file));
+    } catch (error) {
+      if (error instanceof Error && error.message.includes("HTTP 404")) return false;
+      throw error;
+    }
+  };
+  const bambuAtTag = holds(bambuSource) ? bambuSource : bambuSourceBefore;
+  const bambu = sourceValue(latest.atTag, bambuAtTag, validatedPattern);
   if (offered.bambuStudio.version !== bambu) {
-    problems.push(`site Bambu Studio build: ${site} says ${offered.bambuStudio.version}, but ${bambuSource} at ${latest.tag} says ${bambu}`);
+    problems.push(`site Bambu Studio build: ${site} says ${offered.bambuStudio.version}, but ${bambuAtTag} at ${latest.tag} says ${bambu}`);
   }
   const macos = minimumMacOS(latest.atTag);
   if (offered.minimumMacOS !== macos) {
