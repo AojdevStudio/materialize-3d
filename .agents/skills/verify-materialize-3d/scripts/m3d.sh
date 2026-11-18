@@ -17,17 +17,28 @@ set -euo pipefail
 ROOT=$(git -C "$(dirname "$0")" rev-parse --show-toplevel)
 RUNS=${M3D_RUNS:-$HOME/m3d-verify}
 CURRENT=$RUNS/current
-VITE_PORT=1420       # fixed by vite.config.ts (strictPort) and tauri.conf.json devUrl
 DRIVER_PORT=4444
 NATIVE_PORT=4445
-BINARY=$ROOT/src-tauri/target/debug/materialize-3d
+SCREEN=1600x1000
 
 die() { echo "m3d: $*" >&2; exit 1; }
 port_busy() { ss -ltnH "sport = :$1" | grep -q .; }
 pid_of() { cat "$CURRENT/pids/$1" 2>/dev/null || true; }
 alive() { [[ -n "$1" ]] && kill -0 "$1" 2>/dev/null; }
 
-# Waits up to $2 seconds for command $1 to succeed.
+# The Vite port, bundle id, and binary come from the app's own config. `up` reads
+# them after its tool check, so a host without jq still gets the one-line refusal.
+app_facts() {
+  local conf=$ROOT/src-tauri/tauri.conf.json dev_url name
+  dev_url=$(jq -r .build.devUrl "$conf")
+  [[ $dev_url =~ :([0-9]+)/?$ ]] || die "cannot read the port from devUrl $dev_url in $conf"
+  VITE_PORT=${BASH_REMATCH[1]}
+  IDENTIFIER=$(jq -r .identifier "$conf")
+  name=$(sed -n '/^\[package\]$/{n;s/^name = "\(.*\)"$/\1/p}' "$ROOT/src-tauri/Cargo.toml")
+  [[ -n $name ]] || die "cannot read the package name from $ROOT/src-tauri/Cargo.toml"
+  BINARY=$ROOT/src-tauri/target/debug/$name
+}
+
 wait_for() {
   local check=$1 limit=$2
   for ((i = 0; i < limit * 4; i++)); do eval "$check" >/dev/null 2>&1 && return 0; sleep 0.25; done
@@ -49,16 +60,15 @@ stop_group() {
 }
 
 # Installs JS deps without touching tracked files. `tauri` rejects a JS
-# @tauri-apps/plugin-dialog whose version differs from the Rust crate. bun.lock
-# pins the matching version now, so the `bun add` below is a guard that keeps
-# the two in step if they drift apart again.
+# @tauri-apps/plugin-dialog whose version differs from the Rust crate.
 ensure_deps() {
-  local want have
+  local want
   want=$(awk '/^name = "tauri-plugin-dialog"/{getline; gsub(/[^0-9.]/, ""); print}' "$ROOT/src-tauri/Cargo.lock")
-  have=$(jq -r .version "$ROOT/node_modules/@tauri-apps/plugin-dialog/package.json" 2>/dev/null || true)
-  [[ -d "$ROOT/node_modules" && "$have" == "$want" ]] && return 0
-  (cd "$ROOT" && bun install --no-save && bun add --no-save "@tauri-apps/plugin-dialog@$want") >"$RUN/logs/deps.log" 2>&1 \
-    || die "dependency install failed; see $RUN/logs/deps.log"
+  dialog_version() { jq -r .version "$ROOT/node_modules/@tauri-apps/plugin-dialog/package.json" 2>/dev/null || true; }
+  [[ "$(dialog_version)" == "$want" ]] && return 0
+  (cd "$ROOT" && bun install --no-save) >"$RUN/logs/deps.log" 2>&1 || die "dependency install failed; see $RUN/logs/deps.log"
+  [[ "$(dialog_version)" == "$want" ]] \
+    || die "bun.lock installs @tauri-apps/plugin-dialog $(dialog_version), but Cargo.lock has tauri-plugin-dialog $want"
 }
 
 up() {
@@ -68,6 +78,7 @@ up() {
     command -v "$tool" >/dev/null || missing+=("$tool")
   done
   ((${#missing[@]} == 0)) || die "missing ${missing[*]}; this host cannot run verification (use the Linux host)"
+  app_facts
   for port in $VITE_PORT $DRIVER_PORT $NATIVE_PORT; do
     port_busy "$port" && die "port $port is in use by another instance; refusing to double-drive it"
   done
@@ -94,7 +105,7 @@ up() {
     local n=90
     while [[ -e /tmp/.X11-unix/X$n || -e /tmp/.X$n-lock ]]; do n=$((n + 1)); done
     display=:$n
-    spawn xvfb Xvfb "$display" -screen 0 1600x1000x24 -nolisten tcp
+    spawn xvfb Xvfb "$display" -screen 0 "${SCREEN}x24" -nolisten tcp
     wait_for "[[ -e /tmp/.X11-unix/X$n ]]" 10 || die "Xvfb $display did not start; see $RUN/logs/xvfb.log"
   fi
 
@@ -123,6 +134,7 @@ up() {
 doctor() {
   [[ -e "$CURRENT/env.json" ]] || { echo "doctor: no active run at $CURRENT"; exit 1; }
   RUN=$(readlink -f "$CURRENT")
+  app_facts
   local ok=0 display rev
   display=$(jq -r .display "$RUN/env.json"); rev=$(jq -r .rev "$RUN/env.json")
   check() { if eval "$2" >/dev/null 2>&1; then echo "  ok    $1"; else echo "  FAIL  $1"; ok=1; fi; }
@@ -136,7 +148,7 @@ doctor() {
   if [[ -s "$RUN/session" ]]; then
     check "WebDriver session $(cat "$RUN/session") answers" \
       "curl -sf http://127.0.0.1:$DRIVER_PORT/session/$(cat "$RUN/session")/url | jq -e '.value | strings'"
-    check "sidecar store is inside the run dir" "[[ -e $RUN/xdg/data/com.aojdevstudio.materialize3d/state/store.sqlite ]]"
+    check "sidecar store is inside the run dir" "[[ -e $RUN/xdg/data/$IDENTIFIER/state/store.sqlite ]]"
   else
     echo "  --    no WebDriver session yet (bun wd.ts session)"
   fi
@@ -203,7 +215,7 @@ record() {
   case ${1:-} in
     start)
       alive "$(pid_of ffmpeg)" && die "already recording"
-      spawn ffmpeg ffmpeg -y -f x11grab -video_size 1600x1000 -framerate 15 -i "$(jq -r .display "$RUN/env.json")" \
+      spawn ffmpeg ffmpeg -y -f x11grab -video_size "$SCREEN" -framerate 15 -i "$(jq -r .display "$RUN/env.json")" \
         -pix_fmt yuv420p "$RUN/evidence/recording.mp4"
       echo "m3d: recording $RUN/evidence/recording.mp4" ;;
     stop)

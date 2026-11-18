@@ -4,8 +4,7 @@
 // through WebKitWebDriver. Every command is appended to <run>/evidence/actions.log
 // so a proof records the action next to the resulting state.
 //
-// Selectors: plain CSS by default, `xpath=<expr>` for XPath, and `text=<label>`
-// for the innermost element whose normalized text equals <label>.
+// Selectors are the ones commands.ts defines for both drivers.
 //
 //   bun wd.ts session                  start the app (one session per run)
 //   bun wd.ts wait <sel> [ms]          wait until <sel> is displayed (default 15000)
@@ -19,7 +18,8 @@
 //   bun wd.ts attr <sel> <name>        print a DOM property of the first match (visible or not)
 //   bun wd.ts count <sel>              print the number of matches
 //   bun wd.ts shot <name>              save evidence/<NN>-<name>.png of the webview, then run
-//                                      the contrast sweep and report new failures on stderr (exit 0)
+//                                      the contrast sweep and report new failures on stderr (exit 0);
+//                                      a sweep that cannot run exits 1
 //   bun wd.ts contrast [sel]           text contrast of each displayed control, measured against its
 //                                      rendered pixels; exit 1 on a failure below 3.0 that is new, or
 //                                      lower than its ratio in contrast-baseline.txt
@@ -29,9 +29,10 @@
 //   bun wd.ts note <message>           append a free-form line to actions.log
 //   bun wd.ts end                      close the session (the app exits)
 
-import { appendFileSync, existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { inflateSync } from 'node:zlib'
+import { type Command, type Driver, dispatch, evidenceLog, locator, runsRoot, sharedCommands } from './commands.ts'
 
 const ELEMENT_KEY = 'element-6066-11e4-a52e-4f735466cecf'
 const CONTROLS = 'select, input:not([type=checkbox], [type=radio], [type=range], [type=color], [type=file]), textarea, button'
@@ -50,7 +51,6 @@ interface WebDriverError {
 
 type WebDriverReply<T> = { value: T | WebDriverError }
 
-const runsRoot = process.env.M3D_RUNS ?? join(process.env.HOME ?? '', 'm3d-verify')
 const current = join(runsRoot, 'current')
 if (!existsSync(join(current, 'env.json'))) {
   console.error(`wd: no active run at ${current}; run "m3d.sh up" first`)
@@ -60,10 +60,7 @@ const env: RunEnv = JSON.parse(readFileSync(join(current, 'env.json'), 'utf8'))
 const base = `http://127.0.0.1:${env.driverPort}`
 const evidence = join(env.run, 'evidence')
 const sessionFile = join(env.run, 'session')
-
-function log(line: string): void {
-  appendFileSync(join(evidence, 'actions.log'), `${new Date().toISOString()} ${line}\n`)
-}
+const log = evidenceLog(evidence)
 
 function isError(value: unknown): value is WebDriverError {
   return typeof value === 'object' && value !== null && 'error' in value
@@ -85,15 +82,6 @@ function sid(): string {
   return readFileSync(sessionFile, 'utf8').trim()
 }
 
-function locator(sel: string): { using: string; value: string } {
-  if (sel.startsWith('xpath=')) return { using: 'xpath', value: sel.slice(6) }
-  if (sel.startsWith('text=')) {
-    const label = JSON.stringify(sel.slice(5)).replaceAll('"', "'")
-    return { using: 'xpath', value: `//*[normalize-space(.)=${label}][not(*[normalize-space(.)=${label}])]` }
-  }
-  return { using: 'css selector', value: sel }
-}
-
 async function findAll(sel: string): Promise<string[]> {
   const found = await call<Array<Record<string, string>>>('POST', `/session/${sid()}/elements`, locator(sel))
   return found.map((el) => el[ELEMENT_KEY])
@@ -103,8 +91,7 @@ async function displayed(id: string): Promise<boolean> {
   return call<boolean>('GET', `/session/${sid()}/element/${id}/displayed`).catch(() => false)
 }
 
-// Resolves to the first match (the first displayed one unless `present` is set),
-// polling until the deadline.
+// The first displayed match, or with `present` the first match at all.
 async function waitFor(sel: string, ms = 15000, present = false): Promise<string> {
   const deadline = Date.now() + ms
   while (Date.now() < deadline) {
@@ -200,7 +187,6 @@ function dominantRgb(img: Image, box: Box = { x: 0, y: 0, width: img.width, heig
   return [(best >> 16) & 0xff, (best >> 8) & 0xff, best & 0xff]
 }
 
-// Parses a computed `rgb()`/`rgba()` color into RGB plus alpha.
 function parseCssColor(css: string): { rgb: Rgb; alpha: number } {
   const parts = css.match(/^rgba?\(([^)]*)\)$/)?.[1].split(/[\s,/]+/).filter(Boolean).map(Number)
   if (!parts || parts.length < 3 || parts.some(Number.isNaN)) throw new Error(`cannot parse computed color ${JSON.stringify(css)}`)
@@ -254,7 +240,6 @@ s.textContent = '* { caret-color: transparent !important; }'; document.head.appe
 return new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(() => done(true))));`
 const CARET_ON = `document.getElementById('wd-contrast-caret')?.remove(); return true;`
 
-// A CSS-px box in device pixels, clamped to the screenshot.
 function deviceBox(css: Box, dpr: number, page: Image): Box {
   const x = Math.max(0, Math.round(css.x * dpr))
   const y = Math.max(0, Math.round(css.y * dpr))
@@ -433,167 +418,128 @@ async function contrastSweep(sel: string): Promise<Sweep> {
   return { results, hidden, skipped }
 }
 
-async function main(): Promise<void> {
-  const [cmd, ...args] = process.argv.slice(2)
-  switch (cmd) {
-    case 'session': {
-      const created = await call<{ sessionId: string }>('POST', '/session', {
-        capabilities: { alwaysMatch: { browserName: 'wry', 'tauri:options': { application: env.binary } } },
-      })
-      writeFileSync(sessionFile, created.sessionId)
-      log(`session ${created.sessionId} ${env.binary}`)
-      console.log(created.sessionId)
-      return
-    }
-    case 'wait': {
-      await waitFor(args[0], Number(args[1] ?? 15000))
-      log(`wait ${args[0]} ok`)
-      return
-    }
-    case 'gone': {
-      const deadline = Date.now() + Number(args[1] ?? 15000)
-      while (Date.now() < deadline) {
-        const visible = await Promise.all((await findAll(args[0])).map(displayed))
-        if (!visible.includes(true)) {
-          log(`gone ${args[0]} ok`)
-          return
-        }
-        await Bun.sleep(250)
-      }
-      throw new Error(`${args[0]} still displayed`)
-    }
-    case 'click': {
-      const id = await waitFor(args[0])
-      await call('POST', `/session/${sid()}/element/${id}/click`, {})
-      log(`click ${args[0]}`)
-      return
-    }
-    case 'hover': {
-      const id = await waitFor(args[0], 15000, true)
-      await call('POST', `/session/${sid()}/actions`, {
-        actions: [{ type: 'pointer', id: 'mouse', parameters: { pointerType: 'mouse' }, actions: [{ type: 'pointerMove', duration: 0, origin: { [ELEMENT_KEY]: id }, x: 0, y: 0 }] }],
-      })
-      log(`hover ${args[0]}`)
-      return
-    }
-    case 'type': {
-      const [sel, text] = args
-      const id = await waitFor(sel)
-      if (args.includes('--clear')) await call('POST', `/session/${sid()}/element/${id}/clear`, {})
-      // WebDriver rejects an empty value, so `type <sel> '' --clear` only clears.
-      if (text) await call('POST', `/session/${sid()}/element/${id}/value`, { text })
-      log(`type ${sel} ${JSON.stringify(text)}`)
-      return
-    }
-    case 'type-secret': {
-      const [sel, name] = args
-      const text = process.env[name ?? '']
-      if (!text) throw new Error(`type-secret: environment variable ${name} is empty or unset`)
-      const id = await waitFor(sel)
-      if (args.includes('--clear')) await call('POST', `/session/${sid()}/element/${id}/clear`, {})
-      // A WebDriver error can echo the value it refused, so its text is withheld.
-      await call('POST', `/session/${sid()}/element/${id}/value`, { text }).catch(() => {
-        throw new Error(`type-secret ${sel}: WebDriver refused the value (details withheld)`)
-      })
-      log(`type-secret ${sel} $${name} (${text.length} chars)`)
-      return
-    }
-    case 'keys': {
-      const active = await call<Record<string, string>>('GET', `/session/${sid()}/element/active`)
-      await call('POST', `/session/${sid()}/element/${active[ELEMENT_KEY]}/value`, { text: args[0] })
-      log(`keys ${JSON.stringify(args[0])}`)
-      return
-    }
-    case 'text': {
-      const id = await waitFor(args[0])
-      const text = await call<string>('GET', `/session/${sid()}/element/${id}/text`)
-      log(`text ${args[0]} => ${JSON.stringify(text)}`)
-      console.log(text)
-      return
-    }
-    case 'attr': {
-      const id = await waitFor(args[0], 15000, true)
-      const value = await call<unknown>('GET', `/session/${sid()}/element/${id}/property/${args[1]}`)
-      log(`attr ${args[0]} ${args[1]} => ${JSON.stringify(value)}`)
-      console.log(typeof value === 'string' ? value : JSON.stringify(value))
-      return
-    }
-    case 'count': {
-      const n = (await findAll(args[0])).length
-      log(`count ${args[0]} => ${n}`)
-      console.log(n)
-      return
-    }
-    case 'shot': {
-      const png = await call<string>('GET', `/session/${sid()}/screenshot`)
-      const n = readdirSync(evidence).filter((f) => f.endsWith('.png')).length + 1
-      const file = join(evidence, `${String(n).padStart(2, '0')}-${args[0]}.png`)
-      writeFileSync(file, Buffer.from(png, 'base64'))
-      log(`shot ${file}`)
-      console.log(file)
-      // Evidence capture stays exit 0; contrast failures are reported, not thrown.
-      try {
-        const failing = (await contrastSweep(CONTROLS)).results.filter(isNew)
-        log(`shot contrast: ${failing.length} controls below ${MIN_CONTRAST.toFixed(1)} outside the baseline`)
-        if (failing.length > 0) {
-          console.error(`contrast: ${failing.length} controls below ${MIN_CONTRAST.toFixed(1)} outside the baseline`)
-          for (const { line } of failing) {
-            log(`shot contrast ${line}`)
-            console.error(`  ${line}`)
-          }
-        }
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err)
-        log(`shot contrast sweep failed :: ${message}`)
-        console.error(`contrast: sweep failed: ${message}`)
-      }
-      return
-    }
-    case 'contrast': {
-      const sel = args[0] ?? CONTROLS
-      const sweep = await contrastSweep(sel)
-      for (const { line } of sweep.results) {
-        log(`contrast ${line}`)
-        console.log(line)
-      }
-      const summary = summarize(sel, sweep)
-      log(summary)
-      console.log(summary)
-      if (sweep.results.some(isNew)) process.exitCode = 1
-      return
-    }
-    case 'eval': {
-      const value = await call<unknown>('POST', `/session/${sid()}/execute/sync`, { script: args[0], args: [] })
-      log(`eval ${JSON.stringify(args[0])} => ${JSON.stringify(value)}`)
-      console.log(JSON.stringify(value, null, 2))
-      return
-    }
-    case 'eval-secret': {
-      // Neither the script nor a script error is logged: either can hold the secret.
-      const value = await call<unknown>('POST', `/session/${sid()}/execute/sync`, { script: args[0], args: [] }).catch(() => {
-        throw new Error('eval-secret: the script failed (details withheld)')
-      })
-      const out = typeof value === 'string' ? value : JSON.stringify(value)
-      log(`eval-secret => (${out.length} chars, not logged)`)
-      console.log(out)
-      return
-    }
-    case 'note': {
-      log(`note ${args.join(' ')}`)
-      return
-    }
-    case 'end': {
-      await call('DELETE', `/session/${sid()}`)
-      log('end')
-      return
-    }
-    default:
-      console.error('usage: wd.ts session|wait|gone|click|hover|type|type-secret|keys|text|attr|count|shot|contrast|eval|eval-secret|note|end (see header)')
-      process.exit(2)
-  }
+const driver: Driver = {
+  evidence,
+  wait: async (sel, ms) => {
+    await waitFor(sel, ms)
+  },
+  click: async (sel) => {
+    await call('POST', `/session/${sid()}/element/${await waitFor(sel)}/click`, {})
+  },
+  text: async (sel) => call<string>('GET', `/session/${sid()}/element/${await waitFor(sel)}/text`),
+  count: async (sel) => (await findAll(sel)).length,
+  screenshot: async () => Buffer.from(await call<string>('GET', `/session/${sid()}/screenshot`), 'base64'),
+  eval: (script) => call<unknown>('POST', `/session/${sid()}/execute/sync`, { script, args: [] }),
 }
 
-main().catch((err: unknown) => {
+const shared = sharedCommands(driver)
+
+const commands: Record<string, Command> = {
+  ...shared,
+  session: async () => {
+    const created = await call<{ sessionId: string }>('POST', '/session', {
+      capabilities: { alwaysMatch: { browserName: 'wry', 'tauri:options': { application: env.binary } } },
+    })
+    writeFileSync(sessionFile, created.sessionId)
+    log(`session ${created.sessionId} ${env.binary}`)
+    console.log(created.sessionId)
+  },
+  gone: async ([sel, ms]) => {
+    const deadline = Date.now() + Number(ms ?? 15000)
+    while (Date.now() < deadline) {
+      const visible = await Promise.all((await findAll(sel)).map(displayed))
+      if (!visible.includes(true)) {
+        log(`gone ${sel} ok`)
+        return
+      }
+      await Bun.sleep(250)
+    }
+    throw new Error(`${sel} still displayed`)
+  },
+  hover: async ([sel]) => {
+    const id = await waitFor(sel, 15000, true)
+    await call('POST', `/session/${sid()}/actions`, {
+      actions: [{ type: 'pointer', id: 'mouse', parameters: { pointerType: 'mouse' }, actions: [{ type: 'pointerMove', duration: 0, origin: { [ELEMENT_KEY]: id }, x: 0, y: 0 }] }],
+    })
+    log(`hover ${sel}`)
+  },
+  type: async (args) => {
+    const [sel, text] = args
+    const id = await waitFor(sel)
+    if (args.includes('--clear')) await call('POST', `/session/${sid()}/element/${id}/clear`, {})
+    // WebDriver rejects an empty value, so `type <sel> '' --clear` only clears.
+    if (text) await call('POST', `/session/${sid()}/element/${id}/value`, { text })
+    log(`type ${sel} ${JSON.stringify(text)}`)
+  },
+  'type-secret': async (args) => {
+    const [sel, name] = args
+    const text = process.env[name ?? '']
+    if (!text) throw new Error(`type-secret: environment variable ${name} is empty or unset`)
+    const id = await waitFor(sel)
+    if (args.includes('--clear')) await call('POST', `/session/${sid()}/element/${id}/clear`, {})
+    // A WebDriver error can echo the value it refused, so its text is withheld.
+    await call('POST', `/session/${sid()}/element/${id}/value`, { text }).catch(() => {
+      throw new Error(`type-secret ${sel}: WebDriver refused the value (details withheld)`)
+    })
+    log(`type-secret ${sel} $${name} (${text.length} chars)`)
+  },
+  keys: async ([text]) => {
+    const active = await call<Record<string, string>>('GET', `/session/${sid()}/element/active`)
+    await call('POST', `/session/${sid()}/element/${active[ELEMENT_KEY]}/value`, { text })
+    log(`keys ${JSON.stringify(text)}`)
+  },
+  attr: async ([sel, name]) => {
+    const id = await waitFor(sel, 15000, true)
+    const value = await call<unknown>('GET', `/session/${sid()}/element/${id}/property/${name}`)
+    log(`attr ${sel} ${name} => ${JSON.stringify(value)}`)
+    console.log(typeof value === 'string' ? value : JSON.stringify(value))
+  },
+  shot: async (args) => {
+    await shared.shot(args)
+    const failing = (await contrastSweep(CONTROLS)).results.filter(isNew)
+    log(`shot contrast: ${failing.length} controls below ${MIN_CONTRAST.toFixed(1)} outside the baseline`)
+    if (failing.length > 0) {
+      console.error(`contrast: ${failing.length} controls below ${MIN_CONTRAST.toFixed(1)} outside the baseline`)
+      for (const { line } of failing) {
+        log(`shot contrast ${line}`)
+        console.error(`  ${line}`)
+      }
+    }
+  },
+  contrast: async ([sel = CONTROLS]) => {
+    const sweep = await contrastSweep(sel)
+    for (const { line } of sweep.results) {
+      log(`contrast ${line}`)
+      console.log(line)
+    }
+    const summary = summarize(sel, sweep)
+    log(summary)
+    console.log(summary)
+    if (sweep.results.some(isNew)) process.exitCode = 1
+  },
+  'eval-secret': async ([script]) => {
+    // Neither the script nor a script error is logged: either can hold the secret.
+    const value = await call<unknown>('POST', `/session/${sid()}/execute/sync`, { script, args: [] }).catch(() => {
+      throw new Error('eval-secret: the script failed (details withheld)')
+    })
+    const out = typeof value === 'string' ? value : JSON.stringify(value)
+    log(`eval-secret => (${out.length} chars, not logged)`)
+    console.log(out)
+  },
+  note: async (args) => {
+    log(`note ${args.join(' ')}`)
+  },
+  end: async () => {
+    await call('DELETE', `/session/${sid()}`)
+    log('end')
+  },
+}
+
+dispatch(
+  commands,
+  process.argv.slice(2),
+  'usage: wd.ts session|wait|gone|click|hover|type|type-secret|keys|text|attr|count|shot|contrast|eval|eval-secret|note|end (see header)',
+).catch((err: unknown) => {
   const message = err instanceof Error ? err.message : String(err)
   const [cmd, ...rest] = process.argv.slice(2)
   // eval-secret's script can hold a secret, so its failure line names the command alone.

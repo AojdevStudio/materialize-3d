@@ -16,12 +16,14 @@
 //   bun mac.ts dialog <open-path>    the next Open skips the native panel and takes this path
 //   bun mac.ts down                  quit the app we launched; keeps evidence
 //
-// Selectors are CSS, or `text=<label>` for the innermost element with exactly that text.
+// Selectors are the ones commands.ts defines for both drivers.
 
 import { spawnSync } from 'node:child_process'
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
+import tauriConf from '../../../../src-tauri/tauri.conf.json'
+import { type Command, type Driver, dispatch, evidenceLog, locator, runsRoot, sharedCommands } from './commands.ts'
 
 interface Run {
   dir: string
@@ -46,23 +48,20 @@ async function launch(run: Run): Promise<number> {
     if (!ready) await Bun.sleep(500)
   }
   if (!ready) throw new Error('app did not become scriptable within 60 s')
-  return Number(spawnSync('pgrep', ['-nf', `${appPath}/Contents/MacOS/materialize-3d`]).stdout.toString().trim())
+  return Number(spawnSync('pgrep', ['-nf', `${appPath}/Contents/MacOS/${binaryName}`]).stdout.toString().trim())
 }
 
 const root = resolve(import.meta.dir, '../../../..')
-const runsRoot = process.env.M3D_RUNS ?? join(homedir(), 'm3d-verify')
 const currentFile = join(runsRoot, 'current-mac.json')
 const targetDir = process.env.CARGO_TARGET_DIR ?? join(root, 'src-tauri/target')
-const appPath = join(targetDir, 'debug/bundle/macos/Materialize 3D.app')
+const appPath = join(targetDir, `debug/bundle/macos/${tauriConf.productName}.app`)
+const binaryName = /^\[package\]\nname = "([^"]+)"/m.exec(readFileSync(join(root, 'src-tauri/Cargo.toml'), 'utf8'))?.[1]
+if (binaryName === undefined) throw new Error('cannot read the package name from src-tauri/Cargo.toml')
 const bambu = join(homedir(), 'Applications/BambuStudio-02.08.02.61/BambuStudio.app/Contents/MacOS/BambuStudio')
 
 function current(): Run {
   if (!existsSync(currentFile)) throw new Error('no active mac run; run "mac.ts up" first')
   return JSON.parse(readFileSync(currentFile, 'utf8')) as Run
-}
-
-function log(run: Run, line: string): void {
-  appendFileSync(join(run.dir, 'evidence/actions.log'), `${new Date().toISOString()} ${line}\n`)
 }
 
 async function call(run: Run, path: string, body?: object): Promise<Response> {
@@ -81,21 +80,20 @@ async function evalJs<T>(run: Run, script: string, timeoutMs = 15000): Promise<T
   return JSON.parse(result.value) as T
 }
 
-const FIND = `const find = (sel) => {
-  if (sel.startsWith('text=')) {
-    const label = sel.slice(5);
-    return [...document.querySelectorAll('body *')].filter((el) => el.textContent.trim() === label &&
-      ![...el.children].some((c) => c.textContent.trim() === label));
-  }
-  return [...document.querySelectorAll(sel)];
+const FIND = `const find = ({ using, value }) => {
+  if (using === 'css selector') return [...document.querySelectorAll(value)];
+  const found = document.evaluate(value, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+  return Array.from({ length: found.snapshotLength }, (_, i) => found.snapshotItem(i));
 };
 const visible = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };`
+
+const find = (sel: string) => `find(${JSON.stringify(locator(sel))})`
 
 async function waitFor(run: Run, sel: string, ms = 15000): Promise<void> {
   const script = `${FIND}
 const deadline = Date.now() + ${ms};
 while (Date.now() < deadline) {
-  if (find(${JSON.stringify(sel)}).some(visible)) return true;
+  if (${find(sel)}.some(visible)) return true;
   await new Promise((r) => setTimeout(r, 200));
 }
 throw new Error('timed out waiting for ' + ${JSON.stringify(sel)});`
@@ -124,94 +122,70 @@ async function main(): Promise<void> {
     run.pid = await launch(run)
     mkdirSync(runsRoot, { recursive: true })
     writeFileSync(currentFile, JSON.stringify(run), { mode: 0o600 })
-    log(run, `up pid=${run.pid} app=${appPath}`)
+    evidenceLog(join(dir, 'evidence'))(`up pid=${run.pid} app=${appPath}`)
     console.log(dir)
     return
   }
   const run = current()
-  switch (cmd) {
-    case 'wait':
-      await waitFor(run, args[0], Number(args[1] ?? 15000))
-      log(run, `wait ${args[0]} ok`)
-      return
-    case 'click':
-      await waitFor(run, args[0])
-      await evalJs(run, `${FIND} const el = find(${JSON.stringify(args[0])}).find(visible); el.click(); return true;`)
-      log(run, `click ${args[0]}`)
-      return
-    case 'type': {
-      await waitFor(run, args[0])
+  const evidence = join(run.dir, 'evidence')
+  const log = evidenceLog(evidence)
+  const driver: Driver = {
+    evidence,
+    wait: (sel, ms) => waitFor(run, sel, ms),
+    click: async (sel) => {
+      await waitFor(run, sel)
+      await evalJs(run, `${FIND} ${find(sel)}.find(visible).click(); return true;`)
+    },
+    text: async (sel) => {
+      await waitFor(run, sel)
+      return evalJs<string>(run, `${FIND} return ${find(sel)}.find(visible).innerText;`)
+    },
+    count: (sel) => evalJs<number>(run, `${FIND} return ${find(sel)}.length;`),
+    screenshot: async () => {
+      const res = await call(run, '/snapshot')
+      if (!res.ok) throw new Error(`snapshot HTTP ${res.status}: ${await res.text()}`)
+      return Buffer.from(await res.arrayBuffer())
+    },
+    eval: (script) => evalJs<unknown>(run, script),
+  }
+  const commands: Record<string, Command> = {
+    ...sharedCommands(driver),
+    type: async ([sel, text]) => {
+      await waitFor(run, sel)
       await evalJs(
         run,
-        `${FIND} const el = find(${JSON.stringify(args[0])}).find(visible);
+        `${FIND} const el = ${find(sel)}.find(visible);
 const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'value').set;
-setter.call(el, ${JSON.stringify(args[1])});
+setter.call(el, ${JSON.stringify(text)});
 el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true }));
 return true;`,
       )
-      log(run, `type ${args[0]} (${args[1].length} chars)`)
-      return
-    }
-    case 'text': {
-      await waitFor(run, args[0])
-      const text = await evalJs<string>(run, `${FIND} return find(${JSON.stringify(args[0])}).find(visible).innerText;`)
-      log(run, `text ${args[0]} => ${JSON.stringify(text)}`)
-      console.log(text)
-      return
-    }
-    case 'count': {
-      const n = await evalJs<number>(run, `${FIND} return find(${JSON.stringify(args[0])}).length;`)
-      log(run, `count ${args[0]} => ${n}`)
-      console.log(n)
-      return
-    }
-    case 'shot': {
-      const res = await call(run, '/snapshot')
-      if (!res.ok) throw new Error(`snapshot HTTP ${res.status}: ${await res.text()}`)
-      const evidence = join(run.dir, 'evidence')
-      const n = readdirSync(evidence).filter((f) => f.endsWith('.png')).length + 1
-      const file = join(evidence, `${String(n).padStart(2, '0')}-${args[0]}.png`)
-      writeFileSync(file, Buffer.from(await res.arrayBuffer()))
-      log(run, `shot ${file}`)
-      console.log(file)
-      return
-    }
-    case 'eval': {
-      const value = await evalJs<unknown>(run, args[0])
-      log(run, `eval ${JSON.stringify(args[0])} => ${JSON.stringify(value)}`)
-      console.log(JSON.stringify(value, null, 2))
-      return
-    }
-    case 'restart': {
+      log(`type ${sel} (${text.length} chars)`)
+    },
+    restart: async () => {
       if (run.pid > 0) spawnSync('kill', [String(run.pid)])
       for (let i = 0; i < 40 && spawnSync('kill', ['-0', String(run.pid)]).status === 0; i++) await Bun.sleep(250)
       run.pid = await launch(run)
       writeFileSync(currentFile, JSON.stringify(run), { mode: 0o600 })
-      log(run, `restart pid=${run.pid}`)
-      return
-    }
-    case 'dialog': {
+      log(`restart pid=${run.pid}`)
+    },
+    dialog: async ([openPath]) => {
       // The native Open panel is outside the webview. In the e2e build that
       // `build` makes, the app's file-dialog helper (src/lib/fileDialog.ts) reads
       // the next path from this global instead of opening the panel, so a run
       // that uses it does not cover the native panel itself.
-      const [openPath] = args
       if (!openPath) throw new Error('usage: mac.ts dialog <open-path>')
       await evalJs(run, `window.__M3D_E2E_DIALOGS__ = { nextOpenPath: ${JSON.stringify(openPath)} };
 return true;`)
-      log(run, `dialog open=${openPath}`)
-      return
-    }
-    case 'down': {
+      log(`dialog open=${openPath}`)
+    },
+    down: async () => {
       if (run.pid > 0) spawnSync('kill', [String(run.pid)])
       spawnSync('rm', ['-f', currentFile])
-      console.log(`down; evidence kept at ${join(run.dir, 'evidence')}`)
-      return
-    }
-    default:
-      console.error('usage: mac.ts build|up|wait|click|type|text|count|shot|eval|down (see header)')
-      process.exit(2)
+      console.log(`down; evidence kept at ${evidence}`)
+    },
   }
+  await dispatch(commands, [cmd, ...args], 'usage: mac.ts build|up|wait|click|type|text|count|shot|eval|restart|dialog|down (see header)')
 }
 
 main().catch((err: unknown) => {
