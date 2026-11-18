@@ -66,6 +66,18 @@ const LOGIN_FAILURE = /not configured|\b401\b|unauthori[sz]ed|authentication|inv
 
 export const isLoginFailure = (detail: string) => LOGIN_FAILURE.test(detail)
 
+/** A Keychain item as this app writes it, or undefined for any other text, which counts as signed out. */
+function savedLogin(secret: string): Credential | undefined {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(secret)
+  } catch (error) {
+    if (error instanceof SyntaxError) return undefined
+    throw error
+  }
+  return credential.check(parsed) ? (parsed as Credential) : undefined
+}
+
 /**
  * pi-ai's credential store, kept in the Keychain. Each provider's writes run one after another, as pi-ai requires,
  * because OAuth refresh happens inside `modify`. One process owns the store, so a lock in memory is enough.
@@ -90,15 +102,9 @@ export class KeychainCredentials implements CredentialStore {
   async read(provider: string): Promise<Credential | undefined> {
     const { secret } = await this.#host.request('keychain.get', { account: provider })
     if (secret === null) return undefined
-    let parsed: unknown
-    try {
-      parsed = JSON.parse(secret)
-    } catch {
-      parsed = undefined
-    }
-    if (credential.check(parsed)) return parsed as Credential
-    console.error(`the Keychain login for ${provider} is not one this app wrote, so it counts as signed out`)
-    return undefined
+    const saved = savedLogin(secret)
+    if (saved === undefined) console.error(`the Keychain login for ${provider} is not one this app wrote, so it counts as signed out`)
+    return saved
   }
 
   async list(): Promise<readonly CredentialInfo[]> {
@@ -166,12 +172,20 @@ export class Logins {
   readonly #models: MutableModels
   readonly #credentials: CredentialStore
   readonly #emit: (event: LoginEvent) => void
+  readonly #signedIn: (provider: ProviderId) => void
   readonly #attempts = new Map<ProviderId, Attempt>()
 
-  constructor(models: MutableModels, credentials: CredentialStore, emit: (event: LoginEvent) => void) {
+  /** `signedIn` hears of each login saved, after the window does. */
+  constructor(models: MutableModels, credentials: CredentialStore, emit: (event: LoginEvent) => void, signedIn: (provider: ProviderId) => void) {
     this.#models = models
     this.#credentials = credentials
     this.#emit = emit
+    this.#signedIn = signedIn
+  }
+
+  #done(provider: ProviderId): void {
+    this.#emit({ type: 'login', provider, step: 'done' })
+    this.#signedIn(provider)
   }
 
   #cancel(provider: ProviderId): void {
@@ -218,7 +232,7 @@ export class Logins {
     if (known?.auth.apiKey === undefined) throw new Error(`${known?.name ?? provider} takes its own sign-in, not a key.`)
     this.#cancel(provider)
     await this.#credentials.modify(provider, async () => keyCredential(key, baseUrl))
-    this.#emit({ type: 'login', provider, step: 'done' })
+    this.#done(provider)
   }
 
   /** Starts a subscription sign-in. Its progress arrives as events; it ends with `done` or `failed`. */
@@ -251,7 +265,7 @@ export class Logins {
       .login(provider, 'oauth', interaction)
       .then(
         () => {
-          if (!signal.aborted) this.#emit({ type: 'login', provider, step: 'done' })
+          if (!signal.aborted) this.#done(provider)
         },
         () => {
           // A provider's error can carry what its server sent back, tokens included, so its text never leaves here.

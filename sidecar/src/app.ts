@@ -1,16 +1,16 @@
-import { existsSync, lstatSync, readdirSync, rmSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { parseArgs } from 'node:util'
 import type { MutableModels } from '@earendil-works/pi-ai'
 import { createRegistry } from '@earendil-works/pi-durable'
-import { agentExtension, agentTools, ProjectEnv } from './agent'
+import { agentExtension, agentTools, NoProjectFolder, ProjectEnv } from './agent'
 import { Busy } from './busy'
 import { Chats } from './chat'
 import { Host } from './host'
 import { inferenceModels, KeychainCredentials, Logins } from './inference'
 import { legacyProjects } from './legacy'
 import { handlers } from './methods'
-import { EXIT, FLAGS, PICTURES_FOLDER, type SidecarEvent } from './protocol'
+import { sweepPictures } from './pictures'
+import { EXIT, FLAGS, PICTURES_FOLDER } from './protocol'
 import { Store, StoreInUse } from './store'
 
 export interface SidecarOptions {
@@ -36,18 +36,20 @@ export async function runSidecar({ argv, addProviders }: SidecarOptions): Promis
   const version = values[FLAGS.appVersion] ?? 'dev'
 
   const host = new Host((line) => process.stdout.write(line))
-  // The credentials count each save in the store, which needs the models to open, so the store is reached late.
-  const credentials = new KeychainCredentials(host, (provider) => store.loginSaved(provider))
+  // The store opens with the models and the agent's tools, and both call back into it, the tools into the chats too.
+  // A call waits until the sidecar has made them.
+  const opened = Promise.withResolvers<{ store: Store; chats: Chats }>()
+  const credentials = new KeychainCredentials(host, async (provider) => (await opened.promise).store.loginSaved(provider))
   const models = inferenceModels(credentials)
   addProviders?.(models)
 
   const registry = createRegistry()
   const tools = agentTools({
     host,
-    projectOf: (conversation) => store.projectOf(conversation),
-    signedIn: (conversation, task, provider, context, after) => chats.loginFor(conversation, task, provider, context, after),
-    loginSaves: (provider) => store.loginSaves(provider),
-    printer: () => store.printer(),
+    projectOf: async (conversation) => (await opened.promise).store.projectOf(conversation),
+    signedIn: async (conversation, task, provider, context, after) => (await opened.promise).chats.loginFor(conversation, task, provider, context, after),
+    loginSaves: async (provider) => (await opened.promise).store.loginSaves(provider),
+    printer: async () => (await opened.promise).store.printer(),
   })
   const extension = agentExtension(tools)
   registry.install(extension)
@@ -60,7 +62,7 @@ export async function runSidecar({ argv, addProviders }: SidecarOptions): Promis
       models,
       registry,
       env: ({ cwd }) => {
-        if (cwd === undefined) throw new Error('this conversation has no project folder')
+        if (cwd === undefined) throw new NoProjectFolder()
         return new ProjectEnv({ cwd })
       },
     })
@@ -76,15 +78,13 @@ export async function runSidecar({ argv, addProviders }: SidecarOptions): Promis
     process.exit(1)
   })
 
-  const emit = (event: SidecarEvent) => {
-    host.emit(event)
-    if (event.type === 'login' && event.step === 'done') {
-      chats.signedIn(event.provider).catch((error: unknown) => console.error(`resuming turns after a sign-in failed: ${String(error)}`))
-    }
-  }
+  const emit = host.emit.bind(host)
   const busy = new Busy(host)
   const chats = new Chats({ store, models, extension, tools, version, busy, emit })
-  const logins = new Logins(models, credentials, emit)
+  opened.resolve({ store, chats })
+  const logins = new Logins(models, credentials, emit, (provider) => {
+    chats.signedIn(provider).catch((error: unknown) => console.error(`resuming turns after a sign-in failed: ${String(error)}`))
+  })
   console.error(`agent tools: ${tools.map((tool) => tool.name).join(', ')}`)
 
   // The import asks Rust for nothing, so it ends before the pipe opens and the first call sees every old chat. Projects
@@ -98,22 +98,10 @@ export async function runSidecar({ argv, addProviders }: SidecarOptions): Promis
     return { imported: imported.length, blocked }
   }
   let oldChats = await importOld()
-  // A pasted picture is kept until it is sent, which copies it into its project, or its draft lets it go. A window that
-  // outlived a crash may still hold one it has not saved in a draft yet, so only pictures older than a day that no
-  // draft names are removed. A start screen send cut off after its project was made still sends the draft it moved, so
-  // that draft's pictures stay too.
   const pictures = join(dirname(data), PICTURES_FOLDER)
-  const kept = [...Object.values((await store.state()).drafts), ...(await store.startedDrafts())]
-  const named = new Set(kept.flatMap((draft) => draft.attachments))
-  const dayAgo = Date.now() - 86_400_000
-  for (const folder of existsSync(pictures) ? readdirSync(pictures) : []) {
-    const path = join(pictures, folder)
-    // Each pasted picture has a folder of its own. Anything else here, as a file Finder leaves or a link, is not the
-    // sidecar's, so it is read without following it.
-    const stat = lstatSync(path)
-    if (!stat.isDirectory() || stat.mtimeMs > dayAgo) continue
-    if (!readdirSync(path).some((file) => named.has(join(path, file)))) rmSync(path, { recursive: true, force: true })
-  }
+  // A start screen send cut off after its project was made still sends the draft it moved, so that draft's pictures
+  // stay too.
+  sweepPictures(pictures, [...Object.values((await store.state()).drafts), ...(await store.startedDrafts())])
   const legacy = {
     blocked: () => oldChats.blocked,
     retry: async () => {

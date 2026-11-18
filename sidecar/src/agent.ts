@@ -203,6 +203,13 @@ function realPath(path: string, links = 0): string {
 /** Whether a path relative to a folder leads out of it. A name that only starts with two dots, `..notes`, stays in. */
 export const leaves = (rel: string) => rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)
 
+/** A tool ran in a conversation that has no project folder to work in. */
+export class NoProjectFolder extends Error {
+  constructor() {
+    super('this conversation has no project folder')
+  }
+}
+
 /** One project's files and processes. A path that leads out of the project folder is refused, for every file tool. */
 export class ProjectEnv extends NodeExecutionEnv {
   override async absolutePath(path: string, context: Context): Promise<Result<string, FileError>> {
@@ -247,7 +254,6 @@ const text = (value: string) => [{ type: 'text' as const, text: value }]
 
 export interface AgentHost {
   host: Host
-  /** The project a conversation belongs to. */
   projectOf(conversation: number): Promise<string>
   /**
    * Resolves once the person is signed in to `provider`: at once when they are, after holding the turn with the fix
@@ -255,7 +261,6 @@ export interface AgentHost {
    * then saved was refused. The tool's `task` gives the update pass back while it waits. A stop ends the wait.
    */
   signedIn(conversation: number, task: string, provider: string, context: Context, after: number | undefined): Promise<void>
-  /** How many times the provider's login was saved. */
   loginSaves(provider: string): Promise<number>
   /** The printer chosen in the app, for a slice that starts now. */
   printer(): Promise<Printer>
@@ -272,7 +277,7 @@ export const operationId = (taskId: string, callId: string) => createHash('sha25
 function operation<T extends JsonValue>(api: ToolExecutionApi, context: Context) {
   const env = api.env
   // Astra's conversation is not a project, so the folder is the one its tools work in, which it shares.
-  if (!(env instanceof ProjectEnv)) throw new Error('this conversation has no project folder')
+  if (!(env instanceof ProjectEnv)) throw new NoProjectFolder()
   const id = operationId(String(api.taskId), api.callId)
   const memo: Memo<T> = { get: () => api.memo<T>('receipt', context), set: (value) => api.memo('receipt', value, context) }
   return { env, id, memo, receipt: join(env.cwd, META_DIR, 'ops', `${id}.json`) }
