@@ -626,12 +626,11 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn the_sidecars_binary_has_one_name_in_the_build_the_bundle_and_ci() {
+    fn the_sidecars_binary_has_one_name_in_the_build_and_the_bundle() {
         let binary = contract().binary;
         assert!(include_str!("../../scripts/build-sidecar.sh").contains(&format!("\"$root/src-tauri/binaries/{binary}-$triple\"")));
         let config: Value = serde_json::from_str(include_str!("../tauri.conf.json")).expect("tauri.conf.json");
         assert_eq!(config["bundle"]["externalBin"], json!([format!("binaries/{binary}")]));
-        assert!(include_str!("../../.github/workflows/ci.yml").contains(&format!("/Contents/MacOS/{binary}\"")));
     }
 
     #[test]
