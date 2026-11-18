@@ -25,7 +25,7 @@ import { NodeExecutionEnv } from '@earendil-works/pi-durable/env/node'
 import { createEditTool, createReadTool, createWriteTool } from '@earendil-works/pi-durable/tools'
 import { arr, int, obj, opt, str } from '@earendil-works/pi-schema'
 import type { Host } from './host'
-import { ASTRA, type Need, type Plate, type Printer, RUN_PROGRAM, type Toolchain } from './protocol'
+import { ASTRA, KEPT_ENV, META_DIR, type Need, type Plate, type Printer, RUN_PROGRAM, type Toolchain } from './protocol'
 import { isLoginFailure } from './inference'
 import { textOf } from './transcript'
 import workflow from './workflow.md' with { type: 'text' }
@@ -40,17 +40,14 @@ export const ASTRA_MODEL = { provider: 'openai-codex', modelId: 'gpt-6-astra' } 
 /** How much of a command's output the model gets back: the end, where errors are. */
 const OUTPUT_TAIL = 20_000
 
-/** The only variables a command the agent runs gets. */
-const COMMAND_ENV = ['PATH', 'HOME', 'USER', 'LANG', 'TMPDIR'] as const
-
 /**
- * The environment a command the agent runs gets: the sidecar's own values of `COMMAND_ENV`, and nothing else, but for
+ * The environment a command the agent runs gets: the sidecar's own values of `KEPT_ENV`, and nothing else, but for
  * ~/.local/bin at the end of PATH. uv's installer puts uv there and adds it to the shell's startup files, which the
  * PATH the app read at its start comes from, so a uv installed while the app runs is found without a restart.
  */
 function commandEnv(): Record<string, string> {
   const vars: Record<string, string> = {}
-  for (const name of COMMAND_ENV) {
+  for (const name of KEPT_ENV) {
     const value = process.env[name]
     if (value !== undefined) vars[name] = value
   }
@@ -278,7 +275,7 @@ function operation<T extends JsonValue>(api: ToolExecutionApi, context: Context)
   if (!(env instanceof ProjectEnv)) throw new Error('this conversation has no project folder')
   const id = operationId(String(api.taskId), api.callId)
   const memo: Memo<T> = { get: () => api.memo<T>('receipt', context), set: (value) => api.memo('receipt', value, context) }
-  return { env, id, memo, receipt: join(env.cwd, '.m3d', 'ops', `${id}.json`) }
+  return { env, id, memo, receipt: join(env.cwd, META_DIR, 'ops', `${id}.json`) }
 }
 
 /** The agent's tools, in the order the model is offered them, with the args `ToolArgs` names. */

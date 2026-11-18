@@ -6,7 +6,7 @@
  */
 import { type Dirent, existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
-import type { ImportedEntry } from './protocol'
+import { type ImportedEntry, META_DIR } from './protocol'
 
 /** How much of an old tool result the chat keeps. */
 const RESULT_LIMIT = 4_000
@@ -110,7 +110,7 @@ export function legacyProjects(projectsDir: string, known: ReadonlySet<string>):
     return blocked(error)
   }
   const found = dirs.flatMap((dir) => {
-    const meta = join(projectsDir, dir.name, '.m3d')
+    const meta = join(projectsDir, dir.name, META_DIR)
     if (known.has(dir.name) || !dir.isDirectory() || !existsSync(join(meta, 'project.json'))) return []
     const transcript = join(meta, 'transcript.jsonl')
     try {

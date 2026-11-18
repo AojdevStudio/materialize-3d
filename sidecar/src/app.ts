@@ -10,7 +10,7 @@ import { Host } from './host'
 import { inferenceModels, KeychainCredentials, Logins } from './inference'
 import { legacyProjects } from './legacy'
 import { handlers } from './methods'
-import { EXIT, type SidecarEvent } from './protocol'
+import { EXIT, FLAGS, PICTURES_FOLDER, type SidecarEvent } from './protocol'
 import { Store, StoreInUse } from './store'
 
 export interface SidecarOptions {
@@ -28,12 +28,12 @@ export async function runSidecar({ argv, addProviders }: SidecarOptions): Promis
 
   const { values } = parseArgs({
     args: argv,
-    options: { 'app-version': { type: 'string' }, data: { type: 'string' }, projects: { type: 'string' } },
+    options: { [FLAGS.appVersion]: { type: 'string' }, [FLAGS.data]: { type: 'string' }, [FLAGS.projects]: { type: 'string' } },
     strict: true,
   })
-  const { data, projects } = values
-  if (data === undefined || projects === undefined) throw new Error('usage: --data <store folder> --projects <projects folder>')
-  const version = values['app-version'] ?? 'dev'
+  const { [FLAGS.data]: data, [FLAGS.projects]: projects } = values
+  if (data === undefined || projects === undefined) throw new Error(`usage: --${FLAGS.data} <store folder> --${FLAGS.projects} <projects folder>`)
+  const version = values[FLAGS.appVersion] ?? 'dev'
 
   const host = new Host((line) => process.stdout.write(line))
   // The credentials count each save in the store, which needs the models to open, so the store is reached late.
@@ -103,7 +103,7 @@ export async function runSidecar({ argv, addProviders }: SidecarOptions): Promis
   // outlived a crash may still hold one it has not saved in a draft yet, so only pictures older than a day that no
   // draft names are removed. A start screen send cut off after its project was made still sends the draft it moved, so
   // that draft's pictures stay too.
-  const pictures = join(dirname(data), 'pictures')
+  const pictures = join(dirname(data), PICTURES_FOLDER)
   const kept = [...Object.values((await store.state()).drafts), ...(await store.startedDrafts())]
   const named = new Set(kept.flatMap((draft) => draft.attachments))
   const dayAgo = Date.now() - 86_400_000
