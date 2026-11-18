@@ -57,6 +57,9 @@ type StageRow = {
     }
 );
 
+/** The agent's whole turn: how long it ran, in seconds, and the print files it ended with. Slicing was its last step. */
+export const TURN = { seconds: 838, printFiles: 2 };
+
 const FADE_IN: Span = [0.02, 0.14];
 const FADE_OUT: Span = [0.94, 1];
 
@@ -75,7 +78,7 @@ export const STAGES = [
     rail: "Rewind",
     readout: "rewind",
     tells: "trace",
-    log: { ...step("slice", "Sliced 2 print files", "PETG Basic"), seconds: 838, hold: [0, 0.75] },
+    log: { ...step("slice", `Sliced ${TURN.printFiles} print files`, "PETG Basic"), seconds: TURN.seconds, hold: [0, 0.75] },
   },
   {
     id: "guide",
@@ -372,7 +375,7 @@ export function readoutAt(P: number, print: PrintFacts): ReadoutView {
         of: "",
         unit: "",
         line: stage.log.line,
-        note: "One request · 2 print files",
+        note: `One request · ${TURN.printFiles} print files`,
       };
   }
 }

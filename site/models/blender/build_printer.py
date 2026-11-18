@@ -469,8 +469,8 @@ for ob in OBJ.values():
 
 meta = {
     'units': 'metres, three.js axes (x right, y up, z towards the viewer)',
-    'outer_mm': [392, 406, 478],
-    'build_volume_mm': [256, 256, 256],
+    'outer_mm': [round(v * 1000) for v in (W, D, H)],
+    'build_volume_mm': [round(BED * 1000)] * 3,
     'plate_top_center': three((0.0, BED_Y, ZP)),
     'plate_size': 0.2575,
     'nozzle_tip': three((XT, YT - 0.018, ZG - 0.072)),

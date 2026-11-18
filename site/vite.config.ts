@@ -22,6 +22,10 @@ const appAssets = path.resolve(import.meta.dirname, "../src/assets");
 function siteFacts(): Plugin {
   const prePaint = `try { if (localStorage.getItem(${JSON.stringify(THEME_KEY)}) === "dark") document.documentElement.dataset.theme = "dark"; } catch {}`;
   const pages = ["", "privacy"].map((page) => `  <url>\n    <loc>${SITE_URL}${page}</loc>\n  </url>\n`).join("");
+  const files: Record<string, string> = {
+    "robots.txt": `User-agent: *\nAllow: /\n\nSitemap: ${SITE_URL}sitemap.xml\n`,
+    "sitemap.xml": `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${pages}</urlset>\n`,
+  };
   return {
     name: "site-facts",
     transformIndexHtml: {
@@ -33,13 +37,16 @@ function siteFacts(): Plugin {
         tags: [{ tag: "script", children: prePaint, injectTo: "head" }],
       }),
     },
+    configureServer(server) {
+      for (const [fileName, source] of Object.entries(files)) {
+        server.middlewares.use(`${server.config.base}${fileName}`, (_request, response) => {
+          response.setHeader("Content-Type", fileName.endsWith(".xml") ? "application/xml" : "text/plain");
+          response.end(source);
+        });
+      }
+    },
     generateBundle() {
-      this.emitFile({ type: "asset", fileName: "robots.txt", source: `User-agent: *\nAllow: /\n\nSitemap: ${SITE_URL}sitemap.xml\n` });
-      this.emitFile({
-        type: "asset",
-        fileName: "sitemap.xml",
-        source: `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${pages}</urlset>\n`,
-      });
+      for (const [fileName, source] of Object.entries(files)) this.emitFile({ type: "asset", fileName, source });
     },
   };
 }

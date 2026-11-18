@@ -71,7 +71,7 @@ The trace card and the composer use Lucide line icons (ISC) from lucide-static 1
 
 ## Search and sharing
 
-`index.html` carries the description, the canonical URL, and the Open Graph and Twitter card tags. Every URL in them is absolute. The site's address is `SITE_URL` in `src/site.ts`, and the build writes it in place of `%SITE_URL%` in each page. The build also writes `robots.txt`, which allows all crawlers and names the sitemap, and `sitemap.xml`, which lists the page and the privacy page. The dev server does not serve those two. Vite copies `public/` into the root of `dist/` as is. `og-image.png` there is the 1200 by 630 share image. Remake the image from the repository root with this command:
+`index.html` carries the description, the canonical URL, and the Open Graph and Twitter card tags. Every URL in them is absolute. The site's address is `SITE_URL` in `src/site.ts`, and the build writes it in place of `%SITE_URL%` in each page. The build also writes `robots.txt`, which allows all crawlers and names the sitemap, and `sitemap.xml`, which lists the page and the privacy page. The dev server serves the same two. Vite copies `public/` into the root of `dist/` as is. `og-image.png` there is the 1200 by 630 share image. Remake the image from the repository root with this command:
 
 ```sh
 magick docs/images/studio-light.png -resize 1152x582 -background '#CFD0CF' -gravity center -extent 1200x630 -strip site/public/og-image.png

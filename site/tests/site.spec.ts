@@ -4,7 +4,7 @@ import path from "node:path";
 import { base } from "../playwright.config";
 import { blogUrl, externalLinks, licenseUrl, release } from "../src/release";
 import { SITE_URL, THEME_KEY } from "../src/site";
-import { STAGES, STILL_LENGTH, TRACE, at, minutes, type StageId } from "../src/story/timeline";
+import { STAGES, STILL_LENGTH, TRACE, at, type StageId } from "../src/story/timeline";
 
 type Theme = "light" | "dark";
 
@@ -171,6 +171,9 @@ test("how it works tells the chat studio story in order", async ({ page }) => {
   expect(await page.locator("body").innerText()).not.toMatch(/\bMCP\b/);
 });
 
+/** m:ss, written here rather than taken from the page's own formatter, so a broken format fails. */
+const clock = (seconds: number) => `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+
 /**
  * The trace card at a rewind still: the clock holds on that stage's step, and the lines are every step up to it,
  * oldest first. The last step's still shows the whole trace.
@@ -180,8 +183,8 @@ function traceStill(id: StageId) {
     if (stepId !== id) continue;
     const done = i === TRACE.length - 1;
     return {
-      kick: `${done ? "How it got here" : "Rewind"} · ${minutes(log.seconds)}`,
-      head: done ? `Worked for ${Math.round(log.seconds / 60)} min` : `Working for ${minutes(log.seconds)}`,
+      kick: `${done ? "How it got here" : "Rewind"} · ${clock(log.seconds)}`,
+      head: done ? `Worked for ${Math.round(log.seconds / 60)} min` : `Working for ${clock(log.seconds)}`,
       count: done ? `${TRACE.length} steps` : `step ${i + 1} of ${TRACE.length}`,
       lines: i + 1,
       newest: log.did,

@@ -8,7 +8,20 @@ import terminal from "@app/icons/terminal.svg?raw";
 import { DownloadLink } from "../components/Download";
 import { DIMENSIONS, PARAM_ROWS, PRINT, TBD_ROWS } from "./facts";
 import { PARTS } from "./parts";
-import { COPY_STAGES, RAIL, TRACE, railPosition, readoutAt, traceAt, trackLength, type CopyStage, type Motion, type TraceIcon } from "./timeline";
+import {
+  COPY_STAGES,
+  RAIL,
+  TRACE,
+  TURN,
+  minutes,
+  railPosition,
+  readoutAt,
+  traceAt,
+  trackLength,
+  type CopyStage,
+  type Motion,
+  type TraceIcon,
+} from "./timeline";
 import "./story.css";
 
 const REDUCED_MOTION = "(prefers-reduced-motion: reduce)";
@@ -111,7 +124,7 @@ const COPY: Record<CopyStage["id"], ReactNode> = {
           <span className="composer-button composer-start">Start</span>
         </div>
       </div>
-      <p className="request-note">That is all you type. 13:58 later, 2 print files.</p>
+      <p className="request-note">{`That is all you type. ${minutes(TURN.seconds)} later, ${TURN.printFiles} print files.`}</p>
     </>
   ),
 };

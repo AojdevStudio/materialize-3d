@@ -228,14 +228,7 @@ export class StoryScene {
       (printed ? scene : this.inner).add(mesh);
       return { mesh, material, base: material.color.clone(), edges, offset: new Vector3() };
     };
-    this.pieces = {
-      back_plate: piece("back_plate"),
-      rail_left: piece("rail_left"),
-      rail_right: piece("rail_right"),
-      shelf_left: piece("shelf_left"),
-      shelf_right: piece("shelf_right"),
-      adapter: piece("adapter"),
-    };
+    this.pieces = Object.fromEntries(DOCK_PARTS.map((name) => [name, piece(name)])) as Record<DockPartName, DockPiece>;
     this.shelf = this.pieces[PRINTED].mesh;
 
     // The print pose on the plate, with the part's footprint centred.
