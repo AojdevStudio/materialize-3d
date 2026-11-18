@@ -2,16 +2,24 @@
 import { afterEach, expect, it, vi } from 'vitest'
 import { act, cleanup, render } from '@testing-library/react'
 
-const { invokeMock } = vi.hoisted(() => ({ invokeMock: vi.fn() }))
+type Listener = (event: { payload: unknown }) => void
+const { invokeMock, listeners } = vi.hoisted(() => ({ invokeMock: vi.fn(), listeners: [] as Listener[] }))
 vi.mock('@tauri-apps/api/core', () => ({ invoke: invokeMock }))
-vi.mock('@tauri-apps/api/event', () => ({ listen: () => Promise.resolve(() => {}) }))
+vi.mock('@tauri-apps/api/event', () => ({
+  listen: (_: string, listener: Listener) => {
+    listeners.push(listener)
+    return Promise.resolve(() => {})
+  },
+}))
 
 import type { AppState, ChatView, ModelOption, Printer, Project } from '../../sidecar/src/protocol'
-import { load, loadModels, savePrinter, saveSettings, show, useStudio, useStudioEvents } from './store'
+import { load, loadModels, savePrinter, saveSettings, show, start, useStudio, useStudioEvents } from './store'
 
 afterEach(() => {
   cleanup()
+  vi.useRealTimers()
   invokeMock.mockReset()
+  listeners.length = 0
 })
 
 const project: Project = { id: '2026-11-17-clip', conversation: 1, title: 'Clip', createdMs: 0 }
@@ -91,4 +99,77 @@ it('keeps the newest model list when an older read answers late', async () => {
   await act(async () => newer([opus]))
   await act(async () => older([]))
   expect(useStudio.getState().models).toEqual([opus])
+})
+
+const saved = (importBlocked: string | null = null): AppState => ({
+  setup: { step: 'ready', done: true },
+  settings: { model: { provider: 'anthropic', modelId: 'claude-opus-5-5' }, thinking: 'high', printer: { machine: 'Bambu Lab P2S 0.4 nozzle', process: '0.20mm Standard @BBL P2S', filament: 'Bambu PLA Basic @BBL P2S' }, astra: false },
+  projects,
+  drafts: {},
+  importBlocked,
+})
+
+/** Answers each `state.get` with `read`, by its number from 1, and counts the reads. */
+function readsWith(read: (n: number) => Promise<AppState>) {
+  const reads = { count: 0 }
+  invokeMock.mockImplementation((command: string, { method }: { method?: string } = {}) => {
+    if (command === 'sidecar' && method === 'state.get') return read(++reads.count)
+    if (command === 'sidecar' && method === 'projects.status') return Promise.resolve({})
+    return Promise.resolve([])
+  })
+  return reads
+}
+
+const pass = (ms: number) =>
+  act(async () => {
+    await vi.advanceTimersByTimeAsync(ms)
+  })
+const engineReady = () => act(async () => listeners.forEach((listener) => listener({ payload: { type: 'ready', version: '0.3.2' } })))
+
+it('reads the saved state again after a pause when the first read fails', async () => {
+  vi.useFakeTimers()
+  const reads = readsWith((n) => (n === 1 ? Promise.reject('The store was busy.') : Promise.resolve(saved())))
+  render(<Window />)
+  let taken: AppState | undefined
+  void start().then((state) => (taken = state))
+  await pass(0)
+  expect(useStudio.getState().error).toBe('The store was busy.')
+  await pass(2999)
+  expect(reads.count).toBe(1)
+  await pass(1)
+  expect(reads.count).toBe(2)
+  expect(taken).toEqual(saved())
+})
+
+it.each(['answers', 'fails'])('takes only the first answer to the startup reads, so a read that %s after it changes nothing', async (outcome) => {
+  vi.useFakeTimers()
+  let late = () => {}
+  const reads = readsWith((n) =>
+    n === 1
+      ? new Promise((resolve, reject) => (late = () => (outcome === 'answers' ? resolve(saved('/Users/me/Documents/Materialize 3D')) : reject('The engine stopped.'))))
+      : Promise.resolve(saved()),
+  )
+  render(<Window />)
+  let taken: AppState | undefined
+  void start().then((state) => (taken = state))
+  await engineReady()
+  expect(taken).toEqual(saved())
+
+  await act(async () => late())
+  await pass(3500)
+  expect(useStudio.getState().importBlocked).toBeNull()
+  expect(useStudio.getState().error).toBeNull()
+  expect(reads.count).toBe(2)
+})
+
+it('reads the saved state no more once the window closes, even when a read fails after', async () => {
+  vi.useFakeTimers()
+  let failFirst = () => {}
+  const reads = readsWith(() => new Promise((_, reject) => (failFirst = () => reject('The engine stopped.'))))
+  const window = render(<Window />)
+  void start()
+  window.unmount()
+  await act(async () => failFirst())
+  await pass(3500)
+  expect(reads.count).toBe(1)
 })
