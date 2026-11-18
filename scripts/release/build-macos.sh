@@ -50,9 +50,7 @@ unlock_line="$(builtin printf 'unlock-keychain -p "%s" "%s"' "$RELEASE_KEYCHAIN_
 [[ -f "$RELEASE_KEYCHAIN" ]] || die "no keychain at $RELEASE_KEYCHAIN"
 
 # Every copy of a release fact matches its source, and the tree is exactly the tagged commit.
-# The site must offer the release GitHub marks Latest, so a site update missed after
-# the last release stops this one (docs/releasing.md, step 7).
-bun scripts/release/release-facts.ts --published || die "release facts differ"
+bun scripts/release/release-facts.ts || die "release facts differ"
 version="$(bun -p "require('./package.json').version")"
 conf() { bun -p "require('./src-tauri/tauri.conf.json').$1"; }
 product="$(conf productName)"

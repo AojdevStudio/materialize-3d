@@ -31,12 +31,13 @@ const bambuBuild = /(\d{2}\.\d{2}\.\d{2}\.\d{2})/g;
 const orLater = /macOS (\d+(?:\.\d+)*) or later/g;
 /** The docs and the site spell the version placeholder their own way. */
 const placeholder = (text: string) => text.replace(/<version>|\$V\b|\$\{version\}/g, "$version");
+const dmgSource = "scripts/release/build-macos.sh";
+const dmgName = (read: Read) => sourceValue(read, dmgSource, /^name="([^"]+\.dmg)"$/m);
 
 function facts(read: Read): Fact[] {
   const conf = "src-tauri/tauri.conf.json";
   const bambuSource = "src-tauri/src/bambu/studio.rs";
   const bunSource = ".github/actions/setup-bun/action.yml";
-  const dmgSource = "scripts/release/build-macos.sh";
   return [
     {
       name: "app version",
@@ -94,14 +95,13 @@ function facts(read: Read): Fact[] {
         ".agents/skills/verify-materialize-3d/SKILL.md",
         ".agents/skills/verify-materialize-3d/features/README.md",
         ".agents/skills/verify-materialize-3d/scripts/m3d.sh",
-      ].map((file) => ({ file, pattern: /\b(com\.aojdevstudio\.[a-z0-9]+)\b/g })),
+      ].map((file) => ({ file, pattern: /\b(com\.aojdevstudio(?:\.[A-Za-z0-9-]+)+)/g })),
     },
     {
       name: "DMG file name",
       source: dmgSource,
-      value: sourceValue(read, dmgSource, /^name="([^"]+\.dmg)"$/m),
+      value: dmgName(read),
       copies: [
-        { file: "site/src/release.ts", pattern: /\/(Materialize-3D-[^/`"]+\.dmg)/g, normalize: placeholder },
         // A label after "#" or "| " is the name the release page shows, not the file name.
         { file: "docs/releasing.md", pattern: /(?<!#|\| )(Materialize-3D-[^\s/`"#]+\.dmg)/g, normalize: placeholder },
         { file: "docs/install-macos.md", pattern: /(Materialize-3D-[^\s/`"#]+\.dmg)/g, normalize: placeholder },
@@ -125,6 +125,12 @@ export function check(read: Read): string[] {
   const tauriVersion = sourceValue(read, "src-tauri/tauri.conf.json", /"version": "([^"]+)"/);
   if (tauriVersion !== "../package.json") {
     problems.push(`app version: src-tauri/tauri.conf.json sets "${tauriVersion}" instead of reading "../package.json"`);
+  }
+  const repoUrl = sourceValue(read, "site/src/release.ts", /repoUrl: "([^"]+)"/);
+  const siteDmg = placeholder(sourceValue(read, "site/src/release.ts", /dmgUrl: `([^`]+)`/));
+  const releaseDmg = `${repoUrl}/releases/download/v$version/${dmgName(read)}`;
+  if (siteDmg !== releaseDmg) {
+    problems.push(`DMG file name: site/src/release.ts links ${siteDmg}, but ${dmgSource} uploads ${releaseDmg}`);
   }
   const appVersion = sourceValue(read, "package.json", /"version": "([^"]+)"/);
   const siteVersion = sourceValue(read, "site/src/release.ts", /^const version = "([^"]+)";$/m);

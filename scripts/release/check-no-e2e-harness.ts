@@ -9,7 +9,7 @@
  * variable the Rust code reads, behind the `e2e` feature or `debug_assertions`, and each `__M3D_E2E_*__` global the
  * frontend reads. A new name is refused without an edit here.
  */
-import { readdirSync, readFileSync } from "node:fs";
+import { accessSync, constants, readdirSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 
 const root = join(import.meta.dir, "../..");
@@ -51,6 +51,7 @@ if (app !== undefined) {
   if (mainBinary === undefined || sidecar === undefined) throw new Error("cannot read the binary names from Cargo.toml and tauri.conf.json");
   for (const exe of [mainBinary, basename(sidecar)]) {
     const path = join(app, "Contents/MacOS", exe);
+    accessSync(path, constants.X_OK);
     for (const name of holding(path, nativeNames)) problems.push(`${path} holds ${name}, the e2e harness`);
   }
 }
