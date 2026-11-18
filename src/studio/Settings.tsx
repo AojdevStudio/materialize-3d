@@ -1,10 +1,11 @@
 import { revealItemInDir } from '@tauri-apps/plugin-opener'
 import { type ReactNode, useEffect, useState } from 'react'
-import type { AppState, Methods, ModelChoice, ModelOption, Settings as Saved, Setup } from '../../sidecar/src/protocol'
-import { astraSignedIn } from './agents'
-import { checkSlicer, projectsFolder, sidecar } from './api'
-import { agentRows, buildRows, forgetRefused, type Found, type Row, slicerRow } from './checkRows'
-import { BrandRow, Icon, Mark } from './marks'
+import type { AppState, Methods, ModelOption, Settings as Saved, Setup } from '../../sidecar/src/protocol'
+import { astraSignedIn, sameModel } from './agents'
+import { projectsFolder, sidecar } from './api'
+import { agentRows, buildRows, forgetRefused, type Row, slicerRow } from './checkRows'
+import { BrandRow, Icon } from './marks'
+import { AstraSwitch, CheckGroup, ModelRow, useFound } from './setupRows'
 import chat from '../assets/icons/message-square.svg?raw'
 import layers from '../assets/icons/layers.svg?raw'
 import blocks from '../assets/icons/module-three.svg?raw'
@@ -40,50 +41,26 @@ type Props = {
   refused?: string
 }
 
-const same = (a: ModelChoice, b: ModelChoice) => a.provider === b.provider && a.modelId === b.modelId
-
 /** Shows what setup checked and saved. Each fix opens its setup step. */
 export default function Settings({ section, onSection, models, onSaved, onFix, onClose, onError, error, signIn, signIns, refused }: Props) {
-  const [found, setFound] = useState<Found>({})
+  const found = useFound(onError, signIns)
   const [saved, setSaved] = useState<Saved | null>(null)
   const [folder, setFolder] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
 
-  const take = <T,>(answer: Promise<T>, put: (value: T) => void, current: () => boolean, failed?: () => void) =>
-    void answer.then(
-      (value) => current() && put(value),
-      (err: unknown) => {
-        if (!current()) return
-        failed?.()
-        onError(String(err))
-      },
-    )
-  const fill = <K extends keyof Found>(part: K, answer: Promise<Exclude<Found[K], 'failed' | undefined>>, current: () => boolean) =>
-    take(
-      answer,
-      (value) => setFound((now) => ({ ...now, [part]: value })),
-      current,
-      () => setFound((now) => ({ ...now, [part]: 'failed' })),
-    )
-
   useEffect(() => {
     let current = true
-    fill('toolchain', sidecar('setup.tools', {}), () => current)
-    fill('slicer', checkSlicer(), () => current)
-    take(sidecar('state.get', {}), ({ settings }) => setSaved(settings), () => current)
-    take(projectsFolder(), setFolder, () => current)
+    const take = <T,>(answer: Promise<T>, put: (value: T) => void) =>
+      void answer.then(
+        (value) => current && put(value),
+        (err: unknown) => current && onError(String(err)),
+      )
+    take(sidecar('state.get', {}), ({ settings }) => setSaved(settings))
+    take(projectsFolder(), setFolder)
     return () => {
       current = false
     }
   }, [])
-
-  useEffect(() => {
-    let current = true
-    fill('logins', sidecar('auth.status', {}), () => current)
-    return () => {
-      current = false
-    }
-  }, [signIns])
 
   const save = (change: Methods['settings.set']['params']) => {
     setSaving(true)
@@ -100,28 +77,19 @@ export default function Settings({ section, onSection, models, onSaved, onFix, o
   const astra = Array.isArray(shown.logins) && astraSignedIn(shown.logins)
 
   const rows = (title: string, list: Row[]) => (
-    <section className="setup-group" aria-label={title}>
-      <h2>{title}</h2>
-      <ul>
-        {list.map((row) => (
-          <li key={row.id} className="setup-row" data-status={row.status} data-testid={`settings-${row.id}`}>
-            <span className="setup-icon" aria-hidden="true" dangerouslySetInnerHTML={{ __html: row.icon }} />
-            <span className="setup-what">
-              <span className="setup-name">{row.name}</span>
-              <span className="setup-detail">{row.detail}</span>
-            </span>
-            <span className="setup-act">
-              {row.status !== 'ready' && row.status !== 'checking' && (
-                <button type="button" onClick={() => onFix('check')}>
-                  Fix in setup
-                </button>
-              )}
-            </span>
-            <span className="setup-status">{row.label}</span>
-          </li>
-        ))}
-      </ul>
-    </section>
+    <CheckGroup
+      title={title}
+      rows={list}
+      testId="settings"
+      act={(row) =>
+        row.status !== 'ready' &&
+        row.status !== 'checking' && (
+          <button type="button" onClick={() => onFix('check')}>
+            Fix in setup
+          </button>
+        )
+      }
+    />
   )
 
   const body = () => {
@@ -134,38 +102,17 @@ export default function Settings({ section, onSection, models, onSaved, onFix, o
               <legend>Default model</legend>
               {models.length === 0 && <p className="setup-detail">Sign in to pick a model.</p>}
               {models.map((model) => (
-                <label key={`${model.provider}/${model.modelId}`} className="settings-option">
-                  <input
-                    type="radio"
-                    name="settings-model"
-                    checked={saved !== null && same(model, saved.model)}
-                    onChange={() => save({ model: { provider: model.provider, modelId: model.modelId } })}
-                  />
-                  <Mark modelId={model.modelId} />
-                  <span className="setup-what">
-                    <span className="setup-name">{model.name}</span>
-                    <span className="setup-detail">{model.description}</span>
-                  </span>
-                </label>
+                <ModelRow
+                  key={`${model.provider}/${model.modelId}`}
+                  model={model}
+                  className="settings-option"
+                  name="settings-model"
+                  checked={saved !== null && sameModel(model, saved.model)}
+                  onPick={() => save({ model: { provider: model.provider, modelId: model.modelId } })}
+                />
               ))}
             </fieldset>
-            <div className="setup-switch">
-              <input
-                id="settings-astra"
-                type="checkbox"
-                role="switch"
-                checked={astra && (saved?.astra ?? false)}
-                disabled={!astra || saved === null || saving}
-                aria-describedby={astra ? undefined : 'settings-astra-needs'}
-                onChange={(event) => save({ astra: event.target.checked })}
-              />
-              <label htmlFor="settings-astra">Let the main agent ask GPT (Astra) for drawings</label>
-              {!astra && (
-                <span id="settings-astra-needs" className="setup-detail">
-                  Needs a ChatGPT sign-in.
-                </span>
-              )}
-            </div>
+            <AstraSwitch id="settings-astra" signedIn={astra} on={saved?.astra ?? false} busy={saved === null || saving} onChange={(on) => save({ astra: on })} />
           </>
         )
       case 'slicer':

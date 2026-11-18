@@ -80,7 +80,7 @@ export default function SetupReady({ next, onError, signIn }: StepProps) {
       </dl>
       {signIn}
       <div className="setup-actions">
-        <button type="button" className="primary" onClick={next}>
+        <button type="button" className="primary" onClick={() => void next()}>
           Start a project
         </button>
       </div>

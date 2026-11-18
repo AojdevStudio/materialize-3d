@@ -713,16 +713,11 @@ export default function StudioApp() {
         key={opening}
         step={step}
         refused={turnLogin?.provider}
-        onDone={(wentOn) => {
+        onDone={(wentOn, saved) => {
           // A save that ends after its step was left still counts, but closes only the opening it came from.
           if (openings.current === opening) setFixing(null)
           afterSetup(wentOn && step === 'check')
-          // The printer step saved through printer.set, whose answer a reopened step does not hand on.
-          if (wentOn && step === 'printer') {
-            void sidecar('state.get', {})
-              .then((state) => setPrinter(state.settings.printer))
-              .catch((err: unknown) => setError(String(err)))
-          }
+          if (saved !== undefined) setPrinter(saved.settings.printer)
         }}
         onError={setError}
         error={errorBar}
