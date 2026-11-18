@@ -7,7 +7,7 @@ import { createModels, InMemoryCredentialStore } from '@earendil-works/pi-ai'
 import { createRegistry, defineDoc } from '@earendil-works/pi-durable'
 import { registerStorageConformance } from '@earendil-works/pi-durable/testing'
 import { type AppState, EXIT, type Settings, type Setup } from '../src/protocol'
-import { DraftsDoc, openStorage, SettingsDoc, Store } from '../src/store'
+import { openStorage, Store } from '../src/store'
 import { spawnSidecar } from './sidecar'
 
 function scratch() {
@@ -242,8 +242,19 @@ describe('app state', () => {
         throw new Error('no conversation runs here')
       },
     })
+    // The settings document as the app writes it, read as a version before the Astra setting.
+    const SettingsBeforeAstra = defineDoc<Partial<Settings>>({
+      kind: 'm3d.settings',
+      version: 1,
+      scope: 'conversation',
+      history: 'latest',
+      fork: 'initial',
+      initial: () => ({}),
+      checkpointWhen: () => true,
+    })
+    await old.setSettings({})
     await old.harness.commit(async (tx) => {
-      delete (await tx.doc(SettingsDoc, old.root.id) as Partial<Settings>).astra
+      delete (await tx.doc(SettingsBeforeAstra, old.root.id)).astra
     }, BACKGROUND_CONTEXT)
     await old.close()
 
@@ -264,9 +275,18 @@ describe('app state', () => {
         throw new Error('no conversation runs here')
       },
     })
+    // The drafts document as a store from before revisions holds it.
+    const DraftsBeforeRevisions = defineDoc<{ drafts: Record<string, { text: string; attachments: string[] }> }>({
+      kind: 'm3d.drafts',
+      version: 1,
+      scope: 'conversation',
+      history: 'latest',
+      fork: 'initial',
+      initial: () => ({ drafts: {} }),
+      checkpointWhen: () => true,
+    })
     await old.harness.commit(async (tx) => {
-      // A draft as a store from before revisions holds it.
-      ;((await tx.doc(DraftsDoc, old.root.id)).drafts as Record<string, { text: string; attachments: string[] }>).new = { text: 'A knob', attachments: [] }
+      ;(await tx.doc(DraftsBeforeRevisions, old.root.id)).drafts.new = { text: 'A knob', attachments: [] }
     }, BACKGROUND_CONTEXT)
     await old.close()
 
@@ -276,6 +296,49 @@ describe('app state', () => {
     expect(drafts.new).toEqual({ text: 'A knob', attachments: [], rev: expect.any(Number) })
     await app.call('chat.send', { key: 'new', rev: drafts.new?.rev })
     expect(((await app.call('state.get')) as { drafts: object }).drafts).toEqual({})
+    await app.quit()
+  })
+
+  test('a store an earlier version left without seq and madeFor still saves drafts and makes projects', async () => {
+    const { data, projects } = scratch()
+    const old = await Store.open({
+      dataDir: data,
+      projectsDir: projects,
+      models: createModels({ credentials: new InMemoryCredentialStore() }),
+      registry: createRegistry(),
+      env: () => {
+        throw new Error('no conversation runs here')
+      },
+    })
+    // The documents as an earlier version left them before its first draft save and its first start screen send.
+    const ProjectsBefore = defineDoc<{ projects: never[]; madeFor?: Record<string, never> }>({
+      kind: 'm3d.projects',
+      version: 1,
+      scope: 'conversation',
+      history: 'latest',
+      fork: 'initial',
+      initial: () => ({ projects: [] }),
+      checkpointWhen: () => true,
+    })
+    const DraftsBefore = defineDoc<{ drafts: Record<string, never>; seq?: number }>({
+      kind: 'm3d.drafts',
+      version: 1,
+      scope: 'conversation',
+      history: 'latest',
+      fork: 'initial',
+      initial: () => ({ drafts: {} }),
+      checkpointWhen: () => true,
+    })
+    await old.harness.commit(async (tx) => {
+      delete (await tx.doc(ProjectsBefore, old.root.id)).madeFor
+      delete (await tx.doc(DraftsBefore, old.root.id)).seq
+    }, BACKGROUND_CONTEXT)
+    await old.close()
+
+    const app = spawnSidecar(data, projects)
+    await app.next()
+    const { project } = await app.sendDraft('new', 'A knob')
+    expect(((await app.call('state.get')) as AppState).projects.map((p) => p.id)).toEqual([project])
     await app.quit()
   })
 })

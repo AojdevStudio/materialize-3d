@@ -15,6 +15,7 @@ import {
   ConversationBusy,
   type ConversationId,
   configure,
+  defineDoc,
   type EntryRecord,
   type Extension,
   LiveDoc,
@@ -25,12 +26,41 @@ import {
 import type { ConversationView } from '@earendil-works/pi-durable'
 import { leaves, WORKFLOW, WORKFLOW_VERSION } from './agent'
 import type { Busy } from './busy'
+import { type SentMessage, UserMessage } from './entries'
+import { folderSummary } from './folder'
 import { type ChatEntry, type ChatView, type Project, type ProjectStatus, type SidecarEvent, START, type Turn, type Waiting } from './protocol'
 import { isLoginFailure } from './inference'
-import { DRAFT_CHANGED, DraftsDoc, LoginSavesDoc, ProjectsDoc, SettingsDoc, type Store, TurnDoc, WaitingDoc } from './store'
+import { sendName, type Store } from './store'
 import { chatEntry } from './transcript'
 
 const context: Context = BACKGROUND_CONTEXT
+
+/** What a project's current turn runs with, frozen in the commit that sent it. */
+const TurnDoc = defineDoc<{ turn: Turn | null }>({
+  kind: 'm3d.turn',
+  version: 1,
+  scope: 'conversation',
+  history: 'latest',
+  fork: 'initial',
+  initial: () => ({ turn: null }),
+  checkpointWhen: () => true,
+})
+
+/**
+ * Why a project's turn waits, and the run failure that was read, so one failure is read once. `tool` marks a wait a
+ * running tool holds, such as Astra's for a sign-in: the tool goes on by itself, so nothing continues the run. Cleared
+ * in the commit that sends, retries, or resumes, or by the tool once its wait ends. `saves` is how many times the
+ * turn's provider login was saved when the turn last went out, so a refusal can tell a login saved since then.
+ */
+const WaitingDoc = defineDoc<{ waiting: Waiting | null; failure: number | null; tool: boolean; saves: number | null }>({
+  kind: 'm3d.waiting',
+  version: 1,
+  scope: 'conversation',
+  history: 'latest',
+  fork: 'initial',
+  initial: () => ({ waiting: null, failure: null, tool: false, saves: null }),
+  checkpointWhen: () => true,
+})
 
 const IMAGE_TYPES: Record<string, string> = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp' }
 /** Attachments that go to the model as pictures. Every other file goes as its path in the message. */
@@ -109,7 +139,7 @@ function userContent(
  */
 async function copyAttachments(folder: string, rev: number, sources: string[]): Promise<string[]> {
   if (sources.length === 0) return []
-  const rel = join('refs', `draft-${rev}`)
+  const rel = join('refs', sendName(rev))
   const dir = join(folder, rel)
   // The agent could have made either folder a link. Files land inside the project or nowhere, so each folder is
   // checked before anything is made in it.
@@ -263,7 +293,7 @@ export class Chats {
       record.tool = false
       record.waiting = waiting
       // Read in this commit, so a sign-in either lands before it and is seen here, or after it and finds this wait.
-      const saves = (await tx.doc(LoginSavesDoc, store.root.id)).saves[provider] ?? 0
+      const saves = await store.loginSavesIn(tx, provider)
       return login && record.saves !== null && saves > record.saves && turn?.app === version
     }, context)
   }
@@ -282,13 +312,12 @@ export class Chats {
     const started = key === START ? await store.startProject(rev) : undefined
     const project = started?.project ?? (await store.project(key))
     const conversation = await this.#conversation(project.id)
-    const requestId = `draft-${rev}`
+    const requestId = sendName(rev)
     if ((await store.harness.commit((tx) => tx.submissionByRequest(conversation.id, requestId), context)) !== undefined) {
       await this.#watch(project.id, conversation)
       return project
     }
-    const draft = started?.draft ?? (await store.draft(project.id))
-    if (draft?.rev !== rev) throw new Error(DRAFT_CHANGED)
+    const draft = started?.draft ?? (await store.draft(project.id, rev))
     const folder = store.projectFolder(project.id)
     const attachments = await copyAttachments(folder, rev, draft.attachments)
     // The chat entry keeps the split the model got: a picture it could not read is shown as a file, by its path.
@@ -296,28 +325,22 @@ export class Chats {
     try {
       await busy.during(() => store.harness.commit(async (tx) => {
         if ((await tx.submissionByRequest(conversation.id, requestId)) !== undefined) return
-        const settings = await tx.doc(SettingsDoc, store.root.id)
-        // The project's own model, or the app's default for a project from before the picker.
-        const chosen = (await tx.doc(ProjectsDoc, store.root.id)).projects.find((p) => p.id === project.id)?.model ?? settings.model
-        const model = { provider: chosen.provider, modelId: chosen.modelId }
-        const thinking = settings.thinking
-        const offered = settings.astra ? tools : tools.filter((tool) => tool.name !== 'astra')
+        const { model, thinking, astra, saves } = await store.send(tx, project.id, rev)
+        const offered = astra ? tools : tools.filter((tool) => tool.name !== 'astra')
         await conversation.submit(tx, {
           type: 'input',
           content,
           requestId,
           whenBusy: 'reject',
-          entry: { kind: 'm3d.user', data: { text: draft.text, images: shown, files: named } },
+          entry: { kind: UserMessage.kind, data: { text: draft.text, images: shown, files: named } satisfies SentMessage },
         })
         await configure(tx, conversation.id, { model, thinkingLevel: thinking, extensions: [extension], tools: offered, instructions: WORKFLOW, cwd: folder })
         const turn: Turn = { requestId, model, thinking, tools: offered.map((t) => t.name), instructions: WORKFLOW_VERSION, app: version, startedMs: Date.now() }
         ;(await tx.doc(TurnDoc, conversation.id)).turn = turn
-        const { drafts } = await tx.doc(DraftsDoc, store.root.id)
-        if (drafts[project.id]?.rev === rev) delete drafts[project.id]
         const waiting = await tx.doc(WaitingDoc, conversation.id)
         waiting.waiting = null
         waiting.tool = false
-        waiting.saves = (await tx.doc(LoginSavesDoc, store.root.id)).saves[model.provider] ?? 0
+        waiting.saves = saves
       }, context))
     } catch (error) {
       if (error instanceof ConversationBusy) throw new Error('The agent is still working on the last message.')
@@ -347,7 +370,7 @@ export class Chats {
         const { turn } = await tx.doc(TurnDoc, conversation.id)
         if (turn !== null) {
           turn.app = version
-          waiting.saves = (await tx.doc(LoginSavesDoc, store.root.id)).saves[turn.model.provider] ?? 0
+          waiting.saves = await store.loginSavesIn(tx, turn.model.provider)
         }
       }, context)
     if (login === undefined) await this.#o.busy.during(commit)
@@ -423,7 +446,7 @@ export class Chats {
     const rows = await Promise.all(
       (await store.projects()).map(async (project) => {
         const { running, turn } = await this.#state(await this.#conversationOf(project))
-        const { printFiles, newestMs } = store.folderSummary(project.id)
+        const { printFiles, newestMs } = folderSummary(join(store.projectsDir, project.id))
         const lastMs = Math.max(project.createdMs, turn?.startedMs ?? 0, newestMs)
         return [project.id, { running, printed: project.printed === true, printFiles, lastMs }] as const
       }),

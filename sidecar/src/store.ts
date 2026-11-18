@@ -2,18 +2,20 @@
  * The app's one store: Pi Durable over SQLite, in the app's Application Support folder. This is the only module that
  * opens it, and only one process may hold it, so every other module goes through what this one exports.
  *
- * App state lives as Pi documents on the root conversation. Each project is a conversation of its own.
+ * App state lives as Pi documents on the root conversation, and only this module reads or writes them. Each project is
+ * a conversation of its own, whose chat keeps its own documents there (`chat.ts`).
  */
-import { type Dirent, existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
 import type { Models } from '@earendil-works/pi-ai'
-import { type Conversation, defineDoc, type HarnessOptions, Harness, type Registry } from '@earendil-works/pi-durable'
+import { type Conversation, defineDoc, type HarnessOptions, Harness, type Registry, type Tx } from '@earendil-works/pi-durable'
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node'
+import { Imported } from './entries'
 import type { LegacyProject } from './legacy'
 import { DEFAULT_MODEL } from './offered'
-import { type Draft, META_DIR, type ModelChoice, type Printer, type Project, type SavedDraft, type Settings, type Setup, SKIPPED, START, type StoredState, type Turn, type Waiting } from './protocol'
+import { type Draft, META_DIR, type ModelChoice, type Printer, type Project, type SavedDraft, type Settings, type Setup, START, type StoredState, type Thinking } from './protocol'
 import { guideTemplate } from './templates/guide' with { type: 'macro' }
 
 const context = BACKGROUND_CONTEXT
@@ -22,20 +24,6 @@ const context = BACKGROUND_CONTEXT
 const GUIDE_TEMPLATE = guideTemplate()
 
 const always = () => true
-
-/**
- * v0.3.0 and earlier wrote this document on every state read and never changed it, so it says only that one of them
- * ran here. This app reads it and never writes it, so those versions still open the store.
- */
-const SetupBeforeSetupScreens = defineDoc<Setup>({
-  kind: 'm3d.setup',
-  version: 1,
-  scope: 'conversation',
-  history: 'latest',
-  fork: 'initial',
-  initial: () => ({ step: 'welcome', done: false }),
-  checkpointWhen: always,
-})
 
 const SetupDoc = defineDoc<Setup>({
   kind: 'm3d.setup-steps',
@@ -47,7 +35,7 @@ const SetupDoc = defineDoc<Setup>({
   checkpointWhen: always,
 })
 
-export const SettingsDoc = defineDoc<Settings>({
+const SettingsDoc = defineDoc<Settings>({
   kind: 'm3d.settings',
   version: 1,
   scope: 'conversation',
@@ -71,55 +59,29 @@ export const SettingsDoc = defineDoc<Settings>({
  * a send of that revision again makes no other project and still sends what went out, even after the project's draft
  * changed.
  */
-export const ProjectsDoc = defineDoc<{ projects: Project[]; madeFor?: Record<string, { project: string; draft: SavedDraft }> }>({
+const ProjectsDoc = defineDoc<{ projects: Project[]; madeFor: Record<string, { project: string; draft: SavedDraft }> }>({
   kind: 'm3d.projects',
   version: 1,
   scope: 'conversation',
   history: 'latest',
   fork: 'initial',
-  initial: () => ({ projects: [] }),
+  initial: () => ({ projects: [], madeFor: {} }),
   checkpointWhen: always,
 })
 
-export const DraftsDoc = defineDoc<{ drafts: Record<string, SavedDraft>; seq?: number }>({
+/** The drafts, and `seq`, the revision the last save of any draft took. */
+const DraftsDoc = defineDoc<{ drafts: Record<string, SavedDraft>; seq: number }>({
   kind: 'm3d.drafts',
   version: 1,
   scope: 'conversation',
   history: 'latest',
   fork: 'initial',
-  initial: () => ({ drafts: {} }),
-  checkpointWhen: always,
-})
-
-/** What a project's current turn runs with, frozen in the commit that sent it. */
-export const TurnDoc = defineDoc<{ turn: Turn | null }>({
-  kind: 'm3d.turn',
-  version: 1,
-  scope: 'conversation',
-  history: 'latest',
-  fork: 'initial',
-  initial: () => ({ turn: null }),
-  checkpointWhen: always,
-})
-
-/**
- * Why a project's turn waits, and the run failure that was read, so one failure is read once. `tool` marks a wait a
- * running tool holds, such as Astra's for a sign-in: the tool goes on by itself, so nothing continues the run. Cleared
- * in the commit that sends, retries, or resumes, or by the tool once its wait ends. `saves` is how many times the
- * turn's provider login was saved when the turn last went out, so a refusal can tell a login saved since then.
- */
-export const WaitingDoc = defineDoc<{ waiting: Waiting | null; failure: number | null; tool: boolean; saves: number | null }>({
-  kind: 'm3d.waiting',
-  version: 1,
-  scope: 'conversation',
-  history: 'latest',
-  fork: 'initial',
-  initial: () => ({ waiting: null, failure: null, tool: false, saves: null }),
+  initial: () => ({ drafts: {}, seq: 0 }),
   checkpointWhen: always,
 })
 
 /** How many times each provider's login was saved, so a wait can tell a new sign-in from the one a provider refused. */
-export const LoginSavesDoc = defineDoc<{ saves: Record<string, number> }>({
+const LoginSavesDoc = defineDoc<{ saves: Record<string, number> }>({
   kind: 'm3d.login-saves',
   version: 1,
   scope: 'conversation',
@@ -133,9 +95,17 @@ export const LoginSavesDoc = defineDoc<{ saves: Record<string, number> }>({
 export const openStorage = (path: string) => openNodeSqliteStorage(path)
 
 /** Why a send names a draft revision the store no longer holds: the person changed the draft since that save. */
-export const DRAFT_CHANGED = 'The draft changed before it went out. Send it again.'
+const DRAFT_CHANGED = 'The draft changed before it went out. Send it again.'
 
-/** Another process owns the store. */
+/** Whether `draft` is still the save `rev`. A draft saved after it is the next message, even one that reads the same. */
+const holds = (draft: SavedDraft | undefined, rev: number): draft is SavedDraft => draft?.rev === rev
+
+/**
+ * What a send of the draft saved as `rev` is known by: its request id in the chat, and its folder in `refs/`, which its
+ * files are copied to. A start screen send also keeps its project in `madeFor` under `rev`.
+ */
+export const sendName = (rev: number) => `draft-${rev}`
+
 export class StoreInUse extends Error {}
 
 /**
@@ -155,9 +125,6 @@ function own(dir: string): DatabaseSync {
   }
   return lock
 }
-
-/** Whether the file list skips a folder or file of this name. Rust's file list skips the same names. */
-export const skipped = (name: string) => name.startsWith('.') || SKIPPED.some((skip) => skip === name)
 
 function slug(title: string): string {
   const words = title.toLowerCase().match(/[a-z0-9]+/g) ?? []
@@ -196,27 +163,34 @@ export class Store {
     const harness = await Harness.open(storage, { models: options.models, registry: options.registry, env: options.env }, context)
     const root = await harness.root(context)
     const store = new Store(lock, harness, root, options.projectsDir)
-    await store.#skipSetupForEarlierUsers()
-    await store.#keepAstraForEarlierUsers()
+    await store.#migrate()
     return store
   }
 
-  /** Settings saved before the Astra setting have none. Astra was always offered then, so it stays on. */
-  async #keepAstraForEarlierUsers(): Promise<void> {
-    const settings = await this.harness.snapshot(SettingsDoc, this.root.id, context)
-    if (settings === undefined || 'astra' in settings) return
-    await this.harness.commit(async (tx) => {
-      ;(await tx.doc(SettingsDoc, this.root.id)).astra = true
-    }, context)
-  }
-
-  /** A store an app before setup used opens with setup done. The first open by an app with setup decides it once. */
-  async #skipSetupForEarlierUsers(): Promise<void> {
+  /** Brings what earlier versions of the app kept up to this one, before anything else reads the store. */
+  async #migrate(): Promise<void> {
     const id = this.root.id
-    if ((await this.harness.snapshot(SetupDoc, id, context)) !== undefined) return
-    if ((await this.harness.snapshot(SetupBeforeSetupScreens, id, context)) === undefined) return
+    // Read before the commit, which hands out a missing document as its initial value and so hides that it is missing.
+    const [setup, setupBefore, settings] = await Promise.all([
+      this.harness.snapshot(SetupDoc, id, context),
+      this.harness.snapshot(SetupBeforeSetupScreens, id, context),
+      this.harness.snapshot(SettingsDoc, id, context),
+    ])
     await this.harness.commit(async (tx) => {
-      ;(await tx.doc(SetupDoc, id)).done = true
+      // A store an app before setup used opens with setup done. The first open by an app with setup decides it once.
+      if (setup === undefined && setupBefore !== undefined) (await tx.doc(SetupDoc, id)).done = true
+      // Settings saved before the Astra setting have none. Astra was always offered then, so it stays on.
+      if (settings !== undefined && !('astra' in settings)) (await tx.doc(SettingsDoc, id)).astra = true
+      // Each draft saved before drafts had revisions gets one, so a send takes it away as it takes any other.
+      const drafts: DraftsBefore = await tx.doc(DraftsDoc, id)
+      drafts.seq ??= 0
+      for (const draft of Object.values(drafts.drafts)) {
+        if (draft.rev !== undefined) continue
+        drafts.seq++
+        draft.rev = drafts.seq
+      }
+      const projects: ProjectsBefore = await tx.doc(ProjectsDoc, id)
+      projects.madeFor ??= {}
     }, context)
   }
 
@@ -256,28 +230,15 @@ export class Store {
     return this.harness.commit(async (tx) => ({ ...(await tx.doc(SettingsDoc, this.root.id)).printer }), context)
   }
 
-  /** Saves a draft, or removes an empty one, and answers its revision. A store from before revisions starts at 1. */
+  /** Saves a draft, or removes an empty one, and answers its revision. */
   async setDraft(key: string, draft: Draft): Promise<number> {
     return this.harness.commit(async (tx) => {
       const doc = await tx.doc(DraftsDoc, this.root.id)
-      const rev = (doc.seq ?? 0) + 1
+      const rev = doc.seq + 1
       doc.seq = rev
       if (draft.text === '' && draft.attachments.length === 0) delete doc.drafts[key]
       else doc.drafts[key] = { ...draft, rev }
       return rev
-    }, context)
-  }
-
-  /** Gives each draft saved before drafts had revisions one, so a send can take it away as it takes any other. */
-  async reviseOldDrafts(): Promise<void> {
-    await this.harness.commit(async (tx) => {
-      const doc = await tx.doc(DraftsDoc, this.root.id)
-      // A store from before revisions holds drafts without one, which this read is the only place to see.
-      for (const draft of Object.values(doc.drafts) as (Draft & { rev?: number })[]) {
-        if (draft.rev !== undefined) continue
-        doc.seq = (doc.seq ?? 0) + 1
-        draft.rev = doc.seq
-      }
     }, context)
   }
 
@@ -295,13 +256,13 @@ export class Store {
     const today = new Date(now.getTime() - now.getTimezoneOffset() * 60_000).toISOString().slice(0, 10)
     return this.harness.commit(async (tx) => {
       const index = await tx.doc(ProjectsDoc, this.root.id)
-      const before = index.madeFor?.[rev]
+      const before = index.madeFor[rev]
       const made = index.projects.find((p) => p.id === before?.project)
       // A plain copy, since the documents a commit hands out are only valid inside it.
       if (before !== undefined && made !== undefined) return JSON.parse(JSON.stringify({ project: made, draft: before.draft }))
       const { drafts } = await tx.doc(DraftsDoc, this.root.id)
       const draft = drafts[START]
-      if (draft?.rev !== rev) throw new Error(DRAFT_CHANGED)
+      if (!holds(draft, rev)) throw new Error(DRAFT_CHANGED)
       const title = (draft.text.split('\n')[0] ?? '').trim().slice(0, 80) || 'New part'
       const base = `${today}-${slug(title)}`
       const taken = new Set(index.projects.map((p) => p.id))
@@ -315,7 +276,7 @@ export class Store {
       const created: Project = { id, conversation: conversation.id, title, createdMs: now.getTime(), model: { provider: model.provider, modelId: model.modelId } }
       index.projects.push(created)
       const moved: SavedDraft = { text: draft.text, attachments: [...draft.attachments], rev }
-      index.madeFor = { ...index.madeFor, [rev]: { project: id, draft: moved } }
+      index.madeFor[rev] = { project: id, draft: moved }
       drafts[id] = draft
       delete drafts[START]
       return JSON.parse(JSON.stringify({ project: created, draft: moved }))
@@ -325,12 +286,32 @@ export class Store {
   /** The drafts start screen sends moved to their projects, which a send of the same revision again still sends. */
   async startedDrafts(): Promise<SavedDraft[]> {
     const index = await this.harness.snapshot(ProjectsDoc, this.root.id, context)
-    return Object.values(index?.madeFor ?? {}).map(({ draft }) => draft)
+    return index === undefined ? [] : Object.values(index.madeFor).map(({ draft }) => draft)
   }
 
-  /** The draft saved under `key`, a project id or `START`. */
-  async draft(key: string): Promise<SavedDraft | undefined> {
-    return (await this.harness.snapshot(DraftsDoc, this.root.id, context))?.drafts[key]
+  /** The draft saved as `rev` under `key`, a project id or `START`, while no newer save took its place. */
+  async draft(key: string, rev: number): Promise<SavedDraft> {
+    const draft = (await this.harness.snapshot(DraftsDoc, this.root.id, context))?.drafts[key]
+    if (!holds(draft, rev)) throw new Error(DRAFT_CHANGED)
+    return draft
+  }
+
+  /**
+   * The store's part of a send's commit, for the draft saved as `rev` under the project's id: what the turn runs with,
+   * and that draft taken away. A newer save stays. `saves` counts the saves of the login of the turn's provider.
+   */
+  async send(tx: Tx, project: string, rev: number): Promise<{ model: ModelChoice; thinking: Thinking; astra: boolean; saves: number }> {
+    const settings = await tx.doc(SettingsDoc, this.root.id)
+    // The project's own model, or the app's default for a project from before the picker.
+    const chosen = (await tx.doc(ProjectsDoc, this.root.id)).projects.find((p) => p.id === project)?.model ?? settings.model
+    const { drafts } = await tx.doc(DraftsDoc, this.root.id)
+    if (holds(drafts[project], rev)) delete drafts[project]
+    return {
+      model: { provider: chosen.provider, modelId: chosen.modelId },
+      thinking: settings.thinking,
+      astra: settings.astra,
+      saves: await this.loginSavesIn(tx, chosen.provider),
+    }
   }
 
   async projects(): Promise<Project[]> {
@@ -356,9 +337,13 @@ export class Store {
     }, context)
   }
 
-  /** How many times the provider's login was saved. */
   async loginSaves(provider: string): Promise<number> {
     return (await this.harness.snapshot(LoginSavesDoc, this.root.id, context))?.saves[provider] ?? 0
+  }
+
+  /** `loginSaves`, read in the commit `tx`. */
+  async loginSavesIn(tx: Tx, provider: string): Promise<number> {
+    return (await tx.doc(LoginSavesDoc, this.root.id)).saves[provider] ?? 0
   }
 
   /**
@@ -372,7 +357,7 @@ export class Store {
         const index = await tx.doc(ProjectsDoc, this.root.id)
         if (index.projects.some((p) => p.id === old.id)) return false
         const conversation = await tx.createConversation({ ownership: { kind: 'ownerless' } })
-        for (const data of old.entries) await tx.appendEntry(conversation.id, { kind: 'm3d.imported', data })
+        for (const data of old.entries) await tx.appendEntry(Imported, conversation.id, { data })
         index.projects.push({ id: old.id, conversation: conversation.id, title: old.title, createdMs: old.createdMs })
         return true
       }, context)
@@ -389,47 +374,12 @@ export class Store {
     }, context)
   }
 
-  /** Marks a project printed. */
   async markPrinted(id: string): Promise<void> {
     await this.harness.commit(async (tx) => {
       const project = (await tx.doc(ProjectsDoc, this.root.id)).projects.find((p) => p.id === id)
       if (project === undefined) throw new Error(`no project ${id}`)
       project.printed = true
     }, context)
-  }
-
-  /**
-   * What the project's folder holds for the sidebar: its `.3mf` files outside `refs/`, where the person's own files go,
-   * and when a file in it last changed. Folders the file list skips are skipped here too. A folder not made yet is empty.
-   */
-  folderSummary(id: string): { printFiles: number; newestMs: number } {
-    const root = join(this.projectsDir, id)
-    const summary = { printFiles: 0, newestMs: 0 }
-    if (!existsSync(root)) return summary
-    const walk = (dir: string, refs: boolean) => {
-      let entries: Dirent[]
-      try {
-        entries = readdirSync(dir, { withFileTypes: true })
-      } catch (error) {
-        // The agent may remove a folder while it is read. A folder that is gone holds nothing to count.
-        if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return
-        throw error
-      }
-      for (const entry of entries) {
-        if (skipped(entry.name)) continue
-        const path = join(dir, entry.name)
-        if (entry.isDirectory()) walk(path, refs || (dir === root && entry.name === 'refs'))
-        else if (entry.isFile()) {
-          // Likewise a file removed since the folder was read.
-          const stat = statSync(path, { throwIfNoEntry: false })
-          if (stat === undefined) continue
-          summary.newestMs = Math.max(summary.newestMs, stat.mtimeMs)
-          if (!refs && entry.name.toLowerCase().endsWith('.3mf')) summary.printFiles++
-        }
-      }
-    }
-    walk(root, false)
-    return summary
   }
 
   /**
@@ -448,3 +398,30 @@ export class Store {
     this.#lock.close()
   }
 }
+
+/*
+ * What earlier versions of the app kept, which `Store.#migrate` brings up to this one.
+ */
+
+/**
+ * v0.3.0 and earlier wrote this document on every state read and never changed it, so it says only that one of them
+ * ran here. This app reads it and never writes it, so those versions still open the store.
+ */
+const SetupBeforeSetupScreens = defineDoc<Setup>({
+  kind: 'm3d.setup',
+  version: 1,
+  scope: 'conversation',
+  history: 'latest',
+  fork: 'initial',
+  initial: () => ({ step: 'welcome', done: false }),
+  checkpointWhen: always,
+})
+
+/**
+ * The drafts as an earlier version may have left them: no `seq` before the first save, and from a store before drafts
+ * had revisions, drafts without `rev`.
+ */
+type DraftsBefore = { drafts: Record<string, Draft & { rev?: number }>; seq?: number }
+
+/** The projects as an earlier version left them before the first start screen send: no `madeFor`. */
+type ProjectsBefore = { madeFor?: Record<string, { project: string; draft: SavedDraft }> }

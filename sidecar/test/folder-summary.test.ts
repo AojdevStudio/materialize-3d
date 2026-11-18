@@ -2,28 +2,15 @@ import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { createModels, InMemoryCredentialStore } from '@earendil-works/pi-ai'
-import { createRegistry } from '@earendil-works/pi-durable'
-import { Store } from '../src/store'
+import { folderSummary } from '../src/folder'
 
 let dir: string
-let store: Store
 
-beforeAll(async () => {
+beforeAll(() => {
   dir = mkdtempSync(join(tmpdir(), 'm3d-summary-'))
-  store = await Store.open({
-    dataDir: join(dir, 'state'),
-    projectsDir: join(dir, 'projects'),
-    models: createModels({ credentials: new InMemoryCredentialStore() }),
-    registry: createRegistry(),
-    env: () => {
-      throw new Error('no conversation runs here')
-    },
-  })
 })
 
-afterAll(async () => {
-  await store.close()
+afterAll(() => {
   rmSync(dir, { recursive: true, force: true })
 })
 
@@ -47,10 +34,10 @@ describe('folderSummary', () => {
     for (const skipped of ['.m3d/chat.3mf', '.hidden.3mf', '__pycache__/a.3mf', 'node_modules/b.3mf', 'venv/c.3mf', 'print/.cache/d.3mf']) {
       put(project, skipped, 9_000)
     }
-    expect(store.folderSummary(project)).toEqual({ printFiles: 3, newestMs: 5_000_000 })
+    expect(folderSummary(join(dir, 'projects', project))).toEqual({ printFiles: 3, newestMs: 5_000_000 })
   })
 
   test('a folder not made yet is empty', () => {
-    expect(store.folderSummary('2026-11-17-not-made')).toEqual({ printFiles: 0, newestMs: 0 })
+    expect(folderSummary(join(dir, 'projects', '2026-11-17-not-made'))).toEqual({ printFiles: 0, newestMs: 0 })
   })
 })
