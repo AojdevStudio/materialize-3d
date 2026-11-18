@@ -12,7 +12,7 @@ type Requirement = { label: string; text: string };
 const requirements: readonly Requirement[] = [
   {
     label: "Mac",
-    text: "Apple Silicon and macOS 26.0 or later. Intel Macs, Windows, and Linux release builds are not offered.",
+    text: `Apple Silicon and macOS ${release.minimumMacOS} or later. Intel Macs, Windows, and Linux release builds are not offered.`,
   },
   {
     label: "AI sign-in",
@@ -20,12 +20,12 @@ const requirements: readonly Requirement[] = [
   },
   {
     label: "Bambu Studio",
-    text: "Bambu Studio 02.08.02.61, installed separately. The agent slices with it. The app never installs or bundles it.",
+    text: `Bambu Studio ${release.bambuStudio.version}, installed separately. The agent slices with it. The app never installs or bundles it.`,
   },
   { label: "uv", text: "uv and a Python it can run." },
   {
     label: "Printer",
-    text: "To print, a Bambu Lab printer that Bambu Studio 02.08.02.61 has presets for. The agent slices for the printer you pick in setup. Materialize 3D does not send jobs to the printer.",
+    text: `To print, a Bambu Lab printer that Bambu Studio ${release.bambuStudio.version} has presets for. The agent slices for the printer you pick in setup. Materialize 3D does not send jobs to the printer.`,
   },
 ];
 

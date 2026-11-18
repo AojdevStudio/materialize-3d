@@ -48,17 +48,19 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev xvfb
       - uses: ./.github/actions/shared-checks
+      - name: Release facts match their sources
+        run: bun scripts/release/release-facts.ts && bun test scripts/release
       - name: Frontend build
         run: bun run build
-      - name: The frontend build carries no verification override
-        run: "! grep -rl __M3D_E2E_DIALOGS__ dist"
+      - name: The frontend build carries no verification harness
+        run: bun scripts/release/check-no-e2e-harness.ts
       # tauri-build refuses to build the app crate, tests included, until the bundled sidecar exists.
       - name: Build the sidecar
         run: scripts/build-sidecar.sh
       - name: Rust tests
         working-directory: src-tauri
         run: cargo test --lib --locked
-      - name: Install Bambu Studio 02.08.02.61
+      - name: Install the validated Bambu Studio
         run: scripts/ci/install-bambu-linux.sh
       - name: The agent's slice step with real Bambu Studio (P2S presets and plate, staged output)
         working-directory: src-tauri
@@ -86,26 +88,17 @@ jobs:
       - name: Rust tests
         working-directory: src-tauri
         run: cargo test --lib --locked
-      - name: Install Bambu Studio 02.08.02.61
+      - name: Install the validated Bambu Studio
         run: scripts/ci/install-bambu-macos.sh
       - name: The agent's slice step with real Bambu Studio (P2S presets and plate, staged output)
         working-directory: src-tauri
         run: cargo test --lib --locked studio::slice -- --ignored --nocapture
       - name: Build the desktop app (release profile)
         run: bun tauri build --bundles app
-      - name: The release app carries no verification harness or dialog override
+      - name: The release app carries no verification harness
         run: |
-          app="${CARGO_TARGET_DIR:-src-tauri/target}/release/bundle/macos/Materialize 3D.app"
-          test -x "$app/Contents/MacOS/materialize-3d"
-          test -x "$app/Contents/MacOS/materialize-sidecar"
-          if strings "$app/Contents/MacOS/materialize-3d" | grep -E "M3D_E2E_(TOKEN|PORT|DATA_DIR)"; then
-            echo "release binary contains the e2e harness" >&2
-            exit 1
-          fi
-          if grep -rl __M3D_E2E_DIALOGS__ dist; then
-            echo "release frontend contains the scripted dialog override" >&2
-            exit 1
-          fi
+          product="$(bun -p "require('./src-tauri/tauri.conf.json').productName")"
+          bun scripts/release/check-no-e2e-harness.ts "${CARGO_TARGET_DIR:-src-tauri/target}/release/bundle/macos/$product.app"
 
   site:
     name: Landing site
@@ -114,7 +107,7 @@ jobs:
       github.event_name == 'push' ||
       (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
       && github.event.pull_request.user.login != 'dependabot[bot]'))
-    # The Playwright tests launch the installed Google Chrome. The Mac mini has it and dev-substrate does not.
+    # The Playwright tests launch the installed Google Chrome, which this runner has.
     runs-on: [self-hosted, macOS, ARM64, m3d-mac-vz]
     timeout-minutes: 20
     defaults:

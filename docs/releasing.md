@@ -2,11 +2,11 @@
 
 Releases are built on an Apple Silicon Mac by `scripts/release/build-macos.sh`, outside GitHub Actions. Signing and notarization credentials never reach a pull request job.
 
-The 0.3.0 candidate replaces the 0.2.2 app with a chat studio. The commands below describe the release procedure. They do not report a completed build or acceptance run.
+The commands below describe the release procedure. They do not report a completed build or acceptance run.
 
 ## What you need
 
-- An Apple Silicon Mac on macOS 26 or later with Xcode command line tools, Bun, and Rust. The app requires macOS 26.0.
+- An Apple Silicon Mac on macOS 26.0 or later with Xcode command line tools, Bun, and Rust.
 - A keychain that holds a Developer ID Application identity, and its password.
 - An App Store Connect API key for `notarytool`: key id, issuer id, and the `.p8` content.
 - The updater signing key: BWS secrets `MATERIALIZE3D_TAURI_UPDATER_PRIVATE_KEY` and `MATERIALIZE3D_TAURI_UPDATER_KEY_PASSWORD`. The build reads them as `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. Its public key is `plugins.updater.pubkey` in `src-tauri/tauri.conf.json`. This minisign key is separate from the Developer ID certificate. Never generate a new one for a release: installed apps accept only updates signed by the key they were built with.
@@ -21,12 +21,13 @@ Do not rotate or rewrite user credentials to satisfy these limits. If existing c
 
 ## Steps
 
-1. Set the same version in `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`. Update only the root `materialize-3d` package entry in `src-tauri/Cargo.lock`. Keep dependency versions unchanged. Prepare `docs/releases/v0.3.0.md` with source capabilities and publication requirements, then land the version change through a pull request. Keep the final source commit, DMG checksum, and measured acceptance results out of tracked source. They go in the release body and in the acceptance record in the meta repo (step 5).
+1. Set the version in `package.json` and `src-tauri/Cargo.toml`. `src-tauri/tauri.conf.json` reads it from `package.json`. Update only the root `materialize-3d` package entry in `src-tauri/Cargo.lock`. Keep dependency versions unchanged. Leave `site/src/release.ts` for step 7, because the site offers the last published release. Run `bun scripts/release/release-facts.ts --published`. It fails when any copy of a release fact differs from its source, or when the site does not describe the release GitHub marks Latest, which means step 7 of the last release was missed. The site's version, DMG, Bambu Studio build, and minimum macOS are checked against that release and the source at its tag, not against `main`. Fix that first, before you tag. CI runs the check without `--published`. Prepare `docs/releases/v<version>.md` with source capabilities and publication requirements, then land the version change through a pull request. Keep the final source commit, DMG checksum, and measured acceptance results out of tracked source. They go in the release body and in the acceptance record in the meta repo (step 5).
 2. Tag the merged commit on `main` and push the tag:
 
    ```bash
    git switch main && git pull --ff-only
-   git tag v0.3.0 && git push origin v0.3.0
+   V="$(jq -r .version package.json)"
+   git tag "v$V" && git push origin "v$V"
    ```
 
 3. In a clean checkout of the tag, have the authorized secret source inject the existing credentials into the shell environment. Set `RELEASE_KEYCHAIN` to the existing release keychain path. Do not type secret values into commands, enable shell tracing, or print the environment. With those values already supplied, export the variable names and run the script:
@@ -40,14 +41,14 @@ Do not rotate or rewrite user credentials to satisfy these limits. If existing c
    scripts/release/build-macos.sh
    ```
 
-   With `ALLOW_UNTAGGED` unset, the script refuses a dirty tree, an untagged commit, mismatched versions, or a `TAURI_CONFIG` override. Never use the rehearsal override for the final build. It signs the sidecar first, with the hardened runtime and the JIT entitlement, then the app around it, and notarizes and staples both the app and the DMG. The app's staple covers the sidecar. Then it checks Gatekeeper acceptance, the architecture, the absence of the e2e harness and of build-machine paths in both executables, and runs `scripts/release/check-app-bundle.sh`: the exact file list of the app bundle, macOS 26.0 as the minimum, and the sidecar's signature and its only entitlement. It writes `dist-release/Materialize-3D-<version>-macos-arm64.dmg` and a `.sha256` file.
+   With `ALLOW_UNTAGGED` unset, the script refuses a dirty tree, an untagged commit, mismatched versions, or a `TAURI_CONFIG` override. Never use the rehearsal override for the final build. It signs the sidecar first, with the hardened runtime and the JIT entitlement, then the app around it, and notarizes and staples both the app and the DMG. The app's staple covers the sidecar. Then it checks Gatekeeper acceptance, the architecture, and the absence of build-machine paths in both executables. It runs `scripts/release/check-no-e2e-harness.ts`, the same check CI runs, which refuses every `M3D_E2E_*` name the Rust source reads in either executable and every scripted-dialog global in the frontend build. It runs `scripts/release/check-app-bundle.sh`: the exact file list of the app bundle, the minimum macOS from `tauri.conf.json`, and the sidecar's signature and its only entitlement. It writes `dist-release/Materialize-3D-<version>-macos-arm64.dmg` and a `.sha256` file.
 
    The script also writes the update assets from the same stapled app, after the bundle check and before the DMG:
 
    - `Materialize-3D-<version>-macos-arm64.app.tar.gz`, the update archive. The script unpacks it and checks the signature, the staple, and the bundle file list again.
    - `Materialize-3D-<version>-macos-arm64.app.tar.gz.sig`, its minisign signature, bound to the version. The script stops when the signature's key id differs from the public key in `tauri.conf.json`.
    - `Materialize-3D-<version>-macos-arm64.app.tar.gz.sha256`.
-   - `latest.json`, the update feed: version, notes, date, signature, and the archive's download URL on the `v<version>` release.
+   - `latest.json`, the update feed: version, notes, date, signature, and the archive's download URL on the `v<version>` release. `scripts/release/latest-json.ts` writes it and holds the update banner's notes.
 
    The script stops when either updater secret is missing or signing fails.
 
@@ -61,7 +62,7 @@ Do not rotate or rewrite user credentials to satisfy these limits. If existing c
 
    ### [⬇ Download Materialize 3D for Mac](https://github.com/AojdevStudio/materialize-3d/releases/download/v<version>/Materialize-3D-<version>-macos-arm64.dmg)
 
-   For Macs with Apple Silicon (M1 or newer) on macOS 26 or later.
+   For Macs with Apple Silicon (M1 or newer) on macOS 26.0 or later.
 
    Open the file, then drag Materialize 3D into Applications. <one line on what the first launch does>
 
@@ -127,6 +128,14 @@ Do not rotate or rewrite user credentials to satisfy these limits. If existing c
    ```
 
    The last command passes only after the release is published as Latest.
+
+7. Point the site at the published release. In `site/src/release.ts`, set `version` to the new version and `sha256` to the DMG SHA-256 from the release body. If the release changed the Bambu Studio build or the minimum macOS, also set `bambuStudio` and `minimumMacOS` there, and the Bambu Studio build in `site/index.html`. Then run:
+
+   ```bash
+   bun scripts/release/release-facts.ts --published
+   ```
+
+   It fails until the site describes the release GitHub marks Latest. Land the change through a pull request. A merge to `main` deploys the site, so merge it only after step 6 passes.
 
 ## Required software acceptance record
 
