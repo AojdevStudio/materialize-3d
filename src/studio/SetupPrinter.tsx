@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react'
 import type { Plate, Printer } from '../../sidecar/src/protocol'
-import { checkSlicer, sidecar, studio, type BambuLastUsed, type PrinterChoice } from './api'
+import { checkSlicer, studio, type BambuLastUsed, type PrinterChoice } from './api'
 import { withoutPrinter } from './presetNames'
 import type { StepProps } from './Setup'
+import { savePrinter, useStudio } from './store'
 
 type Choice = Required<Printer>
 type Nozzle = PrinterChoice['nozzles'][number]
@@ -57,8 +58,12 @@ export default function SetupPrinter({ next, back }: StepProps) {
   const [unread, setUnread] = useState<string | null>(null)
   const [failed, setFailed] = useState<string | null>(null)
   const [attempt, setAttempt] = useState(0)
+  // The pick starts on the saved printer, so the step waits for the saved state.
+  const settingsRead = useStudio((s) => s.settings !== null)
 
   useEffect(() => {
+    const saved = useStudio.getState().settings
+    if (saved === null) return
     let current = true
     const lastUsed = studio.bambuLastUsed().catch((err: unknown) => {
       if (current) setUnread(String(err))
@@ -73,11 +78,11 @@ export default function SetupPrinter({ next, back }: StepProps) {
           if (current) setFailed('Setup could not move on.')
           return
         }
-        const [printers, last, { settings }] = await Promise.all([studio.printers(), lastUsed, sidecar('state.get', {})])
+        const [printers, last] = await Promise.all([studio.printers(), lastUsed])
         if (!current) return
         const first = fit(printers, { machine: printers[0]?.nozzles[0]?.machine })
         if (first === undefined) return setFailed('Bambu Studio lists no printer to pick.')
-        const made = offer(printers, first, last, settings.printer)
+        const made = offer(printers, first, last, saved.printer)
         setShown(made)
         if (made.confirmable === undefined) setPicking(made.start)
       })
@@ -85,7 +90,7 @@ export default function SetupPrinter({ next, back }: StepProps) {
     return () => {
       current = false
     }
-  }, [attempt])
+  }, [attempt, settingsRead])
 
   const leave = () => {
     setSaving(true)
@@ -95,8 +100,8 @@ export default function SetupPrinter({ next, back }: StepProps) {
   const save = (choice: Choice) => {
     setSaving(true)
     setRefused(null)
-    void sidecar('printer.set', choice)
-      .then(next, (err: unknown) => setRefused(String(err)))
+    void savePrinter(choice)
+      .then(() => next(), (err: unknown) => setRefused(String(err)))
       .finally(() => setSaving(false))
   }
 

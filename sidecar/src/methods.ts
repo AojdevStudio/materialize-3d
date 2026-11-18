@@ -62,8 +62,7 @@ export function handlers({ host, store, models, logins, chats, version, legacy, 
     'setup.check': {
       params: compile(obj({ project: opt(str()) })),
       run: async ({ project }) => {
-        const model = (project === undefined ? undefined : (await store.project(project)).model) ?? (await store.state()).settings.model
-        return [...(await logins.needsFor(model)), ...(await toolchainNeeds())]
+        return [...(await logins.needsFor(await store.modelFor(project))), ...(await toolchainNeeds())]
       },
     },
     'setup.tools': { params: compile(obj({})), run: () => toolchain() },

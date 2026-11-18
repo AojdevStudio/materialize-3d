@@ -1,7 +1,6 @@
-import { openUrl } from '@tauri-apps/plugin-opener'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { type AppState, type Draft, type LoginEvent, type ModelChoice, type ModelOption, type Need, type Printer, type Project, type Setup, START } from '../../sidecar/src/protocol'
-import { checkSlicer, onFileDrop, onQuitFlush, onSidecarEvent, sidecar } from './api'
+import { type AppState, type Draft, type ModelChoice, type Project, type Setup, START } from '../../sidecar/src/protocol'
+import { onFileDrop, onQuitFlush, sidecar } from './api'
 import { ChatView } from './Chat'
 import { Composer, releaseAttachment, savedAttachment, type PastedPicture } from './Composer'
 import ModelPicker from './ModelPicker'
@@ -9,7 +8,23 @@ import RightPanel from './RightPanel'
 import SetupFlow, { SetupStep } from './Setup'
 import Settings, { type Section } from './Settings'
 import Start from './Start'
-import { load, openFile, retry, setError, setPanelView, show as showProject, useStudio, useStudioEvents } from './store'
+import {
+  afterSetup,
+  answerSignIn,
+  checkReady,
+  importAgain,
+  load,
+  onNextReady,
+  openFile,
+  retry,
+  saveSettings,
+  setError,
+  setPanelView,
+  show as showProject,
+  start,
+  useStudio,
+  useStudioEvents,
+} from './store'
 import { buildChat } from './transcript'
 import Sidebar from './Sidebar'
 import { useWindowTheme } from './theme'
@@ -24,8 +39,6 @@ const EMPTY: Draft = { text: '', attachments: [] }
 
 const QUIT_SAVE_TRIES = 4
 const QUIT_RETRY_MS = 3000
-
-const STATE_RETRY_MS = 3000
 
 /**
  * A screen's unsent message as the window holds it. The sidecar owns the draft and the send: the window only knows
@@ -58,29 +71,12 @@ function toBase64(bytes: Uint8Array): string {
 
 export default function StudioApp() {
   const [projects, setProjects] = useState<Project[]>([])
-  const { current, view, files, selected, panelView, status, error } = useStudio()
+  const { current, view, files, selected, panelView, status, error, engine, setup, settings: savedSettings, importBlocked, needs, models, signIn, slicerFound, wentOnInSetup } = useStudio()
   /** A failed send's error, kept with the project it was sent to and shown only there. */
   const [sendErrors, setSendErrors] = useState<Record<string, string>>({})
   /** The open screen's draft, as its composer shows it. */
   const [shown, setShown] = useState<Draft>(EMPTY)
   const [sending, setSending] = useState(false)
-  const [engine, setEngine] = useState('Engine starting')
-  /** What a sign-in needs from the person: the code to enter on its page, or an answer. */
-  const [signIn, setSignIn] = useState<Extract<LoginEvent, { step: 'open' | 'ask' }> | null>(null)
-  const [signIns, setSignIns] = useState(0)
-  const [setup, setSetup] = useState<Setup | null>(null)
-  /** Counts setup's saves, so a state read that started before the newest save never puts back the setup it replaced. */
-  const setupSaves = useRef(0)
-  /** Whether the window took the saved state. Only the first answer to a startup read is taken. */
-  const stateTaken = useRef(false)
-  /** What the agent needs before a send, from the sidecar's check. Null until the check answers, and Send waits. */
-  const [needs, setNeeds] = useState<Need[] | null>(null)
-  /** Whether the newest look found the Bambu Studio the slice step uses. Null until a look answers. */
-  const [slicerFound, setSlicerFound] = useState<boolean | null>(null)
-  /** Counts looks for Bambu Studio, so an older look that answers late never replaces a newer one. */
-  const slicerLooks = useRef(0)
-  /** The person went on from setup's check, so a missing slicer gets no banner until the next launch. */
-  const [wentOnInSetup, setWentOnInSetup] = useState(false)
   /** The setup step opened again, and which opening it is, so a step left earlier cannot close a later one. */
   const [fixing, setFixing] = useState<{ step: Setup['step']; opening: number } | null>(null)
   const openings = useRef(0)
@@ -90,14 +86,6 @@ export default function StudioApp() {
   }
   /** The Settings section on screen. Closing it shows the screen it was opened from. */
   const [settings, setSettings] = useState<Section | null>(null)
-  /** The folder the chats from before the store could not be read from, when macOS keeps it from the app. */
-  const [importBlocked, setImportBlocked] = useState<string | null>(null)
-  /** The models of the providers the person signed in to, for the model picker. */
-  const [models, setModels] = useState<ModelOption[]>([])
-  /** The model a project made on the start screen runs on. Null until the saved state is read. */
-  const [defaultModel, setDefaultModel] = useState<ModelChoice | null>(null)
-  /** The printer the next slice runs for, from the saved state. Null until it is read. */
-  const [printer, setPrinter] = useState<Printer | null>(null)
   const sendingNow = useRef(false)
   /**
    * Each screen the window changed or filled from the saved state, by project id, or `START` for the start screen.
@@ -107,16 +95,12 @@ export default function StudioApp() {
   const screens = useRef<Record<string, Screen>>({})
   /** The open screen's save that waits for typing to pause. */
   const pending = useRef<{ key: string; timer: number } | null>(null)
-  /** What waits for the engine's next start, as a quit's save the engine refused while it restarted. */
-  const readyWaiters = useRef<(() => void)[]>([])
   /** Pastes whose pictures are still being kept, so a quit waits for them. */
   const pastes = useRef(new Set<Promise<void>>())
   /** The previews of pasted pictures, by path, freed when the window closes. */
   const previews = useRef(new Map<string, string>())
   /** Whether the person changed the start screen's pictures, so its saved ones no longer fill it. */
   const startPicturesTouched = useRef(false)
-  /** Counts readiness checks, so only the newest check's answer reaches the screen. */
-  const checks = useRef(0)
 
   const items = useMemo(() => buildChat(view?.entries ?? [], view?.running ?? true), [view?.entries, view?.running])
   const running = view?.running ?? false
@@ -200,139 +184,23 @@ export default function StudioApp() {
         autosave(START)
       }
     }
-    setDefaultModel(state.settings.model)
-    setPrinter(state.settings.printer)
     takeProjects(state)
   }
 
-  const takeProjects = (state: AppState) => {
-    // A project made while this was on its way is newer than the saved list, so it stays.
+  // A project made while this was on its way is newer than the saved list, so it stays.
+  const takeProjects = (state: AppState) =>
     setProjects((made) => [...made.filter((p) => !state.projects.some((saved) => saved.id === p.id)), ...state.projects])
-    setImportBlocked(state.importBlocked)
-  }
 
-  /**
-   * Asks the sidecar what the agent still needs before a send from the open screen, as its model's provider may differ
-   * from another screen's. Each change of screen, model, or sign-in asks again, so an older check's answer is about a
-   * screen or a model the person left, and it is dropped.
-   */
-  const checkReady = () => {
-    const check = ++checks.current
-    const project = useStudio.getState().current?.id
-    void sidecar('setup.check', project === undefined ? {} : { project })
-      .then((found) => check === checks.current && setNeeds(found))
-      .catch((err: unknown) => check === checks.current && setError(String(err)))
-  }
-
-  /** Reads the models the person can pick, which change with each sign-in. */
-  const loadModels = () => {
-    void sidecar('models.list', {})
-      .then(setModels)
-      .catch((err: unknown) => setError(String(err)))
-  }
-
-  const findSlicer = () => {
-    const look = ++slicerLooks.current
-    void checkSlicer()
-      .then(({ found }) => look === slicerLooks.current && setSlicerFound(found === 'ready'))
-      .catch((err: unknown) => look === slicerLooks.current && setError(String(err)))
-  }
-
-  /** Setup's check ended, by going on or by Back. What it can change is read again. */
-  const afterSetup = (wentOn: boolean) => {
-    if (wentOn) setWentOnInSetup(true)
-    checkReady()
-    loadModels()
-    findSlicer()
-  }
-
-  // An import retry brings old chats in as projects. Its saved state may be read before a send the person makes
-  // meanwhile, so it takes the projects only, never drafts, which this window already holds.
   const retryImport = () => {
-    void sidecar('legacy.import', {})
-      .then(() => sidecar('state.get', {}))
+    void importAgain()
       .then(takeProjects)
       .catch((err: unknown) => setError(String(err)))
   }
 
   useEffect(() => {
-    // The first read of the saved state, which Send waits for. A read that fails is tried again after a pause, and at
-    // once when the engine is back. Only the first answer is taken. Every startup read began before a send could go,
-    // so a later answer would bring back what that send took. A read that ends after the window closed does nothing.
-    let stopped = false
-    let retry: number | undefined
-    const readState = () => {
-      const saves = setupSaves.current
-      return sidecar('state.get', {})
-        .then(
-          (state) => {
-            if (stopped || stateTaken.current) return
-            stateTaken.current = true
-            takeState(state)
-            if (saves === setupSaves.current) setSetup(state.setup)
-          },
-          (err: unknown) => {
-            if (stopped || stateTaken.current) return
-            setError(String(err))
-            window.clearTimeout(retry)
-            retry = window.setTimeout(() => {
-              if (!stateTaken.current) void readState()
-            }, STATE_RETRY_MS)
-          },
-        )
-        .catch((err: unknown) => setError(String(err)))
-    }
-    void readState()
-    checkReady()
-    loadModels()
-    findSlicer()
-    // The listener is in place before the ping, so no engine change is missed, and a ping that answers late never
-    // hides one.
-    let engineChanged = false
-    const events = onSidecarEvent((event) => {
-      switch (event.type) {
-        case 'ready': {
-          engineChanged = true
-          setEngine(`Engine ${event.version}`)
-          // A check that failed while the engine started again is asked again, so Send does not stay off.
-          checkReady()
-          loadModels()
-          for (const wake of readyWaiters.current.splice(0)) wake()
-          if (!stateTaken.current) void readState()
-          break
-        }
-        case 'engine':
-          engineChanged = true
-          setEngine(event.state === 'stopped' ? event.detail : 'Engine restarting')
-          break
-        case 'login':
-          if (event.step === 'open') {
-            void openUrl(event.url).catch((err: unknown) => setError(String(err)))
-            setSignIn(event.code === undefined ? null : event)
-          }
-          if (event.step === 'ask') setSignIn(event)
-          if (event.step === 'done') {
-            setSignIn(null)
-            setSignIns((count) => count + 1)
-            checkReady()
-            loadModels()
-          }
-          if (event.step === 'failed') {
-            setSignIn(null)
-            setError(event.detail)
-          }
-          break
-      }
-    })
-    events.ready
-      .then(() => sidecar('app.ping', {}))
-      .then(({ version }) => engineChanged || setEngine(`Engine ${version}`))
-      .catch((err: unknown) => engineChanged || setEngine(String(err)))
-    return () => {
-      stopped = true
-      window.clearTimeout(retry)
-      events.stop()
-    }
+    void start()
+      .then(takeState)
+      .catch((err: unknown) => setError(String(err)))
   }, [])
 
   useEffect(() => () => previews.current.forEach((url) => URL.revokeObjectURL(url)), [])
@@ -397,7 +265,7 @@ export default function StudioApp() {
           throw new Error('a draft could not be saved')
         }
         await new Promise<void>((wake) => {
-          readyWaiters.current.push(wake)
+          onNextReady(wake)
           window.setTimeout(wake, QUIT_RETRY_MS)
         })
       }
@@ -481,7 +349,7 @@ export default function StudioApp() {
   }
 
   /** The open project's own model, or the default for one from before the picker. On the start screen, the default. */
-  const chosenModel = (current ? projects.find((p) => p.id === current.id)?.model : undefined) ?? defaultModel
+  const chosenModel = (current ? projects.find((p) => p.id === current.id)?.model : undefined) ?? savedSettings?.model ?? null
 
   const waiting = view?.waiting ?? null
   const turnLogin: TurnLogin | undefined = waiting?.kind === 'login' ? { kind: 'turn-login', provider: waiting.provider, name: waiting.name } : undefined
@@ -498,11 +366,8 @@ export default function StudioApp() {
   const pickModel = (model: ModelChoice) => {
     const project = current?.id
     if (project === undefined) {
-      void sidecar('settings.set', { model })
-        .then((state) => {
-          setDefaultModel(state.settings.model)
-          checkReady()
-        })
+      void saveSettings({ model })
+        .then(() => checkReady())
         .catch((err: unknown) => setError(String(err)))
       return
     }
@@ -550,31 +415,13 @@ export default function StudioApp() {
     <SignInAsk
       key={signIn.step === 'ask' ? signIn.message : signIn.url}
       ask={signIn}
-      onAnswer={(answer) => {
-        setSignIn(null)
-        void sidecar('auth.answer', { provider: signIn.provider, text: answer }).catch((err: unknown) => setError(String(err)))
-      }}
+      onAnswer={(answer) => answerSignIn(signIn.provider, answer)}
     />
   )
 
   if (setup !== null && !setup.done) {
     return (
-      <SetupFlow
-        setup={setup}
-        onSaved={(state) => {
-          setupSaves.current += 1
-          setSetup(state.setup)
-          if (state.setup.done) {
-            setDefaultModel(state.settings.model)
-            setPrinter(state.settings.printer)
-            afterSetup(true)
-          }
-        }}
-        onError={setError}
-        error={errorBar}
-        signIn={signInAsk}
-        signIns={signIns}
-      />
+      <SetupFlow setup={setup} onError={setError} error={errorBar} signIn={signInAsk} />
     )
   }
 
@@ -585,16 +432,14 @@ export default function StudioApp() {
         key={opening}
         step={step}
         refused={turnLogin?.provider}
-        onDone={(wentOn, saved) => {
+        onDone={(wentOn) => {
           // A save that ends after its step was left still counts, but closes only the opening it came from.
           if (openings.current === opening) setFixing(null)
           afterSetup(wentOn && step === 'check')
-          if (saved !== undefined) setPrinter(saved.settings.printer)
         }}
         onError={setError}
         error={errorBar}
         signIn={signInAsk}
-        signIns={signIns}
       />
     )
   }
@@ -604,17 +449,11 @@ export default function StudioApp() {
       <Settings
         section={settings}
         onSection={setSettings}
-        models={models}
-        onSaved={(state) => {
-          setDefaultModel(state.settings.model)
-          checkReady()
-        }}
         onFix={openFix}
         onClose={() => setSettings(null)}
         onError={setError}
         error={errorBar}
         signIn={signInAsk}
-        signIns={signIns}
         refused={turnLogin?.provider}
       />
     )
@@ -626,7 +465,7 @@ export default function StudioApp() {
         projects={projects}
         current={current?.id ?? null}
         engine={engine}
-        printer={printer}
+        printer={savedSettings?.printer ?? null}
         onOpen={openProject}
         onNew={() => show(null)}
         onSettings={() => setSettings('agents')}

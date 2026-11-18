@@ -1,17 +1,19 @@
-import { type ReactNode, useEffect, useState } from 'react'
+import { type ReactNode, useEffect, useLayoutEffect, useState } from 'react'
 import type { ModelOption } from '../../sidecar/src/protocol'
 import { checkSlicer, sidecar } from './api'
 import type { Found, Row } from './checkRows'
 import { Mark } from './marks'
+import { readLogins, useStudio } from './store'
 
 /**
  * Asks the sign-ins, the slicer, and the build tools, and fills each part as it answers. A new `round` asks all three
- * again from blank. A new `signIns` asks only the sign-ins again.
+ * again from blank. The store reads the sign-ins again after each one that ends.
  */
-export function useFound(onError: (message: string) => void, signIns: number, round = 0): Found {
-  const [found, setFound] = useState<Found>({})
+export function useFound(onError: (message: string) => void, round = 0): Found {
+  const [found, setFound] = useState<Omit<Found, 'logins'>>({})
+  const logins = useStudio((s) => s.logins)
 
-  const fill = <K extends keyof Found>(part: K, answer: Promise<Exclude<Found[K], 'failed' | undefined>>, current: () => boolean) =>
+  const fill = <K extends 'toolchain' | 'slicer'>(part: K, answer: Promise<Exclude<Found[K], 'failed' | undefined>>, current: () => boolean) =>
     void answer.then(
       (value) => current() && setFound((now) => ({ ...now, [part]: value })),
       (err: unknown) => {
@@ -31,15 +33,10 @@ export function useFound(onError: (message: string) => void, signIns: number, ro
     }
   }, [round])
 
-  useEffect(() => {
-    let current = true
-    fill('logins', sidecar('auth.status', {}), () => current)
-    return () => {
-      current = false
-    }
-  }, [round, signIns])
+  // Before the screen paints, so it never shows the sign-ins an earlier read found.
+  useLayoutEffect(() => readLogins(true), [round])
 
-  return found
+  return { ...found, logins }
 }
 
 export function CheckGroup({ title, rows, testId, act, children }: { title: string; rows: Row[]; testId: 'check' | 'settings'; act: (row: Row) => ReactNode; children?: ReactNode }) {

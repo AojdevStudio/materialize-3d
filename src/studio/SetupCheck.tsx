@@ -28,11 +28,11 @@ function verdictOf({ logins, toolchain, slicer }: Found): Verdict {
   return { title: 'Your Mac is ready', text: 'Everything the app needs is here.', go: 'ready' }
 }
 
-export default function SetupCheck({ next, onError, signIn, signIns, refused }: StepProps) {
+export default function SetupCheck({ next, onError, signIn, refused }: StepProps) {
   const [round, setRound] = useState(0)
   const [keyFormFor, setKeyFormFor] = useState<ProviderId | null>(null)
   const [copied, setCopied] = useState<string | null>(null)
-  const found = useFound(onError, signIns, round)
+  const found = useFound(onError, round)
 
   const withoutRefused = forgetRefused(found, refused)
   const verdict = verdictOf(withoutRefused)

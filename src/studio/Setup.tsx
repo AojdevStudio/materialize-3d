@@ -1,22 +1,17 @@
-import { type ComponentType, type ReactNode, useRef } from 'react'
-import type { AppState, Setup } from '../../sidecar/src/protocol'
-import { sidecar } from './api'
+import type { ComponentType, ReactNode } from 'react'
+import type { Setup } from '../../sidecar/src/protocol'
 import SetupCheck from './SetupCheck'
 import SetupModel from './SetupModel'
 import SetupPrinter from './SetupPrinter'
 import SetupReady from './SetupReady'
+import { saveSetup } from './store'
 
-/**
- * What every step's screen gets. A step that saved passes `next` the app state its save answered. `signIn` is a running
- * sign-in's question, and `signIns` counts finished sign-ins. `refused` is the provider a waiting turn needs a new
- * sign-in to.
- */
+/** What every step's screen gets. `signIn` is a running sign-in's question. `refused` is the provider a waiting turn needs a new sign-in to. */
 export type StepProps = {
-  next: (saved?: AppState) => Promise<void>
+  next: () => Promise<void>
   back: () => Promise<void>
   onError: (message: string) => void
   signIn: ReactNode
-  signIns: number
   refused?: string
 }
 
@@ -34,22 +29,12 @@ type Shared = Omit<StepProps, 'next' | 'back'> & { error: ReactNode }
 const indexOf = (step: Setup['step']) => Math.max(0, STEPS.findIndex((entry) => entry.step === step))
 
 /** First-launch setup, on the step the store keeps, until it is done. A step this build lacks starts it over. */
-export default function SetupFlow({ setup, onSaved, ...shared }: Shared & { setup: Setup; onSaved: (state: AppState) => void }) {
+export default function SetupFlow({ setup, ...shared }: Shared & { setup: Setup }) {
   const at = indexOf(setup.step)
   const { step } = STEPS[at]
   const following = STEPS[at + 1]
   const before = STEPS[at - 1]
-  const saving = useRef(false)
-  const save = async (change: Setup) => {
-    if (saving.current) return
-    saving.current = true
-    await sidecar('setup.set', change)
-      .then(onSaved)
-      .catch((err: unknown) => shared.onError(String(err)))
-      .finally(() => {
-        saving.current = false
-      })
-  }
+  const save = (change: Setup) => saveSetup(change).catch((err: unknown) => shared.onError(String(err)))
   const next = () => save(following === undefined ? { step, done: true } : { step: following.step, done: false })
   const back = async () => {
     if (before !== undefined) await save({ step: before.step, done: false })
@@ -59,8 +44,8 @@ export default function SetupFlow({ setup, onSaved, ...shared }: Shared & { setu
 }
 
 /** One step of setup opened again, as Fix in setup does. Going on, or Back, ends it there. The stored setup stays done. */
-export function SetupStep({ step, onDone, ...shared }: Shared & { step: Setup['step']; onDone: (wentOn: boolean, saved?: AppState) => void }) {
-  return <SetupCard at={indexOf(step)} next={async (saved) => onDone(true, saved)} back={async () => onDone(false)} reopened {...shared} />
+export function SetupStep({ step, onDone, ...shared }: Shared & { step: Setup['step']; onDone: (wentOn: boolean) => void }) {
+  return <SetupCard at={indexOf(step)} next={async () => onDone(true)} back={async () => onDone(false)} reopened {...shared} />
 }
 
 /** A reopened step gets a Back above the card, since the flow's own steps around it are done. */
