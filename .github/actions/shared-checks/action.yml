@@ -1,0 +1,30 @@
+name: App toolchain and shared checks
+description: Sets up Node, Bun, and Rust, then runs the checks the Linux and macOS jobs share.
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v6.2.0
+      with:
+        node-version: "24"
+    - uses: ./.github/actions/setup-bun
+    - uses: dtolnay/rust-toolchain@stable
+    - uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: src-tauri
+        # A cache save on this persistent runner would otherwise delete cargo-installed tools from ~/.cargo/bin.
+        cache-bin: false
+        # Only main saves. A pull request restores main's entry and saves none, so it adds no copy to the cache.
+        save-if: ${{ github.ref == 'refs/heads/main' }}
+    - name: Install JavaScript dependencies (frozen lockfile)
+      shell: bash
+      run: bun install --frozen-lockfile
+    - name: Typecheck
+      shell: bash
+      run: bunx tsc --noEmit
+    - name: Frontend tests
+      shell: bash
+      run: bun run test
+    - name: Sidecar typecheck and tests
+      shell: bash
+      working-directory: sidecar
+      run: bun install --frozen-lockfile && bunx tsc --noEmit && bun test
