@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import type { ChatEntry, ChatView } from '../src/protocol'
 import { spawnSidecar } from './sidecar'
 
@@ -40,6 +40,15 @@ async function waitForFile(path: string, ms = 15_000) {
   const deadline = Date.now() + ms
   while (!existsSync(path)) {
     if (Date.now() > deadline) throw new Error(`${path} never appeared`)
+    await Bun.sleep(25)
+  }
+}
+
+/** Waits until no process runs with `dir` in its command line, as when the watch on a crashed sidecar ends its command. */
+async function untilNothingRunsIn(dir: string, ms = 5_000) {
+  const deadline = Date.now() + ms
+  while (Bun.spawnSync(['ps', '-A', '-o', 'command=']).stdout.toString().includes(dir)) {
+    if (Date.now() > deadline) throw new Error(`a command in ${dir} still runs`)
     await Bun.sleep(25)
   }
 }
@@ -113,8 +122,8 @@ describe('a crash mid-turn', () => {
     const before = ((await first.call('chat.open', { project })) as ChatView).seq
     first.child.kill('SIGKILL')
     await first.child.exited
-    // The watch on op2 ends it within a second of the crash, before `go` would let it finish.
-    await Bun.sleep(1500)
+    // The watch on op2 ends it after the crash, before `go` would let it finish.
+    await untilNothingRunsIn(dirname(where.data))
 
     const reopened = start(where, 'ops')
     await reopened.next()
