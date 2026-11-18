@@ -153,7 +153,8 @@ export function buildChat(entries: ChatEntry[], running = true): ChatItem[] {
           else trace.lines.push({ kind: 'note', text: entry.text })
         }
         for (const call of entry.calls) {
-          const args = (call.args ?? {}) as Record<string, unknown>
+          // The model sent the args, so they can be any JSON. Only an object names any of them.
+          const args: Record<string, unknown> = typeof call.args === 'object' && call.args !== null && !Array.isArray(call.args) ? { ...call.args } : {}
           const item: ToolItem = { kind: 'tool', id: call.id, ...describe(call.name, args), state: 'running' }
           tools.set(call.id, item)
           step(item)
