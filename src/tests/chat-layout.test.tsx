@@ -10,7 +10,7 @@ const scroll = vi.fn()
 Element.prototype.scrollIntoView = scroll
 
 const chat = (items: ChatItem[], running = false) => (
-  <ChatView project="p" items={items} running={running} startedMs={undefined} onPreview={() => {}} onError={() => {}} />
+  <ChatView project="p" items={items} running={running} startedMs={undefined} onError={() => {}} />
 )
 
 beforeAll(() => {
