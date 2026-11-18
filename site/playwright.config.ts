@@ -2,7 +2,7 @@ import { defineConfig, devices } from "@playwright/test";
 
 // Tests run against the production build served under a subpath, which also proves
 // SITE_BASE works: every asset and link must resolve below /materialize-3d/.
-const base = "/materialize-3d/";
+export const base = "/materialize-3d/";
 const port = 4173;
 
 export default defineConfig({

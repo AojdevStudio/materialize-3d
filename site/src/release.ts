@@ -1,10 +1,10 @@
 /**
  * Every release fact the page states lives here, with the off-site links the page may
  * render. They describe the published download, not the source on main. After a release is
- * published and checked, edit them as docs/releasing.md step 7 says. The page renders the
- * honest state for whatever these values are (pending checksum, unsigned, unnotarized).
- * `bun scripts/release/release-facts.ts --published` checks them against the Latest release
- * and the source at its tag.
+ * published and checked, edit them as docs/releasing.md step 7 says. The page says the download
+ * is signed and notarized by Apple, because scripts/release/build-macos.sh refuses to build a
+ * release without both. `bun scripts/release/release-facts.ts --published` checks these facts
+ * against the Latest release and the source at its tag.
  */
 export type Release = {
   version: string;
@@ -12,10 +12,8 @@ export type Release = {
   releasesUrl: string;
   docsUrl: string;
   dmgUrl: string;
-  /** Lowercase hex SHA-256 of the DMG, or "pending" until the release is verified. */
-  sha256: "pending" | (string & {});
-  signed: boolean;
-  notarized: boolean;
+  /** Lowercase hex SHA-256 of the DMG. */
+  sha256: string;
   /** Shown verbatim, e.g. "macOS 26.7". */
   testedMacOS: string;
   /** The published build's `minimumSystemVersion`, shown as "macOS 26.0 or later". */
@@ -23,8 +21,6 @@ export type Release = {
   /** Shown verbatim in the download label, e.g. "Apple Silicon". */
   architecture: string;
   bambuStudio: { version: string; releaseUrl: string };
-  /** Whether this download is the chat studio. While false, the hero says the studio is not in a release yet. */
-  studio: boolean;
 };
 
 /** The last published release. It trails package.json while the next release is built. */
@@ -39,8 +35,6 @@ export const release: Release = {
   docsUrl: "https://github.com/AojdevStudio/materialize-3d#readme",
   dmgUrl: `https://github.com/AojdevStudio/materialize-3d/releases/download/v${version}/Materialize-3D-${version}-macos-arm64.dmg`,
   sha256: "5f883a5f5f88983da486c895ff059a72b1628847194be5e352b2f564c2f8b06a",
-  signed: true,
-  notarized: true,
   testedMacOS: "macOS 26.7.2",
   minimumMacOS: "26.0",
   architecture: "Apple Silicon",
@@ -48,13 +42,7 @@ export const release: Release = {
     version: bambuStudio,
     releaseUrl: `https://github.com/bambulab/BambuStudio/releases/tag/v${bambuStudio}`,
   },
-  studio: true,
 };
-
-/** The page may say "signed and notarized by Apple" only when this is true. */
-export const appleTrusted = release.signed && release.notarized;
-
-export const checksumPublished = release.sha256 !== "pending";
 
 export const dmgFileName = new URL(release.dmgUrl).pathname.split("/").pop() ?? "the DMG";
 

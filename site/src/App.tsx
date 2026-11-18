@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { DownloadLink, ReleaseNote } from "./components/Download";
+import { DownloadLink } from "./components/Download";
 import { HowItWorks } from "./components/HowItWorks";
 import { ReleaseFacts } from "./components/ReleaseFacts";
 import { SiteFooter } from "./components/SiteFooter";
 import { SiteHeader } from "./components/SiteHeader";
-import { checksumPublished, dmgFileName, release } from "./release";
+import { dmgFileName, release } from "./release";
 import { ScrollStory } from "./story/ScrollStory";
 
 type Requirement = { label: string; text: string };
@@ -29,30 +29,14 @@ const requirements: readonly Requirement[] = [
   },
 ];
 
-/** What a download of this release goes through, in order. Each step states the release's honest state. */
 const installSteps = [
   <>
-    Download <a href={release.dmgUrl}>{dmgFileName}</a>.
-    {checksumPublished && (
-      <>
-        {" "}
-        Check it with <code>shasum -a 256 {dmgFileName}</code>. It should print{" "}
-        <code className="hash">{release.sha256}</code>.
-      </>
-    )}
+    Download <a href={release.dmgUrl}>{dmgFileName}</a>. Check it with <code>shasum -a 256 {dmgFileName}</code>. It
+    should print <code className="hash">{release.sha256}</code>.
   </>,
   <>Open the DMG.</>,
   <>Drag Materialize 3D to Applications.</>,
-  <>
-    Launch it from Applications.
-    {!release.notarized && (
-      <>
-        {" "}
-        This build has no Apple notarization yet, so macOS blocks the first launch. Open System Settings, then
-        Privacy &amp; Security, and click Open Anyway for Materialize 3D.
-      </>
-    )}
-  </>,
+  <>Launch it from Applications.</>,
   <>Follow setup: sign in to Claude or ChatGPT, pick a model, and confirm your printer.</>,
   <>
     If Check your Mac does not find Bambu Studio{" "}
@@ -123,7 +107,6 @@ export function App() {
                   </svg>
                 </a>
               </div>
-              <ReleaseNote />
             </div>
             <ReleaseFacts />
           </div>

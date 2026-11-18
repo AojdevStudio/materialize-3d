@@ -8,16 +8,16 @@
       name="description"
       content="A Mac app where you describe a 3D-printable part in a chat and an agent makes it. It writes the model, previews it, and slices it into a 3MF with Bambu Studio 02.08.02.61 for the Bambu Lab printer you pick."
     />
-    <link rel="canonical" href="https://materialize-3d.pages.dev/" />
+    <link rel="canonical" href="%SITE_URL%" />
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="Materialize 3D" />
-    <meta property="og:url" content="https://materialize-3d.pages.dev/" />
+    <meta property="og:url" content="%SITE_URL%" />
     <meta property="og:title" content="Materialize 3D: describe a part, print the 3MF" />
     <meta
       property="og:description"
       content="A Mac app where you describe a 3D-printable part in a chat and an agent makes it. It writes the model, previews it, and slices it into a 3MF with Bambu Studio 02.08.02.61 for the Bambu Lab printer you pick."
     />
-    <meta property="og:image" content="https://materialize-3d.pages.dev/og-image.png" />
+    <meta property="og:image" content="%SITE_URL%og-image.png" />
     <meta property="og:image:width" content="1200" />
     <meta property="og:image:height" content="630" />
     <meta
@@ -30,19 +30,13 @@
       name="twitter:description"
       content="A Mac app where you describe a 3D-printable part in a chat and an agent makes it. It writes the model, previews it, and slices it into a 3MF with Bambu Studio 02.08.02.61 for the Bambu Lab printer you pick."
     />
-    <meta name="twitter:image" content="https://materialize-3d.pages.dev/og-image.png" />
+    <meta name="twitter:image" content="%SITE_URL%og-image.png" />
     <meta
       name="twitter:image:alt"
       content="The Materialize 3D studio window: projects on the left, the agent's chat about a two-part desk phone stand in the middle, and its 3D assembly guide on the right."
     />
     <meta name="color-scheme" content="light dark" />
-    <link rel="icon" type="image/svg+xml" href="/src/assets/brand/mark-small-32.svg" />
-    <script>
-      // Apply the remembered theme before first paint. Light is the default.
-      try {
-        if (localStorage.getItem("m3d-theme") === "dark") document.documentElement.dataset.theme = "dark";
-      } catch {}
-    </script>
+    <link rel="icon" type="image/svg+xml" href="%APP_ASSETS%/brand/mark-small-32.svg" />
   </head>
   <body>
     <div id="root"></div>

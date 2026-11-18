@@ -1,8 +1,7 @@
-import markSmall from "../assets/brand/mark-small-32.svg";
-import oflUrl from "../assets/fonts/OFL.txt?url";
+import markSmall from "@app/brand/mark-small-32.svg";
+import oflUrl from "@app/fonts/Inter-OFL.txt?url";
 import { blogUrl, licenseUrl, release } from "../release";
 
-/** The footer on every page: the project links, then a rule and the legal line. */
 export function SiteFooter({ page }: { page: "home" | "privacy" }) {
   return (
     <footer className="site-footer">

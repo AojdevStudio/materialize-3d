@@ -1,7 +1,7 @@
-/* Inter, copied from the app (src/assets/fonts), SIL OFL 1.1; license in assets/fonts/OFL.txt. */
+/* Inter, the app's own font file, SIL OFL 1.1. The footer links its license. */
 @font-face {
   font-family: "Inter";
-  src: url("./assets/fonts/Inter-Latin-Variable.woff2") format("woff2");
+  src: url("@app/fonts/Inter-Latin-Variable.woff2") format("woff2");
   font-weight: 100 900;
   font-display: swap;
 }
@@ -229,12 +229,6 @@ ul {
   font: 400 10px var(--mono);
   letter-spacing: 0.2em;
   text-transform: uppercase;
-}
-.release-note {
-  max-width: 400px;
-  margin-top: 14px;
-  color: var(--muted);
-  font-size: 13px;
 }
 
 /* The end of the scroll: download, release facts, how it works, requirements, install */

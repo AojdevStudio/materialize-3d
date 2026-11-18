@@ -1,11 +1,11 @@
 import { Fragment, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import chevronDown from "../assets/icons/chevron-down.svg?raw";
 import circleCheck from "../assets/icons/circle-check.svg?raw";
-import filePen from "../assets/icons/file-pen-line.svg?raw";
-import layers from "../assets/icons/layers.svg?raw";
 import paperclip from "../assets/icons/paperclip.svg?raw";
-import terminal from "../assets/icons/terminal.svg?raw";
-import { DownloadLink, ReleaseNote } from "../components/Download";
+import filePen from "@app/icons/file-pen-line.svg?raw";
+import layers from "@app/icons/layers.svg?raw";
+import terminal from "@app/icons/terminal.svg?raw";
+import { DownloadLink } from "../components/Download";
 import { DIMENSIONS, PARAM_ROWS, PRINT, TBD_ROWS } from "./facts";
 import { PARTS } from "./parts";
 import { COPY_STAGES, RAIL, TRACE, railPosition, readoutAt, traceAt, trackLength, type CopyStage, type Motion, type TraceIcon } from "./timeline";
@@ -24,9 +24,10 @@ function useMotion(): Motion {
   return useSyncExternalStore(subscribeToMotion, () => (window.matchMedia(REDUCED_MOTION).matches ? "still" : "full"));
 }
 
-/** A Lucide line icon from `assets/icons`, drawn in the text color, as the studio draws its trace. */
+/** A Lucide line icon, drawn in the text color, as the studio draws its trace. */
 const Icon = ({ svg }: { svg: string }) => <span className="icon" aria-hidden="true" dangerouslySetInnerHTML={{ __html: svg }} />;
 
+/** The studio's own icon files, matched to each kind of step as src/studio/Trace.tsx matches them. */
 const TRACE_ICONS: Record<TraceIcon, string> = { write: filePen, run: terminal, slice: layers };
 
 /**
@@ -47,7 +48,6 @@ const COPY: Record<CopyStage["id"], ReactNode> = {
           Install guide
         </a>
       </div>
-      <ReleaseNote />
       <p className="hint">
         <svg viewBox="0 0 9 22" aria-hidden="true">
           <path d="M4.5 0v20M1 16.5l3.5 4 3.5-4" />

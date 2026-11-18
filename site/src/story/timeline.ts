@@ -6,7 +6,7 @@
  * math on the story position P, the distance in vh along the full-motion track, so the
  * scene, the copy, the trace, and the readout all read one number.
  */
-import { LIFTED_PARTS, PARTS, type Part } from "./parts";
+import { LIFTED_PARTS, PARTS, PRINTER, type Part } from "./parts";
 
 export const clamp = (x: number, lo = 0, hi = 1) => Math.min(hi, Math.max(lo, x));
 export const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
@@ -145,7 +145,6 @@ export const COPY_STAGES = STAGES.filter((stage): stage is CopyStage => stage.te
 /** The agent's trace, oldest step first, as the studio lists it. The rewind reads it from the bottom up. */
 export const TRACE = STAGES.filter((stage): stage is Extract<Stage, { tells: "trace" }> => stage.tells === "trace").reverse();
 
-// Filled for every stage by the loop below.
 const timing = {} as Record<StageId, { start: number; length: number; index: number }>;
 let cursor = 0;
 for (const [index, stage] of STAGES.entries()) {
@@ -174,7 +173,7 @@ export function stageAt(P: number): Stage {
 export type Motion = "full" | "still";
 
 /** Under reduced motion every stage gets one screen of scroll. */
-const STILL_LENGTH = 100;
+export const STILL_LENGTH = 100;
 
 /** Scroll length of the story track in vh, plus one screen that holds the last stage under the end section. */
 export const trackLength = (motion: Motion) => (motion === "full" ? TOTAL : STAGES.length * STILL_LENGTH) + 100;
@@ -333,7 +332,6 @@ function elapsedAt(P: number): number {
   return seconds;
 }
 
-/** Seconds as m:ss. */
 export const minutes = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
 
 export function readoutAt(P: number, print: PrintFacts): ReadoutView {
@@ -349,8 +347,8 @@ export function readoutAt(P: number, print: PrintFacts): ReadoutView {
         value: String(lifted).padStart(2, "0"),
         of: `/${LIFTED_PARTS}`,
         unit: "",
-        line: done ? "Build plate, textured PEI" : (lifting.at(-1)?.label ?? "Assembled"),
-        note: done ? "256 × 256 mm" : "392 × 406 × 478 mm outer",
+        line: done ? PRINTER.plate : (lifting.at(-1)?.label ?? "Assembled"),
+        note: done ? `${PRINTER.areaMm.join(" × ")} mm` : `${PRINTER.outerMm.join(" × ")} mm outer`,
       };
     }
     case "print": {
