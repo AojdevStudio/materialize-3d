@@ -165,6 +165,8 @@ let checks = 0
 let looks = 0
 /** Counts sign-in reads, so an older read that answers late never replaces a newer one. */
 let loginReads = 0
+/** Counts model list reads, so an older read that answers late never replaces a newer one. */
+let modelReads = 0
 
 const withRuns = () =>
   Object.fromEntries(Object.entries(kept.read).map(([id, s]) => [id, { ...s, running: kept.runs[id]?.running ?? s.running }]))
@@ -214,9 +216,10 @@ export function checkReady() {
 
 /** Reads the models the person can pick, which change with each sign-in. */
 export function loadModels() {
+  const read = ++modelReads
   void sidecar('models.list', {})
-    .then((models) => set({ models }))
-    .catch((err: unknown) => setError(String(err)))
+    .then((models) => read === modelReads && set({ models }))
+    .catch((err: unknown) => read === modelReads && setError(String(err)))
 }
 
 function findSlicer() {

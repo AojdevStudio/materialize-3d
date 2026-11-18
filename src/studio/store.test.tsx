@@ -6,8 +6,8 @@ const { invokeMock } = vi.hoisted(() => ({ invokeMock: vi.fn() }))
 vi.mock('@tauri-apps/api/core', () => ({ invoke: invokeMock }))
 vi.mock('@tauri-apps/api/event', () => ({ listen: () => Promise.resolve(() => {}) }))
 
-import type { AppState, ChatView, Printer, Project } from '../../sidecar/src/protocol'
-import { load, savePrinter, saveSettings, show, useStudio, useStudioEvents } from './store'
+import type { AppState, ChatView, ModelOption, Printer, Project } from '../../sidecar/src/protocol'
+import { load, loadModels, savePrinter, saveSettings, show, useStudio, useStudioEvents } from './store'
 
 afterEach(() => {
   cleanup()
@@ -72,4 +72,23 @@ it('takes saves that answer the app state in the order they were made, so a late
     await Promise.all([settings, printer])
   })
   expect(useStudio.getState().settings?.printer).toEqual(a1)
+})
+
+it('keeps the newest model list when an older read answers late', async () => {
+  const opus: ModelOption = { provider: 'anthropic', modelId: 'claude-opus-5-5', name: 'Opus 5.5', description: '' }
+  const answers: ((models: ModelOption[]) => void)[] = []
+  invokeMock.mockImplementation((command: string, { method }: { method?: string } = {}) => {
+    if (command === 'sidecar' && method === 'models.list') return new Promise((resolve) => answers.push(resolve))
+    if (command === 'sidecar' && method === 'projects.status') return Promise.resolve({})
+    return Promise.resolve([])
+  })
+  render(<Window />)
+  const reads = answers.length
+  act(() => loadModels())
+  act(() => loadModels())
+  const [older, newer] = answers.slice(reads)
+
+  await act(async () => newer([opus]))
+  await act(async () => older([]))
+  expect(useStudio.getState().models).toEqual([opus])
 })
