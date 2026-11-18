@@ -68,8 +68,12 @@ type Fade = { material: Material; opacity: number; transparent: boolean; depthWr
 /** A printer part as the scene moves it. The page lays out one leader label per part. */
 export type PrinterPart = { part: Part; object: Object3D; base: Vector3; offset: Vector3; fades: Fade[]; exploded: Box3; alpha: number };
 
+/** The dock mount's pieces, by the object names site/models/blender/build_dock.py gives them in dock.glb. */
 const DOCK_PARTS = ["back_plate", "rail_left", "rail_right", "shelf_left", "shelf_right", "adapter"] as const;
 type DockPartName = (typeof DOCK_PARTS)[number];
+/** The piece the story prints on the plate, and the piece the adapter stage lights up. */
+const PRINTED = "shelf_right" satisfies DockPartName;
+const ADAPTER = "adapter" satisfies DockPartName;
 type DockPiece = { mesh: Mesh; material: MeshStandardMaterial; base: Color; edges: LineSegments; offset: Vector3 };
 
 type Key = CameraKey & { at: number; point: Vector3 };
@@ -211,7 +215,7 @@ export class StoryScene {
 
     const piece = (name: DockPartName): DockPiece => {
       const geometry = meshNamed(models.dock, name, "dock.glb").geometry;
-      const printed = name === "shelf_right";
+      const printed = name === PRINTED;
       const material = new MeshStandardMaterial({ color: printed ? OXBLOOD_LIT : CONCRETE, roughness: 0.62, metalness: 0, transparent: true });
       material.polygonOffset = true;
       material.polygonOffsetFactor = 1;
@@ -224,15 +228,8 @@ export class StoryScene {
       (printed ? scene : this.inner).add(mesh);
       return { mesh, material, base: material.color.clone(), edges, offset: new Vector3() };
     };
-    this.pieces = {
-      back_plate: piece("back_plate"),
-      rail_left: piece("rail_left"),
-      rail_right: piece("rail_right"),
-      shelf_left: piece("shelf_left"),
-      shelf_right: piece("shelf_right"),
-      adapter: piece("adapter"),
-    };
-    this.shelf = this.pieces.shelf_right.mesh;
+    this.pieces = Object.fromEntries(DOCK_PARTS.map((name) => [name, piece(name)])) as Record<DockPartName, DockPiece>;
+    this.shelf = this.pieces[PRINTED].mesh;
 
     // The print pose on the plate, with the part's footprint centred.
     const [sizeX, sizeY] = PRINT_SIZE;
@@ -245,7 +242,7 @@ export class StoryScene {
 
     // Layer lines in the plastic, in print space, so they stay with the part when it moves.
     const row = new Vector4(pose.elements[1], pose.elements[5], pose.elements[9], pose.elements[13]);
-    const shelfMaterial = this.pieces.shelf_right.material;
+    const shelfMaterial = this.pieces[PRINTED].material;
     shelfMaterial.clippingPlanes = [this.clipTop];
     shelfMaterial.clipShadows = true;
     shelfMaterial.roughness = 0.58;
@@ -558,21 +555,21 @@ export class StoryScene {
     pieces.rail_left.offset.set(-0.03 * gather, 0, -railY * explodeK - 0.04 * gather);
     pieces.rail_right.offset.set(0.03 * gather, 0, -railY * explodeK - 0.04 * gather);
     pieces.shelf_left.offset.set(-shelfX * explodeK - 0.05 * gather, 0.02 * gather, 0);
-    pieces.shelf_right.offset.set(shelfX * explodeK, 0, 0);
+    pieces[PRINTED].offset.set(shelfX * explodeK, 0, 0);
     pieces.back_plate.offset.set(0, 0, 0.03 * gather);
-    pieces.adapter.offset.set(0, -0.03 * gather, 0.05 * gather + 0.09 * adapterGone);
+    pieces[ADAPTER].offset.set(0, -0.03 * gather, 0.05 * gather + 0.09 * adapterGone);
     for (const name of DOCK_PARTS) {
       const piece = pieces[name];
-      const printed = name === "shelf_right";
+      const printed = name === PRINTED;
       let alpha = (printed ? 1 - 0.88 * sliceBell : others) * story;
-      if (name === "adapter") alpha *= 1 - adapterGone;
+      if (name === ADAPTER) alpha *= 1 - adapterGone;
       if (!printed) {
         piece.mesh.position.copy(piece.offset);
         piece.mesh.visible = alpha > 0.004;
       }
       // Shaded plastic flattens to paper for the drawing.
       this.color.copy(piece.base);
-      if (name === "adapter") this.color.lerp(HIGHLIGHT, adapterLit * (1 - flat));
+      if (name === ADAPTER) this.color.lerp(HIGHLIGHT, adapterLit * (1 - flat));
       piece.material.color.copy(this.color).multiplyScalar(1 - flat);
       piece.material.emissive.copy(palette.paper).multiplyScalar(flat);
       piece.material.envMapIntensity = 1 - flat;
@@ -582,14 +579,14 @@ export class StoryScene {
     this.edgeMaterial.opacity = Math.max(flat, 0.22 * others) * story;
     this.edgeMaterial.color.copy(palette.ink);
     for (const name of DOCK_PARTS) {
-      pieces[name].edges.visible = this.edgeMaterial.opacity > 0.004 && (name !== "shelf_right" || kPose > 0.98);
+      pieces[name].edges.visible = this.edgeMaterial.opacity > 0.004 && (name !== PRINTED || kPose > 0.98);
     }
 
     // The printed shelf travels from the plate into its place on the mount, with a small hop.
     this.inner.updateMatrixWorld(true);
     const place = this.w;
     this.m
-      .makeTranslation(pieces.shelf_right.offset.x, pieces.shelf_right.offset.y, pieces.shelf_right.offset.z)
+      .makeTranslation(pieces[PRINTED].offset.x, pieces[PRINTED].offset.y, pieces[PRINTED].offset.z)
       .premultiply(this.inner.matrixWorld)
       .decompose(place, this.q, this.v.set(1, 1, 1));
     this.shelf.position.lerpVectors(this.printPose.position, place, kPose);

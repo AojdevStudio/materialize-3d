@@ -8,7 +8,6 @@ import type { PrintFacts } from "./timeline";
 
 type Tuple<N extends number, T extends number[] = []> = T["length"] extends N ? T : Tuple<N, [...T, number]>;
 
-/** Reads exactly n numbers from the file, as a tuple. */
 function exactly<N extends number>(values: readonly number[], n: N, what: string): Readonly<Tuple<N>> {
   if (values.length !== n) throw new Error(`dock-data.json: ${what} needs ${n} numbers, got ${values.length}`);
   return values as unknown as Tuple<N>;

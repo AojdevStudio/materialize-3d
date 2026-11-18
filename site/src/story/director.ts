@@ -10,6 +10,7 @@
  */
 import type { Vector3 } from "three";
 import { loadModels } from "./assets";
+import { currentTheme } from "../site";
 import { PRINT } from "./facts";
 import { StoryScene, type Palette, type Point, type PrinterPart, type Rect } from "./scene";
 import {
@@ -132,7 +133,7 @@ export function startStory(root: HTMLElement, motion: Motion, onStatus: (status:
       paper: style.getPropertyValue("--paper").trim(),
       ink: style.getPropertyValue("--ink").trim(),
       accent: style.getPropertyValue("--accent-ink").trim(),
-      dark: document.documentElement.dataset.theme === "dark",
+      dark: currentTheme() === "dark",
     };
   }
 

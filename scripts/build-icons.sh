@@ -7,7 +7,8 @@
 # the full render (mark-1024.png) and two simple drawings for small sizes
 # (mark-small-32.svg and mark-small-16.svg), because the render's grid blurs
 # at 32 px and below. It copies the two drawings to src/assets/brand, where the
-# favicon and the sidebar logo load them. It writes five things in src-tauri/icons:
+# app's favicon and sidebar logo and the landing site's favicon and footer mark
+# load them. It writes five things in src-tauri/icons:
 # - Every PNG from the render through `tauri icon`, except 32x32.png and
 #   Square30x30Logo.png, which come from the 32 px drawing.
 # - icon.icns, through iconutil. Its 16 px entry is the 16 px drawing, its

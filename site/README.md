@@ -18,9 +18,9 @@ The tests launch the installed Google Chrome with its sandbox on, not Playwright
 
 ## Release facts
 
-Every release fact lives in `src/release.ts`: version, repository, releases, docs, and DMG URLs, the DMG SHA-256, the `signed` and `notarized` flags, the tested macOS text, the minimum macOS, the Bambu Studio build, the architecture, and the `studio` flag. These describe the published download, not the source on `main`. Edit that file, and the Bambu Studio build in `index.html`, only after a release is verified. A merge to `main` deploys the site, so an edit to `src/release.ts` goes live as soon as it merges. Merge it only after the release is verified.
+Every release fact lives in `src/release.ts`: version, repository, releases, docs, and DMG URLs, the DMG SHA-256, the tested macOS text, the minimum macOS, the Bambu Studio build, and the architecture. These describe the published download, not the source on `main`. Edit that file, and the Bambu Studio build in `index.html`, only after a release is verified. A merge to `main` deploys the site, so an edit to `src/release.ts` goes live as soon as it merges. Merge it only after the release is verified.
 
-The page renders the honest state of those values. While `studio` is false, the page says next to each download that the chat studio is not in a release yet and names the version the download is. The SHA-256 row reads "Not published yet" while the value is `pending`. The phrase "Signed and notarized by Apple" appears only when both flags are true. While `notarized` is false, the install steps tell people to use Open Anyway in System Settings, Privacy & Security. The page never tells anyone to disable Gatekeeper.
+The page says each release is signed and notarized by Apple, because `scripts/release/build-macos.sh` refuses to build a release without the signing and notarization credentials. The page never tells anyone to disable Gatekeeper.
 
 ## Design direction
 
@@ -40,7 +40,7 @@ Light is the default, a paper-white page with oxblood as the one accent. The dar
 The story lives in `src/story/`:
 
 - `timeline.ts` is the stage table. Each row sets a stage's scroll length, its reduced-motion still, its rail stop, its readout, what tells it (its own copy or the trace card), its copy fades, and its agent log line. A rewind row's log line is also its trace step. The camera keys, the readout, and the trace card hang off the same stage ids. Everything is plain math on one number, the story position.
-- `parts.ts` is the teardown table: each part's label, leader anchor, label side, and lift turn.
+- `parts.ts` is the teardown table: each part's leader anchor, label side, and lift turn. The part order, the labels, and the printer's sizes come from `printer-parts.json`.
 - `facts.ts` reads the dock mount's sizes from `dock-data.json` once. `assets.ts` loads the GLBs and the slice outlines once.
 - `scene.ts` is the three.js scene. `director.ts` maps the scroll to the story position and writes the copy, labels, readout, trace card, and rail. `ScrollStory.tsx` renders all of it as DOM.
 
@@ -63,15 +63,15 @@ The printer has P2S proportions (392 x 406 x 478 mm, a 256 mm plate) and no logo
 
 ## Fonts and third-party material
 
-The page uses Inter, copied from the app. It is licensed under the SIL Open Font License 1.1. The license text with its copyright line is in `src/assets/fonts/OFL.txt`, which the build ships and the page footer links to.
+The page uses Inter from the app's own font file in `src/assets/fonts/` at the repository root. It is licensed under the SIL Open Font License 1.1. The license text with its copyright line is `Inter-OFL.txt` beside it, which the build ships and the page footer links to.
 
 The 3D view uses three.js (MIT), installed as a package and bundled into the story chunk.
 
-The trace card and the composer use Lucide line icons (ISC) from lucide-static 1.70.0, in `src/assets/icons/`. The trace icons are the files the studio ships in `src/assets/icons/` at the repository root. Each file keeps its license comment, which the build carries into the page. The repository's `THIRD_PARTY_NOTICES.md` holds the full license text.
+The trace card and the composer use Lucide line icons (ISC) from lucide-static 1.70.0. The trace icons are the files the studio ships in `src/assets/icons/` at the repository root, and the brand mark is the app's `src/assets/brand/mark-small-32.svg`, which `scripts/build-icons.sh` writes. The site reads them through the `@app` alias in `vite.config.ts`. The composer's icons are in this folder's `src/assets/icons/`. Each file keeps its license comment, which the build carries into the page. The repository's `THIRD_PARTY_NOTICES.md` holds the full license text.
 
 ## Search and sharing
 
-`index.html` carries the description, the canonical URL, and the Open Graph and Twitter card tags. Every URL in them is absolute and points at `https://materialize-3d.pages.dev/`. Vite copies `public/` into the root of `dist/` as is: `robots.txt` allows all crawlers and names the sitemap, `sitemap.xml` lists the page and the privacy page, and `og-image.png` is the 1200 by 630 share image. Remake the image from the repository root with this command:
+`index.html` carries the description, the canonical URL, and the Open Graph and Twitter card tags. Every URL in them is absolute. The site's address is `SITE_URL` in `src/site.ts`, and the build writes it in place of `%SITE_URL%` in each page. The build also writes `robots.txt`, which allows all crawlers and names the sitemap, and `sitemap.xml`, which lists the page and the privacy page. The dev server serves the same two. Vite copies `public/` into the root of `dist/` as is. `og-image.png` there is the 1200 by 630 share image. Remake the image from the repository root with this command:
 
 ```sh
 magick docs/images/studio-light.png -resize 1152x582 -background '#CFD0CF' -gravity center -extent 1200x630 -strip site/public/og-image.png

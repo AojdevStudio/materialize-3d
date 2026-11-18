@@ -1,8 +1,10 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
 import path from "node:path";
-import { appleTrusted, blogUrl, checksumPublished, externalLinks, licenseUrl, release } from "../src/release";
-import { STAGES, at, type StageId } from "../src/story/timeline";
+import { base } from "../playwright.config";
+import { blogUrl, externalLinks, licenseUrl, release } from "../src/release";
+import { SITE_URL, THEME_KEY } from "../src/site";
+import { STAGES, STILL_LENGTH, TRACE, at, type StageId } from "../src/story/timeline";
 
 type Theme = "light" | "dark";
 
@@ -10,7 +12,7 @@ const shotsDir = path.resolve(import.meta.dirname, "../test-results/screens");
 
 /** Start the page in a given theme the way a returning visitor would: via the remembered choice. */
 async function open(page: Page, theme: Theme = "light") {
-  if (theme === "dark") await page.addInitScript(() => localStorage.setItem("m3d-theme", "dark"));
+  if (theme === "dark") await page.addInitScript((key) => localStorage.setItem(key, "dark"), THEME_KEY);
   await page.goto("./");
 }
 
@@ -96,7 +98,7 @@ test("every in-page anchor and internal link resolves", async ({ page, request }
     if (link.raw.startsWith("#")) {
       await expect(page.locator(`[id="${link.raw.slice(1)}"]`), link.raw).toHaveCount(1);
     } else {
-      expect(new URL(link.abs).pathname, link.raw).toMatch(/^\/materialize-3d\//);
+      expect(new URL(link.abs).pathname.startsWith(base), `${link.raw} is under ${base}`).toBe(true);
       expect((await request.get(link.abs)).status(), link.raw).toBe(200);
     }
   }
@@ -163,27 +165,33 @@ for (const theme of ["light", "dark"] as const) {
   });
 }
 
-test("how it works tells the chat studio story in order, and the page says no release has it only while that is true", async ({ page }) => {
+test("how it works tells the chat studio story in order", async ({ page }) => {
   await open(page);
   await expect(page.locator("#how h3")).toHaveText(["Describe", "Make", "Look", "Print"]);
-  const text = await page.locator("body").innerText();
-  if (release.studio) expect(text).not.toContain("The chat studio is not in a release yet.");
-  else {
-    expect(text).toContain("The chat studio is not in a release yet.");
-    expect(text).toContain(`This download is ${release.version}, the earlier sign app.`);
-  }
-  expect(text).not.toMatch(/\bMCP\b/);
+  expect(await page.locator("body").innerText()).not.toMatch(/\bMCP\b/);
 });
 
-/** The trace card at each rewind still: its kick, its head, and the newest of the lines still in, oldest first. */
-const TRACE_STILLS: Partial<Record<StageId, { kick: string; head: string; count: string; lines: number; newest: string }>> = {
-  slices: { kick: "How it got here · 13:58", head: "Worked for 14 min", count: "6 steps", lines: 6, newest: "Sliced 2 print files" },
-  guide: { kick: "Rewind · 9:47", head: "Working for 9:47", count: "step 5 of 6", lines: 5, newest: "Wrote assembly-guide.html" },
-  adapter: { kick: "Rewind · 6:05", head: "Working for 6:05", count: "step 4 of 6", lines: 4, newest: "Added the revision C arm adapter" },
-  parts: { kick: "Rewind · 0:39", head: "Working for 0:39", count: "step 3 of 6", lines: 3, newest: "Built 5 printed parts" },
-  drawing: { kick: "Rewind · 0:26", head: "Working for 0:26", count: "step 2 of 6", lines: 2, newest: "Astra drew drawing.html" },
-  params: { kick: "Rewind · 0:12", head: "Working for 0:12", count: "step 1 of 6", lines: 1, newest: "Wrote params.json" },
-};
+/** m:ss, written here rather than taken from the page's own formatter, so a broken format fails. */
+const clock = (seconds: number) => `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+
+/**
+ * The trace card at a rewind still: the clock holds on that stage's step, and the lines are every step up to it,
+ * oldest first. The last step's still shows the whole trace.
+ */
+function traceStill(id: StageId) {
+  for (const [i, { id: stepId, log }] of TRACE.entries()) {
+    if (stepId !== id) continue;
+    const done = i === TRACE.length - 1;
+    return {
+      kick: `${done ? "How it got here" : "Rewind"} · ${clock(log.seconds)}`,
+      head: done ? `Worked for ${Math.round(log.seconds / 60)} min` : `Working for ${clock(log.seconds)}`,
+      count: done ? `${TRACE.length} steps` : `step ${i + 1} of ${TRACE.length}`,
+      lines: i + 1,
+      newest: log.did,
+    };
+  }
+  return null;
+}
 
 for (const layout of layouts.slice(0, 2)) {
   test(`${layout.name} ${layout.width}: with reduced motion each stage is one still, in story order`, async ({ page }) => {
@@ -208,13 +216,13 @@ for (const layout of layouts.slice(0, 2)) {
       });
 
     for (const [i, stage] of STAGES.entries()) {
-      await scrollStory(page, i * 100 + 30);
-      const still = TRACE_STILLS[stage.id];
+      await scrollStory(page, i * STILL_LENGTH + 30);
+      const still = traceStill(stage.id);
       expect(await shownCopy(), `stage ${i + 1} shows only its own copy`).toEqual(still ? [] : [stage.id]);
       if (still) expect(await trace(), `stage ${i + 1} shows the trace card, its lines leaving from the bottom`).toEqual({ shown: true, ...still });
       else expect((await trace()).shown, `stage ${i + 1} hides the trace card`).toBe(false);
       const early = await page.screenshot();
-      await scrollStory(page, i * 100 + 70);
+      await scrollStory(page, i * STILL_LENGTH + 70);
       expect(early.equals(await page.screenshot()), `nothing moves while scrolling through ${stage.id}`).toBe(true);
     }
   });
@@ -242,8 +250,8 @@ for (const size of screens) {
     // The canvas clears to transparent, so under the card every pixel that is not the page's paper is the model.
     const paper = await page.evaluate(() => getComputedStyle(document.body).backgroundColor);
     for (const [i, stage] of STAGES.entries()) {
-      if (!TRACE_STILLS[stage.id]) continue;
-      await scrollStory(page, i * 100 + 30);
+      if (!traceStill(stage.id)) continue;
+      await scrollStory(page, i * STILL_LENGTH + 30);
       const box = await page.locator(".trace-card").boundingBox();
       if (!box) throw new Error("the trace card has no layout box");
       await page.locator(".story-trace").evaluate((trace: HTMLElement) => (trace.style.visibility = "hidden"));
@@ -380,7 +388,7 @@ test("no text covers other text or runs off screen on phone, desktop, short, lan
     await storyReady(page);
     // One stop per stage still, then the end section coming up over the last stage.
     for (const [i, stop] of [...STAGES.map((stage) => stage.id), "end"].entries()) {
-      await scrollStory(page, i * 100 + (stop === "end" ? 15 : 30));
+      await scrollStory(page, i * STILL_LENGTH + (stop === "end" ? 15 : 30));
       for (const pair of await textOverlaps(page)) found.push(`${size.width}x${size.height} ${stop}: ${pair}`);
     }
   }
@@ -435,8 +443,8 @@ test("at the end, the header is solid over the install guide and the hidden rail
 
 test("search and share tags point at the live site, and robots, sitemap, and share image are served", async ({ page, request }) => {
   await open(page);
-  await expect(page.locator('link[rel="canonical"]')).toHaveAttribute("href", "https://materialize-3d.pages.dev/");
-  await expect(page.locator('meta[property="og:image"]')).toHaveAttribute("content", "https://materialize-3d.pages.dev/og-image.png");
+  await expect(page.locator('link[rel="canonical"]')).toHaveAttribute("href", SITE_URL);
+  await expect(page.locator('meta[property="og:image"]')).toHaveAttribute("content", `${SITE_URL}og-image.png`);
 
   // The preview, like the live host, answers a missing file with the page itself, so a 200 alone proves nothing.
   const served = { "robots.txt": "text/plain", "sitemap.xml": "xml", "og-image.png": "image/png" };
@@ -455,7 +463,7 @@ test("the footer's legal line links the blog, the privacy page, and the license"
   expect(await legalLine(page)).toEqual([
     ["© 2026 AOJDevStudios", null],
     ["Blog", blogUrl],
-    ["Privacy", "/materialize-3d/privacy"],
+    ["Privacy", `${base}privacy`],
     ["MIT license", licenseUrl],
   ]);
 });
@@ -463,14 +471,14 @@ test("the footer's legal line links the blog, the privacy page, and the license"
 for (const theme of ["light", "dark"] as const) {
   test(`the privacy page is served at /privacy with the site's header and footer, in ${theme} theme`, async ({ page, request }) => {
     await page.setViewportSize({ width: 390, height: 844 });
-    if (theme === "dark") await page.addInitScript(() => localStorage.setItem("m3d-theme", "dark"));
+    if (theme === "dark") await page.addInitScript((key) => localStorage.setItem(key, "dark"), THEME_KEY);
     await page.goto("./privacy");
     await expect(page).toHaveTitle("Materialize 3D: privacy");
     await expect(page.locator("main h1")).toHaveText("Privacy");
     await expect(page.locator("main p")).toHaveText(
       "This page sets no cookies and runs no analytics. It saves your light or dark choice in your browser. Cloudflare hosts the page. Downloads come from GitHub.",
     );
-    await expect(page.locator(".site-header a.lockup")).toHaveAttribute("href", "/materialize-3d/");
+    await expect(page.locator(".site-header a.lockup")).toHaveAttribute("href", base);
     await expect(page.getByRole("button", { name: "Dark mode" })).toHaveAttribute("aria-pressed", String(theme === "dark"));
     await expect(page.locator(".site-legal a[aria-current='page']")).toHaveText("Privacy");
     const size = await page.evaluate(() => ({ scrollWidth: document.documentElement.scrollWidth, clientWidth: document.documentElement.clientWidth }));
@@ -478,27 +486,16 @@ for (const theme of ["light", "dark"] as const) {
     const results = await new AxeBuilder({ page }).analyze();
     expect(results.violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.target).join(", ")}`)).toEqual([]);
     await page.screenshot({ path: path.join(shotsDir, `privacy-390-${theme}.png`), fullPage: true });
-    expect(await (await request.get("sitemap.xml")).text(), "the sitemap lists the privacy page").toContain("<loc>https://materialize-3d.pages.dev/privacy</loc>");
+    expect(await (await request.get("sitemap.xml")).text(), "the sitemap lists the privacy page").toContain(`<loc>${SITE_URL}privacy</loc>`);
   });
 }
 
-test("release claims match the release flags", async ({ page }) => {
+test("release claims match the release", async ({ page }) => {
   await open(page);
   const text = await page.locator("body").innerText();
 
   expect(text).not.toMatch(/disable gatekeeper|gatekeeper off|spctl|master-disable|xattr/i);
-  if (!appleTrusted) {
-    expect(text).not.toMatch(/signed and notarized|notarized by apple|signed by apple|apple[- ]notarized/i);
-  }
-  if (!release.signed) expect(text).toContain("Not signed yet");
-  if (!release.notarized) expect(text).toContain("Not notarized yet");
-  if (!checksumPublished) {
-    expect(text).toContain("Not published yet");
-    expect(text).not.toMatch(/\b[0-9a-f]{64}\b/);
-  }
-  if (appleTrusted) {
-    expect(text).toMatch(/signed and notarized by apple/i);
-    expect(text).not.toMatch(/open anyway/i);
-  }
-  if (checksumPublished) expect(text).toContain(release.sha256);
+  expect(text).toMatch(/signed and notarized by apple/i);
+  expect(text).not.toMatch(/open anyway/i);
+  expect(text).toContain(release.sha256);
 });

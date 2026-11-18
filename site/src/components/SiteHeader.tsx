@@ -1,7 +1,6 @@
 import type { Ref } from "react";
 import { ThemeToggle } from "./ThemeToggle";
 
-/** The page header: the lockup, which goes to `home`, and the theme toggle. Solid once content scrolls under it. */
 export function SiteHeader({ home, label, solid, ref }: { home: string; label: string; solid: boolean; ref?: Ref<HTMLElement> }) {
   return (
     <header ref={ref} className="site-header" data-solid={solid || undefined}>

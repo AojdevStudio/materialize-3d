@@ -1,15 +1,6 @@
 import { useState } from "react";
+import { currentTheme, THEME_KEY, type Theme } from "../site";
 
-type Theme = "light" | "dark";
-
-/** Must match the key read by the pre-paint script in index.html. */
-const THEME_KEY = "m3d-theme";
-
-function currentTheme(): Theme {
-  return document.documentElement.dataset.theme === "dark" ? "dark" : "light";
-}
-
-/** Toggles dark mode on <html data-theme> and remembers the choice in localStorage. */
 export function ThemeToggle() {
   const [theme, setTheme] = useState<Theme>(currentTheme);
   const dark = theme === "dark";
