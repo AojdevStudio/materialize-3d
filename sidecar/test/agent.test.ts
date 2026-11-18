@@ -47,13 +47,12 @@ async function waitForFile(path: string, ms = 15_000) {
 /** Waits until process `pid` has ended, as when the watch on a crashed sidecar ends its command. */
 async function untilEnded(pid: number, ms = 5_000) {
   const deadline = Date.now() + ms
-  for (;;) {
-    try {
-      process.kill(pid, 0)
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ESRCH') return
-      throw error
-    }
+  // An ended command may wait as a zombie until the system reaps it, so that counts as ended too.
+  const ended = () => {
+    const state = Bun.spawnSync(['ps', '-o', 'stat=', '-p', String(pid)]).stdout.toString().trim()
+    return state === '' || state.startsWith('Z')
+  }
+  while (!ended()) {
     if (Date.now() > deadline) throw new Error(`process ${pid} still runs`)
     await Bun.sleep(25)
   }
