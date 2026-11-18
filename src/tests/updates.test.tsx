@@ -13,13 +13,13 @@ vi.mock('@tauri-apps/api/event', () => ({
 }))
 
 import type { UpdateCheck } from '../studio/api'
-import { UpdateBanner } from '../update/UpdateBanner'
-import {
-  checkForUpdates,
-  checkForUpdatesAtLaunch,
-  resetUpdateStoreForTests,
-  useUpdateEvents,
-} from '../update/store'
+
+/** A launch: the update store and its banner, loaded fresh as the app loads them, so nothing a test did before stays. */
+async function launch() {
+  vi.resetModules()
+  const { UpdateBanner } = await import('../update/UpdateBanner')
+  return { UpdateBanner, ...(await import('../update/store')) }
+}
 
 const NEWER: UpdateCheck = {
   status: 'available',
@@ -41,11 +41,6 @@ function feed(check: UpdateCheck | Error, install: () => Promise<unknown> = asyn
   })
 }
 
-function UpdateEvents() {
-  useUpdateEvents()
-  return null
-}
-
 function emit(name: string, payload: unknown) {
   const handler = listeners.get(name)
   if (!handler) throw new Error(`nothing listens for ${name}`)
@@ -57,11 +52,11 @@ const installCalls = () => invokeMock.mock.calls.filter(([cmd]) => cmd === 'upda
 describe('updates', () => {
   beforeEach(() => {
     invokeMock.mockReset()
-    resetUpdateStoreForTests()
   })
   afterEach(cleanup)
 
   it('offers a newer version at launch with its notes, Update now, and Later', async () => {
+    const { UpdateBanner, checkForUpdatesAtLaunch } = await launch()
     feed(NEWER)
     render(<UpdateBanner />)
     await act(() => checkForUpdatesAtLaunch())
@@ -73,6 +68,7 @@ describe('updates', () => {
   })
 
   it('shows nothing when the running version is the latest', async () => {
+    const { UpdateBanner, checkForUpdatesAtLaunch } = await launch()
     feed(CURRENT)
     render(<UpdateBanner />)
     await act(() => checkForUpdatesAtLaunch())
@@ -80,6 +76,7 @@ describe('updates', () => {
   })
 
   it('Later installs nothing and the next launch asks again', async () => {
+    const { UpdateBanner, checkForUpdatesAtLaunch } = await launch()
     feed(NEWER)
     render(<UpdateBanner />)
     await act(() => checkForUpdatesAtLaunch())
@@ -89,12 +86,15 @@ describe('updates', () => {
     expect(screen.queryByTestId('update-banner')).toBeNull()
     expect(installCalls()).toHaveLength(0)
 
-    resetUpdateStoreForTests()
-    await act(() => checkForUpdatesAtLaunch())
+    cleanup()
+    const next = await launch()
+    render(<next.UpdateBanner />)
+    await act(() => next.checkForUpdatesAtLaunch())
     expect(screen.getByTestId('update-version').textContent).toContain('0.3.0')
   })
 
   it('Update now installs exactly the offered version', async () => {
+    const { UpdateBanner, checkForUpdatesAtLaunch } = await launch()
     feed(NEWER, () => new Promise(() => {}))
     render(<UpdateBanner />)
     await act(() => checkForUpdatesAtLaunch())
@@ -105,7 +105,12 @@ describe('updates', () => {
   })
 
   it('Update now says it waits for running builds', async () => {
+    const { UpdateBanner, checkForUpdatesAtLaunch, useUpdateEvents } = await launch()
     feed(NEWER, () => new Promise(() => {}))
+    function UpdateEvents() {
+      useUpdateEvents()
+      return null
+    }
     render(
       <>
         <UpdateEvents />
@@ -127,6 +132,7 @@ describe('updates', () => {
   })
 
   it('a failed install shows the error, keeps the app running, and can be retried', async () => {
+    const { UpdateBanner, checkForUpdatesAtLaunch } = await launch()
     feed(NEWER, async () => {
       throw 'The update did not download or its signature did not verify: signature mismatch'
     })
@@ -141,6 +147,7 @@ describe('updates', () => {
   })
 
   it('a failed check shows the error and can be dismissed', async () => {
+    const { UpdateBanner, checkForUpdatesAtLaunch } = await launch()
     feed(new Error('Could not check for updates: error sending request'))
     render(<UpdateBanner />)
     await act(() => checkForUpdatesAtLaunch())
@@ -150,6 +157,7 @@ describe('updates', () => {
   })
 
   it('a failed recheck reports a check failure, not a failed install', async () => {
+    const { UpdateBanner, checkForUpdates, checkForUpdatesAtLaunch } = await launch()
     feed(NEWER)
     render(<UpdateBanner />)
     await act(() => checkForUpdatesAtLaunch())
@@ -161,6 +169,7 @@ describe('updates', () => {
   })
 
   it('checks once when asked twice at the same time', async () => {
+    const { checkForUpdates, checkForUpdatesAtLaunch } = await launch()
     feed(CURRENT)
     await Promise.all([checkForUpdates(), checkForUpdates(), checkForUpdatesAtLaunch()])
     expect(invokeMock.mock.calls.filter(([cmd]) => cmd === 'update_check')).toHaveLength(1)
