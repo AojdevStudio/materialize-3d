@@ -29,14 +29,14 @@ These are failures of the current code, not of the models. Do not weaken a prope
 
 ## Run
 
-TLC needs Java 11 or newer and `tla2tools.jar` from the TLA+ v1.7.4 release (TLC 2.19). The script never downloads or installs anything. Point it at an existing jar:
+TLC needs Java 11 or newer and the `tla2tools.jar` of the TLA+ release that `scripts/tlc.env` names. The script never downloads or installs anything. Point it at an existing jar:
 
 ```sh
 TLA2TOOLS_JAR=/path/to/tla2tools.jar .agents/skills/formal-verify-materialize-3d/scripts/check.sh
 TLA2TOOLS_JAR=/path/to/tla2tools.jar .agents/skills/formal-verify-materialize-3d/scripts/check.sh --mutants
 ```
 
-On a machine where installing is allowed, the jar is the `tla2tools.jar` asset of the v1.7.4 release at `https://github.com/tlaplus/tlaplus/releases/tag/v1.7.4`. The script refuses any other jar by its SHA-256. Without TLC, say plainly that the models were not checked. Do not treat that as a pass.
+On a machine where installing is allowed, the jar is the `tla2tools.jar` asset of that release at `https://github.com/tlaplus/tlaplus/releases`. The script refuses any jar whose SHA-256 differs from the one `scripts/tlc.env` names. Without TLC, say plainly that the models were not checked. Do not treat that as a pass.
 
 CI runs both commands in `.github/workflows/formal-verification.yml` on each push to `main`, and each pull request from a branch in this repository, that changes a file listed in `models/sources.sha256` or this skill. Pull requests from forks and from Dependabot skip it, as they skip every self-hosted job. Before TLC, it fails when a listed file differs from its recorded hash. TLC reads only the models, so this is what stops the code from drifting away from them. Keep the workflow's `paths` list the same as the files in `models/sources.sha256`.
 
@@ -94,4 +94,4 @@ Keep each model action one indivisible step in the code. When the code changes o
 ## Scope
 
 - Bounds: two tasks (a slice and a Studio turn), each holding at most one pass. Two update runs. `update-wakes` limits each task to two starts, so that work stops. It also assumes that each running task ends, and that the updater's wait loop keeps getting scheduled (the `Fairness` conjuncts in `UpdateRestart.tla`). The other checks have no limit on starts.
-- Not covered: the download and its signature check, writes to the sidecar's store after the install (the store survives an exit), and the UI in `src/stores/updates.ts`. The check of a printer setting (the `printer.check` request, `slice_requests::check`) holds no pass. A restart may cut it off, because the setting is saved only after it answers and its preset cache is written whole or not at all.
+- Not covered: the download and its signature check, writes to the sidecar's store after the install (the store survives an exit), and the UI in `src/update/store.ts`. The check of a printer setting (the `printer.check` request, `slice_requests::check`) holds no pass. A restart may cut it off, because the setting is saved only after it answers and its preset cache is written whole or not at all.

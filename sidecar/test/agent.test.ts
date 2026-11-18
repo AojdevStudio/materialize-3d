@@ -44,6 +44,20 @@ async function waitForFile(path: string, ms = 15_000) {
   }
 }
 
+/** Waits until process `pid` has ended, as when the watch on a crashed sidecar ends its command. */
+async function untilEnded(pid: number, ms = 5_000) {
+  const deadline = Date.now() + ms
+  // An ended command may wait as a zombie until the system reaps it, so that counts as ended too.
+  const ended = () => {
+    const state = Bun.spawnSync(['ps', '-o', 'stat=', '-p', String(pid)]).stdout.toString().trim()
+    return state === '' || state.startsWith('Z')
+  }
+  while (!ended()) {
+    if (Date.now() > deadline) throw new Error(`process ${pid} still runs`)
+    await Bun.sleep(25)
+  }
+}
+
 const saveDraft = async (app: App, key: string, text: string) =>
   ((await app.call('drafts.set', { key, text, attachments: [] })) as { rev: number }).rev
 
@@ -113,8 +127,8 @@ describe('a crash mid-turn', () => {
     const before = ((await first.call('chat.open', { project })) as ChatView).seq
     first.child.kill('SIGKILL')
     await first.child.exited
-    // The watch on op2 ends it within a second of the crash, before `go` would let it finish.
-    await Bun.sleep(1500)
+    // The watch on op2 ends it after the crash, before `go` would let it finish.
+    await untilEnded(Number(readFileSync(join(where.projects, project, 'op2.pid'), 'utf8')))
 
     const reopened = start(where, 'ops')
     await reopened.next()

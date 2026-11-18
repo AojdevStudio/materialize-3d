@@ -23,7 +23,7 @@ interface UpdateState {
   dismissed: boolean
 }
 
-export const UPDATE_DEFAULT_STATE: UpdateState = {
+const UPDATE_DEFAULT_STATE: UpdateState = {
   phase: 'idle',
   available: null,
   error: null,
@@ -92,11 +92,4 @@ export function useUpdateEvents() {
   useTauriEvent('update:waiting', (waitingFor) => {
     useUpdateStore.setState({ waitingFor })
   })
-}
-
-/** Test seam: forget this launch's check. */
-export function resetUpdateStoreForTests(): void {
-  inFlight = null
-  checkedAtLaunch = false
-  useUpdateStore.setState({ ...UPDATE_DEFAULT_STATE })
 }

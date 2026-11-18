@@ -5,9 +5,10 @@ import { join } from 'node:path'
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
 import { createModels, InMemoryCredentialStore } from '@earendil-works/pi-ai'
 import { createRegistry, defineDoc } from '@earendil-works/pi-durable'
+import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node'
 import { registerStorageConformance } from '@earendil-works/pi-durable/testing'
 import { type AppState, EXIT, type Settings, type Setup } from '../src/protocol'
-import { openStorage, Store } from '../src/store'
+import { Store } from '../src/store'
 import { spawnSidecar } from './sidecar'
 
 function scratch() {
@@ -15,10 +16,10 @@ function scratch() {
   return { data: join(dir, 'state'), projects: join(dir, 'projects') }
 }
 
-// Pi's own storage conformance suite, against the storage the store opens, on this runtime.
+// Pi's own storage conformance suite, against the SQLite adapter `Store.open` uses, on this runtime.
 registerStorageConformance({ describe, expect, it }, 'the store on Bun SQLite', async (use) => {
   const dir = mkdtempSync(join(tmpdir(), 'm3d-conformance-'))
-  const storage = await openStorage(join(dir, 'store.sqlite'))
+  const storage = await openNodeSqliteStorage(join(dir, 'store.sqlite'))
   try {
     await use(storage)
   } finally {

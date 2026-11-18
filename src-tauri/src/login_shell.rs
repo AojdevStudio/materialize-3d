@@ -105,21 +105,40 @@ fn shell_path(shell: &str, deadline: std::time::Duration) -> Option<String> {
 mod tests {
     use super::*;
 
+    /// An ended process may wait as a zombie until the system reaps it, so that counts as ended too.
+    #[cfg(unix)]
+    fn ended(pid: i32) -> bool {
+        let state = std::process::Command::new("ps").args(["-o", "stat=", "-p", &pid.to_string()]).output().expect("ps");
+        let state = String::from_utf8_lossy(&state.stdout);
+        state.trim().is_empty() || state.trim_start().starts_with('Z')
+    }
+
     #[cfg(unix)]
     #[test]
     fn a_login_shell_that_hangs_is_ended_at_its_deadline() {
         let dir = tempfile::tempdir().unwrap();
         let shell = dir.path().join("slow-shell");
-        crate::write_test_script(&shell, "#!/bin/sh\nsleep 30\n");
-        let started = std::time::Instant::now();
-        assert_eq!(shell_path(shell.to_str().unwrap(), std::time::Duration::from_millis(300)), None);
-        assert!(started.elapsed() < std::time::Duration::from_secs(5), "took {:?}", started.elapsed());
-
-        // Startup files that send stdout elsewhere and then hang end at the deadline too.
-        crate::write_test_script(&shell, "#!/bin/sh\nexec >/dev/null\nsleep 30\n");
-        let started = std::time::Instant::now();
-        assert_eq!(shell_path(shell.to_str().unwrap(), std::time::Duration::from_millis(300)), None);
-        assert!(started.elapsed() < std::time::Duration::from_secs(5), "took {:?}", started.elapsed());
+        // The shell writes its pid beside itself when it starts, so a shell that never started cannot pass for one the
+        // deadline ended. The deadline leaves a busy runner time to start it.
+        let mark = dir.path().join("started");
+        let deadline = std::time::Duration::from_secs(1);
+        for script in [
+            "#!/bin/sh\necho $$ > \"$(dirname \"$0\")/started\"\nsleep 30\n",
+            // Startup files that send stdout elsewhere and then hang end at the deadline too.
+            "#!/bin/sh\necho $$ > \"$(dirname \"$0\")/started\"\nexec >/dev/null\nsleep 30\n",
+        ] {
+            let _ = std::fs::remove_file(&mark);
+            crate::write_test_script(&shell, script);
+            let started = std::time::Instant::now();
+            assert_eq!(shell_path(shell.to_str().unwrap(), deadline), None);
+            assert!(started.elapsed() < std::time::Duration::from_secs(5), "took {:?}", started.elapsed());
+            let pid = std::fs::read_to_string(&mark).expect("the shell never started").trim().parse::<i32>().unwrap();
+            if !ended(pid) {
+                // SAFETY: ends the test's own shell and the sleep it started, which outlived the deadline.
+                unsafe { libc::kill(-pid, libc::SIGKILL) };
+                panic!("the shell {pid} still runs after its deadline");
+            }
+        }
         assert!(shell_path("/bin/sh", std::time::Duration::from_secs(5)).is_some_and(|path| !path.is_empty()));
     }
 
@@ -147,16 +166,10 @@ printf '__M3D_PATH__/opt/tools/bin__M3D_PATH__'
         crate::write_test_script(&shell, &format!("#!/bin/sh\nyes &\necho $! > {}\nprintf '__M3D_PATH__/opt/tools/bin__M3D_PATH__'\n", pid.display()));
         assert_eq!(shell_path(shell.to_str().unwrap(), std::time::Duration::from_secs(5)).as_deref(), Some("/opt/tools/bin"));
         let pid = std::fs::read_to_string(&pid).unwrap().trim().parse::<i32>().unwrap();
-        // Once nothing reads the pipe, the next write ends the writer. An ended writer may wait as a zombie until the
-        // system reaps it, so that counts as ended too.
-        let ended = || {
-            let state = std::process::Command::new("ps").args(["-o", "stat=", "-p", &pid.to_string()]).output().expect("ps");
-            let state = String::from_utf8_lossy(&state.stdout);
-            state.trim().is_empty() || state.trim_start().starts_with('Z')
-        };
+        // Once nothing reads the pipe, the next write ends the writer.
         let gone = (0..50).any(|_| {
             std::thread::sleep(std::time::Duration::from_millis(100));
-            ended()
+            ended(pid)
         });
         if !gone {
             // SAFETY: ends the test's own writer, which outlived the lookup.

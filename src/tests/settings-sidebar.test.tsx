@@ -15,14 +15,11 @@ function Open({ from }: { from: Section }) {
     <Settings
       section={section}
       onSection={setSection}
-      models={[]}
-      onSaved={() => {}}
       onFix={() => {}}
       onClose={() => {}}
       onError={() => {}}
       error={null}
       signIn={null}
-      signIns={0}
     />
   )
 }

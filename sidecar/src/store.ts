@@ -91,9 +91,6 @@ const LoginSavesDoc = defineDoc<{ saves: Record<string, number> }>({
   checkpointWhen: always,
 })
 
-/** The store's SQLite storage, through Pi's own async adapter, which queues every operation and transaction. */
-export const openStorage = (path: string) => openNodeSqliteStorage(path)
-
 /** Why a send names a draft revision the store no longer holds: the person changed the draft since that save. */
 const DRAFT_CHANGED = 'The draft changed before it went out. Send it again.'
 
@@ -159,7 +156,8 @@ export class Store {
   static async open(options: StoreOptions): Promise<Store> {
     mkdirSync(options.dataDir, { recursive: true })
     const lock = own(options.dataDir)
-    const storage = await openStorage(join(options.dataDir, 'store.sqlite'))
+    // SQLite through Pi's own async adapter, which queues every operation and transaction.
+    const storage = await openNodeSqliteStorage(join(options.dataDir, 'store.sqlite'))
     const harness = await Harness.open(storage, { models: options.models, registry: options.registry, env: options.env }, context)
     const root = await harness.root(context)
     const store = new Store(lock, harness, root, options.projectsDir)

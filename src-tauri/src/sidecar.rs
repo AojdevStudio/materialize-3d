@@ -759,13 +759,13 @@ pub(crate) mod tests {
         answer(app.handle(), run, method, params).await
     }
 
-    /// The test store keeps a secret only in the entry that set it, so a get after a set finds nothing.
     #[tokio::test]
     async fn the_host_answers_keychain_requests_for_inference_items_only() {
         let app = mock_app();
         assert_eq!(ask(&app, "keychain.set", json!({ "account": "anthropic", "secret": "s" })).await, Ok(Value::Null));
-        assert_eq!(ask(&app, "keychain.get", json!({ "account": "anthropic" })).await, Ok(json!({ "secret": null })));
+        assert_eq!(ask(&app, "keychain.get", json!({ "account": "anthropic" })).await, Ok(json!({ "secret": "s" })));
         assert_eq!(ask(&app, "keychain.delete", json!({ "account": "anthropic" })).await, Ok(Value::Null));
+        assert_eq!(ask(&app, "keychain.get", json!({ "account": "anthropic" })).await, Ok(json!({ "secret": null })));
         assert_eq!(ask(&app, "keychain.get", json!({ "account": "../printer" })).await, Err(r#""../printer" is not a provider account"#.to_owned()));
         assert_eq!(ask(&app, "keychain.delete", json!({ "account": "Anthropic" })).await, Err(r#""Anthropic" is not a provider account"#.to_owned()));
         let locked = keyring::Error::PlatformFailure("locked".into());

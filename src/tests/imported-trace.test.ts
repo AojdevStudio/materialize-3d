@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest'
-// The real importer, so the test sees the entries an old chat really becomes. It lives here, outside the typechecked
-// `src`, because the importer reads files with Node and the window's typecheck has no Node types.
+// The real importer, so the test sees the entries an old chat really becomes.
 import { readTranscript } from '../../sidecar/src/legacy'
 import { buildChat } from '../studio/transcript'
 

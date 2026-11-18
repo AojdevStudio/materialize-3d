@@ -25,11 +25,14 @@ const resultText = (message: Message | undefined) =>
   message?.role === 'toolResult' ? message.content.map((b) => ('text' in b ? b.text : '')).join('') : ''
 
 const scripts: Record<string, (messages: Message[], model: Model<string>) => AssistantMessage> = {
-  /** Two outside actions, then an answer. The second waits for a `go` file, so a test can crash the sidecar in it. */
+  /**
+   * Two outside actions, then an answer. The second writes its process id, then waits for a `go` file, so a test can
+   * crash the sidecar in it and wait for it to end.
+   */
   ops: (messages) => {
     const { results } = sinceUser(messages)
     if (results.length === 0) return run('echo op1 >> ops.log')
-    if (results.length === 1) return run('echo op2 >> ops.log; while [ ! -f go ]; do sleep 0.05; done')
+    if (results.length === 1) return run('echo $$ > op2.pid; echo op2 >> ops.log; while [ ! -f go ]; do sleep 0.05; done')
     return fauxAssistantMessage(fauxText('done'))
   },
   /** A message with "wait" runs a tool that waits for `go`; every answer names the model that gave it. */

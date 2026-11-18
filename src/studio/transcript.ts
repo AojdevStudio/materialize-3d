@@ -47,8 +47,13 @@ const str = (value: unknown) => (typeof value === 'string' ? value : '')
 /** A committed call's args by the names `ToolArgs` gives them. The model sent them, so any can be missing or wrong. */
 type SentArgs<T extends ToolName> = { [K in keyof ToolArgs[T]]?: unknown }
 
-/** One line for a tool step: what it did, and the file or command it did it with. */
-function describe(name: string, args: Record<string, unknown>): Omit<ToolItem, 'kind' | 'id' | 'state'> {
+/**
+ * One line for a tool step: what it did, and the file or command it did it with. The model sent `raw`, so it can be any
+ * JSON. Only an object names any args, and the detail shows it as it came.
+ */
+function describe(name: string, raw: unknown): Omit<ToolItem, 'kind' | 'id' | 'state'> {
+  const args: Record<string, unknown> = typeof raw === 'object' && raw !== null && !Array.isArray(raw) ? { ...raw } : {}
+  const detail = JSON.stringify(raw ?? {}, null, 2)
   switch (name) {
     case 'read':
     case 'write':
@@ -64,7 +69,7 @@ function describe(name: string, args: Record<string, unknown>): Omit<ToolItem, '
     }
     case 'slice': {
       const sent: SentArgs<'slice'> = args
-      return { action: 'slice', ...STEP_LINES.slice, summary: str(sent.output), detail: JSON.stringify(args, null, 2) }
+      return { action: 'slice', ...STEP_LINES.slice, summary: str(sent.output), detail }
     }
     case ASTRA: {
       const sent: SentArgs<typeof ASTRA> = args
@@ -72,7 +77,7 @@ function describe(name: string, args: Record<string, unknown>): Omit<ToolItem, '
       return { action: 'helper', ...STEP_LINES.astra, summary: task.split('\n')[0] ?? '', detail: task }
     }
     default:
-      return { action: 'other', label: name, doing: name, summary: '', detail: JSON.stringify(args, null, 2) }
+      return { action: 'other', label: name, doing: name, summary: '', detail }
   }
 }
 
@@ -153,8 +158,7 @@ export function buildChat(entries: ChatEntry[], running = true): ChatItem[] {
           else trace.lines.push({ kind: 'note', text: entry.text })
         }
         for (const call of entry.calls) {
-          const args = (call.args ?? {}) as Record<string, unknown>
-          const item: ToolItem = { kind: 'tool', id: call.id, ...describe(call.name, args), state: 'running' }
+          const item: ToolItem = { kind: 'tool', id: call.id, ...describe(call.name, call.args), state: 'running' }
           tools.set(call.id, item)
           step(item)
         }

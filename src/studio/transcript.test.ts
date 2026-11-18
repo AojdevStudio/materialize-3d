@@ -84,6 +84,31 @@ describe('buildChat', () => {
     ])
   })
 
+  it('shows a step whose args the model sent as something other than an object, with no file', () => {
+    const items = buildChat([
+      { id: 1, kind: 'user', text: 'A clip', images: [], files: [] },
+      {
+        id: 2,
+        kind: 'assistant',
+        model: opus,
+        text: '',
+        calls: [
+          { id: 'c1', name: 'write', args: null },
+          { id: 'c2', name: 'read', args: 'params.json' },
+          { id: 'c3', name: 'slice', args: ['clip.stl'] },
+        ],
+      },
+    ])
+    expect(items[2]).toMatchObject({
+      kind: 'trace',
+      lines: [
+        { id: 'c1', label: 'Wrote', summary: '' },
+        { id: 'c2', label: 'Read', summary: '' },
+        { id: 'c3', label: 'Sliced', summary: '', detail: JSON.stringify(['clip.stl'], null, 2) },
+      ],
+    })
+  })
+
   it('keeps finished steps done when their turn ends without an answer', () => {
     const items = buildChat(
       [
