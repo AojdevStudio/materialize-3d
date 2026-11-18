@@ -677,6 +677,24 @@ describe('StudioApp', () => {
     expect(screen.getByTestId('engine').textContent).toBe('The engine stopped.')
   })
 
+  it('keeps a pasted picture with the project it was pasted on, and Remove takes it out', async () => {
+    const keeping = held()
+    mockSidecar({ 'drafts.picture': (params) => keeping.call(params, () => Promise.resolve('/state/pictures/1/shot.png')) }, [projectA, projectB])
+    render(<StudioApp />)
+    fireEvent.click(await projectList().findByText('Project A'))
+    await openRow()
+    fireEvent.paste(prompt(), { clipboardData: { files: [new File(['png'], 'shot.png', { type: 'image/png' })] } })
+    await waitFor(() => expect(sidecarCalls('drafts.picture')).toHaveLength(1))
+    fireEvent.click(projectList().getByText('Project B'))
+    await waitFor(() => expect(openTitle()).toBe('Project B'))
+    await keeping.release()
+    expect(screen.queryByTestId('attachments')).toBeNull()
+    fireEvent.click(projectList().getByText('Project A'))
+    fireEvent.click(await screen.findByLabelText('Remove shot.png'))
+    expect(screen.queryByTestId('attachments')).toBeNull()
+    await waitFor(() => expect(last(saves(projectA.id))).toEqual({ key: projectA.id, text: '', attachments: [] }))
+  })
+
   it("keeps a slow send's failure with the project it was sent to, and sending again names the same revision", async () => {
     let failSend: (reason: string) => void = () => {}
     let tries = 0
@@ -951,6 +969,7 @@ describe('StudioApp', () => {
     fireEvent.click(screen.getByTestId('send'))
     await waitFor(() => expect(sends()).toHaveLength(1))
     expect(last(saves())).toEqual({ key: 'new', text: 'A clip', attachments: ['/Users/me/a.jpg'] })
+    expect(sends()).toEqual([{ key: 'new', rev: draftRevs }])
   })
 
   it('never brings back a sent start picture from a saved state that was read before the send', async () => {
@@ -1306,6 +1325,7 @@ describe('StudioApp', () => {
     fireEvent.click(screen.getByTestId('send'))
     await waitFor(() => expect(sends()).toHaveLength(1))
     expect(last(saves())).toEqual({ key: 'new', text: 'Make this', attachments: files })
+    expect(sends()).toEqual([{ key: 'new', rev: draftRevs }])
   })
 
   it("lists the signed-in providers' models with their marks, and keeps each project's pick", async () => {

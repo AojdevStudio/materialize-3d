@@ -104,7 +104,7 @@ describe('buildChat', () => {
       lines: [
         { id: 'c1', label: 'Wrote', summary: '' },
         { id: 'c2', label: 'Read', summary: '' },
-        { id: 'c3', label: 'Sliced', summary: '', detail: '{}' },
+        { id: 'c3', label: 'Sliced', summary: '', detail: JSON.stringify(['clip.stl'], null, 2) },
       ],
     })
   })

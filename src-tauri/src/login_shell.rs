@@ -110,19 +110,21 @@ mod tests {
     fn a_login_shell_that_hangs_is_ended_at_its_deadline() {
         let dir = tempfile::tempdir().unwrap();
         let shell = dir.path().join("slow-shell");
-        // The shell leaves a mark when it starts, so a shell that never started cannot pass for one the deadline ended.
+        // The shell leaves a mark beside itself when it starts, so a shell that never started cannot pass for one the
+        // deadline ended. The deadline leaves a busy runner time to start it.
         let mark = dir.path().join("started");
-        crate::write_test_script(&shell, &format!("#!/bin/sh\ntouch {}\nsleep 30\n", mark.display()));
+        let deadline = std::time::Duration::from_secs(1);
+        crate::write_test_script(&shell, "#!/bin/sh\n: > \"$(dirname \"$0\")/started\"\nsleep 30\n");
         let started = std::time::Instant::now();
-        assert_eq!(shell_path(shell.to_str().unwrap(), std::time::Duration::from_millis(300)), None);
+        assert_eq!(shell_path(shell.to_str().unwrap(), deadline), None);
         assert!(started.elapsed() < std::time::Duration::from_secs(5), "took {:?}", started.elapsed());
         assert!(mark.exists(), "the shell never started");
 
         // Startup files that send stdout elsewhere and then hang end at the deadline too.
         std::fs::remove_file(&mark).unwrap();
-        crate::write_test_script(&shell, &format!("#!/bin/sh\ntouch {}\nexec >/dev/null\nsleep 30\n", mark.display()));
+        crate::write_test_script(&shell, "#!/bin/sh\n: > \"$(dirname \"$0\")/started\"\nexec >/dev/null\nsleep 30\n");
         let started = std::time::Instant::now();
-        assert_eq!(shell_path(shell.to_str().unwrap(), std::time::Duration::from_millis(300)), None);
+        assert_eq!(shell_path(shell.to_str().unwrap(), deadline), None);
         assert!(started.elapsed() < std::time::Duration::from_secs(5), "took {:?}", started.elapsed());
         assert!(mark.exists(), "the shell never started");
         assert!(shell_path("/bin/sh", std::time::Duration::from_secs(5)).is_some_and(|path| !path.is_empty()));

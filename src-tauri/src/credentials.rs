@@ -70,18 +70,19 @@ pub(crate) mod tests {
     use std::collections::HashMap;
     use std::sync::{LazyLock, Mutex};
 
-    /// Each item's secret in the test store, by item name, for the whole test run.
-    static SECRETS: LazyLock<Mutex<HashMap<String, Vec<u8>>>> = LazyLock::new(Mutex::default);
+    /// Each item's secret in the test store, by service and item name, for the whole test run.
+    static SECRETS: LazyLock<Mutex<HashMap<(String, String), Vec<u8>>>> = LazyLock::new(Mutex::default);
 
-    /// An item in the test store. Every entry for the same item name reads the same secret, as in the real store.
+    /// An item in the test store. Every entry for the same service and item name reads the same secret, as in the real
+    /// store.
     struct TestItem {
-        user: String,
+        key: (String, String),
     }
 
     impl TestItem {
         /// An item whose name ends in `fails.call` fails every call, the way a locked Keychain does.
-        fn reach(&self) -> keyring::Result<std::sync::MutexGuard<'static, HashMap<String, Vec<u8>>>> {
-            if self.user.ends_with("fails.call") {
+        fn reach(&self) -> keyring::Result<std::sync::MutexGuard<'static, HashMap<(String, String), Vec<u8>>>> {
+            if self.key.1.ends_with("fails.call") {
                 return Err(keyring::Error::PlatformFailure("locked".into()));
             }
             Ok(SECRETS.lock().expect("no test panics while it holds the test store"))
@@ -90,16 +91,16 @@ pub(crate) mod tests {
 
     impl keyring::credential::CredentialApi for TestItem {
         fn set_secret(&self, secret: &[u8]) -> keyring::Result<()> {
-            self.reach()?.insert(self.user.clone(), secret.to_vec());
+            self.reach()?.insert(self.key.clone(), secret.to_vec());
             Ok(())
         }
 
         fn get_secret(&self) -> keyring::Result<Vec<u8>> {
-            self.reach()?.get(&self.user).cloned().ok_or(keyring::Error::NoEntry)
+            self.reach()?.get(&self.key).cloned().ok_or(keyring::Error::NoEntry)
         }
 
         fn delete_credential(&self) -> keyring::Result<()> {
-            self.reach()?.remove(&self.user).map(drop).ok_or(keyring::Error::NoEntry)
+            self.reach()?.remove(&self.key).map(drop).ok_or(keyring::Error::NoEntry)
         }
 
         fn as_any(&self) -> &dyn std::any::Any {
@@ -111,11 +112,11 @@ pub(crate) mod tests {
     struct TestStore;
 
     impl keyring::credential::CredentialBuilderApi for TestStore {
-        fn build(&self, _target: Option<&str>, _service: &str, user: &str) -> keyring::Result<Box<keyring::credential::Credential>> {
+        fn build(&self, _target: Option<&str>, service: &str, user: &str) -> keyring::Result<Box<keyring::credential::Credential>> {
             if user.ends_with("fails.entry") {
                 return Err(keyring::Error::Invalid("user".to_owned(), "refused by the test store".to_owned()));
             }
-            Ok(Box::new(TestItem { user: user.to_owned() }))
+            Ok(Box::new(TestItem { key: (service.to_owned(), user.to_owned()) }))
         }
 
         fn as_any(&self) -> &dyn std::any::Any {
@@ -139,6 +140,15 @@ pub(crate) mod tests {
         assert_eq!(delete_credential(item).await, Ok(()));
         assert_eq!(get_credential(item).await, Ok(None));
         assert_eq!(delete_credential(item).await, Ok(()));
+    }
+
+    /// Copies already installed saved their sign-ins under this service name, so a new build must read them there.
+    #[tokio::test]
+    async fn a_sign_in_an_installed_copy_saved_still_reads_back() {
+        use_test_store();
+        let saved = ("com.materialize3d".to_owned(), "inference.installed".to_owned());
+        SECRETS.lock().expect("no test panics while it holds the test store").insert(saved, b"secret".to_vec());
+        assert_eq!(get_credential("inference.installed").await, Ok(Some("secret".to_owned())));
     }
 
     #[tokio::test]

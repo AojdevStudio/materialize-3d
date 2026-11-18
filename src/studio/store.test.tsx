@@ -134,11 +134,14 @@ it('reads the saved state again after a pause when the first read fails', async 
   void start().then((state) => (taken = state))
   await pass(0)
   expect(useStudio.getState().error).toBe('The store was busy.')
+  expect(useStudio.getState().setup).toBeNull()
   await pass(2999)
   expect(reads.count).toBe(1)
   await pass(1)
   expect(reads.count).toBe(2)
   expect(taken).toEqual(saved())
+  // Send waits for the saved setup, so the store must hold it once the retry answers.
+  expect(useStudio.getState().setup).toEqual(saved().setup)
 })
 
 it.each(['answers', 'fails'])('takes only the first answer to the startup reads, so a read that %s after it changes nothing', async (outcome) => {

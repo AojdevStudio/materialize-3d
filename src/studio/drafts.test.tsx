@@ -342,11 +342,12 @@ it('keeps the composer and the saved draft the same when a picture was added dur
   await attach('/Users/me/new.jpg')
   await pass(400)
   await sending.release()
-  const after = shown()
-  expect(last(saves(projectB.id))).toEqual({ key: projectB.id, ...after })
+  const next = { text: 'Make it red', attachments: ['/Users/me/new.jpg'] }
+  expect(shown()).toEqual(next)
+  expect(last(saves(projectB.id))).toEqual({ key: projectB.id, ...next })
   await go(projectA)
   await go(projectB)
-  expect(shown()).toEqual(after)
+  expect(shown()).toEqual(next)
 })
 
 it('keeps text typed during a send as the next message, even when it reads the same as the sent one', async () => {
@@ -747,9 +748,11 @@ it('saves every screen before a quit goes on, retrying a save the engine restart
   await pass(0)
   await savingB.release()
   expect(quitting.done).toBe(false)
+  const refused = saves(projectA.id).length
   engineBack = true
   await engineReady()
   expect(quitting.done).toBe(true)
+  expect(saves(projectA.id)).toHaveLength(refused + 1)
   expect(last(saves(projectA.id))).toMatchObject({ text: 'a hook' })
   expect(last(saves(projectB.id))).toMatchObject({ text: 'a shelf' })
 })

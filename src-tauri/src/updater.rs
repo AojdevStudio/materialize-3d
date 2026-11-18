@@ -285,10 +285,21 @@ mod tests {
         let app = app(KEY_A);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
         let failing = format!("http://{}/latest.json", listener.local_addr().expect("addr"));
-        let router = axum::Router::new().route("/latest.json", axum::routing::get(|| async { axum::http::StatusCode::INTERNAL_SERVER_ERROR }));
+        let asked = Arc::new(AtomicBool::new(false));
+        let router = axum::Router::new().route(
+            "/latest.json",
+            axum::routing::get({
+                let asked = asked.clone();
+                move || async move {
+                    asked.store(true, Ordering::SeqCst);
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR
+                }
+            }),
+        );
         tokio::spawn(async move { axum::serve(listener, router).await.expect("serve") });
         let updater = app.updater_builder().endpoints(vec![failing.parse().expect("url")]).expect("endpoint").build().expect("updater");
         assert!(updater.check().await.is_err());
+        assert!(asked.load(Ordering::SeqCst), "the check never reached the feed");
     }
 
     #[tokio::test]

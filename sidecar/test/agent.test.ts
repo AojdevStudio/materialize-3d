@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { join } from 'node:path'
 import type { ChatEntry, ChatView } from '../src/protocol'
 import { spawnSidecar } from './sidecar'
 
@@ -44,11 +44,17 @@ async function waitForFile(path: string, ms = 15_000) {
   }
 }
 
-/** Waits until no process runs with `dir` in its command line, as when the watch on a crashed sidecar ends its command. */
-async function untilNothingRunsIn(dir: string, ms = 5_000) {
+/** Waits until process `pid` has ended, as when the watch on a crashed sidecar ends its command. */
+async function untilEnded(pid: number, ms = 5_000) {
   const deadline = Date.now() + ms
-  while (Bun.spawnSync(['ps', '-A', '-o', 'command=']).stdout.toString().includes(dir)) {
-    if (Date.now() > deadline) throw new Error(`a command in ${dir} still runs`)
+  for (;;) {
+    try {
+      process.kill(pid, 0)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ESRCH') return
+      throw error
+    }
+    if (Date.now() > deadline) throw new Error(`process ${pid} still runs`)
     await Bun.sleep(25)
   }
 }
@@ -123,7 +129,7 @@ describe('a crash mid-turn', () => {
     first.child.kill('SIGKILL')
     await first.child.exited
     // The watch on op2 ends it after the crash, before `go` would let it finish.
-    await untilNothingRunsIn(dirname(where.data))
+    await untilEnded(Number(readFileSync(join(where.projects, project, 'op2.pid'), 'utf8')))
 
     const reopened = start(where, 'ops')
     await reopened.next()
