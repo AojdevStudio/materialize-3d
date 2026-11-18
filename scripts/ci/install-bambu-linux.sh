@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
 # Installs the validated Bambu Studio CLI into the runner's tool cache and
 # exports BAMBU_STUDIO_CLI for later steps. Idempotent: a verified install is
-# reused. The AppImage is extracted, so FUSE is not needed.
+# reused. The AppImage is extracted, so FUSE is not needed, but the CLI still
+# loads these system libraries. Run apt-get update first on a fresh host.
 set -euo pipefail
+
+sudo apt-get install -y --no-install-recommends \
+  libgstreamer-plugins-base1.0-0 libgstreamer-gl1.0-0 libegl1 libgl1 libgbm1 \
+  libsecret-1-0 libmanette-0.2-0 libenchant-2-2 libhyphen0 libunwind8
 
 version=02.08.02.61
 asset=BambuStudio_ubuntu24.04-v${version}-20260820225108.AppImage

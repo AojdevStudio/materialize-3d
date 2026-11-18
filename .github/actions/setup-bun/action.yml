@@ -1,0 +1,13 @@
+name: Job-local Bun
+description: Installs the pinned Bun under the job's temp directory.
+runs:
+  using: composite
+  steps:
+    # Every runner on a host runs as one user, and setup-bun installs into $HOME/.bun/bin. Another
+    # job rewriting that bun mid-run makes macOS kill this job's next bun with SIGKILL, and on Linux
+    # it replaces the bun that other jobs and agents on the host run. So each job gets its own bun.
+    - uses: oven-sh/setup-bun@v2
+      env:
+        HOME: ${{ runner.temp }}/bun-home
+      with:
+        bun-version: "1.4.4"

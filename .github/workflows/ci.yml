@@ -8,8 +8,8 @@
 #      approves only after reading every change under .github/. Agents never
 #      approve one. A fork's pull request runs the workflow files from its own
 #      head, so this is the guard that holds when a fork edits them.
-#   2. Every self-hosted job runs only on a push to main, a manual dispatch, or
-#      a pull request whose head branch is in this repository
+#   2. Every self-hosted job runs only on a push to main or a pull request
+#      whose head branch is in this repository
 #      (github.event.pull_request.head.repo.full_name == github.repository),
 #      and never for Dependabot, as the actor or as a pull request's author.
 # Outside the jobs, scripts/ci/runner-guard.sh on each runner host reads the
@@ -47,37 +47,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev xvfb
-      - uses: actions/setup-node@v6.2.0
-        with:
-          node-version: "24"
-      # A job-local bun. setup-bun would otherwise replace the bun in the runner user's ~/.bun/bin, which
-      # other jobs and agents on this host also run.
-      - uses: oven-sh/setup-bun@v2
-        env:
-          HOME: ${{ runner.temp }}/bun-home
-        with:
-          bun-version: "1.4.4"
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri
-          # A cache save on this persistent runner would otherwise delete cargo-installed tools from ~/.cargo/bin.
-          cache-bin: false
-          # Only main saves. A pull request restores main's entry and saves none, so it adds no copy to the cache.
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: Install JavaScript dependencies (frozen lockfile)
-        run: bun install --frozen-lockfile
-      - name: Typecheck
-        run: bunx tsc --noEmit
-      - name: Frontend tests
-        run: bun run test
+      - uses: ./.github/actions/shared-checks
       - name: Frontend build
         run: bun run build
       - name: The frontend build carries no verification override
         run: "! grep -rl __M3D_E2E_DIALOGS__ dist"
-      - name: Sidecar typecheck and tests
-        working-directory: sidecar
-        run: bun install --frozen-lockfile && bunx tsc --noEmit && bun test
       # tauri-build refuses to build the app crate, tests included, until the bundled sidecar exists.
       - name: Build the sidecar
         run: scripts/build-sidecar.sh
@@ -85,11 +59,7 @@ jobs:
         working-directory: src-tauri
         run: cargo test --lib --locked
       - name: Install Bambu Studio 02.08.02.61
-        run: |
-          sudo apt-get install -y --no-install-recommends \
-            libgstreamer-plugins-base1.0-0 libgstreamer-gl1.0-0 libegl1 libgl1 libgbm1 \
-            libsecret-1-0 libmanette-0.2-0 libenchant-2-2 libhyphen0 libunwind8
-          scripts/ci/install-bambu-linux.sh
+        run: scripts/ci/install-bambu-linux.sh
       - name: The agent's slice step with real Bambu Studio (P2S presets and plate, staged output)
         working-directory: src-tauri
         run: cargo test --lib --locked studio::slice -- --ignored --nocapture
@@ -104,40 +74,13 @@ jobs:
     runs-on: [self-hosted, macOS, ARM64, m3d-mac-vz]
     timeout-minutes: 60
     env:
-      # Node's default heap limit can be too small for the production
-      # frontend build.
+      # Node's default heap limit can be too small for the production frontend build.
       NODE_OPTIONS: --max-old-space-size=4096
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v6.2.0
-        with:
-          node-version: "24"
-      # Every runner on the Mac runs as one user, and setup-bun installs into $HOME/.bun/bin. Another
-      # repository's job rewriting that bun mid-run makes macOS kill this job's next bun with SIGKILL, so
-      # this job installs its own bun under the runner's per-job temp directory.
-      - uses: oven-sh/setup-bun@v2
-        env:
-          HOME: ${{ runner.temp }}/bun-home
-        with:
-          bun-version: "1.4.4"
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri
-          # A cache save on this persistent runner would otherwise delete cargo-installed tools from ~/.cargo/bin.
-          cache-bin: false
-          # Only main saves. A pull request restores main's entry and saves none, so it adds no copy to the cache.
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: Install JavaScript dependencies (frozen lockfile)
-        run: bun install --frozen-lockfile
-      - name: Typecheck
-        run: bunx tsc --noEmit
-      - name: Frontend tests
-        run: bun run test
-      - name: Sidecar typecheck and tests
-        working-directory: sidecar
-        run: bun install --frozen-lockfile && bunx tsc --noEmit && bun test
-      # tauri-build refuses to build the app crate, tests included, until the bundled sidecar exists.
+      - uses: ./.github/actions/shared-checks
+      # The Rust tests run before the release build, because tauri build can rewrite Cargo.toml and
+      # Cargo.lock. Its beforeBuildCommand builds the sidecar again, which takes under a second.
       - name: Build the sidecar
         run: scripts/build-sidecar.sh
       - name: Rust tests
@@ -179,12 +122,7 @@ jobs:
         working-directory: site
     steps:
       - uses: actions/checkout@v4
-      # A job-local bun, for the same reason as the macos job's setup-bun above.
-      - uses: oven-sh/setup-bun@v2
-        env:
-          HOME: ${{ runner.temp }}/bun-home
-        with:
-          bun-version: "1.4.4"
+      - uses: ./.github/actions/setup-bun
       - name: Install site dependencies (frozen lockfile)
         run: bun install --frozen-lockfile
       - name: Google Chrome is installed on the runner
