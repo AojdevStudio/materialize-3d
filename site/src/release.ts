@@ -3,7 +3,8 @@
  * render. After a release is published and checked, edit `version` and the release's
  * `sha256` only (docs/releasing.md, step 7). The page renders the honest state for whatever
  * these values are (pending checksum, unsigned, unnotarized).
- * `bun scripts/release/release-facts.ts` checks these values against the app's sources.
+ * They describe the published download, not the source on main. `bun scripts/release/release-facts.ts
+ * --published` checks them against the Latest release and the source at its tag.
  */
 export type Release = {
   version: string;
@@ -17,6 +18,8 @@ export type Release = {
   notarized: boolean;
   /** Shown verbatim, e.g. "macOS 26.7". */
   testedMacOS: string;
+  /** The published build's `minimumSystemVersion`, shown as "macOS 26.0 or later". */
+  minimumMacOS: string;
   /** Shown verbatim in the download label, e.g. "Apple Silicon". */
   architecture: string;
   bambuStudio: { version: string; releaseUrl: string };
@@ -26,7 +29,7 @@ export type Release = {
 
 /** The last published release. It trails package.json while the next release is built. */
 const version = "0.3.2";
-/** The build `VALIDATED_VERSIONS` names in src-tauri/src/bambu/studio.rs. */
+/** The build `VALIDATED_VERSIONS` names in src-tauri/src/bambu/studio.rs at the published release's tag. */
 const bambuStudio = "02.08.02.61";
 
 export const release: Release = {
@@ -39,6 +42,7 @@ export const release: Release = {
   signed: true,
   notarized: true,
   testedMacOS: "macOS 26.7.2",
+  minimumMacOS: "26.0",
   architecture: "Apple Silicon",
   bambuStudio: {
     version: bambuStudio,

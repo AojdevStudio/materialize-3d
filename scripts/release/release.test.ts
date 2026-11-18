@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { updateNotes } from "./latest-json";
-import { check, readRepo, type Read } from "./release-facts";
+import { check, checkPublished, type Published, readRepo, type Read } from "./release-facts";
 
 const changing = (file: string, from: string | RegExp, to: string): Read => (path) => {
   const text = readRepo(path);
@@ -18,6 +18,20 @@ const bambu = today("src-tauri/src/bambu/studio.rs", /VALIDATED_VERSIONS: &\[&st
 const bun = today(".github/actions/setup-bun/action.yml", /bun-version: "([^"]+)"/);
 const macos = today("src-tauri/tauri.conf.json", /"minimumSystemVersion": "([^"]+)"/);
 const identifier = today("src-tauri/tauri.conf.json", /"identifier": "([^"]+)"/);
+const siteVersion = today("site/src/release.ts", /^const version = "([^"]+)";$/m);
+const siteBambu = today("site/src/release.ts", /^const bambuStudio = "([^"]+)";$/m);
+const siteMacOS = today("site/src/release.ts", /minimumMacOS: "([^"]+)"/);
+
+/** A Latest release that matches the site, built from source that names the site's Bambu build and minimum macOS. */
+const published = (tagSource: { bambu?: string; macos?: string } = {}, tag = `v${siteVersion}`): Published => ({
+  tag,
+  assets: ["latest.json", `Materialize-3D-${siteVersion}-macos-arm64.dmg`],
+  atTag: (file) =>
+    ({
+      "src-tauri/src/bambu/studio.rs": `pub const VALIDATED_VERSIONS: &[&str] = &["${tagSource.bambu ?? siteBambu}"];`,
+      "src-tauri/tauri.conf.json": `"minimumSystemVersion": "${tagSource.macos ?? siteMacOS}"`,
+    })[file] ?? "",
+});
 
 describe("release facts", () => {
   test("every copy in the tree matches its source", () => {
@@ -27,16 +41,40 @@ describe("release facts", () => {
   test.each([
     ["site/index.html", bambu, "99.99.99.99", "Bambu Studio build: site/index.html says 99.99.99.99"],
     ["src-tauri/Cargo.toml", `version = "${version}"`, 'version = "99.0.0"', "app version: src-tauri/Cargo.toml says 99.0.0"],
-    ["site/src/App.tsx", `macOS ${macos}`, "macOS 99.0", "minimum macOS: site/src/App.tsx says 99.0"],
+    ["docs/install-macos.md", `macOS ${macos} or later`, "macOS 99.0 or later", "minimum macOS: docs/install-macos.md says 99.0"],
     ["sidecar/package.json", `"@types/bun": "${bun}"`, '"@types/bun": "99.0.0"', "Bun version: sidecar/package.json says 99.0.0"],
     ["docs/install-macos.md", identifier, `${identifier}.other`, `bundle id: docs/install-macos.md says ${identifier}.other`],
-    ["site/src/release.ts", "-macos-arm64.dmg", "-mac.dmg", "DMG file name: site/src/release.ts links"],
-    ["site/src/release.ts", "-macos-arm64.dmg`", "-macos-arm64.dmg.zip`", "DMG file name: site/src/release.ts links"],
-    ["site/src/release.ts", "/download/v${version}/", "/download/${version}/", "DMG file name: site/src/release.ts links"],
+    ["site/src/release.ts", "-macos-arm64.dmg`", "-macos-arm64.dmg.zip`", "site DMG: site/src/release.ts links"],
+    ["site/src/release.ts", "/download/v${version}/", "/download/${version}/", "site DMG: site/src/release.ts links"],
     ["site/src/release.ts", /^const version = "[^"]+";$/m, 'const version = "99.0.0";', `site version: site/src/release.ts offers 99.0.0, newer than package.json ${version}`],
     ["src-tauri/tauri.conf.json", '"version": "../package.json"', `"version": "${version}"`, `tauri.conf.json sets "${version}"`],
   ] as const)("a changed copy in %s fails", (file, from, to, problem) => {
     const problems = check(changing(file, from, to));
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain(problem);
+  });
+
+  test("the source moves to a new Bambu build and minimum macOS while the site still offers the published release", () => {
+    const next = (text: string) =>
+      text
+        .replaceAll(bambu, "02.08.02.62")
+        .replaceAll(`macOS ${macos} or later`, "macOS 27.0 or later")
+        .replace(`"minimumSystemVersion": "${macos}"`, '"minimumSystemVersion": "27.0"')
+        .replace(`--minimum-deployment-target ${macos}`, "--minimum-deployment-target 27.0");
+    expect(check((path) => (path.startsWith("site/") ? readRepo(path) : next(readRepo(path))))).toEqual([]);
+  });
+
+  test("the site describes the Latest release and the source at its tag", () => {
+    expect(checkPublished(readRepo, published())).toEqual([]);
+  });
+
+  test.each([
+    ["the tag validates another Bambu build", readRepo, published({ bambu: "99.99.99.99" }), "site Bambu Studio build: site/src/release.ts says"],
+    ["the tag needs a newer macOS", readRepo, published({ macos: "99.0" }), "site minimum macOS: site/src/release.ts says"],
+    ["the site links a DMG the release lacks", changing("site/src/release.ts", "-macos-arm64.dmg", "-mac.dmg"), published(), "site DMG: site/src/release.ts links"],
+    ["a newer release is Latest", readRepo, published({}, "v99.0.0"), "site version: site/src/release.ts offers"],
+  ] as const)("--published fails when %s", (_, read, latest, problem) => {
+    const problems = checkPublished(read, latest);
     expect(problems).toHaveLength(1);
     expect(problems[0]).toContain(problem);
   });

@@ -12,7 +12,7 @@ type Requirement = { label: string; text: string };
 const requirements: readonly Requirement[] = [
   {
     label: "Mac",
-    text: "Apple Silicon and macOS 26.0 or later. Intel Macs, Windows, and Linux release builds are not offered.",
+    text: `Apple Silicon and macOS ${release.minimumMacOS} or later. Intel Macs, Windows, and Linux release builds are not offered.`,
   },
   {
     label: "AI sign-in",

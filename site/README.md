@@ -18,7 +18,7 @@ The tests launch the installed Google Chrome with its sandbox on, not Playwright
 
 ## Release facts
 
-Every release fact lives in `src/release.ts`: version, repository, releases, docs, and DMG URLs, the DMG SHA-256, the `signed` and `notarized` flags, the tested macOS text, the architecture, and the `studio` flag. Edit only that file after a release is verified. A merge to `main` deploys the site, so an edit to `src/release.ts` goes live as soon as it merges. Merge it only after the release is verified.
+Every release fact lives in `src/release.ts`: version, repository, releases, docs, and DMG URLs, the DMG SHA-256, the `signed` and `notarized` flags, the tested macOS text, the minimum macOS, the Bambu Studio build, the architecture, and the `studio` flag. These describe the published download, not the source on `main`. Edit that file, and the Bambu Studio build in `index.html`, only after a release is verified. A merge to `main` deploys the site, so an edit to `src/release.ts` goes live as soon as it merges. Merge it only after the release is verified.
 
 The page renders the honest state of those values. While `studio` is false, the page says next to each download that the chat studio is not in a release yet and names the version the download is. The SHA-256 row reads "Not published yet" while the value is `pending`. The phrase "Signed and notarized by Apple" appears only when both flags are true. While `notarized` is false, the install steps tell people to use Open Anyway in System Settings, Privacy & Security. The page never tells anyone to disable Gatekeeper.
 

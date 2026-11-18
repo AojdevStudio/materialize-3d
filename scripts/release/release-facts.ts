@@ -3,11 +3,15 @@
  * Each release fact has one source. This check fails when a copy of it says something else.
  *
  *   bun scripts/release/release-facts.ts              every copy in the tree agrees with its source
- *   bun scripts/release/release-facts.ts --published  also, the site offers the latest published GitHub release
+ *   bun scripts/release/release-facts.ts --published  also, the site describes the Latest published GitHub release
  *
  * A version bump edits package.json and src-tauri/Cargo.toml, because Cargo cannot read package.json.
- * tauri.conf.json reads its version from package.json. The site's version is a separate fact: it names the last
- * published release, so it trails package.json from the version bump until the release is published and checked.
+ * tauri.conf.json reads its version from package.json.
+ *
+ * The site describes the published download, so its facts have their own source, site/src/release.ts: the version,
+ * the DMG, the Bambu Studio build, and the minimum macOS. They trail the source on main from a change there until
+ * the release is published (docs/releasing.md, step 7). The default check compares the site only with itself.
+ * --published compares it with the Latest release and with the source at that release's tag.
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -31,12 +35,23 @@ const bambuBuild = /(\d{2}\.\d{2}\.\d{2}\.\d{2})/g;
 const orLater = /macOS (\d+(?:\.\d+)*) or later/g;
 /** The docs and the site spell the version placeholder their own way. */
 const placeholder = (text: string) => text.replace(/<version>|\$V\b|\$\{version\}/g, "$version");
-const dmgSource = "scripts/release/build-macos.sh";
-const dmgName = (read: Read) => sourceValue(read, dmgSource, /^name="([^"]+\.dmg)"$/m);
+const site = "site/src/release.ts";
+const bambuSource = "src-tauri/src/bambu/studio.rs";
+const conf = "src-tauri/tauri.conf.json";
+const validatedBambu = (read: Read) => sourceValue(read, bambuSource, /VALIDATED_VERSIONS: &\[&str\] = &\["([^"]+)"\];/);
+const minimumMacOS = (read: Read) => sourceValue(read, conf, /"minimumSystemVersion": "([^"]+)"/);
+
+function siteRelease(read: Read) {
+  return {
+    version: sourceValue(read, site, /^const version = "([^"]+)";$/m),
+    repoUrl: sourceValue(read, site, /repoUrl: "([^"]+)"/),
+    dmgUrl: placeholder(sourceValue(read, site, /dmgUrl: `([^`]+)`/)),
+    bambu: sourceValue(read, site, /^const bambuStudio = "([^"]+)";$/m),
+    minimumMacOS: sourceValue(read, site, /minimumMacOS: "([^"]+)"/),
+  };
+}
 
 function facts(read: Read): Fact[] {
-  const conf = "src-tauri/tauri.conf.json";
-  const bambuSource = "src-tauri/src/bambu/studio.rs";
   const bunSource = ".github/actions/setup-bun/action.yml";
   return [
     {
@@ -51,12 +66,10 @@ function facts(read: Read): Fact[] {
     {
       name: "Bambu Studio build",
       source: bambuSource,
-      value: sourceValue(read, bambuSource, /VALIDATED_VERSIONS: &\[&str\] = &\["([^"]+)"\];/),
+      value: validatedBambu(read),
       copies: [
         "scripts/ci/install-bambu-linux.sh",
         "scripts/ci/install-bambu-macos.sh",
-        "site/src/release.ts",
-        "site/index.html",
         "AGENTS.md",
         "docs/install-macos.md",
         "docs/verify-on-mac.md",
@@ -64,6 +77,12 @@ function facts(read: Read): Fact[] {
         ".agents/skills/verify-materialize-3d/scripts/mac.ts",
         ".agents/skills/verify-materialize-3d/features/README.md",
       ].map((file) => ({ file, pattern: bambuBuild })),
+    },
+    {
+      name: "site Bambu Studio build",
+      source: site,
+      value: siteRelease(read).bambu,
+      copies: [{ file: "site/index.html", pattern: bambuBuild }],
     },
     {
       name: "Bun version",
@@ -77,9 +96,8 @@ function facts(read: Read): Fact[] {
     {
       name: "minimum macOS",
       source: conf,
-      value: sourceValue(read, conf, /"minimumSystemVersion": "([^"]+)"/),
+      value: minimumMacOS(read),
       copies: [
-        { file: "site/src/App.tsx", pattern: orLater },
         { file: "docs/install-macos.md", pattern: orLater },
         { file: "docs/verify-on-mac.md", pattern: orLater },
         { file: "docs/releasing.md", pattern: orLater },
@@ -99,8 +117,8 @@ function facts(read: Read): Fact[] {
     },
     {
       name: "DMG file name",
-      source: dmgSource,
-      value: dmgName(read),
+      source: "scripts/release/build-macos.sh",
+      value: sourceValue(read, "scripts/release/build-macos.sh", /^name="([^"]+\.dmg)"$/m),
       copies: [
         // A label after "#" or "| " is the name the release page shows, not the file name.
         { file: "docs/releasing.md", pattern: /(?<!#|\| )(Materialize-3D-[^\s/`"#]+\.dmg)/g, normalize: placeholder },
@@ -126,34 +144,61 @@ export function check(read: Read): string[] {
   if (tauriVersion !== "../package.json") {
     problems.push(`app version: src-tauri/tauri.conf.json sets "${tauriVersion}" instead of reading "../package.json"`);
   }
-  const repoUrl = sourceValue(read, "site/src/release.ts", /repoUrl: "([^"]+)"/);
-  const siteDmg = placeholder(sourceValue(read, "site/src/release.ts", /dmgUrl: `([^`]+)`/));
-  const releaseDmg = `${repoUrl}/releases/download/v$version/${dmgName(read)}`;
-  if (siteDmg !== releaseDmg) {
-    problems.push(`DMG file name: site/src/release.ts links ${siteDmg}, but ${dmgSource} uploads ${releaseDmg}`);
+  const { version, repoUrl, dmgUrl } = siteRelease(read);
+  const download = `${repoUrl}/releases/download/v$version/`;
+  if (!dmgUrl.startsWith(download) || !dmgUrl.endsWith(".dmg")) {
+    problems.push(`site DMG: ${site} links ${dmgUrl}, not a .dmg on the release it offers, ${download}`);
   }
   const appVersion = sourceValue(read, "package.json", /"version": "([^"]+)"/);
-  const siteVersion = sourceValue(read, "site/src/release.ts", /^const version = "([^"]+)";$/m);
-  if (Bun.semver.order(siteVersion, appVersion) > 0) {
-    problems.push(`site version: site/src/release.ts offers ${siteVersion}, newer than package.json ${appVersion}`);
+  if (Bun.semver.order(version, appVersion) > 0) {
+    problems.push(`site version: ${site} offers ${version}, newer than package.json ${appVersion}`);
   }
   return problems;
 }
 
-/** The tag of the release GitHub marks Latest. */
-function latestPublished(): string {
-  const gh = Bun.spawnSync(["gh", "release", "view", "--repo", "AojdevStudio/materialize-3d", "--json", "tagName", "--jq", ".tagName"]);
-  if (gh.exitCode !== 0) throw new Error(`gh release view failed: ${gh.stderr.toString().trim()}`);
-  return gh.stdout.toString().trim();
+export type Published = { tag: string; assets: readonly string[]; atTag: Read };
+
+/** The site's facts against the published release: its tag, its files, and the source the tag was built from. */
+export function checkPublished(read: Read, latest: Published): string[] {
+  const offered = siteRelease(read);
+  if (`v${offered.version}` !== latest.tag) {
+    return [`site version: ${site} offers v${offered.version}, but the Latest release is ${latest.tag}`];
+  }
+  const problems: string[] = [];
+  const dmg = offered.dmgUrl.slice(offered.dmgUrl.lastIndexOf("/") + 1).replaceAll("$version", offered.version);
+  if (!latest.assets.includes(dmg)) {
+    problems.push(`site DMG: ${site} links ${dmg}, but ${latest.tag} holds ${latest.assets.join(", ")}`);
+  }
+  const bambu = validatedBambu(latest.atTag);
+  if (offered.bambu !== bambu) {
+    problems.push(`site Bambu Studio build: ${site} says ${offered.bambu}, but ${bambuSource} at ${latest.tag} says ${bambu}`);
+  }
+  const macos = minimumMacOS(latest.atTag);
+  if (offered.minimumMacOS !== macos) {
+    problems.push(`site minimum macOS: ${site} says ${offered.minimumMacOS}, but ${conf} at ${latest.tag} says ${macos}`);
+  }
+  return problems;
+}
+
+const repo = "AojdevStudio/materialize-3d";
+
+function gh(args: string[]): string {
+  const run = Bun.spawnSync(["gh", ...args]);
+  if (run.exitCode !== 0) throw new Error(`gh ${args.join(" ")} failed: ${run.stderr.toString().trim()}`);
+  return run.stdout.toString();
+}
+
+/** The release GitHub marks Latest, and its source read through the GitHub API. */
+function latestPublished(): Published {
+  const tag = gh(["release", "view", "--repo", repo, "--json", "tagName", "--jq", ".tagName"]).trim();
+  const assets = gh(["release", "view", tag, "--repo", repo, "--json", "assets", "--jq", ".assets[].name"]).trim().split("\n");
+  const atTag: Read = (file) => gh(["api", "-H", "Accept: application/vnd.github.raw", `repos/${repo}/contents/${file}?ref=${tag}`]);
+  return { tag, assets, atTag };
 }
 
 if (import.meta.main) {
   const problems = check(readRepo);
-  if (process.argv.includes("--published")) {
-    const site = `v${sourceValue(readRepo, "site/src/release.ts", /^const version = "([^"]+)";$/m)}`;
-    const latest = latestPublished();
-    if (site !== latest) problems.push(`site version: site/src/release.ts offers ${site}, but the Latest release is ${latest}`);
-  }
+  if (process.argv.includes("--published")) problems.push(...checkPublished(readRepo, latestPublished()));
   for (const problem of problems) console.error(`release facts: ${problem}`);
   if (problems.length > 0) process.exit(1);
   console.log("release facts: every copy matches its source");

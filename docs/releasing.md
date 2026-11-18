@@ -21,7 +21,7 @@ Do not rotate or rewrite user credentials to satisfy these limits. If existing c
 
 ## Steps
 
-1. Set the version in `package.json` and `src-tauri/Cargo.toml`. `src-tauri/tauri.conf.json` reads it from `package.json`. Update only the root `materialize-3d` package entry in `src-tauri/Cargo.lock`. Keep dependency versions unchanged. Leave `site/src/release.ts` for step 7, because the site offers the last published release. Run `bun scripts/release/release-facts.ts --published`. It fails when any copy of a release fact differs from its source, or when the site does not offer the release GitHub marks Latest, which means step 7 of the last release was missed. Fix that first, before you tag. CI runs the check without `--published`. Prepare `docs/releases/v<version>.md` with source capabilities and publication requirements, then land the version change through a pull request. Keep the final source commit, DMG checksum, and measured acceptance results out of tracked source. They go in the release body and in the acceptance record in the meta repo (step 5).
+1. Set the version in `package.json` and `src-tauri/Cargo.toml`. `src-tauri/tauri.conf.json` reads it from `package.json`. Update only the root `materialize-3d` package entry in `src-tauri/Cargo.lock`. Keep dependency versions unchanged. Leave `site/src/release.ts` for step 7, because the site offers the last published release. Run `bun scripts/release/release-facts.ts --published`. It fails when any copy of a release fact differs from its source, or when the site does not describe the release GitHub marks Latest, which means step 7 of the last release was missed. The site's version, DMG, Bambu Studio build, and minimum macOS are checked against that release and the source at its tag, not against `main`. Fix that first, before you tag. CI runs the check without `--published`. Prepare `docs/releases/v<version>.md` with source capabilities and publication requirements, then land the version change through a pull request. Keep the final source commit, DMG checksum, and measured acceptance results out of tracked source. They go in the release body and in the acceptance record in the meta repo (step 5).
 2. Tag the merged commit on `main` and push the tag:
 
    ```bash
@@ -129,13 +129,13 @@ Do not rotate or rewrite user credentials to satisfy these limits. If existing c
 
    The last command passes only after the release is published as Latest.
 
-7. Point the site at the published release. In `site/src/release.ts`, set `version` to the new version and `sha256` to the DMG SHA-256 from the release body. Then run:
+7. Point the site at the published release. In `site/src/release.ts`, set `version` to the new version and `sha256` to the DMG SHA-256 from the release body. If the release changed the Bambu Studio build or the minimum macOS, also set `bambuStudio` and `minimumMacOS` there, and the Bambu Studio build in `site/index.html`. Then run:
 
    ```bash
    bun scripts/release/release-facts.ts --published
    ```
 
-   It fails until the site offers the release GitHub marks Latest. Land the change through a pull request. A merge to `main` deploys the site, so merge it only after step 6 passes.
+   It fails until the site describes the release GitHub marks Latest. Land the change through a pull request. A merge to `main` deploys the site, so merge it only after step 6 passes.
 
 ## Required software acceptance record
 
