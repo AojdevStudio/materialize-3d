@@ -3,10 +3,10 @@
 # .agents/skills/formal-verify-materialize-3d/SKILL.md.
 #
 # It runs only when a covered source file, the skill, or this file changes. The
-# covered files are the ones in the skill's models/sources.sha256. Keep the two
-# lists the same.
+# covered files are the ones in the skill's models/sources.sha256, and the job's
+# first check fails when the paths below list other files.
 #
-# TLC reads only the models, so a code change alone cannot fail it. The first
+# TLC reads only the models, so a code change alone cannot fail it. The second
 # check fails when a covered file no longer matches the hash recorded when the
 # models were last confirmed against the code. The skill's "Does my change touch
 # the models?" section says how to confirm them and record new hashes.
@@ -53,10 +53,13 @@ jobs:
     # Both runs take about 20 seconds once Java and the jar sit in the runner's tool cache.
     timeout-minutes: 10
     env:
-      CHECK: .agents/skills/formal-verify-materialize-3d/scripts/check.sh
+      SCRIPTS: .agents/skills/formal-verify-materialize-3d/scripts
       SOURCES: .agents/skills/formal-verify-materialize-3d/models/sources.sha256
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-bun
+      - name: The paths above are the covered files
+        run: bun "$SCRIPTS/check-paths.ts"
       - name: The covered code is the code the models were last confirmed against
         run: |
           if ! sha256sum --check --quiet "$SOURCES"; then
@@ -68,22 +71,22 @@ jobs:
         with:
           distribution: temurin
           java-version: "21"
-      - name: Install TLC 2.19 (tla2tools.jar v1.7.4)
+      - name: Install the pinned TLC
         run: |
-          sha=$(sed -n 's/^TLC_SHA256=//p' "$CHECK")
-          dir="$RUNNER_TOOL_CACHE/tla2tools/1.7.4"
+          source "$SCRIPTS/tlc.env"
+          dir="$RUNNER_TOOL_CACHE/tla2tools/$TLC_VERSION"
           jar="$dir/tla2tools.jar"
-          if ! echo "$sha  $jar" | sha256sum --check --status; then
+          if ! echo "$TLC_SHA256  $jar" | sha256sum --check --status; then
             mkdir -p "$dir"
             tmp=$(mktemp "$dir/download.XXXXXX")
             trap 'rm -f "$tmp"' EXIT
-            curl -fsSL --retry 3 -o "$tmp" https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar
-            echo "$sha  $tmp" | sha256sum --check
+            curl -fsSL --retry 3 -o "$tmp" "https://github.com/tlaplus/tlaplus/releases/download/v$TLC_VERSION/tla2tools.jar"
+            echo "$TLC_SHA256  $tmp" | sha256sum --check
             mv "$tmp" "$jar"
           fi
           echo "TLA2TOOLS_JAR=$jar" >>"$GITHUB_ENV"
       # check.sh writes TLC's output and state under TMPDIR. The runner empties RUNNER_TEMP after each job.
       - name: Each check's verdict matches the recorded one
-        run: TMPDIR="$RUNNER_TEMP" $CHECK
+        run: TMPDIR="$RUNNER_TEMP" "$SCRIPTS/check.sh"
       - name: Each broken variant fails its check
-        run: TMPDIR="$RUNNER_TEMP" $CHECK --mutants
+        run: TMPDIR="$RUNNER_TEMP" "$SCRIPTS/check.sh" --mutants
