@@ -8,8 +8,8 @@
 #      approves only after reading every change under .github/. Agents never
 #      approve one. A fork's pull request runs the workflow files from its own
 #      head, so this is the guard that holds when a fork edits them.
-#   2. Every self-hosted job runs only on a push to main, a manual dispatch, or
-#      a pull request whose head branch is in this repository
+#   2. Every self-hosted job runs only on a push to main or a pull request
+#      whose head branch is in this repository
 #      (github.event.pull_request.head.repo.full_name == github.repository),
 #      and never for Dependabot, as the actor or as a pull request's author.
 # Outside the jobs, scripts/ci/runner-guard.sh on each runner host reads the
@@ -79,9 +79,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/shared-checks
-      # Its beforeBuildCommand builds the bundled sidecar, which the Rust tests below also need.
-      - name: Build the desktop app (release profile)
-        run: bun tauri build --bundles app
+      # The Rust tests run before the release build, because tauri build can rewrite Cargo.toml and
+      # Cargo.lock. Its beforeBuildCommand builds the sidecar again, which takes under a second.
+      - name: Build the sidecar
+        run: scripts/build-sidecar.sh
       - name: Rust tests
         working-directory: src-tauri
         run: cargo test --lib --locked
@@ -90,6 +91,8 @@ jobs:
       - name: The agent's slice step with real Bambu Studio (P2S presets and plate, staged output)
         working-directory: src-tauri
         run: cargo test --lib --locked studio::slice -- --ignored --nocapture
+      - name: Build the desktop app (release profile)
+        run: bun tauri build --bundles app
       - name: The release app carries no verification harness or dialog override
         run: |
           app="${CARGO_TARGET_DIR:-src-tauri/target}/release/bundle/macos/Materialize 3D.app"
