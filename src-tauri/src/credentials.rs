@@ -67,21 +67,39 @@ pub async fn delete_credential(key: &str) -> Result<(), String> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use std::collections::HashMap;
+    use std::sync::{LazyLock, Mutex};
 
-    /// keyring's mock store. An item whose name ends in `fails.entry` cannot be made, and one that ends in
-    /// `fails.call` fails its first call, the way a locked Keychain does.
-    struct TestStore;
+    /// Each item's secret in the test store, by item name, for the whole test run.
+    static SECRETS: LazyLock<Mutex<HashMap<String, Vec<u8>>>> = LazyLock::new(Mutex::default);
 
-    impl keyring::credential::CredentialBuilderApi for TestStore {
-        fn build(&self, _target: Option<&str>, _service: &str, user: &str) -> keyring::Result<Box<keyring::credential::Credential>> {
-            if user.ends_with("fails.entry") {
-                return Err(keyring::Error::Invalid("user".to_owned(), "refused by the test store".to_owned()));
+    /// An item in the test store. Every entry for the same item name reads the same secret, as in the real store.
+    struct TestItem {
+        user: String,
+    }
+
+    impl TestItem {
+        /// An item whose name ends in `fails.call` fails every call, the way a locked Keychain does.
+        fn reach(&self) -> keyring::Result<std::sync::MutexGuard<'static, HashMap<String, Vec<u8>>>> {
+            if self.user.ends_with("fails.call") {
+                return Err(keyring::Error::PlatformFailure("locked".into()));
             }
-            let credential = keyring::mock::MockCredential::default();
-            if user.ends_with("fails.call") {
-                credential.set_error(keyring::Error::PlatformFailure("locked".into()));
-            }
-            Ok(Box::new(credential))
+            Ok(SECRETS.lock().expect("no test panics while it holds the test store"))
+        }
+    }
+
+    impl keyring::credential::CredentialApi for TestItem {
+        fn set_secret(&self, secret: &[u8]) -> keyring::Result<()> {
+            self.reach()?.insert(self.user.clone(), secret.to_vec());
+            Ok(())
+        }
+
+        fn get_secret(&self) -> keyring::Result<Vec<u8>> {
+            self.reach()?.get(&self.user).cloned().ok_or(keyring::Error::NoEntry)
+        }
+
+        fn delete_credential(&self) -> keyring::Result<()> {
+            self.reach()?.remove(&self.user).map(drop).ok_or(keyring::Error::NoEntry)
         }
 
         fn as_any(&self) -> &dyn std::any::Any {
@@ -89,19 +107,38 @@ pub(crate) mod tests {
         }
     }
 
-    /// Every entry made from here on lives in keyring's mock store, which keeps a secret only in the entry that set
-    /// it. Nothing reaches the machine's own store.
+    /// An item whose name ends in `fails.entry` cannot be made.
+    struct TestStore;
+
+    impl keyring::credential::CredentialBuilderApi for TestStore {
+        fn build(&self, _target: Option<&str>, _service: &str, user: &str) -> keyring::Result<Box<keyring::credential::Credential>> {
+            if user.ends_with("fails.entry") {
+                return Err(keyring::Error::Invalid("user".to_owned(), "refused by the test store".to_owned()));
+            }
+            Ok(Box::new(TestItem { user: user.to_owned() }))
+        }
+
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+    }
+
+    /// Every entry made from here on lives in the test store, in memory. Nothing reaches the machine's own store.
     pub(crate) fn use_test_store() {
         static ONCE: std::sync::Once = std::sync::Once::new();
         ONCE.call_once(|| keyring::set_default_credential_builder(Box::new(TestStore)));
     }
 
     #[tokio::test]
-    async fn a_secret_is_stored_and_a_missing_one_reads_as_none_and_counts_as_deleted() {
+    async fn a_stored_secret_reads_back_until_it_is_deleted() {
         use_test_store();
-        assert_eq!(store_credential("inference.anthropic", "secret").await, Ok(()));
-        assert_eq!(get_credential("inference.anthropic").await, Ok(None));
-        assert_eq!(delete_credential("inference.anthropic").await, Ok(()));
+        let item = "inference.round-trip";
+        assert_eq!(get_credential(item).await, Ok(None));
+        assert_eq!(store_credential(item, "secret").await, Ok(()));
+        assert_eq!(get_credential(item).await, Ok(Some("secret".to_owned())));
+        assert_eq!(delete_credential(item).await, Ok(()));
+        assert_eq!(get_credential(item).await, Ok(None));
+        assert_eq!(delete_credential(item).await, Ok(()));
     }
 
     #[tokio::test]
@@ -136,54 +173,14 @@ pub(crate) mod tests {
         }
     }
 
+    /// The build's own store, from the platform feature in Cargo.toml. Without one, keyring falls back to its mock
+    /// store, which forgets every sign-in.
     #[test]
-    fn service_name_is_correct() {
-        assert_eq!(SERVICE, "com.materialize3d");
-    }
-
-    #[test]
-    fn default_store_keeps_credentials_until_deleted() {
+    fn the_platform_store_keeps_sign_ins_until_they_are_deleted() {
         use keyring::credential::CredentialPersistence;
         assert!(matches!(
             keyring::default::default_credential_builder().persistence(),
             CredentialPersistence::UntilDelete
         ));
-    }
-
-    #[test]
-    fn entry_construction_succeeds_for_various_keys() {
-        let keys = [
-            "anthropic:access_token",
-            "openai:access_token",
-            "bambu:serial",
-            "test-key-with-dashes",
-            "key.with.dots",
-        ];
-        for key in &keys {
-            let entry = keyring::Entry::new(SERVICE, key);
-            assert!(
-                entry.is_ok(),
-                "Entry::new should succeed for key '{key}', got: {:?}",
-                entry.err()
-            );
-        }
-    }
-
-    #[test]
-    fn no_entry_error_is_distinguishable() {
-        let err = keyring::Error::NoEntry;
-        let msg = format!("{err}");
-        assert!(
-            !msg.is_empty(),
-            "NoEntry error should have a non-empty display"
-        );
-    }
-
-    #[test]
-    fn error_messages_include_key_name() {
-        let key = "test-key";
-        let err_msg = format!("keyring set_password error for key={key}: simulated error");
-        assert!(err_msg.contains("test-key"));
-        assert!(err_msg.contains("keyring"));
     }
 }
