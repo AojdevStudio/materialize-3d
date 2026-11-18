@@ -5,7 +5,8 @@ import { Host } from '../src/host'
 import type { handlers } from '../src/methods'
 import { type Method, type Methods, STEP_LINES, type ToolArgs, type ToolName } from '../src/protocol'
 
-// These checks run when tsc compiles this file: a schema and its type that take different values fail the compile.
+// The checks below are types, so tsc runs them when it compiles this file: a schema and its type that take different
+// values fail the compile.
 
 /** Keys an object type names, or none for a record such as `Record<string, never>`. */
 type Keys<T> = string extends keyof T ? never : keyof T
@@ -48,19 +49,14 @@ type DriftedOf<O extends readonly ToolName[]> = {
 }[number]
 type ToolDrifted = DriftedOf<typeof ORDER>
 
+// Each params schema takes exactly what its type names.
 const methodsMatch: [Drifted] extends [never] ? true : Drifted = true
 const toolsMatch: [ToolDrifted] extends [never] ? true : ToolDrifted = true
 
-test('each params schema takes exactly what its type names', () => {
-  expect([methodsMatch, toolsMatch]).toEqual([true, true])
-})
-
-test('the drift check tells a schema from a type that takes one more value', () => {
-  const narrower: Same<{ plate: 'Cool Plate' }, { plate: 'Cool Plate' | 'Supertack Plate' }> = false
-  const extraKey: Same<{ model: { provider: string } }, { model: { provider: string; modelId?: string } }> = false
-  const noParams: Same<Record<never, never>, Record<string, never>> = true
-  expect([narrower, extraKey, noParams]).toEqual([false, false, true])
-})
+// The drift check tells a schema from a type that takes one more value.
+const narrower: Same<{ plate: 'Cool Plate' }, { plate: 'Cool Plate' | 'Supertack Plate' }> = false
+const extraKey: Same<{ model: { provider: string } }, { model: { provider: string; modelId?: string } }> = false
+const noParams: Same<Record<never, never>, Record<string, never>> = true
 
 test('the agent offers its tools by the names and in the order the protocol lists them', () => {
   const unused = () => Promise.reject(new Error('not used here'))
