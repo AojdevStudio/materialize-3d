@@ -14,12 +14,19 @@ export const savedAttachment = (path: string): Attachment => ({ name: fileName(p
 /** A picture pasted into the composer, before it is kept in a file. */
 export type PastedPicture = { name: string; file: File }
 
-/** Frees a pasted picture's preview once it is sent, removed, or left. */
+/** Frees a pasted picture's preview once the person removes it. */
 export function releaseAttachment(attachment: Attachment): void {
   if (attachment.previewUrl !== undefined) URL.revokeObjectURL(attachment.previewUrl)
 }
 
+/** What the composer says on the start screen and in a chat. */
+const PLACES = {
+  start: { placeholder: 'Describe the part, paste a link, or attach a file', autoFocus: true, hint: 'Photo, PDF, 3MF, STL', sendLabel: 'Start' },
+  chat: { placeholder: 'Reply, paste a link, or attach a file', autoFocus: false, hint: undefined, sendLabel: 'Send' },
+}
+
 interface ComposerProps {
+  place: keyof typeof PLACES
   text: string
   onText: (text: string) => void
   attachments: Attachment[]
@@ -34,19 +41,14 @@ interface ComposerProps {
   /** A turn runs or a send is still being set up, so Send waits. */
   busy: boolean
   running: boolean
-  placeholder: string
   /** Why Send stays off until setup fixes something. The composer says it in place of the placeholder. */
   locked?: string
-  autoFocus?: boolean
-  /** What Attach takes, beside the button. */
-  hint?: string
-  /** The send button's label: Start on the start screen, Send in a chat. */
-  sendLabel: string
   /** The model picker, beside the send button. */
   picker: ReactNode
 }
 
-export function Composer({ text, onText, attachments, onAttach, onPaste, onRemove, onSend, onError, onStop, busy, running, placeholder, locked, autoFocus, hint, sendLabel, picker }: ComposerProps) {
+export function Composer({ place, text, onText, attachments, onAttach, onPaste, onRemove, onSend, onError, onStop, busy, running, locked, picker }: ComposerProps) {
+  const { placeholder, autoFocus, hint, sendLabel } = PLACES[place]
   const empty = !text.trim() && attachments.length === 0
   const off = empty || busy || locked !== undefined
 
