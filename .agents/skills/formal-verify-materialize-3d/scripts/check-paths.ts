@@ -10,10 +10,19 @@ const root = join(skill, "../../..");
 const workflow = ".github/workflows/formal-verification.yml";
 const sources = join(skill, "models/sources.sha256");
 
+// sha256sum --check skips a malformed row with only a warning, so every row must
+// be a digest, a space, a text or binary mode mark, and a path.
 const covered = (await Bun.file(sources).text())
   .split("\n")
   .filter((line) => line !== "")
-  .map((line) => line.slice(line.indexOf("  ") + 2));
+  .map((line) => {
+    const path = /^[0-9a-f]{64} [ *](.+)$/.exec(line)?.[1];
+    if (path === undefined) {
+      console.error(`${relative(root, sources)} has a malformed row: ${line}`);
+      process.exit(1);
+    }
+    return path;
+  });
 const expected = new Set([...covered, `${relative(root, skill)}/**`, workflow]);
 
 const parsed: unknown = Bun.YAML.parse(await Bun.file(join(root, workflow)).text());
