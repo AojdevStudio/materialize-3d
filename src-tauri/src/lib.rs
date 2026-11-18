@@ -3,7 +3,9 @@ mod build_gate;
 mod credentials;
 #[cfg(feature = "e2e")]
 mod e2e;
+mod login_shell;
 mod sidecar;
+mod slice_requests;
 mod studio;
 mod updater;
 

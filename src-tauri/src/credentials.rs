@@ -1,18 +1,39 @@
-//! Secure credential storage backed by the OS-native credential store
-//! (macOS Keychain, Windows Credential Manager, Linux Secret Service) via the
-//! `keyring` crate.
-//!
-//! Every operation is wrapped in `tokio::task::spawn_blocking` because
-//! `keyring::Entry` methods are synchronous and may prompt the user.
+//! The app's items in the OS credential store: the Keychain on macOS, the Secret Service on Linux.
 
+/// Not the bundle id. Renaming either loses every saved sign-in.
 const SERVICE: &str = "com.materialize3d";
+/// Keychain items the sidecar may touch. Any other item, such as a printer's access code, is out of its reach.
+const KEYCHAIN_PREFIX: &str = "inference.";
 
-/// Store a credential in the OS-native credential store.
-pub async fn store_credential(key: &str, value: &str) -> Result<(), String> {
+/// The Keychain item for an inference login. The account is a provider id, never a path or another item's name.
+pub fn keychain_item(account: &str) -> Result<String, String> {
+    let valid = !account.is_empty()
+        && account.len() <= 64
+        && account.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '_' | '.'));
+    if valid {
+        Ok(format!("{KEYCHAIN_PREFIX}{account}"))
+    } else {
+        Err(format!("{account:?} is not a provider account"))
+    }
+}
+
+/// keyring's calls block and may prompt the person, so each runs on a blocking thread.
+async fn with_entry<T: Send + 'static>(
+    key: &str,
+    work: impl FnOnce(&str, keyring::Entry) -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
     let key = key.to_owned();
-    let value = value.to_owned();
     tokio::task::spawn_blocking(move || {
         let entry = keyring::Entry::new(SERVICE, &key).map_err(|e| format!("keyring entry error for key={key}: {e}"))?;
+        work(&key, entry)
+    })
+    .await
+    .map_err(|e| format!("spawn_blocking join error: {e}"))?
+}
+
+pub async fn store_credential(key: &str, value: &str) -> Result<(), String> {
+    let value = value.to_owned();
+    with_entry(key, move |key, entry| {
         entry
             .set_password(&value)
             .map_err(|e| format!("keyring set_password error for key={key}: {e}"))?;
@@ -20,48 +41,91 @@ pub async fn store_credential(key: &str, value: &str) -> Result<(), String> {
         Ok(())
     })
     .await
-    .map_err(|e| format!("spawn_blocking join error: {e}"))?
 }
 
-/// Retrieve a credential from the OS-native credential store.
-///
-/// Returns `None` if the credential does not exist (rather than an error).
 pub async fn get_credential(key: &str) -> Result<Option<String>, String> {
-    let key = key.to_owned();
-    tokio::task::spawn_blocking(move || {
-        let entry = keyring::Entry::new(SERVICE, &key).map_err(|e| format!("keyring entry error for key={key}: {e}"))?;
-        match entry.get_password() {
-            Ok(password) => Ok(Some(password)),
-            Err(keyring::Error::NoEntry) => Ok(None),
-            Err(e) => Err(format!("keyring get_password error for key={key}: {e}")),
-        }
+    with_entry(key, |key, entry| match entry.get_password() {
+        Ok(password) => Ok(Some(password)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => Err(format!("keyring get_password error for key={key}: {e}")),
     })
     .await
-    .map_err(|e| format!("spawn_blocking join error: {e}"))?
 }
 
-/// Delete a credential from the OS-native credential store. A credential that
-/// does not exist counts as deleted.
 pub async fn delete_credential(key: &str) -> Result<(), String> {
-    let key = key.to_owned();
-    tokio::task::spawn_blocking(move || {
-        let entry = keyring::Entry::new(SERVICE, &key).map_err(|e| format!("keyring entry error for key={key}: {e}"))?;
-        match entry.delete_credential() {
-            Ok(()) => {
-                log::info!("credential:deleted key={key}");
-                Ok(())
-            }
-            Err(keyring::Error::NoEntry) => Ok(()),
-            Err(e) => Err(format!("keyring delete_credential error for key={key}: {e}")),
+    with_entry(key, |key, entry| match entry.delete_credential() {
+        Ok(()) => {
+            log::info!("credential:deleted key={key}");
+            Ok(())
         }
+        Err(keyring::Error::NoEntry) => Ok(()),
+        Err(e) => Err(format!("keyring delete_credential error for key={key}: {e}")),
     })
     .await
-    .map_err(|e| format!("spawn_blocking join error: {e}"))?
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    /// keyring's mock store. An item whose name ends in `fails.entry` cannot be made, and one that ends in
+    /// `fails.call` fails its first call, the way a locked Keychain does.
+    struct TestStore;
+
+    impl keyring::credential::CredentialBuilderApi for TestStore {
+        fn build(&self, _target: Option<&str>, _service: &str, user: &str) -> keyring::Result<Box<keyring::credential::Credential>> {
+            if user.ends_with("fails.entry") {
+                return Err(keyring::Error::Invalid("user".to_owned(), "refused by the test store".to_owned()));
+            }
+            let credential = keyring::mock::MockCredential::default();
+            if user.ends_with("fails.call") {
+                credential.set_error(keyring::Error::PlatformFailure("locked".into()));
+            }
+            Ok(Box::new(credential))
+        }
+
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+    }
+
+    /// Every entry made from here on lives in keyring's mock store, which keeps a secret only in the entry that set
+    /// it. Nothing reaches the machine's own store.
+    pub(crate) fn use_test_store() {
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| keyring::set_default_credential_builder(Box::new(TestStore)));
+    }
+
+    #[tokio::test]
+    async fn a_secret_is_stored_and_a_missing_one_reads_as_none_and_counts_as_deleted() {
+        use_test_store();
+        assert_eq!(store_credential("inference.anthropic", "secret").await, Ok(()));
+        assert_eq!(get_credential("inference.anthropic").await, Ok(None));
+        assert_eq!(delete_credential("inference.anthropic").await, Ok(()));
+    }
+
+    #[tokio::test]
+    async fn a_store_failure_names_the_call_and_the_item_but_not_the_secret() {
+        use_test_store();
+        let locked = keyring::Error::PlatformFailure("locked".into());
+        assert_eq!(store_credential("fails.call", "secret").await, Err(format!("keyring set_password error for key=fails.call: {locked}")));
+        assert_eq!(get_credential("fails.call").await, Err(format!("keyring get_password error for key=fails.call: {locked}")));
+        assert_eq!(delete_credential("fails.call").await, Err(format!("keyring delete_credential error for key=fails.call: {locked}")));
+        let refused = keyring::Error::Invalid("user".to_owned(), "refused by the test store".to_owned());
+        let expected = Err(format!("keyring entry error for key=fails.entry: {refused}"));
+        assert_eq!(store_credential("fails.entry", "secret").await, expected);
+        assert_eq!(get_credential("fails.entry").await.map(|_| ()), expected);
+        assert_eq!(delete_credential("fails.entry").await, expected);
+    }
+
+    #[test]
+    fn the_sidecar_reaches_only_inference_items_in_the_keychain() {
+        assert_eq!(keychain_item("anthropic").as_deref(), Ok("inference.anthropic"));
+        assert_eq!(keychain_item("openai-codex").as_deref(), Ok("inference.openai-codex"));
+        for bad in ["", "printer/access", "../printer", "Anthropic", "a b", &"x".repeat(65)] {
+            assert!(keychain_item(bad).is_err(), "{bad:?} must be refused");
+        }
+    }
 
     #[test]
     fn service_name_is_correct() {
@@ -77,8 +141,6 @@ mod tests {
         ));
     }
 
-    /// Verify keyring::Entry can be constructed without error for arbitrary keys.
-    /// This tests the key format construction logic (service + key → Entry).
     #[test]
     fn entry_construction_succeeds_for_various_keys() {
         let keys = [
@@ -98,21 +160,16 @@ mod tests {
         }
     }
 
-    /// Verify that NoEntry is correctly identified as the "not found" variant.
-    /// We use the Display impl to confirm the error type since keyring::Error
-    /// doesn't expose variant checks via public methods on all platforms.
     #[test]
     fn no_entry_error_is_distinguishable() {
         let err = keyring::Error::NoEntry;
         let msg = format!("{err}");
-        // The NoEntry error should produce a recognizable message
         assert!(
             !msg.is_empty(),
             "NoEntry error should have a non-empty display"
         );
     }
 
-    /// Verify error mapping produces descriptive messages including the key name.
     #[test]
     fn error_messages_include_key_name() {
         let key = "test-key";

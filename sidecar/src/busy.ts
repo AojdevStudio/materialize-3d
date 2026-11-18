@@ -105,7 +105,6 @@ export class Busy {
     }
   }
 
-  /** Ends every wait for the pass, as the sidecar closes. */
   close(): void {
     this.#closing.abort()
   }

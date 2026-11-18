@@ -6,23 +6,22 @@
 //! (`sidecar/src/protocol.ts`). Rust never opens the sidecar's store: it only names its folder.
 
 use std::collections::HashMap;
-use std::future::Future;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::sync::{mpsc, oneshot, watch, Notify, OnceCell};
+use tokio::sync::{mpsc, oneshot, watch, Notify};
 
-use crate::credentials;
 use crate::build_gate::{BuildGate, OwnedRunning};
-use crate::studio;
+use crate::slice_requests::{self, SliceCall};
+use crate::{credentials, login_shell, studio};
 
 /// The one event the window listens to. The sidecar's own events and the engine's state both arrive here.
 pub const EVENT: &str = "sidecar://event";
@@ -34,8 +33,7 @@ const MAX_CRASHES: u32 = 5;
 /// Tries, a second apart, while the store is in use. A sidecar that just ended can still be closing it; another
 /// copy of the app holds it for longer than this.
 const IN_USE_TRIES: u32 = 10;
-/// Keychain items the sidecar may touch. Any other item, such as a printer's access code, is out of its reach.
-const KEYCHAIN_PREFIX: &str = "inference.";
+const RESTARTED: &str = "The engine restarted before it answered. Try again.";
 
 /// Whether the window's calls can reach a sidecar.
 #[derive(Clone)]
@@ -57,7 +55,7 @@ pub struct Sidecar {
     /// Ends the running sidecar through its process handle, which never signals a reused pid.
     kill: Notify,
     /// Each slice by its operation id, running or done, for as long as the app runs.
-    slices: Operations,
+    slices: slice_requests::Operations,
     /// The update gate's pass, held while the sidecar has work in flight, and the sidecar run it belongs to.
     pass: Mutex<Pass>,
 }
@@ -70,38 +68,12 @@ struct Pass {
     held: Option<OwnedRunning<Arc<BuildGate>>>,
 }
 
-/// Outside work by operation id: one result each, shared by every request that names the id.
-type Operations = Mutex<HashMap<String, Arc<OnceCell<Result<Value, String>>>>>;
-
-/// Runs `work` once per operation id. A sidecar that crashed mid-slice leaves Rust's slice running, and its resumed
-/// turn asks again with the same id: that request waits for the first and gets its result, so two slices never write
-/// the same output, and a result that came after the crash is not lost.
-async fn once_per_operation<F, Fut>(operations: &Operations, id: String, work: F) -> Result<Value, String>
-where
-    F: FnOnce() -> Fut,
-    Fut: Future<Output = Result<Value, String>>,
-{
-    let cell = operations.lock().unwrap_or_else(|e| e.into_inner()).entry(id).or_default().clone();
-    cell.get_or_init(work).await.clone()
-}
-
-/// The pass that holds an update off while the sidecar works. The updater restarts the app only once no build
+/// The pass that holds an update off while the sidecar works. The updater restarts the app only once no slice
 /// and no sidecar work holds one. While an update installs, the gate is closed and the pass, and with it a send,
 /// is refused.
 fn take_pass(gate: Arc<BuildGate>) -> Result<OwnedRunning<Arc<BuildGate>>, String> {
     BuildGate::enter_owned(gate)
         .ok_or_else(|| "An update is installing, and the app restarts when it is done. Send this again after it opens.".to_owned())
-}
-
-/// Runs `work` under a pass of its own. Work Rust does for the sidecar can outlive the sidecar run that asked for it,
-/// as a slice does after a crash, so the run's pass cannot hold the update off for it.
-async fn with_own_pass<F, Fut, T>(gate: Arc<BuildGate>, work: F) -> Result<T, String>
-where
-    F: FnOnce() -> Fut,
-    Fut: Future<Output = Result<T, String>>,
-{
-    let _pass = take_pass(gate)?;
-    work().await
 }
 
 impl Default for Sidecar {
@@ -137,7 +109,7 @@ impl Sidecar {
     fn drop_calls(&self) {
         let calls = std::mem::take(&mut *self.calls.lock().unwrap_or_else(|e| e.into_inner()));
         for (_, call) in calls {
-            let _ = call.send(Err("The engine restarted before it answered. Try again.".to_owned()));
+            let _ = call.send(Err(RESTARTED.to_owned()));
         }
     }
 
@@ -211,110 +183,13 @@ pub fn start(app: AppHandle) {
 fn binary_path() -> Result<PathBuf, String> {
     let exe = std::env::current_exe().map_err(|e| format!("finding the app's executable: {e}"))?;
     let dir = exe.parent().ok_or("the app's executable has no folder")?;
-    Ok(dir.join(if cfg!(windows) { format!("{BINARY}.exe") } else { BINARY.to_owned() }))
-}
-
-/// How long the login shell may take to tell its PATH before the app goes on without it.
-const LOGIN_SHELL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(5);
-
-/// The PATH of the person's login shell. An app opened from Finder starts with
-/// only the system folders, where `uv` is not.
-fn login_path() -> &'static str {
-    static PATH: OnceLock<String> = OnceLock::new();
-    PATH.get_or_init(|| {
-        let current = std::env::var("PATH").unwrap_or_default();
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_owned());
-        match shell_path(&shell, LOGIN_SHELL_DEADLINE) {
-            Some(path) if current.is_empty() => path,
-            Some(path) => format!("{path}:{current}"),
-            None => current,
-        }
-    })
-}
-
-/// The PATH `shell` reports as a login shell, or none when it fails, says nothing, or does not end within
-/// `deadline`. A shell whose startup files hang is ended with all it started, so the sidecar and the runner still
-/// start.
-fn shell_path(shell: &str, deadline: std::time::Duration) -> Option<String> {
-    let marker = "__M3D_PATH__";
-    let end = std::time::Instant::now() + deadline;
-    let mut command = std::process::Command::new(shell);
-    command
-        .args(["-ilc", &format!("printf '{marker}%s{marker}' \"$PATH\"")])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
-    // The shell leads a session of its own, so the deadline ends what its startup files started too. A session, not
-    // only a group: a shell in a background group of the terminal the app started from stops before its startup
-    // files, and one in a session of its own has no terminal to stop for.
-    #[cfg(unix)]
-    // SAFETY: setsid is async-signal-safe and only makes the child a session leader before it runs the shell.
-    unsafe {
-        std::os::unix::process::CommandExt::pre_exec(&mut command, || {
-            if libc::setsid() == -1 {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
-    let mut child = command.spawn().ok()?;
-    let mut stdout = child.stdout.take()?;
-    // What the shell printed so far. A program its startup files started, such as an agent, can keep stdout open long
-    // after the shell ends, so the reader is not waited on for its end. Once the lookup is done the reader stops at its
-    // next read and closes the pipe, so a program that keeps writing is never read again.
-    let printed = std::sync::Arc::new(Mutex::new(Vec::new()));
-    let done = std::sync::Arc::new(AtomicBool::new(false));
-    let (closed, eof) = std::sync::mpsc::channel::<()>();
-    std::thread::spawn({
-        let printed = printed.clone();
-        let done = done.clone();
-        move || {
-            let mut chunk = [0u8; 4096];
-            while let Ok(n @ 1..) = std::io::Read::read(&mut stdout, &mut chunk) {
-                if done.load(Ordering::Relaxed) {
-                    break;
-                }
-                printed.lock().unwrap_or_else(|e| e.into_inner()).extend_from_slice(&chunk[..n]);
-            }
-            let _ = closed.send(());
-        }
-    });
-    // Startup files can send stdout elsewhere and go on running, so the shell's end has the deadline too.
-    let ended = loop {
-        match child.try_wait() {
-            Ok(Some(_)) => break true,
-            Ok(None) if std::time::Instant::now() < end => std::thread::sleep(std::time::Duration::from_millis(20)),
-            _ => break false,
-        }
-    };
-    // The shell has ended, so all it printed is in the pipe: a short wait lets the reader take it.
-    let _ = eof.recv_timeout(std::time::Duration::from_millis(100));
-    let out = ended.then(|| std::mem::take(&mut *printed.lock().unwrap_or_else(|e| e.into_inner())));
-    done.store(true, Ordering::Relaxed);
-    if !ended {
-        #[cfg(unix)]
-        if let Ok(group) = i32::try_from(child.id()) {
-            // SAFETY: killpg only sends a signal, to the group this shell leads, as its session leader, and has not been
-            // reaped from.
-            unsafe { libc::killpg(group, libc::SIGKILL) };
-        }
-        let _ = child.kill();
-        let _ = child.wait();
-    }
-    let out = out?;
-    // The PATH is what the shell printed between the two markers. A program its startup files left running can write
-    // after it, so nothing past the second marker counts.
-    String::from_utf8_lossy(&out)
-        .split_once(marker)
-        .and_then(|(_, rest)| rest.split_once(marker))
-        .map(|(path, _)| path.trim().to_owned())
-        .filter(|path| !path.is_empty())
+    Ok(dir.join(BINARY))
 }
 
 /// The only variables the sidecar gets. Its tools need a PATH that finds `uv` and a HOME for
 /// uv's cache. The person's agent and inference settings (`ANTHROPIC_API_KEY` and the like) stay out.
 fn kept_env() -> Vec<(&'static str, String)> {
-    let mut env = vec![("PATH", login_path().to_owned())];
+    let mut env = vec![("PATH", login_shell::path().to_owned())];
     for name in ["HOME", "USER", "LANG", "TMPDIR"] {
         if let Ok(value) = std::env::var(name) {
             env.push((name, value));
@@ -461,7 +336,7 @@ enum Outbound {
 }
 
 /// Handles one line from the sidecar, and says whether it was the sidecar's ready event.
-fn dispatch(app: &AppHandle, run: u64, answers: &mpsc::WeakUnboundedSender<String>, line: &str) -> bool {
+fn dispatch<R: Runtime>(app: &AppHandle<R>, run: u64, answers: &mpsc::WeakUnboundedSender<String>, line: &str) -> bool {
     let message = match serde_json::from_str::<Outbound>(line) {
         Ok(message) => message,
         Err(e) => {
@@ -507,14 +382,6 @@ fn parse<T: DeserializeOwned>(method: &str, params: Value) -> Result<T, String> 
     serde_json::from_value(params).map_err(|e| format!("bad params for {method}: {e}"))
 }
 
-/// A slice the agent asked for, under its tool call's operation id.
-#[derive(Deserialize)]
-struct SliceCall {
-    operation: String,
-    #[serde(flatten)]
-    request: studio::slice::Request,
-}
-
 #[derive(Deserialize)]
 struct Busy {
     busy: bool,
@@ -546,38 +413,22 @@ struct NewSecret {
     secret: String,
 }
 
-/// The Keychain item for an inference login. The account is a provider id, never a path or another item's name.
-fn keychain_item(account: &str) -> Result<String, String> {
-    let valid = !account.is_empty()
-        && account.len() <= 64
-        && account.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '_' | '.'));
-    if valid {
-        Ok(format!("{KEYCHAIN_PREFIX}{account}"))
-    } else {
-        Err(format!("{account:?} is not a provider account"))
-    }
-}
-
-fn preset_cache(app: &AppHandle) -> Result<PathBuf, String> {
-    Ok(app.path().app_cache_dir().map_err(|e| format!("finding the app's cache folder: {e}"))?.join("bambu-presets"))
-}
-
 /// Answers one request from the sidecar run `run`. Errors name what failed and never carry a secret.
-async fn answer(app: &AppHandle, run: u64, method: &str, params: Value) -> Result<Value, String> {
+async fn answer<R: Runtime>(app: &AppHandle<R>, run: u64, method: &str, params: Value) -> Result<Value, String> {
     match method {
         "keychain.get" => {
             let Account { account } = parse(method, params)?;
-            let secret = credentials::get_credential(&keychain_item(&account)?).await?;
+            let secret = credentials::get_credential(&credentials::keychain_item(&account)?).await?;
             Ok(json!({ "secret": secret }))
         }
         "keychain.set" => {
             let NewSecret { account, secret } = parse(method, params)?;
-            credentials::store_credential(&keychain_item(&account)?, &secret).await?;
+            credentials::store_credential(&credentials::keychain_item(&account)?, &secret).await?;
             Ok(Value::Null)
         }
         "keychain.delete" => {
             let Account { account } = parse(method, params)?;
-            credentials::delete_credential(&keychain_item(&account)?).await?;
+            credentials::delete_credential(&credentials::keychain_item(&account)?).await?;
             Ok(Value::Null)
         }
         "busy" => {
@@ -585,30 +436,15 @@ async fn answer(app: &AppHandle, run: u64, method: &str, params: Value) -> Resul
             set_busy(&app.state::<Sidecar>(), app.state::<Arc<BuildGate>>().inner(), run, busy)?;
             Ok(Value::Null)
         }
-        "printer.check" => {
-            let printer: studio::slice::Printer = parse(method, params)?;
-            let cache = preset_cache(app)?;
-            tauri::async_runtime::spawn_blocking(move || studio::slice::check(&printer, &cache))
-                .await
-                .map_err(|e| format!("the printer check failed: {e}"))??;
-            Ok(Value::Null)
-        }
+        "printer.check" => slice_requests::check(app, parse(method, params)?).await,
         "slice" => {
-            let SliceCall { operation, request } = parse(method, params)?;
-            let cache = preset_cache(app)?;
-            // The pass comes first, so a refusal while an update installs is not kept as the operation's result, and
-            // the same slice can run once the gate opens.
-            let gate = app.state::<Arc<BuildGate>>().inner().clone();
-            let sidecar = app.state::<Sidecar>();
-            with_own_pass(gate, || {
-                once_per_operation(&sidecar.slices, operation, || async move {
-                    let sliced = tauri::async_runtime::spawn_blocking(move || studio::slice::slice(&request, &cache))
-                        .await
-                        .map_err(|e| format!("the slice task failed: {e}"))??;
-                    serde_json::to_value(sliced).map_err(|e| e.to_string())
-                })
-            })
-            .await
+            let call: SliceCall = parse(method, params)?;
+            let cache = slice_requests::preset_cache(app)?;
+            // A slice can outlive the sidecar run that asked for it, as it does after a crash, so it holds a pass of its
+            // own and not the run's. The pass comes before the slice, so a refusal while an update installs is not kept
+            // as the operation's result, and the same slice can run once the gate opens.
+            let _pass = take_pass(app.state::<Arc<BuildGate>>().inner().clone())?;
+            slice_requests::slice(&app.state::<Sidecar>().slices, call, cache).await
         }
         other => Err(format!("no host request {other}")),
     }
@@ -632,112 +468,22 @@ pub async fn sidecar(sidecar: State<'_, Sidecar>, method: String, params: Value)
     drop(input);
     if !queued {
         sidecar.calls.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
-        return Err("The engine restarted before it answered. Try again.".to_owned());
+        return Err(RESTARTED.to_owned());
     }
-    replied.await.map_err(|_| "The engine restarted before it answered. Try again.".to_owned())?
+    replied.await.map_err(|_| RESTARTED.to_owned())?
 }
 
 #[cfg(test)]
 mod tests {
+    use tauri::Listener;
+
     use super::*;
-
-    #[cfg(unix)]
-    #[test]
-    fn a_login_shell_that_hangs_is_ended_at_its_deadline() {
-        let dir = tempfile::tempdir().unwrap();
-        let shell = dir.path().join("slow-shell");
-        crate::write_test_script(&shell, "#!/bin/sh\nsleep 30\n");
-        let started = std::time::Instant::now();
-        assert_eq!(shell_path(shell.to_str().unwrap(), std::time::Duration::from_millis(300)), None);
-        assert!(started.elapsed() < std::time::Duration::from_secs(5), "took {:?}", started.elapsed());
-
-        // Startup files that send stdout elsewhere and then hang end at the deadline too.
-        crate::write_test_script(&shell, "#!/bin/sh\nexec >/dev/null\nsleep 30\n");
-        let started = std::time::Instant::now();
-        assert_eq!(shell_path(shell.to_str().unwrap(), std::time::Duration::from_millis(300)), None);
-        assert!(started.elapsed() < std::time::Duration::from_secs(5), "took {:?}", started.elapsed());
-        assert!(shell_path("/bin/sh", std::time::Duration::from_secs(5)).is_some_and(|path| !path.is_empty()));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn a_login_shell_that_leaves_a_program_holding_its_output_still_gives_its_path_at_once() {
-        let dir = tempfile::tempdir().unwrap();
-        let shell = dir.path().join("agent-shell");
-        // Startup files that start an agent, which keeps the shell's stdout open after the shell ends.
-        crate::write_test_script(&shell, "#!/bin/sh
-sleep 30 &
-printf '__M3D_PATH__/opt/tools/bin__M3D_PATH__'
-");
-        let started = std::time::Instant::now();
-        assert_eq!(shell_path(shell.to_str().unwrap(), std::time::Duration::from_secs(5)).as_deref(), Some("/opt/tools/bin"));
-        assert!(started.elapsed() < std::time::Duration::from_secs(2), "took {:?}", started.elapsed());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn a_program_that_keeps_writing_to_the_login_shells_output_is_not_read_after_the_lookup() {
-        let dir = tempfile::tempdir().unwrap();
-        let shell = dir.path().join("noisy-shell");
-        let pid = dir.path().join("pid");
-        crate::write_test_script(&shell, &format!("#!/bin/sh\nyes &\necho $! > {}\nprintf '__M3D_PATH__/opt/tools/bin__M3D_PATH__'\n", pid.display()));
-        assert_eq!(shell_path(shell.to_str().unwrap(), std::time::Duration::from_secs(5)).as_deref(), Some("/opt/tools/bin"));
-        let pid = std::fs::read_to_string(&pid).unwrap().trim().parse::<i32>().unwrap();
-        // Once nothing reads the pipe, the next write ends the writer. An ended writer may wait as a zombie until the
-        // system reaps it, so that counts as ended too.
-        let ended = || {
-            let state = std::process::Command::new("ps").args(["-o", "stat=", "-p", &pid.to_string()]).output().expect("ps");
-            let state = String::from_utf8_lossy(&state.stdout);
-            state.trim().is_empty() || state.trim_start().starts_with('Z')
-        };
-        let gone = (0..50).any(|_| {
-            std::thread::sleep(std::time::Duration::from_millis(100));
-            ended()
-        });
-        if !gone {
-            // SAFETY: ends the test's own writer, which outlived the lookup.
-            unsafe { libc::kill(pid, libc::SIGKILL) };
-        }
-        assert!(gone, "the lookup still read the output of a program its shell left running");
-    }
-
-    #[test]
-    fn the_sidecar_reaches_only_inference_items_in_the_keychain() {
-        assert_eq!(keychain_item("anthropic").as_deref(), Ok("inference.anthropic"));
-        assert_eq!(keychain_item("openai-codex").as_deref(), Ok("inference.openai-codex"));
-        for bad in ["", "printer/access", "../printer", "Anthropic", "a b", &"x".repeat(65)] {
-            assert!(keychain_item(bad).is_err(), "{bad:?} must be refused");
-        }
-    }
 
     #[test]
     fn the_sidecar_starts_with_none_of_the_persons_agent_settings() {
         let names: Vec<&str> = kept_env().into_iter().map(|(name, _)| name).collect();
         assert!(names.contains(&"PATH"));
         assert!(names.iter().all(|name| ["PATH", "HOME", "USER", "LANG", "TMPDIR"].contains(name)), "{names:?}");
-    }
-
-    #[tokio::test]
-    async fn a_repeated_operation_waits_for_the_first_and_gets_its_result() {
-        let operations = Operations::default();
-        let runs = AtomicU64::new(0);
-        let work = |answer: &'static str| {
-            let runs = &runs;
-            move || async move {
-                runs.fetch_add(1, Ordering::SeqCst);
-                tokio::time::sleep(Duration::from_millis(50)).await;
-                Ok(json!(answer))
-            }
-        };
-        let (first, again) = tokio::join!(
-            once_per_operation(&operations, "op".to_owned(), work("first")),
-            once_per_operation(&operations, "op".to_owned(), work("again")),
-        );
-        assert_eq!((first, again), (Ok(json!("first")), Ok(json!("first"))));
-        assert_eq!(once_per_operation(&operations, "op".to_owned(), work("later")).await, Ok(json!("first")));
-        assert_eq!(runs.load(Ordering::SeqCst), 1);
-        assert_eq!(once_per_operation(&operations, "other".to_owned(), work("other")).await, Ok(json!("other")));
-        assert_eq!(runs.load(Ordering::SeqCst), 2);
     }
 
     /// A slice that outlives its sidecar run keeps the update off until it ends, and none starts while one installs.
@@ -748,9 +494,11 @@ printf '__M3D_PATH__/opt/tools/bin__M3D_PATH__'
         let sidecar = Sidecar::default();
         set_busy(&sidecar, &gate, 0, true).expect("the sidecar takes the pass");
         let (finish, finished) = oneshot::channel::<()>();
-        let slice = tokio::spawn(with_own_pass(gate.clone(), || async move {
+        let pass = take_pass(gate.clone());
+        let slice = tokio::spawn(async move {
+            let _pass = pass?;
             finished.await.map_err(|e| e.to_string())
-        }));
+        });
         tokio::time::sleep(SETTLE).await;
         sidecar.run_ended();
         let mut close = std::pin::pin!(gate.close_when_idle(|_| {}));
@@ -758,18 +506,9 @@ printf '__M3D_PATH__/opt/tools/bin__M3D_PATH__'
         finish.send(()).expect("the slice is still running");
         slice.await.expect("the slice task").expect("the slice");
         let closed = tokio::time::timeout(SETTLE, &mut close).await.expect("the update goes ahead once the slice ends");
-        let refused = with_own_pass(gate.clone(), || async { Ok(()) }).await.expect_err("no slice starts while the update installs");
+        let refused = take_pass(gate.clone()).map(drop).expect_err("no slice starts while the update installs");
         assert!(refused.contains("update is installing"), "{refused}");
         drop(closed);
-    }
-
-    #[test]
-    fn a_slice_call_carries_its_operation_id() {
-        let printer = json!({ "machine": "Bambu Lab P2S 0.4 nozzle", "process": "0.20mm Standard @BBL P2S", "filament": "Bambu PETG Basic @BBL P2S 0.4 nozzle" });
-        let call: SliceCall =
-            serde_json::from_value(json!({ "operation": "abc", "project": "p", "inputs": ["a.stl"], "output": "out.3mf", "printer": printer })).expect("slice call");
-        assert_eq!(call.operation, "abc");
-        assert!(serde_json::from_value::<SliceCall>(json!({ "project": "p", "inputs": ["a.stl"], "output": "out.3mf", "printer": printer })).is_err());
     }
 
     /// The pass a busy sidecar takes holds an update off until it gives it back, and while the update installs
@@ -804,6 +543,212 @@ printf '__M3D_PATH__/opt/tools/bin__M3D_PATH__'
         set_busy(&sidecar, &gate, exited, true).expect_err("the exited sidecar's request is refused");
         let close = gate.close_when_idle(|_| {});
         let _closed = tokio::time::timeout(Duration::from_millis(50), close).await.expect("the update goes ahead");
+    }
+
+    fn mock_app() -> tauri::App<tauri::test::MockRuntime> {
+        crate::credentials::tests::use_test_store();
+        let app = tauri::test::mock_app();
+        app.manage(Sidecar::default());
+        app.manage(Arc::new(BuildGate::default()));
+        app
+    }
+
+    async fn ask(app: &tauri::App<tauri::test::MockRuntime>, method: &str, params: Value) -> Result<Value, String> {
+        let run = app.state::<Sidecar>().run_started();
+        answer(app.handle(), run, method, params).await
+    }
+
+    /// The test store keeps a secret only in the entry that set it, so a get after a set finds nothing.
+    #[tokio::test]
+    async fn the_host_answers_keychain_requests_for_inference_items_only() {
+        let app = mock_app();
+        assert_eq!(ask(&app, "keychain.set", json!({ "account": "anthropic", "secret": "s" })).await, Ok(Value::Null));
+        assert_eq!(ask(&app, "keychain.get", json!({ "account": "anthropic" })).await, Ok(json!({ "secret": null })));
+        assert_eq!(ask(&app, "keychain.delete", json!({ "account": "anthropic" })).await, Ok(Value::Null));
+        assert_eq!(ask(&app, "keychain.get", json!({ "account": "../printer" })).await, Err(r#""../printer" is not a provider account"#.to_owned()));
+        assert_eq!(ask(&app, "keychain.delete", json!({ "account": "Anthropic" })).await, Err(r#""Anthropic" is not a provider account"#.to_owned()));
+        let locked = keyring::Error::PlatformFailure("locked".into());
+        assert_eq!(
+            ask(&app, "keychain.get", json!({ "account": "fails.call" })).await,
+            Err(format!("keyring get_password error for key=inference.fails.call: {locked}"))
+        );
+        let refused = ask(&app, "keychain.set", json!({ "account": "anthropic" })).await.expect_err("a set needs its secret");
+        assert!(refused.starts_with("bad params for keychain.set: "), "{refused}");
+    }
+
+    #[tokio::test]
+    async fn the_host_holds_the_update_pass_while_the_sidecar_says_it_is_busy() {
+        const SETTLE: Duration = Duration::from_millis(50);
+        let app = mock_app();
+        let gate = app.state::<Arc<BuildGate>>().inner().clone();
+        assert_eq!(ask(&app, "busy", json!({ "busy": true })).await, Ok(Value::Null));
+        let mut close = std::pin::pin!(gate.close_when_idle(|_| {}));
+        assert!(tokio::time::timeout(SETTLE, &mut close).await.is_err(), "the update waits while the sidecar is busy");
+        assert_eq!(ask(&app, "busy", json!({ "busy": false })).await, Ok(Value::Null));
+        drop(tokio::time::timeout(SETTLE, &mut close).await.expect("the update goes ahead once the sidecar is idle"));
+        let refused = ask(&app, "busy", json!({ "busy": "yes" })).await.expect_err("busy is a bool");
+        assert!(refused.starts_with("bad params for busy: "), "{refused}");
+        let ended = app.state::<Sidecar>().run_started();
+        app.state::<Sidecar>().run_ended();
+        assert_eq!(answer(app.handle(), ended, "busy", json!({ "busy": true })).await, Err("This engine has exited.".to_owned()));
+    }
+
+    #[tokio::test]
+    async fn the_host_reads_slice_params_before_the_pass_and_keeps_no_result_for_a_refused_slice() {
+        let app = mock_app();
+        let printer = json!({ "machine": "Bambu Lab P2S 0.4 nozzle", "process": "0.20mm Standard @BBL P2S", "filament": "Bambu PETG Basic @BBL P2S 0.4 nozzle" });
+        let refused = ask(&app, "printer.check", json!({ "machine": 1 })).await.expect_err("a check needs a printer");
+        assert!(refused.starts_with("bad params for printer.check: "), "{refused}");
+        let gate = app.state::<Arc<BuildGate>>().inner().clone();
+        let closed = gate.close_when_idle(|_| {}).await;
+        let unnamed = json!({ "project": "p", "inputs": ["a.stl"], "output": "out.3mf", "printer": printer });
+        let refused = ask(&app, "slice", unnamed).await.expect_err("a slice needs its operation id");
+        assert!(refused.starts_with("bad params for slice: "), "{refused}");
+        let call = json!({ "operation": "abc", "project": "p", "inputs": ["a.stl"], "output": "out.3mf", "printer": printer });
+        let refused = ask(&app, "slice", call).await.expect_err("no slice starts while an update installs");
+        assert!(refused.contains("update is installing"), "{refused}");
+        assert!(!app.state::<Sidecar>().slices.lock().expect("slices").contains_key("abc"), "the refusal is not kept as the slice's result");
+        drop(closed);
+        assert_eq!(ask(&app, "nope", Value::Null).await, Err("no host request nope".to_owned()));
+    }
+
+    /// A resumed turn's slice request waits for the first slice's result, and holds its own pass until it has it.
+    #[tokio::test]
+    async fn a_slice_request_holds_its_pass_until_its_slice_ends() {
+        const SETTLE: Duration = Duration::from_millis(50);
+        let app = mock_app();
+        let first = Arc::new(tokio::sync::OnceCell::new());
+        app.state::<Sidecar>().slices.lock().expect("slices").insert("abc".to_owned(), first.clone());
+        let (finish, finished) = oneshot::channel::<()>();
+        let slicing = tokio::spawn(async move {
+            first
+                .get_or_init(|| async {
+                    finished.await.expect("the test ends the slice");
+                    Ok(json!("sliced"))
+                })
+                .await
+                .clone()
+        });
+        tokio::time::sleep(SETTLE).await;
+        let printer = json!({ "machine": "Bambu Lab P2S 0.4 nozzle", "process": "0.20mm Standard @BBL P2S", "filament": "Bambu PETG Basic @BBL P2S 0.4 nozzle" });
+        let call = json!({ "operation": "abc", "project": "p", "inputs": ["a.stl"], "output": "out.3mf", "printer": printer });
+        let mut request = std::pin::pin!(ask(&app, "slice", call));
+        assert!(tokio::time::timeout(SETTLE, &mut request).await.is_err(), "the request waits for the first slice");
+        let gate = app.state::<Arc<BuildGate>>().inner().clone();
+        let mut close = std::pin::pin!(gate.close_when_idle(|_| {}));
+        assert!(tokio::time::timeout(SETTLE, &mut close).await.is_err(), "the update waits for the slice request");
+        finish.send(()).expect("the slice is still running");
+        assert_eq!(request.await, Ok(json!("sliced")));
+        assert_eq!(slicing.await.expect("the slice task"), Ok(json!("sliced")));
+        drop(tokio::time::timeout(SETTLE, &mut close).await.expect("the update goes ahead once the slice request ends"));
+    }
+
+    #[tokio::test]
+    async fn a_reply_settles_its_call() {
+        let app = mock_app();
+        let (answers, _lines) = mpsc::unbounded_channel::<String>();
+        let call = |id| {
+            let (reply, replied) = oneshot::channel();
+            app.state::<Sidecar>().calls.lock().expect("calls").insert(id, reply);
+            replied
+        };
+        let (listed, refused, bare) = (call(1), call(2), call(3));
+        for line in [
+            r#"{"kind":"reply","id":1,"ok":true,"value":{"chats":[]}}"#,
+            r#"{"kind":"reply","id":2,"ok":false,"error":"no method x"}"#,
+            r#"{"kind":"reply","id":3,"ok":false}"#,
+            r#"{"kind":"reply","id":9,"ok":true}"#,
+        ] {
+            assert!(!dispatch(app.handle(), 0, &answers.downgrade(), line), "{line}");
+        }
+        assert_eq!(listed.await.expect("replied"), Ok(json!({ "chats": [] })));
+        assert_eq!(refused.await.expect("replied"), Err("no method x".to_owned()));
+        assert_eq!(bare.await.expect("replied"), Err("The engine refused the call.".to_owned()));
+        assert!(app.state::<Sidecar>().calls.lock().expect("calls").is_empty());
+    }
+
+    #[tokio::test]
+    async fn events_reach_the_window_and_only_ready_says_the_sidecar_is_ready() {
+        let app = mock_app();
+        let (answers, _lines) = mpsc::unbounded_channel::<String>();
+        let (heard, mut events) = mpsc::unbounded_channel::<String>();
+        app.listen_any(EVENT, move |event| heard.send(event.payload().to_owned()).expect("the test listens"));
+        assert!(dispatch(app.handle(), 0, &answers.downgrade(), r#"{"kind":"event","event":{"type":"ready"}}"#));
+        assert!(!dispatch(app.handle(), 0, &answers.downgrade(), r#"{"kind":"event","event":{"type":"chat","seq":2}}"#));
+        assert!(!dispatch(app.handle(), 0, &answers.downgrade(), "not a protocol line"));
+        assert!(!dispatch(app.handle(), 0, &answers.downgrade(), r#"{"kind":"mystery"}"#));
+        let mut next = async || serde_json::from_str::<Value>(&events.recv().await.expect("an event")).expect("json");
+        assert_eq!(next().await, json!({ "type": "ready" }));
+        assert_eq!(next().await, json!({ "type": "chat", "seq": 2 }));
+    }
+
+    #[tokio::test]
+    async fn a_request_is_answered_on_the_sidecars_input() {
+        let app = mock_app();
+        let (answers, mut lines) = mpsc::unbounded_channel::<String>();
+        let run = app.state::<Sidecar>().run_started();
+        assert!(!dispatch(app.handle(), run, &answers.downgrade(), r#"{"kind":"request","id":7,"method":"busy","params":{"busy":false}}"#));
+        assert!(!dispatch(app.handle(), run, &answers.downgrade(), r#"{"kind":"request","id":8,"method":"nope","params":null}"#));
+        let mut got = Vec::new();
+        for _ in 0..2 {
+            let line = lines.recv().await.expect("an answer");
+            got.push(serde_json::from_str::<Value>(line.strip_suffix('\n').expect("one line")).expect("json"));
+        }
+        got.sort_by_key(|answer| answer["id"].as_u64());
+        assert_eq!(
+            got,
+            [
+                json!({ "kind": "answer", "id": 7, "ok": true, "value": null }),
+                json!({ "kind": "answer", "id": 8, "ok": false, "error": "no host request nope" }),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_call_from_the_window_goes_out_as_one_line_and_its_reply_comes_back() {
+        let app = mock_app();
+        let (input, mut lines) = mpsc::unbounded_channel::<String>();
+        let answers = input.downgrade();
+        app.state::<Sidecar>().link.send_replace(Link::Up(input));
+        let reply = async {
+            let line = lines.recv().await.expect("the call's line");
+            let call: Value = serde_json::from_str(line.strip_suffix('\n').expect("one line")).expect("json");
+            assert_eq!((&call["kind"], &call["method"], &call["params"]), (&json!("call"), &json!("chats.list"), &json!({ "all": true })));
+            assert!(!dispatch(app.handle(), 0, &answers, &json!({ "kind": "reply", "id": call["id"], "ok": true, "value": [1] }).to_string()));
+        };
+        let (value, ()) = tokio::join!(super::sidecar(app.state(), "chats.list".to_owned(), json!({ "all": true })), reply);
+        assert_eq!(value, Ok(json!([1])));
+    }
+
+    #[tokio::test]
+    async fn a_call_the_engine_never_answers_fails_and_asks_to_try_again() {
+        let restarted = Err::<Value, String>("The engine restarted before it answered. Try again.".to_owned());
+        let app = mock_app();
+        let (input, lines) = mpsc::unbounded_channel::<String>();
+        drop(lines);
+        app.state::<Sidecar>().link.send_replace(Link::Up(input));
+        assert_eq!(super::sidecar(app.state(), "chats.list".to_owned(), Value::Null).await, restarted, "the line could not be queued");
+        assert!(app.state::<Sidecar>().calls.lock().expect("calls").is_empty());
+
+        let (input, mut lines) = mpsc::unbounded_channel::<String>();
+        app.state::<Sidecar>().link.send_replace(Link::Up(input));
+        let exit = async {
+            lines.recv().await.expect("the call's line");
+            app.state::<Sidecar>().drop_calls();
+        };
+        let (value, ()) = tokio::join!(super::sidecar(app.state(), "chats.list".to_owned(), Value::Null), exit);
+        assert_eq!(value, restarted, "the sidecar exited before it answered");
+
+        app.state::<Sidecar>().link.send_replace(Link::Stopped("Materialize 3D is quitting.".to_owned()));
+        assert_eq!(super::sidecar(app.state(), "chats.list".to_owned(), Value::Null).await, Err("Materialize 3D is quitting.".to_owned()));
+    }
+
+    #[test]
+    fn the_sidecar_keeps_the_persons_path_and_home() {
+        let env: HashMap<&str, String> = kept_env().into_iter().collect();
+        let current = std::env::var("PATH").expect("the test has a PATH");
+        assert!(env["PATH"].ends_with(&current), "the login shell's folders come first: {}", env["PATH"]);
+        assert_eq!(env.get("HOME"), std::env::var("HOME").ok().as_ref());
     }
 
     #[test]
