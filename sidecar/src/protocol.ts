@@ -3,20 +3,26 @@
  *
  * The window calls the sidecar through Rust (`invoke('sidecar')`) and hears it on one event. The sidecar asks
  * Rust for what only Rust can do: the Keychain and the Bambu slice step. This file imports nothing, so the
- * window's code can share its types.
+ * window's code can share its types and lists. Each value list is defined once here, and the sidecar builds its param
+ * schemas from it.
  */
 
 export type ModelChoice = { provider: string; modelId: string }
 
 /** A model the picker offers, with the short name the app shows and one line on what it suits. */
 export type ModelOption = ModelChoice & { name: string; description: string }
-export type Thinking = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+
+export const THINKING = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const
+export type Thinking = (typeof THINKING)[number]
+
+export const SETUP_STEPS = ['welcome', 'check', 'model', 'printer', 'ready'] as const
 
 /** Where first-launch setup stands. Setup reopens on `step` until it is `done`. */
-export type Setup = { step: 'welcome' | 'check' | 'model' | 'printer' | 'ready'; done: boolean }
+export type Setup = { step: (typeof SETUP_STEPS)[number]; done: boolean }
 
-/** A build plate, by the name Bambu Studio's `curr_bed_type` setting takes. */
-export type Plate = 'Cool Plate' | 'Engineering Plate' | 'High Temp Plate' | 'Textured PEI Plate' | 'Supertack Plate'
+/** The build plates, by the names Bambu Studio's `curr_bed_type` setting takes. */
+export const PLATES = ['Cool Plate', 'Engineering Plate', 'High Temp Plate', 'Textured PEI Plate', 'Supertack Plate'] as const
+export type Plate = (typeof PLATES)[number]
 
 /**
  * The printer a slice runs for: three Bambu Lab system presets by the names Bambu Studio gives them, and the plate.
@@ -67,7 +73,9 @@ export type SavedDraft = Draft & { rev: number }
 /** How a provider's login was made: an API key or proxy token, or a subscription sign-in. */
 export type LoginKind = 'api_key' | 'oauth'
 
-export type ProviderId = 'anthropic' | 'openai-codex' | 'opencode-go'
+/** The providers the app signs in to, in the order the app lists them. */
+export const PROVIDERS = ['anthropic', 'openai-codex', 'opencode-go'] as const
+export type ProviderId = (typeof PROVIDERS)[number]
 
 /** A provider the app offers, how it can be signed in to, and how it is now. */
 export type Login = { provider: ProviderId; name: string; login: LoginKind | null; kinds: LoginKind[] }
@@ -148,6 +156,36 @@ export type Need =
   | { kind: 'model'; fix: string }
   | { kind: 'uv'; fix: string }
   | { kind: 'python'; fix: string }
+
+/**
+ * The args each of the agent's tools takes, by tool name, in the order the model is offered them. `read`, `write`, and
+ * `edit` are Pi's file tools. A committed call holds the args the model sent, which can be malformed.
+ */
+export type ToolArgs = {
+  read: { path: string; offset?: number | undefined; limit?: number | undefined }
+  write: { path: string; content: string }
+  edit: { path: string; edits: { oldText: string; newText: string }[] }
+  run: { args: string[]; timeoutSeconds?: number }
+  slice: { inputs: string[]; output: string }
+  astra: { task: string }
+}
+export type ToolName = keyof ToolArgs
+
+/** The tool that hands a task to Astra. The person can turn it off in Settings. */
+export const ASTRA = 'astra' satisfies ToolName
+
+/** The program the `run` tool runs. Its `args` go after it. */
+export const RUN_PROGRAM = 'uv'
+
+/** What each tool step says: `label` once it ended, and `doing` in the present tense while it runs. */
+export const STEP_LINES = {
+  read: { label: 'Read', doing: 'Reading' },
+  write: { label: 'Wrote', doing: 'Writing' },
+  edit: { label: 'Edited', doing: 'Editing' },
+  run: { label: 'Ran', doing: 'Running' },
+  slice: { label: 'Sliced', doing: 'Slicing' },
+  astra: { label: 'Asked Astra (GPT)', doing: 'Asking Astra (GPT)' },
+} as const satisfies Record<ToolName, { label: string; doing: string }>
 
 /** What the window can ask the sidecar, by method name. */
 export interface Methods {

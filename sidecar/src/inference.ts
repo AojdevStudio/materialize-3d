@@ -21,10 +21,8 @@ import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-code
 import { opencodeGoProvider } from '@earendil-works/pi-ai/providers/opencode-go'
 import { compile, lit, map, num, obj, opt, str, union } from '@earendil-works/pi-schema'
 import type { Host } from './host'
-import type { Login, LoginEvent, LoginKind, ProviderId } from './protocol'
-
-/** The only providers the app offers. */
-export const PROVIDERS: readonly ProviderId[] = ['anthropic', 'openai-codex', 'opencode-go']
+import { OFFERED } from './offered'
+import { type Login, type LoginEvent, type LoginKind, type ModelChoice, type ModelOption, type Need, PROVIDERS, type ProviderId } from './protocol'
 
 /** Auth sees an empty world: every env var is unset and no file exists. */
 const noAmbient: AuthContext = { env: async () => undefined, fileExists: async () => false }
@@ -140,7 +138,7 @@ export class KeychainCredentials implements CredentialStore {
   }
 }
 
-/** The models the agent can run on: the app's three providers, on the person's own logins. */
+/** The models the agent can run on: the app's providers, on the person's own logins. */
 export function inferenceModels(credentials: CredentialStore): MutableModels {
   // pi-ai loads a provider's sign-in with an import a bundler cannot follow, so the compiled sidecar would have none.
   // Registering them statically puts both subscription sign-ins in the binary.
@@ -152,7 +150,6 @@ export function inferenceModels(credentials: CredentialStore): MutableModels {
   return models
 }
 
-/** A key, or a base URL and token, saved as the provider's login. */
 export function keyCredential(key: string, baseUrl: string | undefined): Credential {
   return baseUrl === undefined ? { type: 'api_key', key } : { type: 'api_key', key, env: { [BASE_URL]: baseUrl } }
 }
@@ -192,6 +189,27 @@ export class Logins {
       if (provider.auth.oauth !== undefined) kinds.push('oauth')
       return { provider: id, name: provider.name, login: stored.get(id) ?? null, kinds }
     })
+  }
+
+  /**
+   * What a turn on `model` needs before it can go out: a provider the app offers, with a login. A refused or expired
+   * login still waits in the turn, with its fix.
+   */
+  async needsFor(model: ModelChoice): Promise<Need[]> {
+    const offered = await this.status()
+    const login = offered.find((l) => l.provider === model.provider)
+    if (login === undefined) return [{ kind: 'model', fix: `Choose a model from ${offered.map((l) => l.name).join(', ')}. The app does not offer ${model.provider}.` }]
+    if (login.login === null) return [{ kind: 'login', provider: login.provider, name: login.name, fix: `Sign in to ${login.name} before you send.` }]
+    return []
+  }
+
+  /**
+   * The short list's models of each provider the person signed in to. The pi-ai catalog can lack a model on the short
+   * list. That model cannot run, so its row stays out.
+   */
+  async offered(): Promise<ModelOption[]> {
+    const signedIn = new Set((await this.status()).flatMap((login) => (login.login === null ? [] : [login.provider])))
+    return OFFERED.filter((m) => signedIn.has(m.provider) && this.#models.getModel(m.provider, m.modelId) !== undefined)
   }
 
   /** Saves a key as the provider's login. A provider that has no key sign-in refuses it before its login changes. */

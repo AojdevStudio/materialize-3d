@@ -4,8 +4,11 @@
  */
 import type { ModelChoice, ModelOption, ProviderId } from './protocol'
 
+/** The model a new install runs on. The short list marks it recommended. */
+export const DEFAULT_MODEL = { provider: 'anthropic', modelId: 'claude-opus-5-5' } as const satisfies ModelChoice
+
 export const OFFERED: readonly (ModelOption & { provider: ProviderId })[] = [
-  { provider: 'anthropic', modelId: 'claude-opus-5-5', name: 'Opus 5.5', description: 'Best for design and checks. Recommended.' },
+  { ...DEFAULT_MODEL, name: 'Opus 5.5', description: 'Best for design and checks. Recommended.' },
   { provider: 'anthropic', modelId: 'claude-sonnet-5-5', name: 'Sonnet 5.5', description: 'Faster, a little less careful.' },
   { provider: 'anthropic', modelId: 'claude-fable-5-2', name: 'Fable 5.2', description: 'Strong at explaining and writing guides.' },
   { provider: 'openai-codex', modelId: 'gpt-6.1-sol', name: 'GPT 6.1 Sol', description: 'Use GPT as the main agent instead.' },

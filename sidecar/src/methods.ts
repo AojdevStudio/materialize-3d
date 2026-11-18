@@ -6,8 +6,7 @@ import { toolchain, toolchainNeeds } from './agent'
 import type { Chats } from './chat'
 import type { Handlers, Host } from './host'
 import type { Logins } from './inference'
-import { OFFERED } from './offered'
-import type { AppState, Need } from './protocol'
+import { type AppState, PLATES, PROVIDERS, SETUP_STEPS, THINKING } from './protocol'
 import type { Store } from './store'
 
 export interface Services {
@@ -23,15 +22,18 @@ export interface Services {
   pictures: string
 }
 
-const step = union([lit('welcome'), lit('check'), lit('model'), lit('printer'), lit('ready')])
-const thinking = union([lit('off'), lit('minimal'), lit('low'), lit('medium'), lit('high'), lit('xhigh'), lit('max')])
+const step = union(SETUP_STEPS.map((value) => lit(value)))
+const thinking = union(THINKING.map((value) => lit(value)))
 const model = obj({ provider: str(), modelId: str() })
-const plate = union([lit('Cool Plate'), lit('Engineering Plate'), lit('High Temp Plate'), lit('Textured PEI Plate'), lit('Supertack Plate')])
+const plate = union(PLATES.map((value) => lit(value)))
 const printer = obj({ machine: str({ minLength: 1 }), process: str({ minLength: 1 }), filament: str({ minLength: 1 }), plate: opt(plate) })
-const provider = union([lit('anthropic'), lit('openai-codex'), lit('opencode-go')])
+const provider = union(PROVIDERS.map((value) => lit(value)))
 
-/** Every method the window can call, each parsed at the pipe before it runs. */
-export function handlers({ host, store, models, logins, chats, version, legacy, pictures }: Services): Handlers {
+/**
+ * Every method the window can call, each parsed at the pipe before it runs. `sidecar/test/protocol.test.ts` checks that
+ * each params schema takes exactly what `Methods` names.
+ */
+export function handlers({ host, store, models, logins, chats, version, legacy, pictures }: Services) {
   const state = async (): Promise<AppState> => ({ ...(await store.state()), importBlocked: legacy.blocked() })
   return {
     'app.ping': { params: compile(obj({})), run: async () => ({ version }) },
@@ -61,19 +63,8 @@ export function handlers({ host, store, models, logins, chats, version, legacy, 
     'setup.check': {
       params: compile(obj({ project: opt(str()) })),
       run: async ({ project }) => {
-        // The model the next turn runs on must be one the app offers, and its provider must have a login: the project's
-        // own model, or the default on the start screen. A refused or expired login still waits in the turn, with its fix.
-        const { settings } = await store.state()
-        const model = (project === undefined ? undefined : (await store.project(project)).model) ?? settings.model
-        const offered = await logins.status()
-        const login = offered.find((l) => l.provider === model.provider)
-        const needs: Need[] =
-          login === undefined
-            ? [{ kind: 'model', fix: `Choose a model from ${offered.map((l) => l.name).join(', ')}. The app does not offer ${model.provider}.` }]
-            : login.login === null
-              ? [{ kind: 'login', provider: login.provider, name: login.name, fix: `Sign in to ${login.name} before you send.` }]
-              : []
-        return [...needs, ...(await toolchainNeeds())]
+        const model = (project === undefined ? undefined : (await store.project(project)).model) ?? (await store.state()).settings.model
+        return [...(await logins.needsFor(model)), ...(await toolchainNeeds())]
       },
     },
     'setup.tools': { params: compile(obj({})), run: () => toolchain() },
@@ -142,14 +133,7 @@ export function handlers({ host, store, models, logins, chats, version, legacy, 
         return null
       },
     },
-    'models.list': {
-      params: compile(obj({})),
-      run: async () => {
-        const signedIn = new Set((await logins.status()).flatMap((login) => (login.login === null ? [] : [login.provider])))
-        // The pi-ai catalog can lack a model on the short list. That model cannot run, so its row stays out.
-        return OFFERED.filter((m) => signedIn.has(m.provider) && models.getModel(m.provider, m.modelId) !== undefined)
-      },
-    },
+    'models.list': { params: compile(obj({})), run: () => logins.offered() },
     'projects.setModel': {
       params: compile(obj({ project: str(), model })),
       run: async ({ project, model }) => {
@@ -167,5 +151,5 @@ export function handlers({ host, store, models, logins, chats, version, legacy, 
       },
     },
     'agent.tools': { params: compile(obj({ project: str() })), run: ({ project }) => chats.tools(project) },
-  }
+  } satisfies Handlers
 }
