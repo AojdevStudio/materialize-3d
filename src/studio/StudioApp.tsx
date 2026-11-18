@@ -104,7 +104,6 @@ export default function StudioApp() {
   const slicerLooks = useRef(0)
   /** The person went on from setup's check, so a missing slicer gets no banner until the next launch. */
   const [wentOnInSetup, setWentOnInSetup] = useState(false)
-  /** A setup step opened again, from Fix in setup or from Settings. It ends back on the screen it was opened from. */
   /** The setup step opened again, and which opening it is, so a step left earlier cannot close a later one. */
   const [fixing, setFixing] = useState<{ step: Setup['step']; opening: number } | null>(null)
   const openings = useRef(0)

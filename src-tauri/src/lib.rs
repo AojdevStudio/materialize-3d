@@ -32,8 +32,6 @@ pub fn run() {
             updater::update_check,
             updater::update_install,
             studio::files::studio_files,
-            studio::files::studio_import_file,
-            studio::files::studio_save_bytes,
             studio::files::studio_reveal,
             studio::files::studio_open_in_bambu,
             studio::files::studio_pop_out,

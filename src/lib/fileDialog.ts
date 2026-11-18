@@ -1,4 +1,4 @@
-import { open, type OpenDialogOptions } from '@tauri-apps/plugin-dialog'
+import { open } from '@tauri-apps/plugin-dialog'
 
 // The native Open panel lives outside the webview, so the macOS verification
 // harness (src-tauri/src/e2e.rs, `--features e2e` only) answers them by setting
@@ -25,9 +25,9 @@ const takeScripted: (key: keyof ScriptedDialogs) => string | undefined =
     : () => undefined
 
 /** Picks one file; returns null when the person cancels. */
-export async function pickFile(options: OpenDialogOptions): Promise<string | null> {
+export async function pickFile(): Promise<string | null> {
   const scripted = takeScripted('nextOpenPath')
   if (scripted !== undefined) return scripted
-  const picked = await open({ ...options, multiple: false, directory: false })
+  const picked = await open({ multiple: false, directory: false })
   return typeof picked === 'string' ? picked : null
 }

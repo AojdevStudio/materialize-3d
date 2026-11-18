@@ -68,5 +68,3 @@ export function UpdateBanner() {
     </div>
   )
 }
-
-export default UpdateBanner

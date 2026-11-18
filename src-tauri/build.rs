@@ -20,8 +20,6 @@ const APP_COMMANDS: &[&str] = &[
     "update_check",
     "update_install",
     "studio_files",
-    "studio_import_file",
-    "studio_save_bytes",
     "studio_reveal",
     "studio_open_in_bambu",
     "studio_pop_out",

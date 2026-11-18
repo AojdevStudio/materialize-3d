@@ -617,10 +617,6 @@ pre {
   text-underline-offset: 2px;
 }
 
-.msg-error {
-  color: var(--s-error);
-}
-
 /* The run trace: one plain line per step with an action icon. The tense of each line shows its status. */
 .trace {
   font-size: 13px;

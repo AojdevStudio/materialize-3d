@@ -21,12 +21,11 @@ pub type Result<T, E = BambuError> = std::result::Result<T, E>;
 pub type JsonMap = serde_json::Map<String, serde_json::Value>;
 
 /// System preset names to slice with.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PresetSelection {
     pub machine: String,
     pub process: String,
-    /// One per filament slot, in slot order; duplicates are expected.
-    pub filaments: Vec<String>,
+    pub filament: String,
 }
 
 /// A build plate. It serializes as the name Bambu's `curr_bed_type` setting takes.

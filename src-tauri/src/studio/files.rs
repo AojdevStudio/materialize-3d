@@ -1,6 +1,6 @@
-//! The files in a project folder: the list, the pictures Ossie adds, the
-//! `m3dfile://` protocol the preview panel loads them through, the two
-//! hand-offs to the operating system, and the pop out window.
+//! The files in a project folder: the list, the `m3dfile://` protocol the
+//! preview panel loads them through, the two hand-offs to the operating
+//! system, and the pop out window.
 
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -83,75 +83,6 @@ fn resolve(project: &str, rel: &str) -> Result<PathBuf, String> {
         return Err(format!("{rel} is outside the project"));
     }
     Ok(full)
-}
-
-/// Creates a new file in `refs/` that keeps the original name and never
-/// overwrites. Each name is created with `create_new`, which refuses an existing
-/// path, a dangling symlink included, so nothing can redirect the write.
-fn create_ref(dir: &Path, name: &str) -> Result<(std::fs::File, String), String> {
-    std::fs::create_dir_all(dir.join("refs")).map_err(|e| format!("creating {}: {e}", dir.join("refs").display()))?;
-    // `refs` could be a symlink the agent made. Pictures land inside the project or nowhere.
-    let refs = dir.join("refs").canonicalize().map_err(|e| format!("refs: {e}"))?;
-    if !refs.starts_with(dir.canonicalize().map_err(|e| format!("{}: {e}", dir.display()))?) {
-        return Err("refs/ points outside the project".to_owned());
-    }
-    let clean: String = Path::new(name)
-        .file_name()
-        .map(|n| n.to_string_lossy().chars().map(|c| if c.is_ascii_alphanumeric() || ".-_".contains(c) { c } else { '-' }).collect())
-        .filter(|n: &String| !n.trim_matches('.').is_empty())
-        .unwrap_or_else(|| "picture.png".to_owned());
-    let (stem, ext) = match clean.rsplit_once('.') {
-        Some((stem, ext)) => (stem.to_owned(), format!(".{ext}")),
-        None => (clean.clone(), String::new()),
-    };
-    for n in 1.. {
-        let file = if n == 1 { clean.clone() } else { format!("{stem}-{n}{ext}") };
-        match std::fs::OpenOptions::new().write(true).create_new(true).open(refs.join(&file)) {
-            Ok(handle) => return Ok((handle, format!("refs/{file}"))),
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(e) => return Err(format!("creating refs/{file}: {e}")),
-        }
-    }
-    unreachable!("the name counter never ends")
-}
-
-/// Removes a picture whose write failed, so no empty or partial file is left
-/// in the project, and returns the error to report.
-fn discard(dir: &Path, rel: &str, error: String) -> String {
-    let _ = std::fs::remove_file(dir.join(rel));
-    error
-}
-
-/// Copies a dropped file into the project's `refs/` folder and returns its path there.
-#[tauri::command]
-pub fn studio_import_file(project: String, source: String) -> Result<String, String> {
-    let dir = project_dir(&project)?;
-    let mut from = std::fs::File::open(&source).map_err(|e| format!("opening {source}: {e}"))?;
-    if !from.metadata().map_err(|e| format!("{source}: {e}"))?.is_file() {
-        return Err(format!("{source} is not a file"));
-    }
-    let (mut target, rel) = create_ref(&dir, &source)?;
-    std::io::copy(&mut from, &mut target).map_err(|e| discard(&dir, &rel, format!("copying {source}: {e}")))?;
-    Ok(rel)
-}
-
-/// Saves pasted bytes into `refs/`. The body is the raw file; the project and
-/// name ride in headers so a photo never goes through JSON.
-#[tauri::command]
-pub fn studio_save_bytes(request: tauri::ipc::Request<'_>) -> Result<String, String> {
-    let header = |name: &str| {
-        request.headers().get(name).and_then(|v| v.to_str().ok()).map(str::to_owned).ok_or_else(|| format!("missing {name} header"))
-    };
-    let project = header("m3d-project")?;
-    // The name is percent-encoded, because a header holds only ASCII.
-    let name = percent_encoding::percent_decode_str(&header("m3d-name")?).decode_utf8_lossy().into_owned();
-    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
-        return Err("expected raw bytes".to_owned());
-    };
-    let dir = project_dir(&project)?;
-    let (mut target, rel) = create_ref(&dir, &name)?;
-    std::io::Write::write_all(&mut target, bytes).map_err(|e| discard(&dir, &rel, format!("writing {rel}: {e}")))?;
-    Ok(rel)
 }
 
 fn spawn_detached(program: &str, args: &[&std::ffi::OsStr]) -> Result<(), String> {
@@ -315,39 +246,6 @@ mod tests {
         assert_eq!(parts("m3dfile://2026-11-06-clip/print/a%20b.3mf"), Some(("2026-11-06-clip".to_owned(), "print/a b.3mf".to_owned())));
         assert_eq!(parts("m3dfile://m3dfile.localhost/2026-11-06-clip/guide.html"), None);
         assert_eq!(parts("m3dfile://localhost/2026-11-06-clip/guide.html"), None);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn a_symlinked_refs_folder_cannot_take_a_picture_out() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let outside = tempfile::tempdir().expect("outside");
-        std::os::unix::fs::symlink(outside.path(), dir.path().join("refs")).expect("symlink");
-        assert!(create_ref(dir.path(), "photo.jpg").is_err());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn a_dangling_symlink_in_refs_cannot_take_a_picture_out() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let outside = tempfile::tempdir().expect("outside");
-        std::fs::create_dir(dir.path().join("refs")).expect("refs");
-        let target = outside.path().join("stolen.jpg");
-        std::os::unix::fs::symlink(&target, dir.path().join("refs/photo.jpg")).expect("symlink");
-        let (_, rel) = create_ref(dir.path(), "photo.jpg").expect("create");
-        assert_eq!(rel, "refs/photo-2.jpg");
-        assert!(!target.exists(), "nothing was written outside the project");
-    }
-
-    #[test]
-    fn ref_names_never_overwrite_and_never_escape() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let (_, rel) = create_ref(dir.path(), "/Users/x/Desktop/arm photo.JPG").expect("name");
-        assert_eq!(rel, "refs/arm-photo.JPG");
-        let (_, second) = create_ref(dir.path(), "arm photo.JPG").expect("name");
-        assert_eq!(second, "refs/arm-photo-2.JPG");
-        let (_, odd) = create_ref(dir.path(), "..").expect("name");
-        assert_eq!(odd, "refs/picture.png");
     }
 
     /// Writes an empty file in `dir`, last changed `seconds` after 1970.

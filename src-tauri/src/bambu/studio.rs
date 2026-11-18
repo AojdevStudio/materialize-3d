@@ -44,7 +44,7 @@ impl fmt::Display for BambuVersion {
 }
 
 /// A located Bambu Studio executable and the `BBL` vendor profile directory it ships.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BambuStudio {
     pub exe: PathBuf,
     pub profiles_dir: PathBuf,

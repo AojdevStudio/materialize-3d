@@ -40,19 +40,18 @@ pub async fn get_credential(key: &str) -> Result<Option<String>, String> {
     .map_err(|e| format!("spawn_blocking join error: {e}"))?
 }
 
-/// Delete a credential from the OS-native credential store.
-///
-/// Returns `true` if deleted, `false` if the credential did not exist.
-pub async fn delete_credential(key: &str) -> Result<bool, String> {
+/// Delete a credential from the OS-native credential store. A credential that
+/// does not exist counts as deleted.
+pub async fn delete_credential(key: &str) -> Result<(), String> {
     let key = key.to_owned();
     tokio::task::spawn_blocking(move || {
         let entry = keyring::Entry::new(SERVICE, &key).map_err(|e| format!("keyring entry error for key={key}: {e}"))?;
         match entry.delete_credential() {
             Ok(()) => {
                 log::info!("credential:deleted key={key}");
-                Ok(true)
+                Ok(())
             }
-            Err(keyring::Error::NoEntry) => Ok(false),
+            Err(keyring::Error::NoEntry) => Ok(()),
             Err(e) => Err(format!("keyring delete_credential error for key={key}: {e}")),
         }
     })
@@ -64,7 +63,6 @@ pub async fn delete_credential(key: &str) -> Result<bool, String> {
 mod tests {
     use super::*;
 
-    /// Verify that the service constant is set correctly.
     #[test]
     fn service_name_is_correct() {
         assert_eq!(SERVICE, "com.materialize3d");

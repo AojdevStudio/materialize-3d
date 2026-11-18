@@ -38,5 +38,3 @@ export function useTauriEvent<T>(eventName: string, callback: (event: Event<T>) 
     }
   }, [eventName])
 }
-
-export default useTauriEvent
