@@ -91,8 +91,6 @@ function realSidebars() {
         onOpen={() => {}}
         onNew={() => {}}
         onSettings={() => {}}
-        onError={() => {}}
-        onStatus={() => {}}
       />
       <Open from="agents" />
     </>,

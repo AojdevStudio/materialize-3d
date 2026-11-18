@@ -19,6 +19,7 @@ vi.mock('@tauri-apps/api/event', () => ({
 
 import type { Project, ProjectStatus } from '../../sidecar/src/protocol'
 import Sidebar from './Sidebar'
+import { useStudio, useStudioEvents } from './store'
 
 // jsdom has no layout, so the open row menu's scroll into view is a no-op here.
 Element.prototype.scrollIntoView = vi.fn()
@@ -53,25 +54,14 @@ afterEach(() => {
   listeners.length = 0
 })
 
-const onStatus = vi.fn<(status: Record<string, ProjectStatus>) => void>()
-const onError = vi.fn<(message: string) => void>()
+/** The sidebar in a window that feeds the store, as StudioApp does. */
+function Window() {
+  useStudioEvents(projects)
+  return <Sidebar projects={projects} current={null} engine="Opus 5.5" printer={null} onOpen={() => {}} onNew={() => {}} onSettings={() => {}} />
+}
 
 function show() {
-  onStatus.mockClear()
-  onError.mockClear()
-  render(
-    <Sidebar
-      projects={projects}
-      current={null}
-      engine="Opus 5.5"
-      printer={null}
-      onOpen={() => {}}
-      onNew={() => {}}
-      onSettings={() => {}}
-      onError={onError}
-      onStatus={onStatus}
-    />,
-  )
+  render(<Window />)
 }
 
 const emit = (event: object) => act(() => listeners.forEach((listener) => listener({ payload: event })))
@@ -80,8 +70,8 @@ const chat = (project: Project, running: boolean, seq: number) =>
 const statusReads = () => invokeMock.mock.calls.filter(([, call]) => call.method === 'projects.status').length
 const groupOf = (project: Project) => screen.getByTestId(`project-${project.id}`).closest('section')?.getAttribute('data-testid')
 const groups = () => Object.fromEntries(projects.map((p) => [p.title, groupOf(p)]))
-// onStatus runs in an effect after the render that moved the rows, so a test waits for it on its own.
-const lastStatus = () => onStatus.mock.lastCall?.[0]
+const lastStatus = () => useStudio.getState().status
+const shownError = () => useStudio.getState().error
 
 describe('Sidebar', () => {
   it('reads the status once and groups each project by it', async () => {
@@ -143,13 +133,13 @@ describe('Sidebar', () => {
       { method: 'projects.status', params: {} },
     ])
     await waitFor(() => expect(lastStatus()?.[bracket.id]?.printed).toBe(true))
-    expect(onError).not.toHaveBeenCalled()
+    expect(shownError()).toBeNull()
   })
 
-  it('hands a failed read to onError', async () => {
+  it('shows a failed read in the error bar', async () => {
     invokeMock.mockImplementation(() => Promise.reject('the engine restarted'))
     show()
-    await waitFor(() => expect(onError).toHaveBeenCalledWith('the engine restarted'))
+    await waitFor(() => expect(shownError()).toBe('the engine restarted'))
     expect(groups()).toEqual({ Bracket: 'group-drafts', Knob: 'group-drafts', Clip: 'group-drafts' })
   })
 })

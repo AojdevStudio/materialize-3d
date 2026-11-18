@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { Printer, Project, ProjectStatus } from '../../sidecar/src/protocol'
-import { onSidecarEvent, sidecar } from './api'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import type { Printer, Project } from '../../sidecar/src/protocol'
 import { BrandRow, Icon, WorkingRing } from './marks'
 import { printerModel } from './presetNames'
 import { ago, detail, type Group, groupProjects, lastActivity } from './sidebarGroups'
+import { markPrinted, useStudio } from './store'
 import { useTheme } from './theme'
 import { useDismiss } from './useDismiss'
 import bambuMark from '../assets/icons/bambulab.svg?raw'
@@ -68,22 +68,11 @@ type Props = {
   onOpen: (project: Project) => void
   onNew: () => void
   onSettings: () => void
-  onError: (message: string) => void
-  /** Hands each project's status on, so the start screen shows the same one. */
-  onStatus: (status: Record<string, ProjectStatus>) => void
 }
 
 /** The projects sidebar: projects grouped by status, newest first in each group, with the time of their last activity. */
-export default function Sidebar({ projects, current, engine, printer, onOpen, onNew, onSettings, onError, onStatus }: Props) {
-  /** The sidecar's last status read: print files, the printed mark, and last activity are only known from it. */
-  const [read, setRead] = useState<Record<string, ProjectStatus>>({})
-  /**
-   * Whether each project's turn runs, as this engine run's chat events said it. Events come in order, so they are newer
-   * than any read, and a read that comes back late cannot move a project out of Working or into it.
-   */
-  const [live, setLive] = useState<Record<string, { running: boolean; seq: number }>>({})
-  /** The same states, updated as each event arrives, so two events before one render still compare in order. */
-  const liveNow = useRef(live)
+export default function Sidebar({ projects, current, engine, printer, onOpen, onNew, onSettings }: Props) {
+  const status = useStudio((s) => s.status)
   const [now, setNow] = useState(() => Date.now())
   const [menuFor, setMenuFor] = useState<string | null>(null)
   const [collapsed, setCollapsed] = useState(false)
@@ -91,51 +80,6 @@ export default function Sidebar({ projects, current, engine, printer, onOpen, on
   const [search, setSearch] = useState<string | null>(null)
   const menu = useRef<HTMLLIElement>(null)
   const searchButton = useRef<HTMLButtonElement>(null)
-  /** One status read at a time. A read asked for meanwhile runs once that one ends, so the newest state always lands. */
-  const reading = useRef<{ busy: boolean; again: boolean }>({ busy: false, again: false })
-
-  const refresh = useCallback(() => {
-    const read = reading.current
-    read.again = true
-    if (read.busy) return
-    read.busy = true
-    void (async () => {
-      while (read.again) {
-        read.again = false
-        try {
-          setRead(await sidecar('projects.status', {}))
-        } catch (err) {
-          onError(String(err))
-        }
-      }
-      read.busy = false
-    })()
-  }, [onError])
-
-  // A chat event says whether its turn runs, and that moves the row at once. A turn that starts or ends also reads the
-  // status again, for the files a turn writes and its last activity. A transcript line that changes nothing reads
-  // nothing. An engine that started again holds its own turns, so its read replaces what the old run's events said.
-  useEffect(() => {
-    const events = onSidecarEvent((event) => {
-      if (event.type === 'ready') {
-        liveNow.current = {}
-        setLive(liveNow.current)
-        return refresh()
-      }
-      if (event.type !== 'chat') return
-      // `seq` orders a chat's states, as in the chat view. A state no newer than the last one kept changes nothing. A
-      // newer one is kept, and it moves the row and reads the status only when its running state differs.
-      const before = liveNow.current[event.project]
-      if (before !== undefined && event.seq <= before.seq) return
-      liveNow.current = { ...liveNow.current, [event.project]: { running: event.running, seq: event.seq } }
-      if (before?.running === event.running) return
-      setLive(liveNow.current)
-      refresh()
-    })
-    return events.stop
-  }, [refresh])
-
-  useEffect(refresh, [projects, refresh])
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 60_000)
@@ -144,24 +88,11 @@ export default function Sidebar({ projects, current, engine, printer, onOpen, on
 
   useDismiss(menuFor !== null, menu, () => setMenuFor(null))
 
-  const markPrinted = (project: string) => {
-    setMenuFor(null)
-    void sidecar('projects.markPrinted', { project })
-      .then(refresh)
-      .catch((err: unknown) => onError(String(err)))
-  }
-
-  const status = useMemo(
-    () =>
-      Object.fromEntries(Object.entries(read).map(([id, s]) => [id, { ...s, running: live[id]?.running ?? s.running }])),
-    [read, live],
-  )
   const query = search?.trim().toLowerCase() ?? ''
   const groups = useMemo(
     () => groupProjects(query === '' ? projects : projects.filter((p) => p.title.toLowerCase().includes(query)), status),
     [projects, status, query],
   )
-  useEffect(() => onStatus(status), [status, onStatus])
 
   const panelToggle = (
     <button
@@ -267,7 +198,11 @@ export default function Sidebar({ projects, current, engine, printer, onOpen, on
                     )}
                     {menuFor === p.id && (
                       <div className="row-menu" role="menu" ref={(el) => el?.scrollIntoView({ block: 'nearest' })}>
-                        <button type="button" role="menuitem" onClick={() => markPrinted(p.id)}>
+                        <button type="button" role="menuitem" onClick={() => {
+                            setMenuFor(null)
+                            markPrinted(p.id)
+                          }}
+                        >
                           Mark as printed
                         </button>
                       </div>

@@ -1,15 +1,15 @@
 import { openUrl } from '@tauri-apps/plugin-opener'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { type AppState, type Draft, type LoginEvent, type ModelChoice, type ModelOption, type Need, type Printer, type Project, type ProjectStatus, type Setup, START, type ChatView as View } from '../../sidecar/src/protocol'
-import { checkSlicer, onFileDrop, onQuitFlush, onSidecarEvent, sidecar, studio, type ProjectFile } from './api'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { type AppState, type Draft, type LoginEvent, type ModelChoice, type ModelOption, type Need, type Printer, type Project, type Setup, START } from '../../sidecar/src/protocol'
+import { checkSlicer, onFileDrop, onQuitFlush, onSidecarEvent, sidecar } from './api'
 import { ChatView } from './Chat'
 import { Composer, releaseAttachment, savedAttachment, type PastedPicture } from './Composer'
-import { firstView, panelFiles, viewOf, type PanelView } from './files'
 import ModelPicker from './ModelPicker'
 import RightPanel from './RightPanel'
 import SetupFlow, { SetupStep } from './Setup'
 import Settings, { type Section } from './Settings'
 import Start from './Start'
+import { load, openFile, retry, setError, setPanelView, show as showProject, useStudio, useStudioEvents } from './store'
 import { buildChat } from './transcript'
 import Sidebar from './Sidebar'
 import { useWindowTheme } from './theme'
@@ -22,11 +22,9 @@ const DRAFT_PAUSE_MS = 400
 
 const EMPTY: Draft = { text: '', attachments: [] }
 
-/** How often a quit tries to save a draft, and how long it waits between tries for the engine to come back. */
 const QUIT_SAVE_TRIES = 4
 const QUIT_RETRY_MS = 3000
 
-/** How long a failed first read of the saved state waits before it tries again. */
 const STATE_RETRY_MS = 3000
 
 /**
@@ -51,18 +49,6 @@ type Screen = {
 /** Whether the screen changed since its last completed save. Each change makes a new draft object. */
 const changed = (screen: Screen) => screen.draft !== (screen.saved?.draft ?? EMPTY)
 
-/**
- * A chat with a change applied. Entries only grow, so each one is kept. The running state comes from whichever was read
- * last, so a change read before the open chat, which can arrive after it, never puts back a turn that already ended.
- */
-function merge(view: View, change: View): View {
-  const byId = new Map(view.entries.map((entry) => [entry.id, entry]))
-  for (const entry of change.entries) byId.set(entry.id, entry)
-  const entries = [...byId.values()].sort((a, b) => a.id - b.id)
-  if (change.seq < view.seq) return { ...view, entries }
-  return { ...view, entries, running: change.running, waiting: change.waiting, turn: change.turn, seq: change.seq }
-}
-
 /** A pasted picture's bytes as base64, to cross the sidecar's pipe. */
 function toBase64(bytes: Uint8Array): string {
   let binary = ''
@@ -72,16 +58,7 @@ function toBase64(bytes: Uint8Array): string {
 
 export default function StudioApp() {
   const [projects, setProjects] = useState<Project[]>([])
-  const [current, setCurrent] = useState<Project | null>(null)
-  const [view, setView] = useState<View | null>(null)
-  const [files, setFiles] = useState<ProjectFile[]>([])
-  const [selected, setSelected] = useState<string | null>(null)
-  /**
-   * The right panel's view. Null until the person picks one or the open project's files are first listed, and the panel
-   * shows Guide's neutral note meanwhile. A pick made first stays.
-   */
-  const [panelView, setPanelView] = useState<PanelView | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  const { current, view, files, selected, panelView, status, error } = useStudio()
   /** A failed send's error, kept with the project it was sent to and shown only there. */
   const [sendErrors, setSendErrors] = useState<Record<string, string>>({})
   /** The open screen's draft, as its composer shows it. */
@@ -121,17 +98,7 @@ export default function StudioApp() {
   const [defaultModel, setDefaultModel] = useState<ModelChoice | null>(null)
   /** The printer the next slice runs for, from the saved state. Null until it is read. */
   const [printer, setPrinter] = useState<Printer | null>(null)
-  /** Each project's status as the sidebar keeps it, for the start screen's recent projects. */
-  const [status, setStatus] = useState<Record<string, ProjectStatus>>({})
   const sendingNow = useRef(false)
-  const currentId = useRef<string | null>(null)
-  /** Bumped on every switch, so a slow load for a project already left is dropped. */
-  const loadRequest = useRef(0)
-  /**
-   * The newest guide, model, or drawing time the panel has seen, so only a newer one takes the panel over. Null until
-   * the open project's files are first listed, which picks the view it opens on.
-   */
-  const lastSeen = useRef<number | null>(null)
   /**
    * Each screen the window changed or filled from the saved state, by project id, or `START` for the start screen.
    * Typing saves its screen once typing pauses, and at once when the person leaves it. A send saves first if the
@@ -148,12 +115,6 @@ export default function StudioApp() {
   const previews = useRef(new Map<string, string>())
   /** Whether the person changed the start screen's pictures, so its saved ones no longer fill it. */
   const startPicturesTouched = useRef(false)
-  /** The project whose chat view is loaded. Chat changes for the open project wait in `early` until it is. */
-  const loaded = useRef<string | null>(null)
-  const failedLoad = useRef<{ project: string; message: string } | null>(null)
-  const early = useRef<View[]>([])
-  /** Counts chat loads, so only the newest load of the open chat replaces its view, not an older one that answers late. */
-  const loads = useRef(0)
   /** Counts readiness checks, so only the newest check's answer reaches the screen. */
   const checks = useRef(0)
 
@@ -161,16 +122,16 @@ export default function StudioApp() {
   const running = view?.running ?? false
   const attachments = shown.attachments.map((path) => ({ ...savedAttachment(path), previewUrl: previews.current.get(path) }))
 
+  useStudioEvents(projects)
   useUpdateEvents()
   useWindowTheme()
   useEffect(() => {
     void checkForUpdatesAtLaunch()
   }, [])
 
-  const openKey = () => currentId.current ?? START
+  const openKey = () => useStudio.getState().current?.id ?? START
   const draftOf = (key: string) => screens.current[key]?.draft ?? EMPTY
 
-  /** Puts a draft on a screen, and in the composer if that screen is open. */
   const put = (key: string, draft: Draft) => {
     ;(screens.current[key] ??= { draft }).draft = draft
     if (key === openKey()) setShown(draft)
@@ -214,7 +175,6 @@ export default function StudioApp() {
     pending.current = null
   }
 
-  /** Changes the open screen's draft from its composer, and saves it once typing pauses. */
   const edit = (draft: Draft) => {
     const key = openKey()
     put(key, draft)
@@ -226,7 +186,6 @@ export default function StudioApp() {
     pending.current = { key, timer }
   }
 
-  /** Takes the app's saved state: projects, drafts, and whether the old chats could be read. */
   const takeState = (state: AppState) => {
     // The saved state fills only the screens this window has not changed, since what it changed is newer.
     for (const [key, saved] of Object.entries(state.drafts)) {
@@ -246,7 +205,6 @@ export default function StudioApp() {
     takeProjects(state)
   }
 
-  /** Takes the saved projects, and whether the old chats could be read. */
   const takeProjects = (state: AppState) => {
     // A project made while this was on its way is newer than the saved list, so it stays.
     setProjects((made) => [...made.filter((p) => !state.projects.some((saved) => saved.id === p.id)), ...state.projects])
@@ -260,8 +218,8 @@ export default function StudioApp() {
    */
   const checkReady = () => {
     const check = ++checks.current
-    const project = currentId.current
-    void sidecar('setup.check', project === null ? {} : { project })
+    const project = useStudio.getState().current?.id
+    void sidecar('setup.check', project === undefined ? {} : { project })
       .then((found) => check === checks.current && setNeeds(found))
       .catch((err: unknown) => check === checks.current && setError(String(err)))
   }
@@ -341,27 +299,11 @@ export default function StudioApp() {
           loadModels()
           for (const wake of readyWaiters.current.splice(0)) wake()
           if (!stateTaken.current) void readState()
-          // An engine that started again holds what a crash cut off from the window, such as a turn's last entry, so
-          // the open chat is read again. The changes that arrive meanwhile are kept, as when it first opened.
-          const project = currentId.current
-          if (project !== null) {
-            loaded.current = null
-            early.current = []
-            void load(project, loadRequest.current)
-          }
           break
         }
         case 'engine':
           engineChanged = true
           setEngine(event.state === 'stopped' ? event.detail : 'Engine restarting')
-          break
-        case 'chat':
-          if (event.project !== currentId.current) break
-          if (loaded.current !== event.project) {
-            early.current.push(event)
-            break
-          }
-          setView((now) => now && merge(now, event))
           break
         case 'login':
           if (event.step === 'open') {
@@ -398,7 +340,6 @@ export default function StudioApp() {
 
   const type = (text: string) => edit({ ...draftOf(openKey()), text })
 
-  /** Changes the open screen's attached files, and saves them with its draft. */
   const setAttachments = (paths: string[]) => {
     if (openKey() === START) startPicturesTouched.current = true
     const sending = screens.current[openKey()]?.sendingPictures
@@ -467,82 +408,19 @@ export default function StudioApp() {
   // Files dropped anywhere on the window join the next message, as Attach adds them.
   useEffect(() => onFileDrop((paths) => setAttachments([...draftOf(openKey()).attachments, ...paths])).stop, [])
 
-  const refreshFiles = useCallback(async (project: string) => {
-    const list = await studio.files(project)
-    if (project !== currentId.current) return
-    setFiles(list)
-    const shown = panelFiles(list)
-    const latest = shown.latest?.modifiedMs ?? 0
-    if (lastSeen.current === null) {
-      lastSeen.current = latest
-      setPanelView((picked) => picked ?? firstView(shown))
-    } else if (shown.latest && latest > lastSeen.current) {
-      lastSeen.current = latest
-      setSelected(null)
-      setPanelView(viewOf(shown.latest.rel))
-    }
-  }, [])
-
-  // While the agent works, new files show up within a couple of seconds.
-  useEffect(() => {
-    if (!current) return
-    void refreshFiles(current.id).catch((err: unknown) => setError(String(err)))
-    if (!running) return
-    const timer = window.setInterval(() => {
-      void refreshFiles(current.id).catch((err: unknown) => setError(String(err)))
-    }, 1500)
-    return () => window.clearInterval(timer)
-  }, [current, running, refreshFiles])
-
   /** Shows a project, or the start screen, with its draft. The screen left is saved at once. */
   const show = (project: Project | null) => {
     clearPause()
     autosave(openKey())
-    loadRequest.current += 1
-    currentId.current = project?.id ?? null
+    showProject(project)
     setShown(draftOf(openKey()))
-    loaded.current = null
-    failedLoad.current = null
-    early.current = []
-    lastSeen.current = null
-    setCurrent(project)
-    setView(null)
-    setFiles([])
-    setSelected(null)
-    setPanelView(null)
-    setError(null)
     checkReady()
   }
 
-  /** Loads the open project's chat, with the changes that arrived while it loaded. */
-  const load = async (project: string, request: number) => {
-    const load = ++loads.current
-    const failed = failedLoad.current
-    failedLoad.current = null
-    try {
-      const opened = await sidecar('chat.open', { project })
-      if (request !== loadRequest.current || load !== loads.current) return
-      if (failed) setError((shown) => (shown === failed.message ? null : shown))
-      setView(early.current.reduce(merge, opened))
-      early.current = []
-      loaded.current = project
-    } catch (err) {
-      if (request !== loadRequest.current || load !== loads.current) return
-      const message = String(err)
-      failedLoad.current = { project, message }
-      setError(message)
-    }
-  }
-
-  const openProject = async (project: Project) => {
-    if (project.id === currentId.current) {
-      if (failedLoad.current?.project !== project.id) return
-      failedLoad.current = null
-      setError(null)
-    } else {
-      show(project)
-    }
-    await load(project.id, loadRequest.current)
+  const openProject = (project: Project) => {
+    if (project.id !== useStudio.getState().current?.id) show(project)
+    else if (!retry()) return
+    void load()
   }
 
   /**
@@ -575,7 +453,7 @@ export default function StudioApp() {
         // here meanwhile goes with them as its draft.
         clear(START)
         if (!unchanged) put(project.id, next)
-        void openProject(project)
+        openProject(project)
         autosave(project.id)
       } else if (unchanged) {
         clear(key)
@@ -594,12 +472,6 @@ export default function StudioApp() {
       setSending(false)
       autosave(key)
     }
-  }
-
-  /** Opens a file in the panel's view for it. Null goes back to the list of files. */
-  const openFile = (rel: string | null) => {
-    setSelected(rel)
-    if (rel !== null) setPanelView(viewOf(rel))
   }
 
   const shownError = error ?? (current ? sendErrors[current.id] : undefined)
@@ -755,11 +627,9 @@ export default function StudioApp() {
         current={current?.id ?? null}
         engine={engine}
         printer={printer}
-        onOpen={(project) => void openProject(project)}
+        onOpen={openProject}
         onNew={() => show(null)}
         onSettings={() => setSettings('agents')}
-        onError={setError}
-        onStatus={setStatus}
       />
 
       <main className="chat" aria-label="Chat">
@@ -786,7 +656,7 @@ export default function StudioApp() {
             status={status}
             composer={composer('Describe the part, paste a link, or attach a file', true)}
             onSuggest={type}
-            onOpen={(project) => void openProject(project)}
+            onOpen={openProject}
             onError={setError}
           />
         )}

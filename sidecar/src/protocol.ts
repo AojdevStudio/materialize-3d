@@ -176,6 +176,9 @@ export type ToolName = keyof ToolArgs
 /** The tool that hands a task to Astra. The person can turn it off in Settings. */
 export const ASTRA = 'astra' satisfies ToolName
 
+/** Astra, the GPT helper: OpenAI's model on the person's ChatGPT plan. */
+export const ASTRA_MODEL = { provider: 'openai-codex', modelId: 'gpt-6-astra' } as const
+
 /** The program the `run` tool runs. Its `args` go after it. */
 export const RUN_PROGRAM = 'uv'
 
