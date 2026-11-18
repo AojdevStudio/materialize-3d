@@ -12,14 +12,14 @@ vi.mock('@tauri-apps/api/event', () => ({
   }),
 }))
 
-import { UpdateBanner } from '../components/UpdateBanner'
+import type { UpdateCheck } from '../studio/api'
+import { UpdateBanner } from '../update/UpdateBanner'
 import {
   checkForUpdates,
   checkForUpdatesAtLaunch,
   resetUpdateStoreForTests,
   useUpdateEvents,
-  type UpdateCheck,
-} from '../stores/updates'
+} from '../update/store'
 
 const NEWER: UpdateCheck = {
   status: 'available',

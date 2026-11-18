@@ -13,6 +13,7 @@ use super::{io_err, parse_json_object, BambuError, Plate, Result};
 /// The printer, nozzle, quality, filament, and plate Bambu Studio last had selected. Bambu Studio always records a
 /// printer once one is chosen. The process, the filament, and the plate can each be missing.
 #[derive(Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(rename = "BambuLastUsed"))]
 pub struct LastUsed {
     /// The printer and its nozzle size in mm, as the printer preset's name gives them: `Bambu Lab P2S` and `0.4`.
     pub printer: String,
@@ -27,6 +28,7 @@ pub struct LastUsed {
 /// A preset by the name Bambu Studio shows. `system` is the Bambu Lab preset a slice can run with: the same name,
 /// or for a preset the person made, the one it was made from. A preset the person made from nothing has none.
 #[derive(Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(rename = "BambuPreset"))]
 pub struct Preset {
     pub name: String,
     pub system: Option<String>,

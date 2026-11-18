@@ -117,7 +117,7 @@ async fn eval(State(harness): State<Harness>, Json(request): Json<EvalRequest>) 
         done = emit("true", "JSON.stringify(__v===undefined?null:__v)"),
         fail = emit("false", "String((__e&&__e.stack)||__e)"),
     );
-    let Some(webview) = harness.app.get_webview("main") else {
+    let Some(webview) = harness.app.get_webview(crate::studio::window::MAIN) else {
         return (StatusCode::SERVICE_UNAVAILABLE, "main webview not ready").into_response();
     };
     if let Err(err) = webview.eval(&script) {
@@ -156,7 +156,7 @@ mod platform {
     /// Snapshots the webview's own content through WebKit, which needs no
     /// Screen Recording permission.
     pub async fn snapshot_png(app: &AppHandle) -> Result<Vec<u8>, String> {
-        let webview = app.get_webview("main").ok_or("main webview not ready")?;
+        let webview = app.get_webview(crate::studio::window::MAIN).ok_or("main webview not ready")?;
         let (sender, receiver) = oneshot::channel::<Result<Vec<u8>, String>>();
         let sender = Mutex::new(Some(sender));
         webview

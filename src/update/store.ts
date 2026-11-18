@@ -1,18 +1,8 @@
 import { create } from 'zustand'
-import { invoke } from '@tauri-apps/api/core'
-import { useTauriEvent } from '../hooks/useTauriEvent'
-
-/** What `update_check` returns. Mirrors `UpdateCheck` in `src-tauri/src/updater.rs`. */
-export type UpdateCheck =
-  | { status: 'upToDate'; currentVersion: string }
-  | { status: 'available'; currentVersion: string; version: string; notes: string | null; date: string | null }
+import { updater, type UpdateCheck, type UpdateProgress } from '../studio/api'
+import { useTauriEvent } from './useTauriEvent'
 
 type AvailableUpdate = Extract<UpdateCheck, { status: 'available' }>
-
-export interface UpdateProgress {
-  downloaded: number
-  total: number | null
-}
 
 /**
  * idle: no check yet. checking: a check is running. upToDate and available: the
@@ -25,7 +15,6 @@ interface UpdateState {
   phase: UpdatePhase
   available: AvailableUpdate | null
   error: string | null
-  /** Which step the error came from. */
   failed: 'check' | 'install' | null
   progress: UpdateProgress | null
   /** Running builds the downloaded update waits for before it installs. 0 when it is not waiting. */
@@ -55,7 +44,7 @@ export function checkForUpdates(): Promise<void> {
   inFlight ??= (async () => {
     useUpdateStore.setState({ phase: 'checking', error: null })
     try {
-      const check = await invoke<UpdateCheck>('update_check')
+      const check = await updater.check()
       useUpdateStore.setState(
         check.status === 'available'
           ? { phase: 'available', available: check }
@@ -70,7 +59,6 @@ export function checkForUpdates(): Promise<void> {
   return inFlight
 }
 
-/** The one check each launch makes. */
 export function checkForUpdatesAtLaunch(): Promise<void> {
   if (checkedAtLaunch) return Promise.resolve()
   checkedAtLaunch = true
@@ -91,18 +79,18 @@ export async function installUpdate(): Promise<void> {
   if (!available || phase === 'installing') return
   useUpdateStore.setState({ phase: 'installing', error: null, progress: null, waitingFor: 0, dismissed: false })
   try {
-    await invoke('update_install', { version: available.version })
+    await updater.install(available.version)
   } catch (error) {
     useUpdateStore.setState({ phase: 'error', error: String(error), failed: 'install', progress: null, waitingFor: 0 })
   }
 }
 
 export function useUpdateEvents() {
-  useTauriEvent<UpdateProgress>('update:progress', ({ payload }) => {
-    useUpdateStore.setState({ progress: payload })
+  useTauriEvent('update:progress', (progress) => {
+    useUpdateStore.setState({ progress })
   })
-  useTauriEvent<number>('update:waiting', ({ payload }) => {
-    useUpdateStore.setState({ waitingFor: payload })
+  useTauriEvent('update:waiting', (waitingFor) => {
+    useUpdateStore.setState({ waitingFor })
   })
 }
 

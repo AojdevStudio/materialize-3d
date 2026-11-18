@@ -1,8 +1,7 @@
-import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { type AppState, type Draft, type LoginEvent, type ModelChoice, type ModelOption, type Need, type Printer, type Project, type ProjectStatus, type Setup, START, type ChatView as View } from '../../sidecar/src/protocol'
-import { checkSlicer, firstView, onQuitFlush, onSidecarEvent, panelFiles, sidecar, studio, viewOf, type PanelView, type ProjectFile } from './api'
+import { checkSlicer, firstView, onFileDrop, onQuitFlush, onSidecarEvent, panelFiles, sidecar, studio, viewOf, type PanelView, type ProjectFile } from './api'
 import { ChatView } from './Chat'
 import { Composer, releaseAttachment, savedAttachment, type PastedPicture } from './Composer'
 import ModelPicker from './ModelPicker'
@@ -13,8 +12,8 @@ import Start from './Start'
 import { buildChat } from './transcript'
 import Sidebar from './Sidebar'
 import { ImportBlockedBanner, lockedText, SetupBanner, SignInAsk, WaitingBanner, type Blocker, type SetupCause, type TurnLogin } from './Waiting'
-import { UpdateBanner } from '../components/UpdateBanner'
-import { checkForUpdatesAtLaunch, useUpdateEvents } from '../stores/updates'
+import { UpdateBanner } from '../update/UpdateBanner'
+import { checkForUpdatesAtLaunch, useUpdateEvents } from '../update/store'
 import './studio.css'
 
 /** How long typing pauses before the draft is saved. */
@@ -330,7 +329,7 @@ export default function StudioApp() {
     // The listener is in place before the ping, so no engine change is missed, and a ping that answers late never
     // hides one.
     let engineChanged = false
-    const unlisten = onSidecarEvent((event) => {
+    const events = onSidecarEvent((event) => {
       switch (event.type) {
         case 'ready': {
           engineChanged = true
@@ -381,14 +380,14 @@ export default function StudioApp() {
           break
       }
     })
-    unlisten
+    events.ready
       .then(() => sidecar('app.ping', {}))
       .then(({ version }) => engineChanged || setEngine(`Engine ${version}`))
       .catch((err: unknown) => engineChanged || setEngine(String(err)))
     return () => {
       stopped = true
       window.clearTimeout(retry)
-      void unlisten.then((stop) => stop())
+      events.stop()
     }
   }, [])
 
@@ -437,7 +436,7 @@ export default function StudioApp() {
   // screen, those a send just made included. Rust holds the quit meanwhile. A save the engine refused, as while it
   // restarts, is tried again once the engine is back. A draft that still cannot be saved calls the quit off.
   useEffect(() => {
-    const unlisten = onQuitFlush(async () => {
+    const quitting = onQuitFlush(async () => {
       clearPause()
       await Promise.allSettled([...pastes.current])
       // It is done only when no screen sends and each holds what the store holds. A send or an edit that came while it
@@ -460,21 +459,11 @@ export default function StudioApp() {
         })
       }
     })
-    return () => {
-      void unlisten.then((stop) => stop())
-    }
+    return quitting.stop
   }, [])
 
   // Files dropped anywhere on the window join the next message, as Attach adds them.
-  useEffect(() => {
-    const unlisten = getCurrentWebview().onDragDropEvent(({ payload }) => {
-      if (payload.type !== 'drop') return
-      setAttachments([...draftOf(openKey()).attachments, ...payload.paths])
-    })
-    return () => {
-      void unlisten.then((stop) => stop())
-    }
-  }, [])
+  useEffect(() => onFileDrop((paths) => setAttachments([...draftOf(openKey()).attachments, ...paths])).stop, [])
 
   const refreshFiles = useCallback(async (project: string) => {
     const list = await studio.files(project)

@@ -1,4 +1,5 @@
-import { dismissUpdate, installUpdate, useUpdateStore, waitingMessage, type UpdateProgress } from '../stores/updates'
+import type { UpdateProgress } from '../studio/api'
+import { dismissUpdate, installUpdate, useUpdateStore, waitingMessage } from './store'
 import styles from './UpdateBanner.module.css'
 
 export function formatProgress(progress: UpdateProgress | null): string {

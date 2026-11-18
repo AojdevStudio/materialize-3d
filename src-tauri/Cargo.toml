@@ -56,6 +56,8 @@ axum = { version = "0.8", optional = true }
 tauri = { version = "~2.12.5", features = ["test"] }
 # the updater tests' local release feed
 axum = "0.8"
+# the window's TypeScript copies of what the commands return, written by a test and checked by it
+ts-rs = "12"
 
 # OS-native credential store: Keychain (macOS), Credential Manager (Windows),
 # Secret Service (Linux).

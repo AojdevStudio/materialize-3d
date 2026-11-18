@@ -137,7 +137,7 @@ export default function Sidebar({ projects, current, engine, printer, onOpen, on
   // status again, for the files a turn writes and its last activity. A transcript line that changes nothing reads
   // nothing. An engine that started again holds its own turns, so its read replaces what the old run's events said.
   useEffect(() => {
-    const unlisten = onSidecarEvent((event) => {
+    const events = onSidecarEvent((event) => {
       if (event.type === 'ready') {
         liveNow.current = {}
         setLive(liveNow.current)
@@ -153,9 +153,7 @@ export default function Sidebar({ projects, current, engine, printer, onOpen, on
       setLive(liveNow.current)
       refresh()
     })
-    return () => {
-      void unlisten.then((stop) => stop())
-    }
+    return events.stop
   }, [refresh])
 
   useEffect(refresh, [projects, refresh])

@@ -1,14 +1,15 @@
 import { act, cleanup, render } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import type { Events } from '../studio/api'
 
 const listenMock = vi.fn()
 const unlistenMock = vi.fn()
 
 vi.mock('@tauri-apps/api/event', () => ({ listen: listenMock }))
 
-const { useTauriEvent } = await import('../hooks/useTauriEvent')
+const { useTauriEvent } = await import('../update/useTauriEvent')
 
-function Listener({ name }: { name: string }) {
+function Listener({ name }: { name: keyof Events }) {
   useTauriEvent(name, () => {})
   return null
 }

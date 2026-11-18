@@ -90,6 +90,22 @@ impl TryFrom<String> for Plate {
     }
 }
 
+/// `Plate` in `sidecar/src/protocol.ts` owns the window's list of plates, so the window's generated types name that one
+/// and declare no second copy.
+#[cfg(test)]
+impl ts_rs::TS for Plate {
+    type WithoutGenerics = Self;
+    type OptionInnerType = Self;
+
+    fn name(_: &ts_rs::Config) -> String {
+        "Plate".to_owned()
+    }
+
+    fn inline(cfg: &ts_rs::Config) -> String {
+        Self::name(cfg)
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum BambuError {
     #[error("{path}: {source}")]
