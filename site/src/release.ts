@@ -25,7 +25,7 @@ export type Release = {
 
 /** The last published release. It trails package.json while the next release is built. */
 const version = "0.3.2";
-/** The build `VALIDATED_VERSIONS` names in src-tauri/src/bambu/studio.rs at the published release's tag. */
+/** The build `VALIDATED_VERSIONS` names in src-tauri/src/bambu/locate.rs at the published release's tag. */
 const bambuStudio = "02.08.02.61";
 
 export const release: Release = {

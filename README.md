@@ -55,7 +55,7 @@ bun run test
 (cd src-tauri && cargo test --lib --locked)
 ```
 
-The test that slices with a real Bambu Studio is ignored by default. Point `BAMBU_STUDIO_CLI` at the Bambu Studio build that `VALIDATED_VERSIONS` names in `src-tauri/src/bambu/studio.rs`, and run `cargo test --lib --locked studio::slice -- --ignored`.
+The test that slices with a real Bambu Studio is ignored by default. Point `BAMBU_STUDIO_CLI` at the Bambu Studio build that `VALIDATED_VERSIONS` names in `src-tauri/src/bambu/locate.rs`, and run `cargo test --lib --locked studio::slice -- --ignored`.
 
 A development build is not an installed-release acceptance test. See the [release procedure](docs/releasing.md) and the [installed GUI checklist](docs/verify-on-mac.md).
 

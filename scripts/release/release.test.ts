@@ -15,7 +15,7 @@ const today = (file: string, pattern: RegExp) => {
   return value;
 };
 const version = today("package.json", /"version": "([^"]+)"/);
-const bambu = today("src-tauri/src/bambu/studio.rs", /VALIDATED_VERSIONS: &\[&str\] = &\["([^"]+)"\]/);
+const bambu = today("src-tauri/src/bambu/locate.rs", /VALIDATED_VERSIONS: &\[&str\] = &\["([^"]+)"\]/);
 const bun = today(".github/actions/setup-bun/action.yml", /bun-version: "([^"]+)"/);
 const macos = today("src-tauri/tauri.conf.json", /"minimumSystemVersion": "([^"]+)"/);
 const identifier = today("src-tauri/tauri.conf.json", /"identifier": "([^"]+)"/);
@@ -30,7 +30,7 @@ const published = (tagSource: { bambu?: string; macos?: string } = {}, tag = `v$
   assets: ["latest.json", dmg],
   atTag: (file) =>
     ({
-      "src-tauri/src/bambu/studio.rs": `pub const VALIDATED_VERSIONS: &[&str] = &["${tagSource.bambu ?? release.bambuStudio.version}"];`,
+      "src-tauri/src/bambu/locate.rs": `pub const VALIDATED_VERSIONS: &[&str] = &["${tagSource.bambu ?? release.bambuStudio.version}"];`,
       "src-tauri/tauri.conf.json": `"minimumSystemVersion": "${tagSource.macos ?? release.minimumMacOS}"`,
     })[file] ?? "",
 });
@@ -77,6 +77,15 @@ describe("release facts", () => {
 
   test("the site describes the Latest release and the source at its tag", () => {
     expect(checkPublished(published())).toEqual([]);
+  });
+
+  test("a tag from before the move keeps the Bambu build in bambu/studio.rs", () => {
+    const tag = published();
+    const before: Read = (file) => {
+      if (file === "src-tauri/src/bambu/locate.rs") throw new Error(`gh api ${file} failed: HTTP 404: Not Found`);
+      return tag.atTag(file === "src-tauri/src/bambu/studio.rs" ? "src-tauri/src/bambu/locate.rs" : file);
+    };
+    expect(checkPublished({ ...tag, atTag: before })).toEqual([]);
   });
 
   test.each([
