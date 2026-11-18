@@ -85,24 +85,7 @@ The tags and files go live with the next production deployment.
 
 ## Tests
 
-`tests/site.spec.ts` covers:
-
-- no horizontal overflow at 1440, 390, and 320 px in both themes, at the top and at the end section
-- the download link is the first action and points at the configured DMG
-- every in-page anchor and internal link resolves under the base path
-- off-site links are exactly the configured set, the blog and license links included
-- the footer's legal line reads © 2026 AOJDevStudios, then Blog, Privacy, and MIT license
-- the privacy page is served at `/privacy` with its text, the shared header and footer, and no axe violations, in both themes, and the sitemap lists it
-- keyboard focus reaches every link and button, with a visible focus ring
-- axe finds no violations in either theme
-- How it works shows Describe, Make, Look, and Print in order, and the page says no release has the studio only while `studio` is false
-- with reduced motion, each stage shows only its own copy, in order, and nothing moves while scrolling through it. Each rewind still shows the trace card with its own kick, head, and lines, one fewer at each step back
-- the trace card covers no pixel of the 3D view in any rewind still, at 320x568, 320x640, 390x844, 568x320, 844x390, 768x1024, 1440x600, and 1440x900
-- the teardown labels never overlap and stay on screen, at 1440 and 390
-- no visible text covers other text at 390 x 844, 1440 x 900, 1440 x 600, 844 x 390, 568 x 320, and 768 x 1024, in any stage or as the end section comes up
-- the readout follows the scroll: parts lifted, then Z height, then the rewind clock
-- no signing or notarization claim appears while the flags are false
-- the head carries the canonical URL and an absolute share image, and the preview serves `robots.txt`, `sitemap.xml`, and `og-image.png` as real files
+Each test's title in `tests/site.spec.ts` says what it checks. `bunx playwright test --list` prints them.
 
 The layout and label tests also save screenshots to `test-results/screens/`, which is gitignored. The tests never fetch GitHub. CI runs them in the `Landing site` job.
 

@@ -1,8 +1,9 @@
 /**
  * Every release fact the page states lives here, with the off-site links the page may
- * render. After a release is verified, the orchestrator edits the release object only.
- * The page renders the honest state for whatever these values are (pending checksum,
- * unsigned, unnotarized).
+ * render. After a release is published and checked, edit `version` and the release's
+ * `sha256` only (docs/releasing.md, step 7). The page renders the honest state for whatever
+ * these values are (pending checksum, unsigned, unnotarized).
+ * `bun scripts/release/release-facts.ts` checks these values against the app's sources.
  */
 export type Release = {
   version: string;
@@ -23,21 +24,25 @@ export type Release = {
   studio: boolean;
 };
 
+/** The last published release. It trails package.json while the next release is built. */
+const version = "0.3.2";
+/** The build `VALIDATED_VERSIONS` names in src-tauri/src/bambu/studio.rs. */
+const bambuStudio = "02.08.02.61";
+
 export const release: Release = {
-  version: "0.3.2",
+  version,
   repoUrl: "https://github.com/AojdevStudio/materialize-3d",
   releasesUrl: "https://github.com/AojdevStudio/materialize-3d/releases",
   docsUrl: "https://github.com/AojdevStudio/materialize-3d#readme",
-  dmgUrl:
-    "https://github.com/AojdevStudio/materialize-3d/releases/download/v0.3.2/Materialize-3D-0.3.2-macos-arm64.dmg",
+  dmgUrl: `https://github.com/AojdevStudio/materialize-3d/releases/download/v${version}/Materialize-3D-${version}-macos-arm64.dmg`,
   sha256: "5f883a5f5f88983da486c895ff059a72b1628847194be5e352b2f564c2f8b06a",
   signed: true,
   notarized: true,
   testedMacOS: "macOS 26.7.2",
   architecture: "Apple Silicon",
   bambuStudio: {
-    version: "02.08.02.61",
-    releaseUrl: "https://github.com/bambulab/BambuStudio/releases/tag/v02.08.02.61",
+    version: bambuStudio,
+    releaseUrl: `https://github.com/bambulab/BambuStudio/releases/tag/v${bambuStudio}`,
   },
   studio: true,
 };

@@ -49,12 +49,17 @@ unlock_line="$(builtin printf 'unlock-keychain -p "%s" "%s"' "$RELEASE_KEYCHAIN_
 [[ "$RELEASE_KEYCHAIN" != -* ]] || die "RELEASE_KEYCHAIN must not start with a dash"
 [[ -f "$RELEASE_KEYCHAIN" ]] || die "no keychain at $RELEASE_KEYCHAIN"
 
-# One version everywhere, and the tree is exactly the tagged commit.
+# Every copy of a release fact matches its source, and the tree is exactly the tagged commit.
+# The site must offer the release GitHub marks Latest, so a site update missed after
+# the last release stops this one (docs/releasing.md, step 7).
+bun scripts/release/release-facts.ts --published || die "release facts differ"
 version="$(bun -p "require('./package.json').version")"
-cargo_version="$(sed -n 's/^version = "\(.*\)"$/\1/p' src-tauri/Cargo.toml | head -1)"
-tauri_version="$(bun -p "require('./src-tauri/tauri.conf.json').version")"
-[[ "$version" == "$cargo_version" && "$version" == "$tauri_version" ]] \
-  || die "versions differ: package.json $version, Cargo.toml $cargo_version, tauri.conf.json $tauri_version"
+conf() { bun -p "require('./src-tauri/tauri.conf.json').$1"; }
+product="$(conf productName)"
+identifier="$(conf identifier)"
+main_binary="$(sed -n '/^\[package\]$/{n;s/^name = "\(.*\)"$/\1/p;}' src-tauri/Cargo.toml)"
+sidecar_binary="$(basename "$(conf 'bundle.externalBin[0]')")"
+[[ -n "$main_binary" ]] || die "cannot read the package name from src-tauri/Cargo.toml"
 [[ -z "$(git status --porcelain)" ]] || die "working tree is not clean"
 if [[ "${ALLOW_UNTAGGED:-}" != 1 ]]; then
   [[ "$(git rev-parse HEAD)" == "$(git rev-parse -q --verify "refs/tags/v$version^{commit}" || true)" ]] \
@@ -138,17 +143,16 @@ bun install --frozen-lockfile
 # The updater key signs only the finished archive below, so the app build never sees it.
 RUSTFLAGS="--remap-path-prefix=$HOME=~" env -u VITE_M3D_E2E -u APPLE_SIGNING_IDENTITY \
   -u TAURI_SIGNING_PRIVATE_KEY -u TAURI_SIGNING_PRIVATE_KEY_PASSWORD bun tauri build --bundles app
-app="$target/release/bundle/macos/Materialize 3D.app"
-bin="$app/Contents/MacOS/materialize-3d"
-sidecar="$app/Contents/MacOS/materialize-sidecar"
+app="$target/release/bundle/macos/$product.app"
+bin="$app/Contents/MacOS/$main_binary"
+sidecar="$app/Contents/MacOS/$sidecar_binary"
 
 echo "release: signing and notarizing the app"
 # Inside out: the sidecar gets its own signature with the JIT entitlement, then
 # the app's signature seals it with the rest of the bundle. One notarization
 # covers both, and the staple on the app covers the sidecar, which as a bare
 # executable could not carry its own.
-# Tauri bundles the sidecar (bundle.externalBin). It gets its own signature too, with the JIT entitlement Bun needs.
-sign --options runtime --identifier com.aojdevstudio.materialize3d.sidecar \
+sign --options runtime --identifier "$identifier.sidecar" \
   --entitlements sidecar/entitlements.plist "$sidecar"
 sign --options runtime "$app"
 ditto -c -k --keepParent "$app" "$workdir/app.zip"
@@ -165,16 +169,13 @@ spctl --assess --type execute "$app"
 [[ "$(lipo -archs "$bin")" == arm64 ]] || die "binary is not arm64-only"
 plist="$app/Contents/Info.plist"
 [[ "$(plutil -extract CFBundleShortVersionString raw "$plist")" == "$version" ]] || die "Info.plist version is not $version"
+bun scripts/release/check-no-e2e-harness.ts "$app" || die "the build carries the e2e harness"
 # grep reads a saved copy: piping strings into grep -q would fail on SIGPIPE
 # under pipefail exactly when a match is found.
 for exe in "$bin" "$sidecar"; do
   strings "$exe" > "$workdir/strings.txt"
-  if grep -qE 'M3D_E2E_(TOKEN|PORT|DATA_DIR|UPDATE_FEED)' "$workdir/strings.txt"; then die "the e2e harness is in $exe"; fi
   if grep -qF "$HOME" "$workdir/strings.txt"; then die "$exe embeds the build machine's home path"; fi
 done
-if grep -rlq __M3D_E2E_DIALOGS__ dist; then die "the scripted file dialog is in the frontend"; fi
-# The exact file list, the minimum macOS, and the sidecar's signature and
-# entitlement.
 scripts/release/check-app-bundle.sh "$app" "$team"
 
 # The update archive holds the app exactly as notarized and stapled above. Its
@@ -191,9 +192,9 @@ COPYFILE_DISABLE=1 tar --no-mac-metadata --no-xattrs --no-acls --no-fflags -czf 
 unpacked="$workdir/unpacked"
 mkdir -p "$unpacked"
 tar -xzf "$archive" -C "$unpacked"
-codesign --verify --deep --strict "$unpacked/Materialize 3D.app"
-xcrun stapler validate "$unpacked/Materialize 3D.app"
-scripts/release/check-app-bundle.sh "$unpacked/Materialize 3D.app" "$team"
+codesign --verify --deep --strict "$unpacked/$product.app"
+xcrun stapler validate "$unpacked/$product.app"
+scripts/release/check-app-bundle.sh "$unpacked/$product.app" "$team"
 bun tauri signer sign --app-version "$version" "$archive" >/dev/null || die "signing the update archive failed"
 [[ -s "$archive.sig" ]] || die "the updater signer wrote no signature"
 # A signature from any key but the one tauri.conf.json trusts would make every
@@ -204,31 +205,16 @@ trusted="$(key_id "$(bun -p "require('./src-tauri/tauri.conf.json').plugins.upda
   || die "the update archive is not signed by the key in tauri.conf.json"
 UPDATE_VERSION="$version" UPDATE_SIGNATURE="$(cat "$archive.sig")" \
   UPDATE_URL="https://github.com/AojdevStudio/materialize-3d/releases/download/v$version/$archive_name" \
-  UPDATE_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)" bun -e '
-    const version = process.env.UPDATE_VERSION
-    const changes = `What changed: https://github.com/AojdevStudio/materialize-3d/releases/tag/v${version}`
-    // The update banner shows these notes, and they are all a user reads before Update now.
-    const notes = {
-      "0.3.0": `Materialize 3D 0.3.0 is a new chat studio. The sign, part, printer, and MakerWorld screens, the MCP server, and the OpenAI API key path are gone, and the app no longer sends jobs to a printer. Choose Later to keep 0.2.2.\n${changes}`,
-    }[version] ??
-      (version.startsWith("0.3.")
-        ? `Materialize 3D ${version}. Updating from 0.2.2? 0.3 is a new chat studio. The sign, part, printer, and MakerWorld screens, the MCP server, and the OpenAI API key path are gone, and the app no longer sends jobs to a printer. Choose Later to keep 0.2.2.\n${changes}`
-        : `Materialize 3D ${version}. ${changes}`)
-    console.log(JSON.stringify({
-      version,
-      notes,
-      pub_date: process.env.UPDATE_DATE,
-      platforms: { "darwin-aarch64": { signature: process.env.UPDATE_SIGNATURE, url: process.env.UPDATE_URL } },
-    }, null, 2))' > "$out/latest.json"
+  UPDATE_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)" bun scripts/release/latest-json.ts > "$out/latest.json"
 ( cd "$out" && shasum -a 256 "$archive_name" > "$archive_name.sha256" )
 
 echo "release: building, signing, and notarizing the DMG"
 stage="$workdir/dmg"
 mkdir -p "$stage"
-ditto "$app" "$stage/Materialize 3D.app"
+ditto "$app" "$stage/$product.app"
 ln -s /Applications "$stage/Applications"
-dmg="$workdir/Materialize 3D.dmg"
-hdiutil create -volname "Materialize 3D" -srcfolder "$stage" -fs HFS+ -format UDZO -ov "$dmg" >/dev/null
+dmg="$workdir/$product.dmg"
+hdiutil create -volname "$product" -srcfolder "$stage" -fs HFS+ -format UDZO -ov "$dmg" >/dev/null
 sign "$dmg"
 notarize "$dmg"
 xcrun stapler staple "$dmg"
