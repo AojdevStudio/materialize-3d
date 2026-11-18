@@ -18,7 +18,6 @@ import {
   saveSettings,
   setError,
   setPanelView,
-  start,
   useStudio,
   useStudioEvents,
 } from './store'
@@ -53,28 +52,20 @@ export default function StudioApp() {
     void checkForUpdatesAtLaunch()
   }, [])
 
-  const { drafts, shown, attachments, sending, sendErrors } = useDrafts((project) =>
-    setProjects((prev) => (prev.some((p) => p.id === project.id) ? prev : [project, ...prev])),
-  )
-
   // A project made while this was on its way is newer than the saved list, so it stays.
   const takeProjects = (state: AppState) =>
     setProjects((made) => [...made.filter((p) => !state.projects.some((saved) => saved.id === p.id)), ...state.projects])
+
+  const { drafts, shown, attachments, sending, sendErrors } = useDrafts({
+    onSent: (project) => setProjects((prev) => (prev.some((p) => p.id === project.id) ? prev : [project, ...prev])),
+    onStarted: takeProjects,
+  })
 
   const retryImport = () => {
     void importAgain()
       .then(takeProjects)
       .catch((err: unknown) => setError(String(err)))
   }
-
-  useEffect(() => {
-    void start()
-      .then((state) => {
-        drafts.take(state)
-        takeProjects(state)
-      })
-      .catch((err: unknown) => setError(String(err)))
-  }, [])
 
   const shownError = error ?? (current ? sendErrors[current.id] : undefined)
   const dismissError = () => {
@@ -121,7 +112,7 @@ export default function StudioApp() {
       attachments={attachments}
       onAttach={(more) => drafts.attach(more.map((a) => a.path))}
       onPaste={drafts.paste}
-      onRemove={drafts.remove}
+      onRemove={(index) => drafts.remove(attachments[index], index)}
       onSend={() => {
         if (!running && !notReady) void drafts.send()
       }}

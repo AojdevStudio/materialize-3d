@@ -13,7 +13,7 @@ vi.mock('@tauri-apps/api/event', () => ({
 }))
 vi.mock('@tauri-apps/plugin-opener', () => ({ openUrl: () => Promise.resolve() }))
 
-import { type Clock, createDrafts, DRAFT_PAUSE_MS, QUIT_RETRY_MS, QUIT_SAVE_TRIES } from './drafts'
+import { type Clock, createDrafts } from './drafts'
 import { useStudio, useStudioEvents } from './store'
 
 const clock: Clock = {
@@ -62,9 +62,9 @@ it('saves the open screen once typing pauses, and each key press starts the paus
   const drafts = createDrafts(clock, () => {})
 
   drafts.type('A cable')
-  await vi.advanceTimersByTimeAsync(DRAFT_PAUSE_MS - 1)
+  await vi.advanceTimersByTimeAsync(399)
   drafts.type('A cable clip')
-  await vi.advanceTimersByTimeAsync(DRAFT_PAUSE_MS - 1)
+  await vi.advanceTimersByTimeAsync(399)
   expect(saved).toEqual([])
 
   await vi.advanceTimersByTimeAsync(1)
@@ -97,13 +97,13 @@ it('tries a refused save again each pause, and calls the quit off when the last 
   drafts.type('A cable clip')
 
   const quitting = drafts.quit().catch((err: unknown) => err)
-  await vi.advanceTimersByTimeAsync(QUIT_RETRY_MS - 1)
+  await vi.advanceTimersByTimeAsync(2999)
   expect(saved).toHaveLength(1)
   await vi.advanceTimersByTimeAsync(1)
   expect(saved).toHaveLength(2)
 
-  await vi.advanceTimersByTimeAsync(QUIT_RETRY_MS * (QUIT_SAVE_TRIES - 2))
-  expect(saved).toHaveLength(QUIT_SAVE_TRIES)
+  await vi.advanceTimersByTimeAsync(2 * 3000)
+  expect(saved).toHaveLength(4)
   expect(await quitting).toEqual(new Error('a draft could not be saved'))
   expect(useStudio.getState().error).toBe('A draft could not be saved, so Materialize 3D stayed open. Quit again once the engine is back.')
 })

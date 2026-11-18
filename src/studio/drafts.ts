@@ -4,11 +4,11 @@ import { createStore } from 'zustand/vanilla'
 import { type AppState, type Draft, type Project, START } from '../../sidecar/src/protocol'
 import { onFileDrop, onQuitFlush, sidecar } from './api'
 import { releaseAttachment, savedAttachment, type Attachment, type PastedPicture } from './Composer'
-import { checkReady, load, onNextReady, retry, setError, show as showProject, useStudio } from './store'
+import { checkReady, load, onNextReady, retry, setError, show as showProject, start, useStudio } from './store'
 
-export const DRAFT_PAUSE_MS = 400
-export const QUIT_SAVE_TRIES = 4
-export const QUIT_RETRY_MS = 3000
+const DRAFT_PAUSE_MS = 400
+const QUIT_SAVE_TRIES = 4
+const QUIT_RETRY_MS = 3000
 
 const EMPTY: Draft = { text: '', attachments: [] }
 
@@ -216,8 +216,8 @@ export function createDrafts(clock: Clock, onSent: (project: Project) => void) {
 
     type: (text: string) => edit(openKey(), { ...draftOf(openKey()), text }),
 
-    remove: (index: number) => {
-      const attachment = state.getState().attachments[index]
+    /** Takes the attachment the person saw at `index`, since a quick second click can come before the list redraws. */
+    remove: (attachment: Attachment, index: number) => {
       releaseAttachment(attachment)
       previews.delete(attachment.path)
       setPictures(openKey(), draftOf(openKey()).attachments.filter((_, i) => i !== index))
@@ -296,9 +296,20 @@ export function createDrafts(clock: Clock, onSent: (project: Project) => void) {
   }
 }
 
-/** The window's drafts while it is open, with what the open screen's composer shows. `onSent` is taken once. */
-export function useDrafts(onSent: (project: Project) => void) {
+/**
+ * The window's drafts while it is open, with what the open screen's composer shows. It starts the window's store, and
+ * `onStarted` hears the saved state once the drafts took it. Both callbacks are taken once.
+ */
+export function useDrafts({ onSent, onStarted }: { onSent: (project: Project) => void; onStarted: (saved: AppState) => void }) {
   const [drafts] = useState(() => createDrafts(windowClock, onSent))
+  useEffect(() => {
+    void start()
+      .then((saved) => {
+        drafts.take(saved)
+        onStarted(saved)
+      })
+      .catch((err: unknown) => setError(String(err)))
+  }, [drafts])
   useEffect(() => drafts.close, [drafts])
   useEffect(() => onQuitFlush(drafts.quit).stop, [drafts])
   // Files dropped anywhere on the window join the next message, as Attach adds them.
