@@ -278,13 +278,16 @@ mod tests {
         assert!(update.download(|_, _| {}, || {}).await.is_err());
     }
 
+    /// The feed answers with a server error. It keeps its port while the test runs, so no other test's server can
+    /// answer in its place.
     #[tokio::test]
     async fn a_failed_check_is_an_error() {
         let app = app(KEY_A);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
-        let closed = format!("http://{}/latest.json", listener.local_addr().expect("addr"));
-        drop(listener);
-        let updater = app.updater_builder().endpoints(vec![closed.parse().expect("url")]).expect("endpoint").build().expect("updater");
+        let failing = format!("http://{}/latest.json", listener.local_addr().expect("addr"));
+        let router = axum::Router::new().route("/latest.json", axum::routing::get(|| async { axum::http::StatusCode::INTERNAL_SERVER_ERROR }));
+        tokio::spawn(async move { axum::serve(listener, router).await.expect("serve") });
+        let updater = app.updater_builder().endpoints(vec![failing.parse().expect("url")]).expect("endpoint").build().expect("updater");
         assert!(updater.check().await.is_err());
     }
 
