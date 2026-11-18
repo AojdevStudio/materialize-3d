@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import type { LoginEvent, Need, Waiting } from '../../sidecar/src/protocol'
+import { AGENTS } from './agents'
 import { openFilesPrivacy, sidecar } from './api'
-import { AGENTS } from './SetupCheck'
 
 /** A turn that stopped until the person signs in to its provider again: the saved sign-in was refused, or is gone. */
 export type TurnLogin = { kind: 'turn-login'; provider: string; name: string }

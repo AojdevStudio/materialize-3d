@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 import { pickFile } from '../lib/fileDialog'
 import attachIcon from '../assets/icons/attach.svg?raw'
+import { fileName } from './files'
 
 /**
  * A file waiting to go with the next message: a file on disk, so a draft can keep it. A pasted picture is first kept
@@ -8,8 +9,7 @@ import attachIcon from '../assets/icons/attach.svg?raw'
  */
 export type Attachment = { name: string; path: string; previewUrl?: string }
 
-/** The file a draft keeps at `path`. */
-export const savedAttachment = (path: string): Attachment => ({ name: path.split(/[\\/]/).pop() ?? path, path })
+export const savedAttachment = (path: string): Attachment => ({ name: fileName(path), path })
 
 /** A picture pasted into the composer, before it is kept in a file. */
 export type PastedPicture = { name: string; file: File }
@@ -29,6 +29,7 @@ interface ComposerProps {
   onRemove: (index: number) => void
   /** Sends the text and files. The owner clears them only once the send succeeds. */
   onSend: () => void
+  onError: (message: string) => void
   onStop?: () => void
   /** A turn runs or a send is still being set up, so Send waits. */
   busy: boolean
@@ -45,7 +46,7 @@ interface ComposerProps {
   picker: ReactNode
 }
 
-export function Composer({ text, onText, attachments, onAttach, onPaste, onRemove, onSend, onStop, busy, running, placeholder, locked, autoFocus, hint, sendLabel, picker }: ComposerProps) {
+export function Composer({ text, onText, attachments, onAttach, onPaste, onRemove, onSend, onError, onStop, busy, running, placeholder, locked, autoFocus, hint, sendLabel, picker }: ComposerProps) {
   const empty = !text.trim() && attachments.length === 0
   const off = empty || busy || locked !== undefined
 
@@ -63,10 +64,11 @@ export function Composer({ text, onText, attachments, onAttach, onPaste, onRemov
   }
 
   // Any file: a photo, a PDF, a 3MF, an STL, or anything else the agent can read.
-  const pick = async () => {
-    const path = await pickFile()
-    if (path) onAttach([savedAttachment(path)])
-  }
+  const pick = () =>
+    pickFile().then(
+      (path) => path && onAttach([savedAttachment(path)]),
+      (err: unknown) => onError(String(err)),
+    )
 
   return (
     <div className={locked === undefined ? 'composer' : 'composer locked'}>

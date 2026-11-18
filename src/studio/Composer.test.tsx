@@ -1,7 +1,10 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { type Attachment, Composer, type PastedPicture } from './Composer'
+
+const dialog = vi.hoisted(() => ({ pickFile: vi.fn<() => Promise<string | null>>() }))
+vi.mock('../lib/fileDialog', () => dialog)
 
 afterEach(() => {
   cleanup()
@@ -11,7 +14,7 @@ afterEach(() => {
 type Shown = { text?: string; attachments?: Attachment[]; busy?: boolean; running?: boolean; locked?: string; stop?: boolean }
 
 function show({ text = 'A cable clip', attachments = [], busy = false, running = false, locked, stop = true }: Shown = {}) {
-  const calls = { onSend: vi.fn(), onStop: vi.fn(), onPaste: vi.fn<(pictures: PastedPicture[]) => void>() }
+  const calls = { onSend: vi.fn(), onStop: vi.fn(), onError: vi.fn(), onPaste: vi.fn<(pictures: PastedPicture[]) => void>() }
   render(
     <Composer
       text={text}
@@ -21,6 +24,7 @@ function show({ text = 'A cable clip', attachments = [], busy = false, running =
       onPaste={calls.onPaste}
       onRemove={() => {}}
       onSend={calls.onSend}
+      onError={calls.onError}
       onStop={stop ? calls.onStop : undefined}
       busy={busy}
       running={running}
@@ -107,5 +111,12 @@ describe('Composer', () => {
     show({ running: true, stop: false })
     expect(screen.queryByTestId('stop')).toBeNull()
     expect(send().disabled).toBe(false)
+  })
+
+  it('shows a file dialog that fails in the error bar', async () => {
+    dialog.pickFile.mockRejectedValueOnce(new Error('The dialog could not open'))
+    const { onError } = show()
+    fireEvent.click(screen.getByTestId('attach'))
+    await waitFor(() => expect(onError).toHaveBeenCalledWith('Error: The dialog could not open'))
   })
 })

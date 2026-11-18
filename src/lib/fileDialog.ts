@@ -1,9 +1,10 @@
 import { open } from '@tauri-apps/plugin-dialog'
 
 // The native Open panel lives outside the webview, so the macOS verification
-// harness (src-tauri/src/e2e.rs, `--features e2e` only) answers them by setting
-// this global. Only a build with VITE_M3D_E2E=1 reads it; in every other build
-// the reader below is constant-folded away and the global is never consulted.
+// harness (.agents/skills/verify-materialize-3d/scripts/mac.ts) answers it by
+// setting this global. Only a build with VITE_M3D_E2E=1 reads it. In every other
+// build the reader below is folded away, and CI checks that no build output
+// names the global.
 interface ScriptedDialogs {
   nextOpenPath?: string
 }

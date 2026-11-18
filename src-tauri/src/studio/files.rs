@@ -394,4 +394,18 @@ mod tests {
             assert!(!reads(local), "{local}");
         }
     }
+
+    /// The window shows a page in a frame and a picture in an image, so each needs the content type that makes the
+    /// webview show it. Text and models the window fetches and reads itself, whatever their type.
+    #[test]
+    fn every_page_and_picture_the_window_shows_is_served_as_one() {
+        let kinds: std::collections::HashMap<String, Vec<String>> =
+            serde_json::from_str(include_str!("../../../src/studio/extensions.json")).expect("the window's extensions");
+        for (kind, served_as) in [("html", "text/html"), ("image", "image/")] {
+            for ext in &kinds[kind] {
+                let served = content_type(Path::new(&format!("file.{ext}")));
+                assert!(served.starts_with(served_as), "{ext} is served as {served}");
+            }
+        }
+    }
 }

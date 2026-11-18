@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import Markdown from './Markdown'
+import { Icon, WorkingRing } from './marks'
 import type { Action, ToolItem, TraceItem } from './transcript'
 import circleX from '../assets/icons/circle-x.svg?raw'
 import filePen from '../assets/icons/file-pen-line.svg?raw'
@@ -9,17 +10,6 @@ import messageSquare from '../assets/icons/message-square.svg?raw'
 import terminal from '../assets/icons/terminal.svg?raw'
 
 const ICONS: Record<Action, string> = { read: fileText, write: filePen, run: terminal, slice: layers, helper: messageSquare, other: '' }
-
-/** A line icon from `src/assets/icons`, drawn in the line's color. */
-const Icon = ({ svg }: { svg: string }) => <span className="trace-icon" aria-hidden="true" dangerouslySetInnerHTML={{ __html: svg }} />
-
-/** The running mark: a still ring, as the sidebar's, since a spinning one repaints without end. */
-const Ring = () => (
-  <svg className="trace-icon trace-ring" viewBox="0 0 16 16" aria-hidden="true">
-    <circle cx={8} cy={8} r={6} fill="none" stroke="currentColor" strokeOpacity={0.25} strokeWidth={2} />
-    <path d="M8 2a6 6 0 0 1 6 6" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" />
-  </svg>
-)
 
 /**
  * The mark of a trace that ended: a plain circle, as the sidebar marks a draft, since the entries cannot say it succeeded.
@@ -63,7 +53,7 @@ function Since({ startedMs, before }: { startedMs: number | undefined; before: s
 /** The ring and how long the turn has worked, as a running turn's head says it. */
 const Busy = ({ startedMs }: { startedMs: number | undefined }) => (
   <>
-    <Ring />
+    <WorkingRing className="trace-icon trace-ring" />
     <span>
       Working<Since startedMs={startedMs} before=" for " />
     </span>
@@ -92,7 +82,7 @@ function StepLine({ step }: { step: ToolItem }) {
     <li className={`trace-step step-${step.state}`}>
       <details>
         <summary>
-          <Icon svg={ICONS[step.action]} />
+          <Icon className="trace-icon" svg={ICONS[step.action]} />
           <span className="step-action">{actionOf(step)}</span>
           {step.summary !== '' && <span className="step-target">{step.summary}</span>}
           {step.durationMs !== undefined && <span className="step-time">{took(step.durationMs)}</span>}
@@ -123,7 +113,7 @@ export default function Trace({ trace, startedMs, onError }: { trace: TraceItem;
 
   const head = !running ? (
     <>
-      {stopped ? <Icon svg={circleX} /> : <Ended />}
+      {stopped ? <Icon className="trace-icon" svg={circleX} /> : <Ended />}
       <span>{stopped ? 'Stopped' : 'Worked'}</span>
       <span className="trace-count">{count}</span>
     </>
@@ -134,7 +124,7 @@ export default function Trace({ trace, startedMs, onError }: { trace: TraceItem;
     </>
   ) : (
     <>
-      <Icon svg={ICONS[shown.action]} />
+      <Icon className="trace-icon" svg={ICONS[shown.action]} />
       <span>{actionOf(shown)}</span>
       <Flag step={shown} />
       <span className="trace-count">

@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { fileKind, firstView, formatSize, is3mf, panelFiles, type ProjectFile, viewOf } from './api'
+import workflow from '../../sidecar/src/workflow.md?raw'
+import { fileKind, fileName, firstView, formatSize, is3mf, PAGE_VIEWS, panelFiles, viewOf } from './files'
+import type { ProjectFile } from './native-types'
 
 const file = (rel: string, modifiedMs: number): ProjectFile => ({ rel, size: 1, modifiedMs })
 const rels = (files: (ProjectFile | undefined)[]) => files.map((f) => f?.rel)
@@ -109,5 +111,19 @@ describe('panelFiles and firstView', () => {
     expect(shown).toEqual({ guide: undefined, model: undefined, drawing: undefined, prints: [], latest: undefined })
     expect(firstView(shown)).toBe('files')
     expect(firstView(panelFiles([]))).toBe('files')
+  })
+})
+
+describe('the names the window and the agent share', () => {
+  it('the agent prompt names each page the panel looks for', () => {
+    for (const view of PAGE_VIEWS) expect(workflow).toContain(`\`${view}*.html\``)
+  })
+
+  it.each([
+    ['print/plate.3mf', 'plate.3mf'],
+    ['plate.3mf', 'plate.3mf'],
+    ['/Users/me/Desktop/photo 1.png', 'photo 1.png'],
+  ])('fileName(%s) is %s', (path, name) => {
+    expect(fileName(path)).toBe(name)
   })
 })

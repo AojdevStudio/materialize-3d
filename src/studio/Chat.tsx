@@ -1,8 +1,9 @@
 import { useEffect, useRef } from 'react'
 import { modelName } from '../../sidecar/src/offered'
 import { fileUrl } from './api'
+import { fileName } from './files'
 import Markdown from './Markdown'
-import { Mark } from './ModelPicker'
+import { Mark } from './marks'
 import Trace, { Working } from './Trace'
 import type { ChatItem } from './transcript'
 
@@ -36,7 +37,7 @@ export function ChatView({ project, items, running, startedMs, onError }: ChatVi
                 )}
                 {item.files.length > 0 && (
                   <ul className="msg-files">
-                    {item.files.map((rel) => <li key={rel}>{rel.split('/').pop()}</li>)}
+                    {item.files.map((rel) => <li key={rel}>{fileName(rel)}</li>)}
                   </ul>
                 )}
                 {item.text && <div className="bubble">{item.text}</div>}

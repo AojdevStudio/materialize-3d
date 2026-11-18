@@ -1,9 +1,10 @@
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { type AppState, type Draft, type LoginEvent, type ModelChoice, type ModelOption, type Need, type Printer, type Project, type ProjectStatus, type Setup, START, type ChatView as View } from '../../sidecar/src/protocol'
-import { checkSlicer, firstView, onFileDrop, onQuitFlush, onSidecarEvent, panelFiles, sidecar, studio, viewOf, type PanelView, type ProjectFile } from './api'
+import { checkSlicer, onFileDrop, onQuitFlush, onSidecarEvent, sidecar, studio, type ProjectFile } from './api'
 import { ChatView } from './Chat'
 import { Composer, releaseAttachment, savedAttachment, type PastedPicture } from './Composer'
+import { firstView, panelFiles, viewOf, type PanelView } from './files'
 import ModelPicker from './ModelPicker'
 import RightPanel from './RightPanel'
 import SetupFlow, { SetupStep } from './Setup'
@@ -11,12 +12,12 @@ import Settings, { type Section } from './Settings'
 import Start from './Start'
 import { buildChat } from './transcript'
 import Sidebar from './Sidebar'
+import { useWindowTheme } from './theme'
 import { ImportBlockedBanner, lockedText, SetupBanner, SignInAsk, WaitingBanner, type Blocker, type SetupCause, type TurnLogin } from './Waiting'
 import { UpdateBanner } from '../update/UpdateBanner'
 import { checkForUpdatesAtLaunch, useUpdateEvents } from '../update/store'
 import './studio.css'
 
-/** How long typing pauses before the draft is saved. */
 const DRAFT_PAUSE_MS = 400
 
 const EMPTY: Draft = { text: '', attachments: [] }
@@ -161,6 +162,7 @@ export default function StudioApp() {
   const attachments = shown.attachments.map((path) => ({ ...savedAttachment(path), previewUrl: previews.current.get(path) }))
 
   useUpdateEvents()
+  useWindowTheme()
   useEffect(() => {
     void checkForUpdatesAtLaunch()
   }, [])
@@ -653,6 +655,7 @@ export default function StudioApp() {
         setAttachments(draftOf(openKey()).attachments.filter((_, i) => i !== index))
       }}
       onSend={() => void send()}
+      onError={setError}
       onStop={current ? () => void sidecar('chat.stop', { project: current.id }).catch((err: unknown) => setError(String(err))) : undefined}
       busy={sending || running || notReady}
       running={running}

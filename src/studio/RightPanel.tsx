@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState } from 'react'
-import { fileKind, fileUrl, formatSize, is3mf, isMac, panelFiles, studio, viewOf, VIEWS, type PanelView, type ProjectFile } from './api'
-import ModelView from './ModelView'
+import { studio, type ProjectFile } from './api'
+import FileBody from './FileBody'
+import { RevealButton, reporting } from './fileActions'
+import { fileKind, formatSize, is3mf, panelFiles, viewOf, VIEWS, type PanelView } from './files'
 import PrintFiles from './PrintFiles'
-import { useTheme, type Theme } from './theme'
 
 const LABELS: Record<PanelView, string> = { guide: 'Guide', model: 'Model', drawing: 'Drawing', files: 'Files' }
 
@@ -19,80 +19,20 @@ interface Props {
 }
 
 function FileActions({ project, rel, onError }: { project: string; rel: string; onError: (message: string) => void }) {
-  const run = (action: Promise<void>) => action.catch((err: unknown) => onError(String(err)))
   return (
     <>
       {is3mf(rel) && (
-        <button type="button" className="primary" onClick={() => run(studio.openInBambu(project, rel))}>
+        <button type="button" className="primary" onClick={() => reporting(onError)(studio.openInBambu(project, rel))}>
           Open in Bambu Studio
         </button>
       )}
-      <button type="button" onClick={() => run(studio.reveal(project, rel))}>
-        {isMac ? 'Reveal in Finder' : 'Show in folder'}
-      </button>
+      <RevealButton project={project} rel={rel} onError={onError} />
     </>
   )
 }
 
-function TextView({ url }: { url: string }) {
-  const [text, setText] = useState('')
-  useEffect(() => {
-    let live = true
-    fetch(url)
-      .then((r) => r.text())
-      .then((t) => live && setText(t))
-      .catch((err: unknown) => live && setText(String(err)))
-    return () => {
-      live = false
-    }
-  }, [url])
-  return <pre className="text-view">{text}</pre>
-}
-
 /** Whether the panel can show a file. A very large text file it leaves to the person's own editor. */
 const previewable = (file: ProjectFile) => fileKind(file.rel) !== 'other' && !(fileKind(file.rel) === 'text' && file.size >= 400_000)
-
-/** Tells the page in a frame the app's theme, in the message the guide template listens for. */
-const postTheme = (frame: HTMLIFrameElement | null, theme: Theme) => frame?.contentWindow?.postMessage({ type: 'm3d:theme', theme }, '*')
-
-/**
- * A page in a frame, which cannot read the app's theme. The app owns it: the page opens in the theme named in its
- * address, and each later change is posted to it, so a guide made from the template flips without a reload and keeps
- * its step. A page that has loaded gets the theme once more, in case it changed while the page loaded.
- */
-function HtmlFrame({ url, title }: { url: string; title: string }) {
-  const frame = useRef<HTMLIFrameElement>(null)
-  const [opened] = useState(() => useTheme.getState().theme)
-  useEffect(() => useTheme.subscribe(({ theme }) => postTheme(frame.current, theme)), [])
-  return (
-    <iframe
-      ref={frame}
-      title={title}
-      src={`${url}${url.includes('?') ? '&' : '?'}theme=${opened}`}
-      onLoad={(event) => postTheme(event.currentTarget, useTheme.getState().theme)}
-      sandbox="allow-scripts allow-same-origin allow-modals"
-      data-testid="html-preview"
-    />
-  )
-}
-
-/** A project file as the panel and a pop out show it, loaded from its project, so its relative links work. */
-export function FileBody({ project, rel, version }: { project: string; rel: string; version?: number }) {
-  const url = fileUrl(project, rel, version)
-  switch (fileKind(rel)) {
-    case 'html':
-      // A new version is a new frame, which opens in the theme of that moment.
-      return <HtmlFrame key={url} url={url} title={rel} />
-    case 'model':
-      return <ModelView url={url} ext={rel.split('.').pop()!.toLowerCase()} />
-    case 'image':
-      return <img className="image-view" src={url} alt={rel} />
-    case 'text':
-      return <TextView url={url} />
-    case 'other':
-      return <p className="preview-note">No preview for this file.</p>
-  }
-}
 
 function Preview({ project, file }: { project: string; file: ProjectFile | undefined }) {
   if (!file) {
@@ -169,7 +109,7 @@ export default function RightPanel({ project, files, view, selected, onView, onO
           </button>
         ))}
         {file && previewable(file) && (
-          <button type="button" className="pop-out" onClick={() => studio.popOut(project, file.rel, file.modifiedMs).catch((err: unknown) => onError(String(err)))} data-testid="pop-out">
+          <button type="button" className="pop-out" onClick={() => reporting(onError)(studio.popOut(project, file.rel, file.modifiedMs))} data-testid="pop-out">
             Pop out
             <svg viewBox="0 0 16 16" width={12} height={12} aria-hidden="true">
               <path d="M6 4h6v6M12 4l-7.5 7.5" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />

@@ -1,6 +1,10 @@
 @import '../styles/fonts.css';
 
-/* Light by default. The theme toggle sets data-theme="dark" on the root, which swaps these for true black. */
+/*
+ * Light by default. The theme toggle sets data-theme="dark" on the root, which swaps these for true black. The guide
+ * template (sidecar/src/templates/guide.html) repeats some of these colors, and src/tests/guide-template.test.ts holds
+ * them equal.
+ */
 :root {
   color-scheme: light;
   --s-bg: #fafaf8;

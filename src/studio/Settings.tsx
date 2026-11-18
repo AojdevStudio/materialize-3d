@@ -1,11 +1,10 @@
 import { revealItemInDir } from '@tauri-apps/plugin-opener'
 import { type ReactNode, useEffect, useState } from 'react'
 import type { AppState, Methods, ModelChoice, ModelOption, Settings as Saved, Setup } from '../../sidecar/src/protocol'
+import { astraSignedIn } from './agents'
 import { checkSlicer, projectsFolder, sidecar } from './api'
-import { Mark } from './ModelPicker'
-import { agentRows, buildRows, forgetRefused, type Found, type Row, slicerRow } from './SetupCheck'
-import { astraSignedIn } from './SetupModel'
-import { BrandRow, Icon } from './Sidebar'
+import { agentRows, buildRows, forgetRefused, type Found, type Row, slicerRow } from './checkRows'
+import { BrandRow, Icon, Mark } from './marks'
 import chat from '../assets/icons/message-square.svg?raw'
 import layers from '../assets/icons/layers.svg?raw'
 import blocks from '../assets/icons/module-three.svg?raw'
@@ -216,7 +215,7 @@ export default function Settings({ section, onSection, models, onSaved, onFix, o
         <BrandRow />
         {ORDER.map((id) => (
           <button key={id} type="button" className="row-open" aria-current={id === section ? 'page' : undefined} onClick={() => onSection(id)}>
-            <Icon svg={SECTIONS[id].icon} />
+            <Icon className="side-icon" svg={SECTIONS[id].icon} />
             {SECTIONS[id].name}
           </button>
         ))}
