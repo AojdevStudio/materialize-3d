@@ -28,9 +28,8 @@ function show({ text = 'A cable clip', attachments = [], busy = false, running =
       onStop={stop ? calls.onStop : undefined}
       busy={busy}
       running={running}
-      placeholder="Describe a part"
+      place="chat"
       locked={locked}
-      sendLabel="Send"
       picker={null}
     />,
   )
