@@ -3,10 +3,10 @@
 # .agents/skills/formal-verify-materialize-3d/SKILL.md.
 #
 # It runs only when a covered source file, the skill, or this file changes. The
-# covered files are the ones in the skill's models/sources.sha256, and the job's
-# first check fails when the paths below list other files.
+# covered files are the ones in the skill's models/sources.sha256. ci.yml's Linux
+# job, which runs on every pull request, fails when the paths below list other files.
 #
-# TLC reads only the models, so a code change alone cannot fail it. The second
+# TLC reads only the models, so a code change alone cannot fail it. The first
 # check fails when a covered file no longer matches the hash recorded when the
 # models were last confirmed against the code. The skill's "Does my change touch
 # the models?" section says how to confirm them and record new hashes.
