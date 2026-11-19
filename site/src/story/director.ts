@@ -34,7 +34,7 @@ import {
   type StageId,
 } from "./timeline";
 
-/** Below this width, held upright, the story uses its phone framing. Matches the stylesheet's phone layout. */
+/** At or below this width, held upright, the story uses its phone framing, as the stylesheet's `max-width: 760px` does. */
 const PHONE = 760;
 
 function pick<T extends Element>(root: ParentNode, selector: string, kind: new () => T): T {
@@ -180,7 +180,7 @@ export function startStory(root: HTMLElement, motion: Motion, onStatus: (status:
     if (!force && phone && w === width && Math.abs(h - height) < 120) return;
     width = w;
     height = h;
-    phone = w < PHONE && h >= w;
+    phone = w <= PHONE && h >= w;
     scene?.resize(width, height, phone);
     forgetSizes();
   }
