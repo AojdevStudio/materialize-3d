@@ -34,8 +34,9 @@ app_facts() {
   [[ $dev_url =~ :([0-9]+)/?$ ]] || die "cannot read the port from devUrl $dev_url in $conf"
   VITE_PORT=${BASH_REMATCH[1]}
   IDENTIFIER=$(jq -r .identifier "$conf")
-  name=$(sed -n '/^\[package\]$/{n;s/^name = "\(.*\)"$/\1/p}' "$ROOT/src-tauri/Cargo.toml")
-  [[ -n $name ]] || die "cannot read the package name from $ROOT/src-tauri/Cargo.toml"
+  name=$(cargo metadata --no-deps --format-version 1 --manifest-path "$ROOT/src-tauri/Cargo.toml" \
+    | jq -r '[.packages[].targets[] | select(.kind == ["bin"]) | .name] | first // empty')
+  [[ -n $name ]] || die "cargo metadata names no binary in $ROOT/src-tauri/Cargo.toml"
   BINARY=$ROOT/src-tauri/target/debug/$name
 }
 
@@ -109,7 +110,7 @@ up() {
     wait_for "[[ -e /tmp/.X11-unix/X$n ]]" 10 || die "Xvfb $display did not start; see $RUN/logs/xvfb.log"
   fi
 
-  (cd "$ROOT" && spawn vite bun run dev)
+  (cd "$ROOT" && spawn vite bun run dev --port "$VITE_PORT" --strictPort)
   wait_for "curl -sf http://localhost:$VITE_PORT/" 60 || die "Vite not answering on :$VITE_PORT; see $RUN/logs/vite.log"
 
   # XDG_* isolates the sidecar's store and WebKit storage per run.

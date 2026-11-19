@@ -62,6 +62,15 @@ const evidence = join(env.run, 'evidence')
 const sessionFile = join(env.run, 'session')
 const log = evidenceLog(evidence)
 
+class DriverError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+  ) {
+    super(message)
+  }
+}
+
 function isError(value: unknown): value is WebDriverError {
   return typeof value === 'object' && value !== null && 'error' in value
 }
@@ -73,7 +82,7 @@ async function call<T>(method: 'GET' | 'POST' | 'DELETE', path: string, body?: o
     body: body ? JSON.stringify(body) : undefined,
   })
   const reply = (await res.json()) as WebDriverReply<T>
-  if (isError(reply.value)) throw new Error(`${method} ${path}: ${reply.value.error}: ${reply.value.message}`)
+  if (isError(reply.value)) throw new DriverError(reply.value.error, `${method} ${path}: ${reply.value.error}: ${reply.value.message}`)
   return reply.value
 }
 
@@ -91,7 +100,7 @@ async function findAll(sel: string): Promise<string[]> {
 // other driver error propagates, so a dead session fails at once instead of timing out.
 async function displayed(id: string): Promise<boolean> {
   return call<boolean>('GET', `/session/${sid()}/element/${id}/displayed`).catch((err: unknown) => {
-    if (err instanceof Error && /stale element reference|no such element/.test(err.message)) return false
+    if (err instanceof DriverError && (err.code === 'stale element reference' || err.code === 'no such element')) return false
     throw err
   })
 }
@@ -314,24 +323,24 @@ interface Sweep {
 // Known failures: each line is the measured ratio, then the control label. A listed
 // control counts as known only while it measures within BASELINE_TOLERANCE of its
 // recorded ratio or above it, so a known failure that gets worse fails again. Remove a line when it is fixed.
-const BASELINE = new Map<string, number>()
-for (const raw of readFileSync(join(import.meta.dir, 'contrast-baseline.txt'), 'utf8').split('\n')) {
-  const line = raw.trim()
-  if (line === '' || line.startsWith('#')) continue
-  const match = /^(\d+\.\d+)\s+(.+)$/.exec(line)
-  if (!match) throw new Error(`contrast-baseline.txt: expected "<ratio> <label>", got ${JSON.stringify(line)}`)
-  const ratio = Number(match[1])
-  BASELINE.set(match[2], Math.min(ratio, BASELINE.get(match[2]) ?? ratio))
+// Read by the sweep, not at load, so a bad line fails a `shot` only after its PNG is saved.
+function readBaseline(): Map<string, number> {
+  const baseline = new Map<string, number>()
+  for (const raw of readFileSync(join(import.meta.dir, 'contrast-baseline.txt'), 'utf8').split('\n')) {
+    const line = raw.trim()
+    if (line === '' || line.startsWith('#')) continue
+    const match = /^(\d+\.\d+)\s+(.+)$/.exec(line)
+    if (!match) throw new Error(`contrast-baseline.txt: expected "<ratio> <label>", got ${JSON.stringify(line)}`)
+    const ratio = Number(match[1])
+    baseline.set(match[2], Math.min(ratio, baseline.get(match[2]) ?? ratio))
+  }
+  return baseline
 }
 
 // A reading within 0.05 of its record is the same failure: ratios print with two
 // decimals, and a placeholder's ink is a raw pixel that antialiasing can nudge. A real
 // regression (2.53 down to 1.5) is far outside it.
 const BASELINE_TOLERANCE = 0.05
-const knownFailure = (label: string, ratio: number) => {
-  const recorded = BASELINE.get(label)
-  return recorded !== undefined && ratio >= recorded - BASELINE_TOLERANCE
-}
 
 const isNew = (r: ContrastResult) => r.ratio < MIN_CONTRAST && !r.known
 
@@ -347,6 +356,7 @@ function summarize(sel: string, { results, hidden, skipped }: Sweep): string {
 // An empty field with a placeholder is the exception: its ink is read from pixels
 // (inkRgb), because WebKit does not report the placeholder's computed color.
 async function contrastSweep(sel: string): Promise<Sweep> {
+  const baseline = readBaseline()
   const results: ContrastResult[] = []
   let hidden = 0
   let skipped = 0
@@ -402,8 +412,8 @@ async function contrastSweep(sel: string): Promise<Sweep> {
       : style.inks.map((ink) => measure(ink.color, backgroundOf(ink.box), ink.source))
     if (inks.length === 0) inks.push(measure(style.color, controlBackground, ''))
     const worst = inks.reduce((a, b) => (b.ratio < a.ratio ? b : a))
-    const known = worst.ratio < MIN_CONTRAST && knownFailure(style.label, worst.ratio)
-    const recorded = BASELINE.get(style.label)
+    const recorded = baseline.get(style.label)
+    const known = worst.ratio < MIN_CONTRAST && recorded !== undefined && worst.ratio >= recorded - BASELINE_TOLERANCE
     const tag = known ? ' (baseline)' : recorded !== undefined ? ` (worse than baseline ${recorded.toFixed(2)})` : ''
     const low = worst.ratio < MIN_CONTRAST ? `  below ${MIN_CONTRAST.toFixed(1)}${tag}` : ''
     const from = worst.source ? ` in ${worst.source}` : ''

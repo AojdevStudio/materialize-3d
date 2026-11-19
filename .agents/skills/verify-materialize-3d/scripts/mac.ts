@@ -48,15 +48,26 @@ async function launch(run: Run): Promise<number> {
     if (!ready) await Bun.sleep(500)
   }
   if (!ready) throw new Error('app did not become scriptable within 60 s')
-  return Number(spawnSync('pgrep', ['-nf', `${appPath}/Contents/MacOS/${binaryName}`]).stdout.toString().trim())
+  return Number(spawnSync('pgrep', ['-nf', `${appPath}/Contents/MacOS/${binaryName()}`]).stdout.toString().trim())
+}
+
+interface CargoMetadata {
+  packages: Array<{ targets: Array<{ name: string; kind: string[] }> }>
+}
+
+function binaryName(): string {
+  const meta = spawnSync('cargo', ['metadata', '--no-deps', '--format-version', '1', '--manifest-path', join(root, 'src-tauri/Cargo.toml')])
+  if (meta.status !== 0) throw new Error(`cargo metadata failed: ${meta.stderr}`)
+  const { packages } = JSON.parse(meta.stdout.toString()) as CargoMetadata
+  const bin = packages.flatMap((p) => p.targets).find((t) => t.kind.length === 1 && t.kind[0] === 'bin')
+  if (bin === undefined) throw new Error('cargo metadata names no binary in src-tauri/Cargo.toml')
+  return bin.name
 }
 
 const root = resolve(import.meta.dir, '../../../..')
 const currentFile = join(runsRoot, 'current-mac.json')
 const targetDir = process.env.CARGO_TARGET_DIR ?? join(root, 'src-tauri/target')
 const appPath = join(targetDir, `debug/bundle/macos/${tauriConf.productName}.app`)
-const binaryName = /^\[package\]\nname = "([^"]+)"/m.exec(readFileSync(join(root, 'src-tauri/Cargo.toml'), 'utf8'))?.[1]
-if (binaryName === undefined) throw new Error('cannot read the package name from src-tauri/Cargo.toml')
 const bambu = join(homedir(), 'Applications/BambuStudio-02.08.02.61/BambuStudio.app/Contents/MacOS/BambuStudio')
 
 function current(): Run {
@@ -83,7 +94,9 @@ async function evalJs<T>(run: Run, script: string, timeoutMs = 15000): Promise<T
 const FIND = `const find = ({ using, value }) => {
   if (using === 'css selector') return [...document.querySelectorAll(value)];
   const found = document.evaluate(value, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
-  return Array.from({ length: found.snapshotLength }, (_, i) => found.snapshotItem(i));
+  const nodes = Array.from({ length: found.snapshotLength }, (_, i) => found.snapshotItem(i));
+  if (!nodes.every((n) => n instanceof Element)) throw new Error('invalid selector: ' + value + ' matches a node that is not an element');
+  return nodes;
 };
 const visible = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };`
 

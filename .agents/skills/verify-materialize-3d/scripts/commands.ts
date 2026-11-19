@@ -12,12 +12,20 @@ export interface Locator {
   value: string
 }
 
+// XPath 1.0 string literals have no escapes, so a label holding both quote kinds is
+// spliced together with concat().
+function xpathLiteral(text: string): string {
+  if (!text.includes("'")) return `'${text}'`
+  if (!text.includes('"')) return `"${text}"`
+  return `concat('${text.replaceAll("'", `', "'", '`)}')`
+}
+
 // `xpath=<expr>` is XPath. `text=<label>` is the innermost element whose text, with
 // whitespace collapsed and trimmed, equals <label>. Anything else is CSS.
 export function locator(sel: string): Locator {
   if (sel.startsWith('xpath=')) return { using: 'xpath', value: sel.slice(6) }
   if (sel.startsWith('text=')) {
-    const label = JSON.stringify(sel.slice(5)).replaceAll('"', "'")
+    const label = xpathLiteral(sel.slice(5))
     return { using: 'xpath', value: `//*[normalize-space(.)=${label}][not(*[normalize-space(.)=${label}])]` }
   }
   return { using: 'css selector', value: sel }
