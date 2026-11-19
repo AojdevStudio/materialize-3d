@@ -50,6 +50,10 @@ jobs:
       - uses: ./.github/actions/shared-checks
       - name: Release facts match their sources
         run: bun scripts/release/release-facts.ts && bun test scripts/release
+      # Here and not in formal-verification.yml, whose own paths list decides whether it runs, so a PR that edits
+      # that list could skip the check of that list.
+      - name: The TLA+ workflow paths are the files the models cover
+        run: bun .agents/skills/formal-verify-materialize-3d/scripts/check-paths.ts
       - name: Frontend build
         run: bun run build
       - name: The frontend build carries no verification harness
