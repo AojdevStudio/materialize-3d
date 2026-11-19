@@ -48,7 +48,8 @@ function offer(printers: PrinterChoice[], first: Fitted, last: BambuLastUsed | n
 
 /**
  * Setup's printer step. It shows what Bambu Studio last used when all of it can be saved. Otherwise it shows a pick of
- * every printer the validated Bambu Studio slices for.
+ * every printer the validated Bambu Studio slices for. With no such Bambu Studio nothing can be saved. First setup then
+ * passes the step and keeps the saved printer. A step reopened from Settings stays open and says why.
  */
 export default function SetupPrinter({ next, back, reopened }: StepProps) {
   const [shown, setShown] = useState<Offer | null>(null)
