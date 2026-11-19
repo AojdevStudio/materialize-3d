@@ -26,12 +26,12 @@ Preconditions:
 - Port 4173 free.
 
 - **dev-substrate (observed 2026-11-10).** With Bun 1.4.4 and Google Chrome 157.0.8103.50, all 28 tests pass in about 2.2 minutes with 4 workers.
-- **aojdevlinux (observed 2026-11-03).** All 11 tests fail with "Chromium distribution 'chrome' is not found at /opt/google/chrome/chrome", because Chrome is installed at `~/.local/opt/google-chrome`. Run the tests on dev-substrate, or link Chrome into `/opt/google/chrome` (that needs sudo). A scratch Playwright config outside the repo that drops `channel` and sets `launchOptions.executablePath` to `~/.local/opt/google-chrome/chrome` runs them there **(observed 2026-11-10)**. Run with 4 workers or fewer, since more time out drawing the 3D view in software.
+- **aojdevlinux (observed 2026-11-17).** Google Chrome 156 is at `/opt/google/chrome/chrome`. With Bun 1.4.4, `bunx playwright test --workers=4` passes all 34 tests in about 3.1 minutes on an idle box. Run with 4 workers or fewer, and not while the box is busy, since more time out drawing the 3D view in software. Run it with `TMPDIR=/tmp`, because Chrome fails with "Socket path too long" under a deep `TMPDIR`.
 - **CI.** The `Landing site` job runs on a self-hosted Mac (`runs-on: [self-hosted, macOS, ARM64, m3d-mac-vz]`) with its own Bun under the job's temp directory, see `.github/workflows/ci.yml`.
 
 ## Gotchas
 
 - The tests run `bun run build` themselves through Playwright's `webServer`, so a stale `dist/` does not matter.
 - `test-results/` and `node_modules/` are ignored, so a run leaves the tree clean.
-- The page describes the chat studio, but `site/src/release.ts` still points the download at 0.1.0. Until a release carries the studio, the hero says so.
+- The release claims the tests check come from `site/src/release.ts`, which describes the last published release. It trails `package.json` while the next release is built.
 - The 3D view renders with WebGL. Headless Chrome draws it in software (SwiftShader), so the eased scroll takes a few seconds to settle. The tests wait until the story stops writing to the page before they measure.

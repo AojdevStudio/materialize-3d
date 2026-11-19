@@ -66,7 +66,7 @@ bun $S/mac.ts click '[data-testid=files-list] button.primary'   # Open in Bambu 
 
 - The sidecar's stderr is in the app log, as `sidecar: <line>`. Its first line lists the agent's tools.
 - The sidecar reads none of the host's agent setup or environment. A login made with `claude` or `codex` on the host does not reach it.
-- `mac.ts` selectors are CSS or `text=`. It has no XPath.
+- `mac.ts` takes the same selectors as `wd.ts`: CSS, `xpath=`, and `text=`. It runs XPath through the page's `document.evaluate`.
 - A `mac.ts wait` longer than about five minutes fails with "The operation timed out", because Bun's fetch ends the one request it makes **(observed 2026-11-07)**. Wait in rounds of four minutes.
 - The WebKit snapshot from `mac.ts shot` includes the iframe and the WebGL canvas **(observed 2026-11-06)**.
 - Bambu Studio's own window is outside the webview. Check its process with `pgrep -x BambuStudio` after Open in Bambu Studio.

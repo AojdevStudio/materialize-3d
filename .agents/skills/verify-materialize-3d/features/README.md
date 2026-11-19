@@ -30,9 +30,9 @@ For installed macOS release acceptance, use [Verify the installed Mac app](../..
 ## Host facts (dev-substrate, 2026-11-03)
 
 - The Linux host is dev-substrate (`ssh ossie@dev-substrate`, Ubuntu 24.04.5). It has Bun 1.4.4, tauri-driver 2.1.0, WebKitGTK 2.52.6, and Google Chrome 156 at `/opt/google/chrome`. The app on `main` builds with Tauri 2.12.5 and wry 0.57.1.
-- aojdevlinux cannot run the app harness and cannot run the site tests as installed, see SKILL.md and [site](./site.md). Drive dev-substrate from it over ssh.
+- aojdevlinux cannot run the app harness, see SKILL.md. Drive dev-substrate from it over ssh. It can run the [site](./site.md) tests **(observed 2026-11-17)**.
 - Bambu Studio 02.08.02.61 is at `/home/ossie/actions-runner-materialize-3d/_work/_tool/bambu-studio/02.08.02.61/squashfs-root/AppRun`, the self-hosted runner's tool cache installed by `scripts/ci/install-bambu-linux.sh`. Export `BAMBU_STUDIO_CLI` to it before `up` so the agent's `slice` tool finds it.
-- The harness build has no `e2e` feature, so the studio keeps its projects in the host user's `~/Documents/Materialize 3D/`, not in the run directory.
+- The harness build has no `e2e` feature, so the studio keeps its projects in the host user's home folder, `~/Materialize 3D/`, not in the run directory. The run's `XDG_CONFIG_HOME` has no `user-dirs.dirs`, so the app finds no Documents folder.
 
 ## Feature entry contract
 

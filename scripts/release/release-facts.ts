@@ -113,7 +113,6 @@ function facts(read: Read, offered: Release): Fact[] {
         "docs/install-macos.md",
         ".agents/skills/verify-materialize-3d/SKILL.md",
         ".agents/skills/verify-materialize-3d/features/README.md",
-        ".agents/skills/verify-materialize-3d/scripts/m3d.sh",
       ].map((file) => ({ file, pattern: /\b(com\.aojdevstudio(?:\.[A-Za-z0-9-]+)+)/g })),
     },
     {
