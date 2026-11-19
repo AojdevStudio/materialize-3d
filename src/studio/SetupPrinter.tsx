@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { Plate, Printer } from '../../sidecar/src/protocol'
 import { checkSlicer, studio, type BambuLastUsed, type PrinterChoice } from './api'
+import { slicerRow } from './checkRows'
 import { withoutPrinter } from './presetNames'
 import type { StepProps } from './Setup'
 import { savePrinter, useStudio } from './store'
@@ -47,10 +48,9 @@ function offer(printers: PrinterChoice[], first: Fitted, last: BambuLastUsed | n
 
 /**
  * Setup's printer step. It shows what Bambu Studio last used when all of it can be saved. Otherwise it shows a pick of
- * every printer the validated Bambu Studio slices for. With no such Bambu Studio nothing can be saved, so the step
- * passes and the saved printer stays.
+ * every printer the validated Bambu Studio slices for.
  */
-export default function SetupPrinter({ next, back }: StepProps) {
+export default function SetupPrinter({ next, back, reopened }: StepProps) {
   const [shown, setShown] = useState<Offer | null>(null)
   const [picking, setPicking] = useState<Fitted | null>(null)
   const [saving, setSaving] = useState(false)
@@ -73,6 +73,7 @@ export default function SetupPrinter({ next, back }: StepProps) {
       .then(async (slicer) => {
         if (slicer.found !== 'ready') {
           if (!current) return
+          if (reopened) return setFailed(slicerRow(slicer).detail)
           await next()
           // A save that went through has moved setup on. Still here means it failed, and the window showed why.
           if (current) setFailed('Setup could not move on.')
@@ -90,7 +91,7 @@ export default function SetupPrinter({ next, back }: StepProps) {
     return () => {
       current = false
     }
-  }, [attempt, settingsRead])
+  }, [attempt, reopened, settingsRead])
 
   const leave = () => {
     setSaving(true)
