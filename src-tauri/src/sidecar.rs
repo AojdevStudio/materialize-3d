@@ -491,6 +491,8 @@ async fn answer<R: Runtime>(app: &AppHandle<R>, run: u64, method: &str, params: 
             set_busy(&app.state::<Sidecar>(), app.state::<Arc<BuildGate>>().inner(), run, busy)?;
             Ok(Value::Null)
         }
+        // An update can interrupt this check. The sidecar saves the printer only after the check succeeds.
+        // Each preset cache file is published by atomic rename.
         "printer.check" => slice_requests::check(app, parse(method, params)?).await,
         "slice" => {
             let call: SliceCall = parse(method, params)?;
