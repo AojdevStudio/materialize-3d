@@ -87,8 +87,13 @@ async function findAll(sel: string): Promise<string[]> {
   return found.map((el) => el[ELEMENT_KEY])
 }
 
+// An element that left the DOM between the find and this call reads as hidden. Any
+// other driver error propagates, so a dead session fails at once instead of timing out.
 async function displayed(id: string): Promise<boolean> {
-  return call<boolean>('GET', `/session/${sid()}/element/${id}/displayed`).catch(() => false)
+  return call<boolean>('GET', `/session/${sid()}/element/${id}/displayed`).catch((err: unknown) => {
+    if (err instanceof Error && /stale element reference|no such element/.test(err.message)) return false
+    throw err
+  })
 }
 
 // The first displayed match, or with `present` the first match at all.
@@ -347,13 +352,7 @@ async function contrastSweep(sel: string): Promise<Sweep> {
   let skipped = 0
   let page: Image | undefined
   for (const id of await findAll(sel)) {
-    // Unlike displayed(), driver errors propagate: only a control that is hidden or
-    // gone from the DOM may be passed over, never one the driver failed to answer for.
-    const visible = await call<boolean>('GET', `/session/${sid()}/element/${id}/displayed`).catch((err: unknown) => {
-      if (err instanceof Error && /stale element reference|no such element/.test(err.message)) return false
-      throw err
-    })
-    if (!visible) {
+    if (!(await displayed(id))) {
       hidden++
       continue
     }
