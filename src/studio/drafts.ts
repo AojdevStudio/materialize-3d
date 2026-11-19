@@ -67,6 +67,8 @@ export function createDrafts(clock: Clock, onSent: (project: Project) => void) {
   const pastes = new Set<Promise<void>>()
   /** The previews of pasted pictures, by path, freed when the window closes. */
   const previews = new Map<string, string>()
+  /** A second click can use the same row before the composer redraws. */
+  const removedRows = new WeakSet<Attachment>()
   /** Whether the person changed the start screen's pictures, so its saved ones no longer fill it. */
   let startPicturesTouched = false
 
@@ -191,7 +193,7 @@ export function createDrafts(clock: Clock, onSent: (project: Project) => void) {
         autosave(project.id)
       } else if (unchanged) {
         clear(key)
-      } else if (key !== START && next.attachments.length !== screen.draft.attachments.length) {
+      } else if (next.attachments.length !== screen.draft.attachments.length) {
         put(key, next)
       }
     } catch (err) {
@@ -216,11 +218,19 @@ export function createDrafts(clock: Clock, onSent: (project: Project) => void) {
 
     type: (text: string) => edit(openKey(), { ...draftOf(openKey()), text }),
 
-    /** Takes the attachment the person saw at `index`, since a quick second click can come before the list redraws. */
     remove: (attachment: Attachment, index: number) => {
-      releaseAttachment(attachment)
-      previews.delete(attachment.path)
-      setPictures(openKey(), draftOf(openKey()).attachments.filter((_, i) => i !== index))
+      if (removedRows.has(attachment)) return
+      const key = openKey()
+      const { attachments } = draftOf(key)
+      const position = attachments[index] === attachment.path ? index : attachments.indexOf(attachment.path)
+      if (position === -1) return
+      removedRows.add(attachment)
+      const remaining = attachments.filter((_, i) => i !== position)
+      if (!remaining.includes(attachment.path)) {
+        releaseAttachment(attachment)
+        previews.delete(attachment.path)
+      }
+      setPictures(key, remaining)
     },
 
     /** Keeps pasted pictures in files, then adds them to the screen they were pasted on, which may no longer be open. */

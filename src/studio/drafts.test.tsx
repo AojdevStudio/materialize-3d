@@ -261,6 +261,27 @@ it('leaves the project the person moved to alone when a slow send from the start
   expect(shown().text).toBe('draft for B')
 })
 
+it('drops a sent start picture when a paste lands after the person leaves during the send', async () => {
+  const sending = held('chat.send')
+  const keeping = held('drafts.picture')
+  const { go, attach, type, paste, send, shown } = open({
+    'chat.send': sending.answer,
+    'drafts.picture': keeping.answer,
+  })
+  await attach('/Users/me/sent.jpg')
+  await type('A clip')
+  await send()
+  await paste(shot())
+  await go(projectB)
+  await keeping.release()
+  await sending.release()
+
+  const next = { text: 'A clip', attachments: ['/state/pictures/1/shot.png'] }
+  expect(last(saves(START))).toEqual({ key: START, ...next })
+  await go(null)
+  expect(shown()).toEqual(next)
+})
+
 it('never brings a sent picture back in the next draft', async () => {
   const sending = held('chat.send')
   const { go, attach, type, send, shown } = open({ 'chat.send': sending.answer })
@@ -302,6 +323,23 @@ it('takes the sent pictures out of the composer when the person left and came ba
   await go(projectA)
   await sending.release()
   expect(shown().attachments).toEqual([])
+})
+
+it('keeps the next picture when Remove runs twice for the same row', async () => {
+  const { drafts, go, attach, shown } = open()
+  await go(projectA)
+  const first = '/Users/me/first.jpg'
+  const second = '/Users/me/second.jpg'
+  await attach(first, second, first)
+  const row = drafts.state.getState().attachments[0]
+
+  await step(() => {
+    drafts.remove(row, 0)
+    drafts.remove(row, 0)
+  }, 400)
+
+  expect(shown().attachments).toEqual([second, first])
+  expect(last(saves(projectA.id))).toEqual({ key: projectA.id, text: '', attachments: [second, first] })
 })
 
 it('keeps a picture the person took out and put back while its send was on its way', async () => {
@@ -640,7 +678,7 @@ it('leaves no draft behind when the person left the start screen before its firs
   expect(shown().text).toBe('')
 })
 
-it('keeps a start draft changed while its first send runs as a newer draft, exactly as it is, and never sends it', async () => {
+it('keeps text edited during a first send in the start draft and drops the sent picture', async () => {
   const sending = held('chat.send')
   const { go, attach, type, send, shown } = open({ 'chat.send': sending.answer })
   await attach('/Users/me/photo.jpg')
@@ -650,11 +688,11 @@ it('keeps a start draft changed while its first send runs as a newer draft, exac
   await go(projectB)
   expect(saves(START)).toEqual([{ key: START, text: 'A clip', attachments: ['/Users/me/photo.jpg'] }])
   await sending.release()
-  expect(last(saves(START))).toEqual({ key: START, text: 'A hook', attachments: ['/Users/me/photo.jpg'] })
+  expect(last(saves(START))).toEqual({ key: START, text: 'A hook', attachments: [] })
   expect(saves(made.id)).toEqual([])
   expect(sends()).toHaveLength(1)
   await go(null)
-  expect(shown()).toEqual({ text: 'A hook', attachments: ['/Users/me/photo.jpg'] })
+  expect(shown()).toEqual({ text: 'A hook', attachments: [] })
 })
 
 it("keeps text typed during a first send as its project's draft, and never saves it on the start screen", async () => {
