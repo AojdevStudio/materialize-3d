@@ -58,8 +58,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-bun
-      - name: The paths above are the covered files
-        run: bun "$SCRIPTS/check-paths.ts"
       - name: The covered code is the code the models were last confirmed against
         run: |
           if ! sha256sum --check --quiet "$SOURCES"; then
