@@ -237,6 +237,21 @@ describe('settings', () => {
     expect(await screen.findByRole('region', { name: 'Slicer and printer' })).toBeTruthy()
   })
 
+  it('keeps the printer step open when Bambu Studio is not found', async () => {
+    mockApp({ ...ready, slicer: { found: 'none' } })
+    render(<StudioApp />)
+    await openSettings()
+    const slicer = await show('Slicer and printer')
+    const printer = within(await within(slicer).findByTestId('settings-printer'))
+    await act(async () => {
+      fireEvent.click(printer.getByRole('button', { name: 'Change' }))
+    })
+    const step = within(screen.getByRole('region', { name: 'Your printer' }))
+    expect(step.getByRole('alert').textContent).toBe('Not installed. Bambu Studio makes the print-ready 3MF.')
+    fireEvent.click(step.getByRole('button', { name: 'Back' }))
+    expect(screen.getByRole('region', { name: 'Slicer and printer' })).toBeTruthy()
+  })
+
   it('a slicer check the printer step left by Back does not close the setup step opened after it', async () => {
     mockApp()
     render(<StudioApp />)

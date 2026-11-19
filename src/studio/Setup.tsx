@@ -10,6 +10,7 @@ import { saveSetup } from './store'
 export type StepProps = {
   next: () => Promise<void>
   back: () => Promise<void>
+  reopened: boolean
   onError: (message: string) => void
   signIn: ReactNode
   refused?: string
@@ -24,7 +25,7 @@ const STEPS: readonly { step: Setup['step']; name: string; numbered: boolean; Sc
 ]
 const NUMBERED = STEPS.filter((entry) => entry.numbered)
 
-type Shared = Omit<StepProps, 'next' | 'back'> & { error: ReactNode }
+type Shared = Omit<StepProps, 'next' | 'back' | 'reopened'> & { error: ReactNode }
 
 const indexOf = (step: Setup['step']) => Math.max(0, STEPS.findIndex((entry) => entry.step === step))
 
@@ -49,7 +50,7 @@ export function SetupStep({ step, onDone, ...shared }: Shared & { step: Setup['s
 }
 
 /** A reopened step gets a Back above the card, since the flow's own steps around it are done. */
-function SetupCard({ at, next, back, reopened, error, ...shared }: Shared & Pick<StepProps, 'next' | 'back'> & { at: number; reopened: boolean }) {
+function SetupCard({ at, next, back, reopened, error, ...shared }: StepProps & { at: number; error: ReactNode }) {
   const { step, name, numbered, Screen } = STEPS[at]
   return (
     <main className="setup" data-testid="setup">
@@ -71,7 +72,7 @@ function SetupCard({ at, next, back, reopened, error, ...shared }: Shared & Pick
             ))}
           </ol>
         )}
-        <Screen next={next} back={back} {...shared} />
+        <Screen next={next} back={back} reopened={reopened} {...shared} />
       </section>
     </main>
   )
