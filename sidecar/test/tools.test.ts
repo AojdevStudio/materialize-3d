@@ -461,6 +461,8 @@ describe('Astra', () => {
 })
 
 describe('a restart', () => {
+  const resumedErrorWait = 60_000
+
   test('watches every chat, so a resumed run that then fails waits with its fix even if no one opened it', async () => {
     const where = scratch()
     const first = start(where, 'fails-after')
@@ -473,10 +475,10 @@ describe('a restart', () => {
     const second = start(where, 'fails-after')
     await second.next()
     writeFileSync(join(where.projects, project, 'go'), '')
-    const waiting = await second.until((event) => event.type === 'chat' && event.waiting !== null, 60_000)
+    const waiting = await second.until((event) => event.type === 'chat' && event.waiting !== null, resumedErrorWait)
     expect(waiting).toMatchObject({ project, running: false, waiting: { kind: 'error', fix: 'Try again' } })
     await second.quit()
-  })
+  }, resumedErrorWait + 15_000)
 
   test('after an update, a turn that waited on a sign-in from the old version waits for the person to go on', async () => {
     const where = scratch()
