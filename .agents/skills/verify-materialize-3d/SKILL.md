@@ -64,6 +64,7 @@ $S/wd.ts type "[data-testid=prompt]" "Make a cable clip"
 $S/wd.ts type "[data-testid=prompt]" '' --clear   # clear only
 KEY=... $S/wd.ts type-secret '[aria-label="API key or token"]' KEY --clear   # types $KEY, and actions.log gets only its length
 $S/wd.ts click "[data-testid=files-tab]"
+$S/wd.ts pointer-click '[data-testid=project-<id>] .row-open'  # Linux, when WebDriver click times out
 $S/wd.ts text "[data-testid=engine]"
 $S/wd.ts gone "[data-testid=working]"
 $S/wd.ts eval "return innerHeight"          # inspection only, never to cause the behavior under test
@@ -87,6 +88,8 @@ The feature files list the exact handles.
 Quote an `aria-label` value that contains a space: `[aria-label="API key or token"]`. Unquoted, the selector fails with "invalid selector".
 
 A control that stays at opacity 0 until its row is hovered is not displayed for WebDriver, so run `wd.ts hover <row>` first, then `click`.
+
+If WebKitWebDriver reports a visible project button as hidden, use `wd.ts pointer-click <sel>`. It uses the same selectors as `click`, scrolls the first match into view, and clicks its center with the real pointer on the run's display. On a reused display, keep only one visible window with the app's title. Wait for the resulting screen to prove the click.
 
 Native GTK dialogs are outside the webview, so WebDriver cannot see them. Answer them the way a user does with `m3d.sh file-dialog <abs-path>`. The helper finds which dialog is open, "Open File" or "Save File", and types the path into it. "Open File" needs an existing file. "Save File" needs a new file name in an existing directory, because an existing target makes GTK ask to replace it in a second dialog the helper does not answer.
 

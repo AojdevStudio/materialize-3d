@@ -1,6 +1,8 @@
 # Studio
 
-The studio is the whole app. Each chat is a project folder in `~/Documents/Materialize 3D/<date>-<slug>/` (an `e2e` build uses `<M3D_E2E_DATA_DIR>/projects/`), and a conversation in the sidecar's store, `<app data>/state/store.sqlite` (an `e2e` build: `<M3D_E2E_DATA_DIR>/state/`). The sidecar, `Contents/MacOS/materialize-sidecar`, runs the agent through Pi Durable on the person's own inference login, with the app's own tools: `read`, `write`, and `edit` inside the project folder, `run` (uv), `slice` (the validated Bambu Studio, through Rust), and `astra` (GPT 6 Astra as a child task). The right panel has four views: Guide, Model, Drawing, and Files. HTML shows in a sandboxed frame, and STL, 3MF, and GLB in an orbit viewer. The newest guide, drawing, or model opens on its own. The Files tab lists every file, with Reveal in Finder and, for a 3MF, Open in Bambu Studio. The print files bar under the views opens the 3MF files in Bambu Studio.
+The studio is the whole app. Each chat has a project folder and a conversation in the sidecar's store. On Linux, the verification run imports old chats and reads project files from `~/Materialize 3D/<date>-<slug>/`. The run's `XDG_CONFIG_HOME` has no `user-dirs.dirs`, so the app uses the home folder. The store lives in `<app data>/state/store.sqlite`. A macOS `e2e` build uses `<M3D_E2E_DATA_DIR>/projects/` and `<M3D_E2E_DATA_DIR>/state/`, respectively.
+
+The sidecar, `Contents/MacOS/materialize-sidecar`, runs the agent through Pi Durable on the person's own inference login, with the app's own tools: `read`, `write`, and `edit` inside the project folder, `run` (uv), `slice` (the validated Bambu Studio, through Rust), and `astra` (GPT 6 Astra as a child task). The right panel has four views: Guide, Model, Drawing, and Files. HTML shows in a sandboxed frame, and STL, 3MF, and GLB in an orbit viewer. The newest guide, drawing, or model opens on its own. The Files tab lists every file, with Reveal in Finder and, for a 3MF, Open in Bambu Studio. The print files bar under the views opens the 3MF files in Bambu Studio.
 
 ## Sub-features
 
@@ -27,6 +29,13 @@ The studio is the whole app. Each chat is a project folder in `~/Documents/Mater
 - Earlier projects are in the left sidebar (`nav[aria-label=Projects]`). `new-project` returns to the start screen.
 
 ## Driving it with wd.ts
+
+On Linux, if WebKitWebDriver reports a visible sidebar project as hidden, click it with the run's real pointer. Replace `<id>` with the project folder name. The second command prints the title when the row becomes current.
+
+```bash
+$S/wd.ts pointer-click '[data-testid="project-<id>"] .row-open'
+$S/wd.ts attr '[data-testid="project-<id>"] .row-open[aria-current="true"]' title
+```
 
 On macOS, drive it with `mac.ts` from an `e2e` build. Answer `Attach` with `mac.ts dialog <png>` before the click. A fresh data folder opens [setup](./setup.md), which asks for a login, uv, and Python, then the default model, before the start screen. That order is from the code (`src/studio/Setup.tsx`). `ANTHROPIC_TOKEN` and `ANTHROPIC_PROXY` are the host's proxy token and URL.
 

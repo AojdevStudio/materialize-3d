@@ -10,6 +10,7 @@
 //   bun wd.ts wait <sel> [ms]          wait until <sel> is displayed (default 15000)
 //   bun wd.ts gone <sel> [ms]          wait until <sel> is absent or hidden
 //   bun wd.ts click <sel>
+//   bun wd.ts pointer-click <sel>      click the first match with the run's X11 pointer
 //   bun wd.ts hover <sel>              move the pointer over <sel> (reveals hover-only controls)
 //   bun wd.ts type <sel> <text> [--clear]
 //   bun wd.ts type-secret <sel> <ENV> [--clear]  type the value of $ENV; the log records only its length
@@ -42,6 +43,7 @@ interface RunEnv {
   run: string
   driverPort: number
   binary: string
+  display: string
 }
 
 interface WebDriverError {
@@ -445,6 +447,39 @@ const shared = sharedCommands(driver)
 
 const commands: Record<string, Command> = {
   ...shared,
+  'pointer-click': async ([sel]) => {
+    if (!sel) throw new Error('usage: wd.ts pointer-click <sel>')
+    const id = await waitFor(sel, 15000, true)
+    const point = await call<{ title: string; x: number; y: number } | null>('POST', `/session/${sid()}/execute/sync`, {
+      args: [{ [ELEMENT_KEY]: id }],
+      script: `const el = arguments[0];
+el.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'instant' });
+const { left, right, top, bottom } = el.getBoundingClientRect();
+const x = (Math.max(left, 0) + Math.min(right, innerWidth)) / 2;
+const y = (Math.max(top, 0) + Math.min(bottom, innerHeight)) / 2;
+if (!el.contains(document.elementFromPoint(x, y))) return null;
+return {
+  title: document.title,
+  x: Math.round(x * devicePixelRatio),
+  y: Math.round(y * devicePixelRatio),
+};`,
+    })
+    if (point === null) throw new Error(`pointer-click ${sel}: the first match has no clickable center`)
+    const { title, x, y } = point
+    const displayEnv = { ...process.env, DISPLAY: env.display }
+    const pattern = `^${title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`
+    const found = Bun.spawnSync(['xdotool', 'search', '--onlyvisible', '--name', pattern], { env: displayEnv })
+    const window = found.stdout.toString().trim()
+    if (found.exitCode !== 0 || !/^\d+$/.test(window)) {
+      throw new Error(`pointer-click ${sel}: expected one visible X11 window titled ${JSON.stringify(title)} on ${env.display} (xdotool exit ${found.exitCode})`)
+    }
+    // WebKit's screenX/Y include window decorations. X11 translates from the client area.
+    const result = Bun.spawnSync(['xdotool', 'mousemove', '--window', window, String(x), String(y), 'click', '1'], { env: displayEnv })
+    if (result.exitCode !== 0) throw new Error(`pointer-click ${sel}: xdotool exited ${result.exitCode}: ${result.stderr.toString().trim()}`)
+    const action = `pointer-click ${sel} at ${x},${y} in ${JSON.stringify(title)} on ${env.display}`
+    log(action)
+    console.log(action)
+  },
   session: async () => {
     const created = await call<{ sessionId: string }>('POST', '/session', {
       capabilities: { alwaysMatch: { browserName: 'wry', 'tauri:options': { application: env.binary } } },
@@ -547,7 +582,7 @@ const commands: Record<string, Command> = {
 dispatch(
   commands,
   process.argv.slice(2),
-  'usage: wd.ts session|wait|gone|click|hover|type|type-secret|keys|text|attr|count|shot|contrast|eval|eval-secret|note|end (see header)',
+  'usage: wd.ts session|wait|gone|click|pointer-click|hover|type|type-secret|keys|text|attr|count|shot|contrast|eval|eval-secret|note|end (see header)',
 ).catch((err: unknown) => {
   const message = err instanceof Error ? err.message : String(err)
   const [cmd, ...rest] = process.argv.slice(2)
