@@ -33,6 +33,8 @@ $S/m3d.sh close-inspector    # debug builds dock devtools over the bottom 300px
 
 `up` is ready when it prints `m3d: ready run=... display=:9N rev=<sha>`. A first cargo build takes a few minutes. Later builds are incremental. Each run gets `~/m3d-verify/<timestamp>/`, and `~/m3d-verify/current` points at the active run.
 
+Bambu Studio discovery uses `BAMBU_STUDIO_CLI` when set and searches the standard install locations when it is unset. Discovery never searches a CI runner's tool cache. On a host with only the cached copy, launch without `BAMBU_STUDIO_CLI` to reproduce `Not found`. Export `BAMBU_STUDIO_CLI` to the validated executable before `up` for proof that needs the slicer.
+
 `up` isolates app state with `XDG_DATA_HOME`/`XDG_CONFIG_HOME`/`XDG_CACHE_HOME` under the run dir. A fresh run therefore starts at setup, then the studio start screen, with an empty sidecar store at `<run>/xdg/data/com.aojdevstudio.materialize3d/state/store.sqlite`. Project folders are the exception: the harness build keeps them in the host user's `~/Materialize 3D/`. The app puts them in the Documents folder, but the run's own `XDG_CONFIG_HOME` has no `user-dirs.dirs`, so the app falls back to the home folder (`src-tauri/src/studio/mod.rs`). `wd.ts end` followed by `wd.ts session` relaunches the app on the same data, which is how you prove persistence.
 
 The driver and app run with the run directory as their working directory, so stray output never lands in the checkout. The app's Bambu Studio `--help` probe runs in its own temporary directory (PR 42), so neither the run directory nor the checkout gets a `result.json` **(observed 2026-11-03)**. Compare `git status --short` before `up` and after `down` to check for Git-visible changes. Ignored build and dependency outputs, including `src-tauri/target` and `node_modules`, stay in the checkout.
@@ -109,7 +111,7 @@ A proof must meet these standards:
 - Drive the user path: clicks, typing, and the native dialog. `wd.ts eval` and `invoke(...)` calls inspect state and never produce the behavior under test.
 - Capture the action and the resulting state with a screenshot before and after, plus `actions.log`. The final screen alone is not enough.
 - Verify the side effect as well as the pixels: the file written and the state after an app relaunch.
-- Report an unreachable path together with the unmet precondition. For example, a turn needs an inference login, and the `run` tool needs uv. Never swap in a different path and call the feature verified.
+- Write proof preconditions as states the app shows. For slicer proof, require `Ready` on the Bambu Studio row in setup. For missing-slicer proof, require `Not found` on that row. Report an unreachable path with the app state that blocked it. Never swap in a different path and call the feature verified.
 - For a PR, attach media per AGENTS.md. Pull the files first with `scp ossie@dev-substrate:m3d-verify/<run>/evidence/<file> .`, then attach them with `gh pr create|edit|comment --attach <file>`, or ship them with `pr-media <files>` if GitHub refuses them. Confirm each attachment renders on the PR page, and run `pr-media check` if the PR links any `pr-media` file.
 
 ## Cleanup

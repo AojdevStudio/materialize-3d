@@ -1,0 +1,29 @@
+# Provision the CI toolchains, platform libraries, and Google Chrome before running the gate.
+# Export BAMBU_STUDIO_CLI for the validated build. CI provisions it with scripts/ci/install-bambu-{linux,macos}.sh.
+
+# Shared app checks (.github/actions/shared-checks/action.yml).
+bun install --frozen-lockfile
+bunx tsc --noEmit
+bun run test
+cd sidecar && bun install --frozen-lockfile && bunx tsc --noEmit && bun test
+
+# Linux build and checks. These frontend checks also run on a Mac gate host.
+bun scripts/release/release-facts.ts && bun test scripts/release
+bun .agents/skills/formal-verify-materialize-3d/scripts/check-paths.ts
+bun run build
+bun scripts/release/check-no-e2e-harness.ts
+
+# Both desktop gates run these on their own platform.
+scripts/build-sidecar.sh
+cd src-tauri && cargo test --lib --locked
+test -x "${BAMBU_STUDIO_CLI:?Export BAMBU_STUDIO_CLI for the validated Bambu Studio build.}"
+cd src-tauri && cargo test --lib --locked studio::slice -- --ignored --nocapture
+
+# macOS desktop build gate. CI covers these commands for a Linux receipt.
+case "$(uname -s)" in Darwin) bun tauri build --bundles app ;; *) echo 'macOS desktop app build runs in macOS CI' ;; esac
+case "$(uname -s)" in Darwin) product="$(bun -p "require('./src-tauri/tauri.conf.json').productName")" && bun scripts/release/check-no-e2e-harness.ts "${CARGO_TARGET_DIR:-src-tauri/target}/release/bundle/macos/$product.app" ;; *) echo 'macOS release harness check runs in macOS CI' ;; esac
+
+# Landing site. Playwright uses the installed Google Chrome on either platform.
+cd site && bun install --frozen-lockfile
+case "$(uname -s)" in Darwin) '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' --version ;; Linux) /opt/google/chrome/chrome --version ;; *) echo 'Google Chrome check requires Linux or macOS' >&2 && exit 1 ;; esac
+cd site && bunx playwright test

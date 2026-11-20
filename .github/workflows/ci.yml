@@ -78,6 +78,9 @@ jobs:
       (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
       && github.event.pull_request.user.login != 'dependabot[bot]'))
     runs-on: [self-hosted, macOS, ARM64, m3d-mac-vz]
+    concurrency:
+      group: ci-macos-desktop-build
+      queue: max
     timeout-minutes: 60
     env:
       # Node's default heap limit can be too small for the production frontend build.
