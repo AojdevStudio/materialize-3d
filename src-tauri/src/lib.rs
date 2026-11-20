@@ -120,6 +120,23 @@ fn write_test_script(path: &std::path::Path, body: &str) {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).expect("make the script executable");
 }
 
+/// Gives a test child time to reach its ready marker before the test starts its deadline.
+#[cfg(all(test, unix))]
+fn wait_for_test_marker(path: &std::path::Path) -> Option<std::time::Instant> {
+    use std::time::{Duration, Instant};
+
+    let startup = Instant::now();
+    loop {
+        if path.is_file() {
+            return Some(Instant::now());
+        }
+        if startup.elapsed() >= Duration::from_secs(15) {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 #[cfg(test)]
 mod acl_tests {
     use std::collections::BTreeSet;

@@ -150,6 +150,14 @@ fn detect_version(exe: &Path) -> Result<Option<BambuVersion>> {
 }
 
 fn detect_version_with_timeout(exe: &Path, timeout: Duration) -> Result<Option<BambuVersion>> {
+    detect_version_with_clock(exe, timeout, std::convert::identity)
+}
+
+fn detect_version_with_clock(
+    exe: &Path,
+    timeout: Duration,
+    start_clock: impl FnOnce(Instant) -> Instant,
+) -> Result<Option<BambuVersion>> {
     let Ok(exe) = std::path::absolute(exe) else {
         return Ok(None);
     };
@@ -172,6 +180,7 @@ fn detect_version_with_timeout(exe: &Path, timeout: Duration) -> Result<Option<B
     else {
         return Ok(None);
     };
+    let start = start_clock(start);
     let outcome = loop {
         match child.try_wait() {
             Ok(Some(_)) => break Ok(()),
@@ -414,27 +423,36 @@ mod tests {
     #[test]
     fn help_output_cannot_hold_the_probe_open() {
         let root = tempfile::tempdir().expect("tempdir");
-        let exe = root.path().join("BambuStudio");
-        let holder_pid = root.path().join("holder-pid");
-        for body in [
-            "dd if=/dev/zero bs=65536 count=32 2>/dev/null\necho 'BambuStudio-02.08.02.61:' >&2\n"
-                .to_owned(),
-            format!(
-                "sleep 5 &\necho $! > '{}'\necho 'BambuStudio-02.08.02.61:'\n",
-                holder_pid.display()
+        for (name, body) in [
+            (
+                "BambuStudio-flood",
+                "dd if=/dev/zero bs=65536 count=32 2>/dev/null\necho 'BambuStudio-02.08.02.61:' >&2",
+            ),
+            (
+                "BambuStudio-hold",
+                "sleep 30 &\necho $! > \"$0.holder\"\necho 'BambuStudio-02.08.02.61:'",
             ),
         ] {
-            crate::write_test_script(&exe, &format!("#!/bin/sh\n{body}"));
-            let start = Instant::now();
-            let result = detect_version_with_timeout(&exe, Duration::from_secs(1));
-            let elapsed = start.elapsed();
-            if let Ok(pid) = std::fs::read_to_string(&holder_pid) {
+            let exe = root.path().join(name);
+            let ready = exe.with_extension("ready");
+            let holder_pid = exe.with_extension("holder");
+            // Start the test clock once the script has written the output the probe must handle.
+            crate::write_test_script(&exe, &format!("#!/bin/sh\nset -e\n{body}\n: > \"$0.ready\"\n"));
+            let mut ready_at = None;
+            let result = detect_version_with_clock(&exe, Duration::from_secs(1), |start| {
+                ready_at = crate::wait_for_test_marker(&ready);
+                ready_at.unwrap_or(start)
+            });
+            let elapsed = ready_at.map(|at| at.elapsed());
+            if name == "BambuStudio-hold" && (ready_at.is_some() || holder_pid.is_file()) {
+                let pid = std::fs::read_to_string(holder_pid).expect("holder pid");
                 assert!(Command::new("kill")
                     .arg(pid.trim())
                     .status()
                     .expect("stop descriptor holder")
                     .success());
             }
+            let elapsed = elapsed.expect("the fixture never finished writing its help output");
             assert!(
                 elapsed < Duration::from_secs(3),
                 "output held the probe open for {elapsed:?}"

@@ -26,8 +26,12 @@ pub fn path() -> &'static str {
 /// The PATH `shell` reports as a login shell, or none when it fails, says nothing, or does not end within
 /// `deadline`. A shell whose startup files hang is ended with all it started, so the sidecar still starts.
 fn shell_path(shell: &str, deadline: std::time::Duration) -> Option<String> {
-    let marker = "__M3D_PATH__";
     let end = std::time::Instant::now() + deadline;
+    shell_path_until(shell, || end)
+}
+
+fn shell_path_until(shell: &str, deadline: impl FnOnce() -> std::time::Instant) -> Option<String> {
+    let marker = "__M3D_PATH__";
     let mut command = std::process::Command::new(shell);
     command
         .args(["-ilc", &format!("printf '{marker}%s{marker}' \"$PATH\"")])
@@ -48,6 +52,7 @@ fn shell_path(shell: &str, deadline: std::time::Duration) -> Option<String> {
         });
     }
     let mut child = command.spawn().ok()?;
+    let end = deadline();
     let mut stdout = child.stdout.take()?;
     // What the shell printed so far. A program its startup files started, such as an agent, can keep stdout open long
     // after the shell ends, so the reader is not waited on for its end. Once the lookup is done the reader stops at its
@@ -117,27 +122,39 @@ mod tests {
     #[test]
     fn a_login_shell_that_hangs_is_ended_at_its_deadline() {
         let dir = tempfile::tempdir().unwrap();
-        let shell = dir.path().join("slow-shell");
-        // The shell writes its pid beside itself when it starts, so a shell that never started cannot pass for one the
-        // deadline ended. The deadline leaves a busy runner time to start it.
-        let mark = dir.path().join("started");
-        let deadline = std::time::Duration::from_secs(1);
-        for script in [
-            "#!/bin/sh\necho $$ > \"$(dirname \"$0\")/started\"\nsleep 30\n",
+        use std::time::{Duration, Instant};
+
+        let deadline = Duration::from_secs(1);
+        for (name, redirect) in [
+            ("slow-shell", ""),
             // Startup files that send stdout elsewhere and then hang end at the deadline too.
-            "#!/bin/sh\necho $$ > \"$(dirname \"$0\")/started\"\nexec >/dev/null\nsleep 30\n",
+            ("quiet-shell", "exec >/dev/null\n"),
         ] {
-            let _ = std::fs::remove_file(&mark);
-            crate::write_test_script(&shell, script);
-            let started = std::time::Instant::now();
-            assert_eq!(shell_path(shell.to_str().unwrap(), deadline), None);
-            assert!(started.elapsed() < std::time::Duration::from_secs(5), "took {:?}", started.elapsed());
-            let pid = std::fs::read_to_string(&mark).expect("the shell never started").trim().parse::<i32>().unwrap();
+            let shell = dir.path().join(name);
+            let ready = shell.with_extension("ready");
+            crate::write_test_script(
+                &shell,
+                &format!("#!/bin/sh\nset -e\n{redirect}echo $$ > \"$0.pid\"\n: > \"$0.ready\"\nsleep 30\n"),
+            );
+            let mut ready_at = None;
+            let result = shell_path_until(shell.to_str().unwrap(), || {
+                ready_at = crate::wait_for_test_marker(&ready);
+                ready_at.unwrap_or_else(Instant::now) + deadline
+            });
+            let elapsed = ready_at.map(|at| at.elapsed());
+            let pid = std::fs::read_to_string(shell.with_extension("pid"))
+                .expect("the shell never started")
+                .trim()
+                .parse::<i32>()
+                .unwrap();
             if !ended(pid) {
                 // SAFETY: ends the test's own shell and the sleep it started, which outlived the deadline.
                 unsafe { libc::kill(-pid, libc::SIGKILL) };
                 panic!("the shell {pid} still runs after its deadline");
             }
+            assert_eq!(result, None);
+            let elapsed = elapsed.expect("the shell missed the startup limit");
+            assert!((deadline..Duration::from_secs(5)).contains(&elapsed), "took {elapsed:?}");
         }
         assert!(shell_path("/bin/sh", std::time::Duration::from_secs(5)).is_some_and(|path| !path.is_empty()));
     }
