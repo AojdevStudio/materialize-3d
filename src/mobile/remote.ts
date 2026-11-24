@@ -56,18 +56,23 @@ export const remoteUrl = (path: string) => `m3dremote://localhost${path}`
 /** The computer did not answer, so whether the request reached it is not known. Rust answers 502 for this. */
 export class Unreachable extends Error {}
 
-/** The computer refused the request before it changed anything: a 4xx answer. Any other failed answer leaves that open. */
+/**
+ * The computer refused a send before it committed it, so its revision never goes out: a 409, 422, or 423 whose body is
+ * `{ error }`. Any other failed answer, as Rust's own 413 or a body that is not the computer's, leaves that open.
+ */
 export class Refused extends Error {}
 
-/** A refusal's words. The computer refuses with `{ error }`, and Rust and Tailscale with plain text. */
-function refusal(body: string): string {
+const REFUSALS = new Set([409, 422, 423])
+
+/** The words of the computer's `{ error }` answer, or null for a body that is not one, as Rust's and Tailscale's plain text. */
+function errorWords(body: string): string | null {
   try {
     const parsed: unknown = JSON.parse(body)
     if (typeof parsed === 'object' && parsed !== null && 'error' in parsed && typeof parsed.error === 'string') return parsed.error
   } catch {
-    // Plain text, shown as it is.
+    // Not JSON, so not the computer's refusal.
   }
-  return body
+  return null
 }
 
 export async function remoteJson<T>(path: string, write?: { method: 'PUT' | 'POST'; body: unknown }): Promise<T> {
@@ -82,8 +87,10 @@ export async function remoteJson<T>(path: string, write?: { method: 'PUT' | 'POS
   }
   if (response.status === 502) throw new Unreachable(await response.text())
   if (!response.ok) {
-    const words = refusal(await response.text()) || `The computer answered ${response.status}.`
-    throw response.status < 500 ? new Refused(words) : new Error(words)
+    const body = await response.text()
+    const words = errorWords(body)
+    if (words !== null && REFUSALS.has(response.status)) throw new Refused(words)
+    throw new Error(words || body || `The computer answered ${response.status}.`)
   }
   return (await response.json()) as T
 }

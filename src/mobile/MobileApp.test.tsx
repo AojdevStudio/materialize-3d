@@ -548,6 +548,18 @@ describe('a draft and the link to the computer', () => {
     expect(computerSide.sent).toEqual([41, 42])
   })
 
+  it.each([
+    ['a 413 from this device', () => new Response('This is too large to show on this device (over 64 MB).', { status: 413 })],
+    ['a 409 with no refusal in it', () => new Response('<html>Conflict</html>', { status: 409 })],
+  ])('settles a send answered with %s, since the computer may have taken it, and starts no second job', async (_, answer) => {
+    await readyToSend()
+    computerSide.nextSend = { commits: true, answer }
+    fireEvent.click(sendButton())
+    await waitFor(() => expect(kept.has('desk-clip')).toBe(false))
+    expect(settles()).toBe(1)
+    expect(computerSide.sent).toEqual([41])
+  })
+
   it('keeps a send unconfirmed when its settle fails, and settles again only when the link comes back or the person checks again', async () => {
     await readyToSend()
     computerSide.nextSend = { commits: true, answer: () => new Response('Upstream failed', { status: 500 }) }
