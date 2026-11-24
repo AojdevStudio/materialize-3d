@@ -142,12 +142,13 @@ pub async fn pair(link: String, device: String, paired: tauri::State<'_, Paired>
 /// Forgets the computer, and with it every draft written for its chats.
 #[tauri::command]
 pub fn forget(paired: tauri::State<'_, Paired>, drafts: tauri::State<'_, crate::drafts::Drafts>) -> Result<(), Error> {
+    // The drafts go first, so any error leaves the pairing as it was and the window can go on with it.
+    drafts.clear()?;
     match entry()?.delete_credential() {
         Ok(()) | Err(keyring::Error::NoEntry) => {}
         Err(err) => return Err(err.into()),
     }
     *paired.0.write().expect("pairing lock") = None;
-    drafts.clear()?;
     Ok(())
 }
 

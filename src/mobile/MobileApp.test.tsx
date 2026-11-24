@@ -292,7 +292,7 @@ describe('MobileApp', () => {
 /** The drafts this device keeps, by chat, as Rust's draft files hold them across launches. */
 const kept = new Map<string, DeviceDraft>()
 /** Rust's answer to a draft load, when it cannot read the file, and to a draft save, when it cannot write it or the test holds it. */
-const device = { loadFails: null as string | null, saveFails: null as string | null, saveWaits: null as Promise<void> | null }
+const device = { loadFails: null as string | null, saveFails: null as string | null, saveWaits: null as Promise<void> | null, forgetFails: null as string | null }
 
 /** Holds the next draft write until the returned function lets it go. */
 function holdSave(): () => void {
@@ -318,7 +318,10 @@ function answerWithDrafts(commands: Record<string, unknown>) {
       return
     }
     // Rust removes every draft when the device forgets its computer.
-    if (command === 'forget') return kept.clear()
+    if (command === 'forget') {
+      if (device.forgetFails !== null) throw device.forgetFails
+      return kept.clear()
+    }
     return commands[command]
   })
 }
@@ -429,7 +432,7 @@ describe('a draft and the link to the computer', () => {
   afterEach(() => {
     kept.clear()
     localStorage.clear()
-    Object.assign(device, { loadFails: null, saveFails: null, saveWaits: null })
+    Object.assign(device, { loadFails: null, saveFails: null, saveWaits: null, forgetFails: null })
     Object.assign(computerSide, {
       reach: true,
       requests: [],
@@ -564,6 +567,26 @@ describe('a draft and the link to the computer', () => {
     expect(settles()).toBe(3)
     expect(computerSide.sent).toEqual([41])
   }, 10_000)
+
+  it('settles again on the new link when a settle under way fails after the link came back', async () => {
+    await readyToSend()
+    computerSide.nextSend = { commits: true, answer: () => new Response('Upstream failed', { status: 500 }) }
+    // The first settle fails, as one sent on a link that dropped does. The next gets the computer's answer.
+    computerSide.settleAnswer = () => {
+      computerSide.settleAnswer = null
+      return Response.json({ error: 'The link dropped mid-check.' }, { status: 503 })
+    }
+    const release = hold('POST /chats/desk-clip/sends/41/settle')
+    fireEvent.click(sendButton())
+    await waitFor(() => expect(settles()).toBe(1))
+    await linkIs({ kind: 'offline', detail: 'The link dropped.' })
+    await linkIs({ kind: 'connected' })
+    release()
+
+    await waitFor(() => expect(kept.has('desk-clip')).toBe(false))
+    expect(settles()).toBe(2)
+    expect(computerSide.sent).toEqual([41])
+  })
 
   it.each([['{}', {}], ['null', null], ['another chat', { project: { id: 'desk-drawer' } }]])('settles a send the computer answered with %s', async (_, body) => {
     await readyToSend()
@@ -729,6 +752,17 @@ describe('a draft and the link to the computer', () => {
     const drawer = invoke.mock.calls.filter(([command, args]) => command.startsWith('draft_') && args.project === 'desk-drawer')
     expect(drawer).toEqual([])
     expect(kept.size).toBe(0)
+  })
+
+  it('stays paired with working chats and its draft when Forget fails', async () => {
+    const message = await openChat()
+    fireEvent.change(message, { target: { value: 'Make the clip' } })
+    backToChats()
+    device.forgetFails = 'The Keychain refused the pairing. User interaction is not allowed.'
+    fireEvent.click(await screen.findByRole('button', { name: 'Forget' }))
+
+    expect(await screen.findByText(/The Keychain refused the pairing/)).toBeTruthy()
+    expect((await reopen()).value).toBe('Make the clip')
   })
 
   it('shows a turn that ends after the chat was read, from the event stream alone, with Send still on', async () => {

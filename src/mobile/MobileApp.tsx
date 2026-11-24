@@ -99,19 +99,15 @@ export default function MobileApp() {
       {screen.kind === 'paired' && (
         <Paired
           computer={screen.computer}
-          onForget={() =>
-            pairing.forget().then(
-              () => {
-                try {
-                  localStorage.removeItem(CHATS_KEY)
-                } catch {
-                  // No storage, so no list was kept.
-                }
-                setScreen({ kind: 'unpaired', step: 'idle' })
-              },
-              (err) => setError(errorText(err)),
-            )
-          }
+          onForget={async () => {
+            await pairing.forget()
+            try {
+              localStorage.removeItem(CHATS_KEY)
+            } catch {
+              // No storage, so no list was kept.
+            }
+            setScreen({ kind: 'unpaired', step: 'idle' })
+          }}
         />
       )}
       {error && <p className="mobile-error" role="alert">{error}</p>}
@@ -179,7 +175,7 @@ function savedChats(): MobileChat[] | null {
   }
 }
 
-function Paired({ computer, onForget }: { computer: Computer; onForget: () => void }) {
+function Paired({ computer, onForget }: { computer: Computer; onForget: () => Promise<void> }) {
   const [chats, setChats] = useState<MobileChat[] | null>(savedChats)
   const [open, setOpen] = useState<MobileChat | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -261,7 +257,15 @@ function Paired({ computer, onForget }: { computer: Computer; onForget: () => vo
   const forget = async () => {
     closing.current = true
     await Promise.all([...senders.current.values()].map((sender) => sender.close()))
-    onForget()
+    // Every sender is closed. A Forget that fails leaves the pairing as it was, so the chats open again with new
+    // senders that read their drafts from this device.
+    senders.current.clear()
+    try {
+      await onForget()
+    } catch (err) {
+      closing.current = false
+      setError(errorText(err))
+    }
   }
 
   if (open !== null)
