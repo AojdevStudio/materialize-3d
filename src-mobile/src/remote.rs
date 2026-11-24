@@ -11,7 +11,7 @@ use tokio::sync::watch;
 use crate::paired::Paired;
 
 pub const SCHEME: &str = "m3dremote";
-/// The window's origin on iOS. Its reads of `m3dremote://` cross origins, so every answer names it.
+/// The window's origin on iOS. Its reads and sends through `m3dremote://` cross origins, so every answer names it.
 const WINDOW_ORIGIN: &str = "tauri://localhost";
 /// The most of one answer the phone holds. A larger model would exhaust its memory before the person could pick a
 /// smaller one, so it is refused and the rest of the chat stays usable.
@@ -85,6 +85,13 @@ pub fn serve<R: Runtime>(context: UriSchemeContext<'_, R>, request: Request<Vec<
     let model_read = is_model_read(request.uri().path()).then(|| app.state::<ModelReads>().start());
     tauri::async_runtime::spawn(async move {
         let response = match pairing {
+            // A JSON send asks first whether it may cross origins. The computer never sees that question.
+            _ if request.method() == Method::OPTIONS => Response::builder()
+                .status(StatusCode::NO_CONTENT)
+                .header(header::ACCESS_CONTROL_ALLOW_METHODS, "GET, PUT, POST")
+                .header(header::ACCESS_CONTROL_ALLOW_HEADERS, "content-type")
+                .body(Vec::new())
+                .expect("a preflight answer"),
             None => text(StatusCode::UNAUTHORIZED, "This device is not paired with a computer.".into()),
             Some(pairing) => {
                 let answer = forward(&pairing, request);

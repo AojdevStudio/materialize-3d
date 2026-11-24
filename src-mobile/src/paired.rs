@@ -45,6 +45,8 @@ pub enum Error {
     Keychain(#[from] keyring::Error),
     #[error("The saved pairing is damaged. Pair again. {0}")]
     Damaged(#[from] serde_json::Error),
+    #[error(transparent)]
+    Drafts(#[from] crate::drafts::Error),
 }
 
 impl Serialize for Error {
@@ -137,13 +139,15 @@ pub async fn pair(link: String, device: String, paired: tauri::State<'_, Paired>
     Ok(computer)
 }
 
+/// Forgets the computer, and with it every draft written for its chats.
 #[tauri::command]
-pub fn forget(paired: tauri::State<'_, Paired>) -> Result<(), Error> {
+pub fn forget(paired: tauri::State<'_, Paired>, drafts: tauri::State<'_, crate::drafts::Drafts>) -> Result<(), Error> {
     match entry()?.delete_credential() {
         Ok(()) | Err(keyring::Error::NoEntry) => {}
         Err(err) => return Err(err.into()),
     }
     *paired.0.write().expect("pairing lock") = None;
+    drafts.clear()?;
     Ok(())
 }
 
