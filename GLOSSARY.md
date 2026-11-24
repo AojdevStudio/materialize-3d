@@ -26,7 +26,7 @@ _Avoid_: Lead-only turn
 A task the lead model gives the helper model. One entry in the main chat shows the task, its live status, and its result or failure, even when the activity trace is closed.
 
 **Handoff entry**:
-The one live entry a handoff has in the main chat. It names both models and shows the task, its current status, and the result or failure.
+The one live entry a handoff has in the main chat. It names both roles and their models, and shows the task, its current status, and the result or failure.
 
 ### Model versions
 
