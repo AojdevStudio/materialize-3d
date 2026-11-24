@@ -174,7 +174,7 @@ describe('MobileApp', () => {
   })
 
   it('never fetches a model the list says is too large, and opens the newest one that fits', async () => {
-    answer({ paired_computer: computer })
+    answerWithDrafts({ paired_computer: computer })
     const fetched: string[] = []
     const files = [
       { rel: 'huge.stl', size: PREVIEW_LIMIT + 1, modifiedMs: 2 },
@@ -190,7 +190,10 @@ describe('MobileApp', () => {
       return listed(url)
     })
     render(<MobileApp />)
-    fireEvent.click(await screen.findByRole('button', { name: 'Desk cable clip' }))
+    const opens = await screen.findByRole('button', { name: 'Desk cable clip' })
+    // The chat reads the computer once the link is up.
+    await linkIs({ kind: 'connected' })
+    fireEvent.click(opens)
 
     expect(await screen.findByRole('button', { name: 'clip.stl', pressed: true })).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: 'huge.stl' }))
