@@ -44,7 +44,7 @@ it('drops a chat load that answers after the window opened again', async () => {
   render(<Window />)
 
   await act(async () => {
-    finishOpen({ project: project.id, entries: [], running: true, waiting: null, turn: null, seq: 2 })
+    finishOpen({ project: project.id, entries: [], running: true, waiting: null, turn: null, handoffs: [], seq: 2 })
     await loading
   })
   expect(useStudio.getState().view).toBeNull()

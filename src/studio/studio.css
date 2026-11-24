@@ -736,6 +736,75 @@ pre {
   padding: 3px 0 3px 22px;
 }
 
+/* A task the lead handed its helper: a line like a trace head, then the task and how it went under a left rule. */
+.handoff {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--s-muted);
+}
+
+.handoff-who {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.handoff-who .model-mark {
+  width: 14px;
+  height: 14px;
+}
+
+.handoff-who b {
+  font-weight: 500;
+  color: var(--s-text);
+}
+
+.handoff-role,
+.handoff-label {
+  color: var(--s-muted);
+}
+
+.handoff-body {
+  margin: 2px 0 0 6px;
+  padding: 0 0 0 14px;
+  border-left: 1px solid var(--s-line);
+}
+
+.handoff-body p {
+  margin: 4px 0;
+  color: var(--s-text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.handoff-label,
+.handoff-body .step-flag {
+  display: inline-block;
+  min-width: 52px;
+}
+
+.handoff-body .handoff-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.handoff-result {
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.handoff[data-state='failed'] .trace-head > .trace-icon {
+  color: var(--s-error);
+}
+
+.handoff[data-state='failed'] .handoff-body {
+  border-left-color: var(--s-error);
+}
+
 .error-bar {
   display: flex;
   align-items: center;
@@ -756,6 +825,8 @@ pre {
 
 /* Composer */
 .composer {
+  /* The pickers move to their own row when the composer, not the window, gets narrow. */
+  container-type: inline-size;
   position: relative;
   margin: 0 20px 16px;
   border: 1px solid var(--s-line);
@@ -809,6 +880,48 @@ pre {
   display: flex;
   align-items: center;
   gap: 6px;
+}
+
+/* The Lead and Helper pickers sit in the composer's bar, each after its role's word. */
+.model-roles {
+  display: contents;
+}
+
+.model-picker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.model-role,
+.model-none {
+  color: var(--s-muted);
+}
+
+.model-role {
+  font-size: 12px;
+}
+
+/* The helper's menu opens from the bar's right end, under its own picker. */
+.helper-picker .model-menu {
+  left: auto;
+  right: 0;
+}
+
+@container (max-width: 560px) {
+  .composer-bar {
+    flex-wrap: wrap;
+  }
+
+  .model-roles {
+    order: -1;
+    flex-basis: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    padding-bottom: 6px;
+  }
 }
 
 .model-mark {

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { CATALOG } from '../../sidecar/src/offered'
 import type { AppState, ModelChoice, Project, Setup } from '../../sidecar/src/protocol'
 import { onSidecarEvent, sidecar } from './api'
 import { ChatView } from './Chat'
@@ -42,7 +43,10 @@ export default function StudioApp() {
   /** The Settings section on screen. Closing it shows the screen it was opened from. */
   const [settings, setSettings] = useState<Section | null>(null)
 
-  const items = useMemo(() => buildChat(view?.entries ?? [], view?.running ?? true), [view?.entries, view?.running])
+  const items = useMemo(
+    () => buildChat(view?.entries ?? [], view?.running ?? true, { handoffs: view?.handoffs ?? [], helper: view?.turn?.helper ?? null }),
+    [view?.entries, view?.running, view?.handoffs, view?.turn?.helper],
+  )
   const running = view?.running ?? false
 
   useStudioEvents(projects)
@@ -87,6 +91,16 @@ export default function StudioApp() {
   /** The open project's own model, or the default for one from before the picker. On the start screen, the default. */
   const chosenModel = (current ? projects.find((p) => p.id === current.id)?.model : undefined) ?? savedSettings?.model ?? null
 
+  /**
+   * The helper the next start screen send gives its project, once the person picked one there. Until then, and again
+   * after that send, it is the default: the newest Astra offered while the Astra setting is on, or none.
+   */
+  const [startHelper, setStartHelper] = useState<{ pick: ModelChoice | null } | null>(null)
+  const helperFamily = CATALOG.families[CATALOG.helper]
+  const astra = models.find((m) => m.provider === helperFamily?.provider && helperFamily.versions.some((v) => v.modelId === m.modelId))
+  const defaultHelper = savedSettings?.astra === true && astra !== undefined ? { provider: astra.provider, modelId: astra.modelId } : null
+  const chosenHelper = current ? (projects.find((p) => p.id === current.id)?.helper ?? null) : startHelper === null ? defaultHelper : startHelper.pick
+
   const waiting = view?.waiting ?? null
   const turnLogin: TurnLogin | undefined = waiting?.kind === 'login' ? { kind: 'turn-login', provider: waiting.provider, name: waiting.name } : undefined
   const nextWaitsForLogin = turnLogin !== undefined && turnLogin.provider === chosenModel?.provider
@@ -115,6 +129,24 @@ export default function StudioApp() {
       .catch((err: unknown) => setError(String(err)))
   }
 
+  /**
+   * Saves a helper pick: the open project's helper, which the check reads again, as a retired one holds the next
+   * message. On the start screen it is the helper the next project starts with.
+   */
+  const pickHelper = (model: ModelChoice | null) => {
+    const project = current?.id
+    if (project === undefined) {
+      setStartHelper({ pick: model })
+      return
+    }
+    void sidecar('projects.setHelper', { project, model })
+      .then(() => {
+        setProjects((all) => all.map((p) => (p.id === project ? { ...p, helper: model } : p)))
+        checkReady()
+      })
+      .catch((err: unknown) => setError(String(err)))
+  }
+
   const composer = (
     <Composer
       place={current ? 'chat' : 'start'}
@@ -125,14 +157,26 @@ export default function StudioApp() {
       onPaste={drafts.paste}
       onRemove={(index) => drafts.remove(attachments[index], index)}
       onSend={() => {
-        if (!running && !notReady) void drafts.send()
+        if (running || notReady) return
+        if (current) void drafts.send()
+        else
+          void drafts.send(chosenHelper).then((project) => {
+            if (project !== undefined) setStartHelper(null)
+          })
       }}
       onError={setError}
       onStop={current ? () => void sidecar('chat.stop', { project: current.id }).catch((err: unknown) => setError(String(err))) : undefined}
       busy={sending || running || notReady}
       running={running}
       locked={blocker === undefined ? undefined : lockedText(blocker)}
-      picker={blocker !== undefined && models.length === 0 ? null : <ModelPicker models={models} chosen={chosenModel} onPick={pickModel} />}
+      picker={
+        blocker !== undefined && models.length === 0 ? null : (
+          <span className="model-roles">
+            <ModelPicker role="Lead" models={models} chosen={chosenModel} onPick={pickModel} />
+            <ModelPicker role="Helper" models={models} chosen={chosenHelper} onPick={pickHelper} />
+          </span>
+        )
+      }
     />
   )
 

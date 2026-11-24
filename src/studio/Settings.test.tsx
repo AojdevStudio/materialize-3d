@@ -103,7 +103,7 @@ function mockApp(machine: Machine = ready, logins: Login[] = claudeOnly, waiting
     'models.list': () => models,
     'projects.status': () => ({}),
     'app.ping': () => ({ version: '1.2.3' }),
-    'chat.open': () => ({ project: project.id, entries: [], running: false, waiting, turn: null, seq: 0 }),
+    'chat.open': () => ({ project: project.id, entries: [], running: false, waiting, turn: null, handoffs: [], seq: 0 }),
     'mobile.pair': () => pairing,
     'mobile.devices': () => store.devices,
     'mobile.forget': (params) => {

@@ -50,7 +50,7 @@ let calls: { method: string; params: Params }[] = []
 const defaults: Record<string, Answer> = {
   'drafts.set': () => Promise.resolve({ rev: ++revs }),
   'chat.send': ({ key }) => Promise.resolve({ project: key === START ? made : [projectA, projectB].find((p) => p.id === key) }),
-  'chat.open': ({ project }) => Promise.resolve({ project, entries: [], running: false, waiting: null, turn: null, seq: 1 }),
+  'chat.open': ({ project }) => Promise.resolve({ project, entries: [], running: false, waiting: null, turn: null, handoffs: [], seq: 1 }),
   'drafts.picture': ({ name }) => Promise.resolve(`/state/pictures/1/${String(name)}`),
   'projects.status': () => Promise.resolve({}),
   'setup.check': () => Promise.resolve([]),

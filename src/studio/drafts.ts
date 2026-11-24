@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useStore } from 'zustand'
 import { createStore } from 'zustand/vanilla'
-import { type AppState, type Draft, type Project, START } from '../../sidecar/src/protocol'
+import { type AppState, type Draft, type ModelChoice, type Project, START } from '../../sidecar/src/protocol'
 import { onFileDrop, onQuitFlush, sidecar } from './api'
 import { releaseAttachment, savedAttachment, type Attachment, type PastedPicture } from './Composer'
 import { checkReady, load, onNextReady, retry, setError, show as showProject, start, useStudio } from './store'
@@ -162,12 +162,14 @@ export function createDrafts(clock: Clock, onSent: (project: Project) => void) {
 
   /**
    * Sends the open screen's draft by its revision: saved first if it changed, and a save that fails ends the send. The
-   * sidecar makes the project for a first message, copies the pictures, and removes the draft it sent.
+   * sidecar makes the project for a first message, copies the pictures, and removes the draft it sent. From the start
+   * screen, a `startHelper` given is the helper that project gets. Answers the project the message went to, or
+   * undefined when it did not go.
    */
-  const send = async () => {
+  const send = async (startHelper?: ModelChoice | null): Promise<Project | undefined> => {
     const key = openKey()
     const screen = screens[key]
-    if (screen === undefined || (screen.draft.text.trim() === '' && screen.draft.attachments.length === 0) || state.getState().sending) return
+    if (screen === undefined || (screen.draft.text.trim() === '' && screen.draft.attachments.length === 0) || state.getState().sending) return undefined
     state.setState({ sending: true })
     clearPause()
     let done = () => {}
@@ -175,8 +177,9 @@ export function createDrafts(clock: Clock, onSent: (project: Project) => void) {
     try {
       screen.sendingPictures = new Set(screen.draft.attachments)
       const sent = await flush(key, screen.draft)
-      if (sent === undefined) return
-      const { project } = await sidecar('chat.send', { key, rev: sent.rev })
+      if (sent === undefined) return undefined
+      const helper = key === START && startHelper !== undefined ? { helper: startHelper } : {}
+      const { project } = await sidecar('chat.send', { key, rev: sent.rev, ...helper })
       state.setState(({ sendErrors: { [project.id]: _, ...rest } }) => ({ sendErrors: rest }))
       onSent(project)
       // What changed since the save that went out is the next message. The pictures that went out leave it, but for one
@@ -196,10 +199,12 @@ export function createDrafts(clock: Clock, onSent: (project: Project) => void) {
       } else if (next.attachments.length !== screen.draft.attachments.length) {
         put(key, next)
       }
+      return project
     } catch (err) {
       const message = String(err)
       if (key !== START) state.setState(({ sendErrors }) => ({ sendErrors: { ...sendErrors, [key]: message } }))
       else if (openKey() === START) setError(message)
+      return undefined
     } finally {
       delete screen.sending
       delete screen.sendingPictures

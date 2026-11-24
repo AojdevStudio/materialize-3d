@@ -66,7 +66,7 @@ function show() {
 
 const emit = (event: object) => act(() => listeners.forEach((listener) => listener({ payload: event })))
 const chat = (project: Project, running: boolean, seq: number) =>
-  emit({ type: 'chat', project: project.id, entries: [], running, waiting: null, turn: null, seq })
+  emit({ type: 'chat', project: project.id, entries: [], running, waiting: null, turn: null, handoffs: [], seq })
 const statusReads = () => invokeMock.mock.calls.filter(([, call]) => call.method === 'projects.status').length
 const groupOf = (project: Project) => screen.getByTestId(`project-${project.id}`).closest('section')?.getAttribute('data-testid')
 const groups = () => Object.fromEntries(projects.map((p) => [p.title, groupOf(p)]))

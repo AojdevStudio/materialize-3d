@@ -25,7 +25,7 @@ vi.mock('@tauri-apps/api/webview', () => ({
   }),
 }))
 
-import type { Project } from '../../sidecar/src/protocol'
+import type { AppState, Project } from '../../sidecar/src/protocol'
 import type { ProjectFile } from './api'
 import StudioApp from './StudioApp'
 import { useTheme } from './theme'
@@ -38,7 +38,7 @@ URL.revokeObjectURL = vi.fn()
 
 const projectA = { id: '2026-11-06-a', conversation: 2, title: 'Project A', createdMs: 2, model: { provider: 'anthropic', modelId: 'claude-opus-5-5' }, helper: null }
 const projectB = { id: '2026-11-06-b', conversation: 3, title: 'Project B', createdMs: 1, model: { provider: 'anthropic', modelId: 'claude-opus-5-5' }, helper: null }
-const view = (project: string, more: object = {}) => ({ project, entries: [], running: false, waiting: null, turn: null, seq: 1, ...more })
+const view = (project: string, more: object = {}) => ({ project, entries: [], running: false, waiting: null, turn: null, handoffs: [], seq: 1, ...more })
 const settings = { model: { provider: 'anthropic', modelId: 'claude-opus-5-5' }, thinking: 'high', printer: { machine: 'Bambu Lab P2S 0.4 nozzle', process: '0.20mm Standard @BBL P2S', filament: 'Bambu PETG Basic @BBL P2S' } }
 const models = [
   { provider: 'anthropic', modelId: 'claude-opus-5-5', name: 'Opus 5.5' },
@@ -940,7 +940,7 @@ describe('StudioApp', () => {
     await waitFor(() => expect(screen.getByTestId('model-picker').textContent).toBe('Opus 5.5'))
     type('A clip')
     fireEvent.click(screen.getByTestId('model-picker'))
-    fireEvent.click(within(screen.getByRole('menu', { name: 'Models' })).getByText('GPT 6.1 Sol'))
+    fireEvent.click(within(screen.getByRole('menu', { name: 'Lead models' })).getByText('GPT 6.1 Sol'))
     await waitFor(() => expect((screen.getByTestId('send') as HTMLButtonElement).disabled).toBe(false))
     await first.release()
     await pause(50)
@@ -969,7 +969,38 @@ describe('StudioApp', () => {
     fireEvent.click(screen.getByTestId('send'))
     await waitFor(() => expect(sends()).toHaveLength(1))
     expect(last(saves())).toEqual({ key: 'new', text: 'A clip', attachments: ['/Users/me/a.jpg'] })
-    expect(sends()).toEqual([{ key: 'new', rev: draftRevs }])
+    expect(sends()).toEqual([{ key: 'new', rev: draftRevs, helper: null }])
+  })
+
+  it("starts the start screen's helper at the newest Astra, sends its pick with the first message only, and saves a project's own pick", async () => {
+    const astra = { provider: 'openai-codex', modelId: 'gpt-6-astra', name: 'Astra' }
+    mockSidecar({
+      'state.get': (_, real) => real().then((state) => ({ ...(state as AppState), settings: { ...(state as AppState).settings, astra: true } })),
+      'models.list': () => Promise.resolve([...models, astra]),
+    })
+    render(<StudioApp />)
+    const helper = () => screen.getByTestId('helper-picker')
+    const pick = (name: string) => {
+      fireEvent.click(helper())
+      fireEvent.click(within(screen.getByRole('menu', { name: 'Helper models' })).getByText(name))
+    }
+    await waitFor(() => expect(helper().textContent).toBe('Astra'))
+    pick('No helper')
+    expect(helper().textContent).toBe('None')
+    type('A clip')
+    await waitFor(() => expect((screen.getByTestId('send') as HTMLButtonElement).disabled).toBe(false))
+    fireEvent.click(screen.getByTestId('send'))
+    await waitFor(() => expect(sends()).toHaveLength(1))
+    expect(sends()).toEqual([{ key: 'new', rev: draftRevs, helper: null }])
+
+    await waitFor(() => expect(openTitle()).toBe('A clip'))
+    expect(helper().textContent).toBe('None')
+    pick('Astra')
+    await waitFor(() => expect(helper().textContent).toBe('Astra'))
+    expect(sidecarCalls('projects.setHelper')).toEqual([{ project: made.id, model: { provider: astra.provider, modelId: astra.modelId } }])
+
+    fireEvent.click(screen.getByTestId('new-project'))
+    expect(helper().textContent).toBe('Astra')
   })
 
   it('never brings back a sent start picture from a saved state that was read before the send', async () => {
@@ -1325,7 +1356,7 @@ describe('StudioApp', () => {
     fireEvent.click(screen.getByTestId('send'))
     await waitFor(() => expect(sends()).toHaveLength(1))
     expect(last(saves())).toEqual({ key: 'new', text: 'Make this', attachments: files })
-    expect(sends()).toEqual([{ key: 'new', rev: draftRevs }])
+    expect(sends()).toEqual([{ key: 'new', rev: draftRevs, helper: null }])
   })
 
   it("lists the signed-in providers' models with their marks, and keeps each project's pick", async () => {
@@ -1337,7 +1368,7 @@ describe('StudioApp', () => {
     fireEvent.click(await projectList().findByText('Project A'))
     await waitFor(() => expect(openTitle()).toBe('Project A'))
     fireEvent.click(screen.getByTestId('model-picker'))
-    const items = within(screen.getByRole('menu', { name: 'Models' })).getAllByRole('menuitemradio')
+    const items = within(screen.getByRole('menu', { name: 'Lead models' })).getAllByRole('menuitemradio')
     expect(items.map((item) => [item.textContent, item.getAttribute('aria-checked')])).toEqual([
       ['Opus 5.5', 'true'],
       ['Sonnet 5.5', 'false'],
@@ -1361,7 +1392,7 @@ describe('StudioApp', () => {
     // On the start screen, a pick is the model the next project starts with.
     fireEvent.click(screen.getByTestId('new-project'))
     fireEvent.click(screen.getByTestId('model-picker'))
-    fireEvent.click(within(screen.getByRole('menu', { name: 'Models' })).getByText('Sonnet 5.5'))
+    fireEvent.click(within(screen.getByRole('menu', { name: 'Lead models' })).getByText('Sonnet 5.5'))
     await waitFor(() => expect(picked()).toBe('Sonnet 5.5'))
     expect(sidecarCalls('settings.set')).toEqual([{ model: { provider: 'anthropic', modelId: 'claude-sonnet-5-5' } }])
     expect(store.model).toEqual({ provider: 'anthropic', modelId: 'claude-sonnet-5-5' })
@@ -1398,7 +1429,7 @@ describe('StudioApp', () => {
     await waitFor(() => expect(button.textContent).toBe('claude-opus-4-8'))
     expect(button.querySelector('.model-mark svg')?.getAttribute('fill')).toBe('#D97757')
     fireEvent.click(button)
-    const items = within(screen.getByRole('menu', { name: 'Models' })).getAllByRole('menuitemradio')
+    const items = within(screen.getByRole('menu', { name: 'Lead models' })).getAllByRole('menuitemradio')
     expect(items.map((item) => [item.textContent, item.getAttribute('aria-checked')])).toEqual([
       ['Opus 5.5', 'false'],
       ['Sonnet 5.5', 'false'],
