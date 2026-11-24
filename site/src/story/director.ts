@@ -125,6 +125,8 @@ export function startStory(root: HTMLElement, motion: Motion, onStatus: (status:
   /** The scroll offset `target` was read at. */
   let targetScroll = 0;
   let raf = 0;
+  /** When the last eased frame ran, or 0 while P is settled. */
+  let eased = 0;
   let stopped = false;
 
   const scrollVh = () => (window.scrollY - top) / vh;
@@ -311,11 +313,14 @@ export function startStory(root: HTMLElement, motion: Motion, onStatus: (status:
     }
   }
 
-  function tick() {
+  function tick(now: number) {
     raf = 0;
     const gap = target - P;
-    P = motion === "still" || Math.abs(gap) < 0.02 ? target : P + gap * 0.16;
+    // Ease by time, not by frame, so a slow renderer or a 120 Hz display settles as fast as a 60 Hz one: 0.16 of the gap per 60th of a second.
+    const step = eased ? 1 - 0.84 ** ((now - eased) / (1000 / 60)) : 0.16;
+    P = motion === "still" || Math.abs(gap) < 0.02 ? target : P + gap * step;
     frame();
+    eased = P === target ? 0 : now;
     if (P !== target) raf = requestAnimationFrame(tick);
     // The canvas says which scroll offset its last settled frame shows. A software renderer can take seconds
     // per frame, so this is the one signal that the view and its text have caught up with the scroll.
