@@ -1,12 +1,13 @@
 //! The messages this device has not sent yet, one file per chat in the app data folder, so a draft written while the
 //! computer is out of reach survives a relaunch. A draft whose send went out but was not confirmed keeps that send's
-//! revision, so the window asks the computer about it before it offers a retry.
+//! revision, so the window settles it with the computer before it offers the draft again.
 
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Picture {
@@ -50,9 +51,6 @@ impl Serialize for Error {
     }
 }
 
-/// The end of the name a save writes first, before its rename.
-const TEMP: &str = ".json.tmp";
-
 /// The folder of drafts. The app sets it up from its data folder at start.
 pub struct Drafts {
     dir: PathBuf,
@@ -63,15 +61,14 @@ impl Drafts {
         Drafts { dir }
     }
 
-    /// The draft's file, named by the project id's UTF-8 bytes in lowercase hex, so every id names one file in the folder
-    /// and none outside it. An empty id is refused, and so is one whose longest file name, the temporary one a save
-    /// writes, would pass the 255 bytes a file name may hold.
+    /// The draft's file, named by the SHA-256 of the project id's UTF-8 bytes in lowercase hex, so every id, however
+    /// long or whatever it holds, names one file of 64 characters in the folder and none outside it. An empty id is
+    /// refused.
     fn file(&self, project: &str) -> Result<PathBuf, Error> {
-        const HEX: &[u8; 16] = b"0123456789abcdef";
-        let name: String = project.bytes().flat_map(|byte| [HEX[usize::from(byte >> 4)], HEX[usize::from(byte & 0xf)]]).map(char::from).collect();
-        if name.is_empty() || name.len() + TEMP.len() > 255 {
+        if project.is_empty() {
             return Err(Error::Project(project.into()));
         }
+        let name: String = Sha256::digest(project.as_bytes()).iter().map(|byte| format!("{byte:02x}")).collect();
         Ok(self.dir.join(format!("{name}.json")))
     }
 
@@ -91,7 +88,7 @@ impl Drafts {
             return remove(&file);
         }
         fs::create_dir_all(&self.dir)?;
-        let temp = file.with_extension(&TEMP[1..]);
+        let temp = file.with_extension("json.tmp");
         fs::write(&temp, serde_json::to_vec(draft)?)?;
         fs::rename(&temp, &file)?;
         Ok(())
@@ -143,7 +140,8 @@ mod tests {
         assert_eq!(drafts.load("2026-11-24-desk-clip").expect("a load"), None);
         drafts.save("2026-11-24-desk-clip", &photo()).expect("a save");
         assert_eq!(drafts.load("2026-11-24-desk-clip").expect("a load"), Some(photo()));
-        assert!(!drafts.dir.join("2026-11-24-desk-clip.json.tmp").exists());
+        // The temporary file the save wrote first is gone.
+        assert_eq!(fs::read_dir(&drafts.dir).expect("the folder").count(), 1);
     }
 
     #[test]
@@ -152,7 +150,7 @@ mod tests {
         drafts.save("desk-clip", &photo()).expect("a save");
         let empty = Draft { text: String::new(), pictures: vec![], sent: None };
         drafts.save("desk-clip", &empty).expect("a save");
-        assert!(!drafts.dir.join("desk-clip.json").exists());
+        assert_eq!(fs::read_dir(&drafts.dir).expect("the folder").count(), 0);
         assert_eq!(drafts.load("desk-clip").expect("a load"), None);
         // An empty draft that still waits on a send's answer is kept.
         let unconfirmed = Draft { sent: Some(Sent { rev: 7 }), ..empty };
@@ -163,25 +161,24 @@ mod tests {
     #[test]
     fn any_project_id_keeps_its_draft_in_the_folder() {
         let drafts = drafts("ids");
-        for project in ["Desk Clip", "../escape", "a/b", "..", "-flag", "x.json", "Ünïcode clip"] {
+        let long = "p".repeat(124);
+        for project in ["Desk Clip", "../escape", "a/b", "..", "-flag", "x.json", "Ünïcode clip", &long] {
             drafts.save(project, &photo()).expect(project);
             assert_eq!(drafts.load(project).expect(project), Some(photo()), "{project}");
         }
         assert_eq!(drafts.load("desk clip").expect("a load"), None);
         let names: Vec<_> = fs::read_dir(&drafts.dir).expect("the folder").map(|entry| entry.expect("an entry").file_name()).collect();
-        assert_eq!(names.len(), 7);
-        assert!(drafts.dir.join("4465736b20436c6970.json").exists());
+        assert_eq!(names.len(), 8);
+        assert!(drafts.dir.join("31a548c4ae36a1ac97c5c1033ef6128947b6a47c20bb96d3cd24dc6753c58a87.json").exists());
+        assert!(drafts.dir.join("1ba7343c47dc442de7dec43a995deb9a7b62234ecca16d7c6f597b5155bd85b1.json").exists());
         assert!(!drafts.dir.parent().expect("a parent").join("escape.json").exists());
     }
 
     #[test]
-    fn an_empty_or_overlong_project_id_names_no_file() {
+    fn an_empty_project_id_names_no_file() {
         let drafts = drafts("refused");
-        drafts.save(&"p".repeat(123), &photo()).expect("the longest id");
-        for project in ["".to_string(), "p".repeat(124)] {
-            assert!(matches!(drafts.save(&project, &photo()), Err(Error::Project(_))), "{project}");
-            assert!(matches!(drafts.load(&project), Err(Error::Project(_))), "{project}");
-        }
+        assert!(matches!(drafts.save("", &photo()), Err(Error::Project(_))));
+        assert!(matches!(drafts.load(""), Err(Error::Project(_))));
     }
 
     #[test]

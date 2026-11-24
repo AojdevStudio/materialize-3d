@@ -113,20 +113,22 @@ pub fn serve<R: Runtime>(context: UriSchemeContext<'_, R>, request: Request<Vec<
 }
 
 /// Whether the token may go with this request. Tailscale Serve can mount other services under other paths of the same
-/// origin, and it decodes a path before it picks a mount, so the token goes only with the four chat reads this window
-/// makes, segment by segment, and never with an encoded slash or backslash. `path` is the one sent, after `url`
-/// resolved it.
+/// origin, and it decodes a path before it picks a mount, so the token goes only with the routes this window calls,
+/// each with its own method, segment by segment, and never with an encoded slash or backslash. `path` is the one sent,
+/// after `url` resolved it.
 fn carries_token(method: &Method, path: &str) -> bool {
     let lower = path.to_ascii_lowercase();
-    if *method != Method::GET || lower.contains("%2f") || lower.contains("%5c") || path.contains('\\') {
+    if lower.contains("%2f") || lower.contains("%5c") || path.contains('\\') {
         return false;
     }
     let segments: Vec<&str> = path.split('/').skip(1).collect();
-    match segments.as_slice() {
-        ["api", "v1", "chats"] => true,
-        ["api", "v1", "chats", project] => !project.is_empty(),
-        ["api", "v1", "chats", project, "files"] => !project.is_empty(),
-        ["api", "v1", "chats", project, "files", rel @ ..] => !project.is_empty() && !rel.is_empty() && rel.iter().all(|part| !part.is_empty()),
+    match (method.as_str(), segments.as_slice()) {
+        ("GET", ["api", "v1", "chats"]) => true,
+        ("GET", ["api", "v1", "chats", project] | ["api", "v1", "chats", project, "files"])
+        | ("PUT", ["api", "v1", "chats", project, "draft"])
+        | ("POST", ["api", "v1", "chats", project, "send"]) => !project.is_empty(),
+        ("POST", ["api", "v1", "chats", project, "sends", rev, "settle"]) => !project.is_empty() && !rev.is_empty() && rev.bytes().all(|b| b.is_ascii_digit()),
+        ("GET", ["api", "v1", "chats", project, "files", rel @ ..]) => !project.is_empty() && !rel.is_empty() && rel.iter().all(|part| !part.is_empty()),
         _ => false,
     }
 }
@@ -181,12 +183,15 @@ mod tests {
     }
 
     #[test]
-    fn the_token_goes_only_with_chat_reads() {
+    fn the_token_goes_only_with_chat_reads_and_this_device_s_sends() {
         let origin = url::Url::parse("https://studio.tail1234.ts.net:47380/").expect("an origin");
         let sent = |method: Method, path: &str| carries_token(&method, url(&origin, path, None).path());
         for path in ["/api/v1/chats", "/api/v1/chats/2026-11-08-cube", "/api/v1/chats/2026-11-08-cube/files", "/api/v1/chats/2026-11-08-cube/files/print/cube.3mf"] {
             assert!(sent(Method::GET, path), "{path}");
         }
+        assert!(sent(Method::PUT, "/api/v1/chats/2026-11-08-cube/draft"));
+        assert!(sent(Method::POST, "/api/v1/chats/2026-11-08-cube/send"));
+        assert!(sent(Method::POST, "/api/v1/chats/2026-11-08-cube/sends/41/settle"));
         for path in [
             "/",
             "/other/service",
@@ -203,7 +208,31 @@ mod tests {
         ] {
             assert!(!sent(Method::GET, path), "{path}");
         }
-        assert!(!sent(Method::POST, "/api/v1/chats/2026-11-08-cube/send"));
+        for (method, path) in [
+            (Method::GET, "/api/v1/chats/2026-11-08-cube/draft"),
+            (Method::POST, "/api/v1/chats/2026-11-08-cube/draft"),
+            (Method::PUT, "/api/v1/chats//draft"),
+            (Method::PUT, "/api/v1/chats/2026-11-08-cube/draft/x"),
+            (Method::PUT, "/api/v1/chats/2026-11-08-cube%2Fother/draft"),
+            (Method::PUT, "/api/v1/chats/2026-11-08-cube%5Cother/draft"),
+            (Method::PUT, "/api/v1/chats/2026-11-08-cube/send"),
+            (Method::GET, "/api/v1/chats/2026-11-08-cube/send"),
+            (Method::POST, "/api/v1/chats//send"),
+            (Method::POST, "/api/v1/chats/2026-11-08-cube/send/x"),
+            (Method::POST, "/api/v1/chats/2026-11-08-cube/files"),
+            (Method::GET, "/api/v1/chats/2026-11-08-cube/sends/41/settle"),
+            (Method::PUT, "/api/v1/chats/2026-11-08-cube/sends/41/settle"),
+            (Method::POST, "/api/v1/chats/2026-11-08-cube/sends//settle"),
+            (Method::POST, "/api/v1/chats/2026-11-08-cube/sends/4a/settle"),
+            (Method::POST, "/api/v1/chats/2026-11-08-cube/sends/-1/settle"),
+            (Method::POST, "/api/v1/chats/2026-11-08-cube/sends/41"),
+            (Method::POST, "/api/v1/chats/2026-11-08-cube/sends/41/settle/x"),
+            (Method::POST, "/api/v1/chats//sends/41/settle"),
+            (Method::POST, "/api/v1/chats/2026-11-08-cube%2fother/sends/41/settle"),
+            (Method::DELETE, "/api/v1/chats/2026-11-08-cube/draft"),
+        ] {
+            assert!(!sent(method.clone(), path), "{method} {path}");
+        }
     }
 
     #[test]
