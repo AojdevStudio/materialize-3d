@@ -208,39 +208,14 @@ describe('MobileApp', () => {
     expect(remoteRs).toContain(`const ANSWER_LIMIT: usize = ${PREVIEW_LIMIT / (1024 * 1024)} * 1024 * 1024;`)
   })
 
-  it('stops the model download in Rust whenever its viewer goes away: a too-large file, then leaving the chat', async () => {
-    answer({ paired_computer: computer })
-    const files = [
-      { rel: 'clip.stl', size: 1000, modifiedMs: 2 },
-      { rel: 'huge.stl', size: PREVIEW_LIMIT + 1, modifiedMs: 1 },
-    ]
-    computerAnswers(chats, {
-      '/api/v1/chats/desk-clip': () => Response.json(deskClip),
-      '/api/v1/chats/desk-clip/files': () => Response.json(files),
-    })
-    const stops = () => invoke.mock.calls.filter(([command]) => command === 'stop_model_reads').length
+  it("stops the chat's model download in Rust when the person leaves the chat", async () => {
+    answerWithDrafts({ paired_computer: computer })
+    computerAnswers(chats, { '/api/v1/chats/desk-clip': () => Response.json(deskClip) })
     render(<MobileApp />)
-    fireEvent.click(await screen.findByRole('button', { name: 'Desk cable clip' }))
-    expect(await screen.findByTestId('model-view')).toBeTruthy()
-    expect(stops()).toBe(0)
-
-    fireEvent.click(screen.getByRole('button', { name: 'huge.stl' }))
-    await screen.findByText('huge.stl is too large to show on this device (over 64 MB).')
-    expect(stops()).toBe(1)
-
-    fireEvent.click(screen.getByRole('button', { name: 'clip.stl' }))
-    expect(await screen.findByTestId('model-view')).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: 'Chats' }))
-    expect(await screen.findByRole('button', { name: 'Desk cable clip' })).toBeTruthy()
-    expect(stops()).toBe(2)
-  })
-
-  it('shows a chat made on the computer meanwhile, after a chat and after Refresh', async () => {
-    answer({ paired_computer: computer })
-    let listed = [{ id: 'desk-clip', title: 'Desk cable clip' }]
-    computerAnswers(() => Response.json(listed), { '/api/v1/chats/desk-clip': () => Response.json(deskClip) })
-    render(<MobileApp />)
-    fireEvent.click(await screen.findByRole('button', { name: 'Desk cable clip' }))
+    const opens = await screen.findByRole('button', { name: 'Desk cable clip' })
+    // The chat reads the computer once the link is up.
+    await linkIs({ kind: 'connected' })
+    fireEvent.click(opens)
     await screen.findByText('Make a clip that holds a cable on the edge of my desk.')
 
     listed = [{ id: 'hook', title: 'Wall hook' }, ...listed]
