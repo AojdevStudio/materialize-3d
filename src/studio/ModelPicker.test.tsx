@@ -50,13 +50,14 @@ describe('ModelPicker', () => {
     expect(onPick).not.toHaveBeenCalled()
   })
 
-  it('closes without a pick on the chosen model, and picks another', () => {
+  it('picks the chosen model again, which lets a chat choose a lead it found retired, and picks another', () => {
     const button = show()
     fireEvent.click(button)
     fireEvent.click(screen.getByRole('menuitemradio', { name: 'Opus 5.5' }))
     expect(menu()).toBeNull()
-    expect(onPick).not.toHaveBeenCalled()
+    expect(onPick).toHaveBeenCalledExactlyOnceWith({ provider: 'anthropic', modelId: 'claude-opus-5-5' })
 
+    onPick.mockClear()
     fireEvent.click(button)
     fireEvent.click(screen.getByRole('menuitemradio', { name: 'GPT 6.1 Sol' }))
     expect(menu()).toBeNull()

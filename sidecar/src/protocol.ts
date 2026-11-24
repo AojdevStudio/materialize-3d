@@ -56,7 +56,8 @@ export type Settings = {
  * `model` is the lead model the project's next turn runs on, and `helper` the helper model that turn can hand tasks to,
  * or null when the lead works alone. A project gets the start screen's pair when it is made. A project from before
  * pairs gets the lead it ran on and the helper the Astra setting gave it. `retired` holds each role whose version a
- * provider reported removed in this chat, until the person chooses that role again.
+ * provider reported removed in this chat, until the person chooses that role again. Its replacement is not kept: it
+ * is read from the catalog of the app that runs, so an update that adds a version offers it.
  */
 export type Project = {
   id: string
@@ -66,7 +67,7 @@ export type Project = {
   printed?: boolean
   model: ModelChoice
   helper: ModelChoice | null
-  retired?: Retired[]
+  retired?: Omit<Retired, 'replacement'>[]
 }
 
 /**

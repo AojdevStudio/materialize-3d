@@ -6,6 +6,7 @@ import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
 import { createModels, InMemoryCredentialStore } from '@earendil-works/pi-ai'
 import { AgentDoc, type ConversationId, createRegistry, defineDoc, type TaskId } from '@earendil-works/pi-durable'
 import type { AppState, ChatEntry, ChatView, ModelChoice, Need, Project, Turn } from '../src/protocol'
+import { CATALOG, type Catalog } from '../src/offered'
 import { Store } from '../src/store'
 import { spawnSidecar } from './sidecar'
 
@@ -57,7 +58,7 @@ async function project(app: App, lead: ModelChoice, helper: ModelChoice | null):
 }
 
 /** Opens the store the sidecar left, once it has quit, to read what only the store holds. */
-const openStore = (where: Where) =>
+const openStore = (where: Where, catalog?: Catalog) =>
   Store.open({
     dataDir: where.data,
     projectsDir: where.projects,
@@ -66,6 +67,7 @@ const openStore = (where: Where) =>
     env: () => {
       throw new Error('no conversation runs here')
     },
+    ...(catalog === undefined ? {} : { catalog }),
   })
 
 describe('a new chat', () => {
@@ -360,6 +362,29 @@ describe('the catalog', () => {
     expect(await retiredRoles(app, id)).toEqual([])
     await app.quit()
   }, 60_000)
+
+  test('names the replacement from the catalog the app runs now, not the one that saw the removal', async () => {
+    const where = scratch()
+    const opus = { provider: 'anthropic', modelId: 'claude-opus-5-5' }
+    const before = await openStore(where)
+    await before.setSettings({ model: opus })
+    const rev = await before.setDraft('new', { text: 'a clip', attachments: [] })
+    const { project } = await before.startProject(rev, null)
+    await before.harness.commit((tx) => before.retire(tx, project.id, 'lead', opus), BACKGROUND_CONTEXT)
+    expect(await before.retiredFor(project.id)).toEqual([{ role: 'lead', model: opus, replacement: null }])
+    await before.close()
+
+    // An update ships Opus 5.6.
+    const newer: Catalog = {
+      ...CATALOG,
+      families: CATALOG.families.map((family) =>
+        family.name === 'Opus' ? { ...family, versions: [{ modelId: 'claude-opus-5-6', name: 'Opus 5.6' }, ...family.versions] } : family,
+      ),
+    }
+    const after = await openStore(where, newer)
+    expect(await after.retiredFor(project.id)).toEqual([{ role: 'lead', model: opus, replacement: { provider: 'anthropic', modelId: 'claude-opus-5-6' } }])
+    await after.close()
+  })
 
   test('names the way out of a retired role whose family has no version left to replace it', async () => {
     const store = await openStore(scratch())

@@ -32,7 +32,8 @@ export default function ModelPicker({ models, chosen, onPick }: Props) {
               aria-checked={isChosen({ provider, modelId })}
               onClick={() => {
                 setOpen(false)
-                if (!isChosen({ provider, modelId })) onPick({ provider, modelId })
+                // The chosen model picks again too: that is how a chat chooses again a lead it found retired.
+                onPick({ provider, modelId })
               }}
             >
               <Mark modelId={modelId} />

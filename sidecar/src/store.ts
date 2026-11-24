@@ -356,7 +356,11 @@ export class Store {
    */
   #retiredRoles(project: Project, astra: boolean): Retired[] {
     const retired = project.retired ?? []
-    return [...retired.filter((r) => r.role === 'lead'), ...(astra ? retired.filter((r) => r.role === 'helper') : [])].map((r) => JSON.parse(JSON.stringify(r)))
+    return [...retired.filter((r) => r.role === 'lead'), ...(astra ? retired.filter((r) => r.role === 'helper') : [])].map(({ role, model }) => ({
+      role,
+      model: copy(model),
+      replacement: replacementFor(this.catalog, model),
+    }))
   }
 
   /**
@@ -420,7 +424,7 @@ export class Store {
     const saved = await this.#projectIn(tx, project)
     const current = role === 'lead' ? saved.model : saved.helper
     if (current?.provider === model.provider && current.modelId === model.modelId) {
-      saved.retired = [...(saved.retired ?? []).filter((r) => r.role !== role), { ...retired, model: copy(model) }]
+      saved.retired = [...(saved.retired ?? []).filter((r) => r.role !== role), { role, model: copy(model) }]
     }
     return retired
   }
