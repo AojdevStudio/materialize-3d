@@ -792,6 +792,11 @@ pre {
   white-space: nowrap;
 }
 
+/* A long command shortens, so the step count beside it stays whole. */
+.handoff-status .trace-count {
+  flex-shrink: 0;
+}
+
 .handoff-result {
   max-height: 240px;
   overflow-y: auto;
