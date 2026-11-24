@@ -201,6 +201,19 @@ describe('buildChat', () => {
       expect(buildChat(asked, false, { handoffs: [], helper: astra })[3]).toEqual({ ...head, state: 'stopped', result: STOPPED })
     })
 
+    it("keeps each turn's helper when a provider gives a later turn's call the same id", () => {
+      const again: ChatEntry[] = [
+        { id: 6, kind: 'user', text: 'Again', images: [], files: [] },
+        { id: 7, kind: 'assistant', model: opus, text: '', calls: [{ id: 'h1', name: 'helper', args: { task } }] },
+        { id: 8, kind: 'tool', callId: 'h1', name: 'helper', text: 'Fits too.', failed: false, durationMs: 2_000, handoff: { ...handoff, helper: opus } },
+      ]
+      const items = buildChat([...asked, { id: 5, kind: 'tool', callId: 'h1', name: 'helper', text: 'Fits.', failed: false, durationMs: 68_000, handoff }, ...again], false)
+      expect(items.flatMap((item) => (item.kind === 'handoff' ? [[item.helper, item.result]] : []))).toEqual([
+        [astra, 'Fits.'],
+        [opus, 'Fits too.'],
+      ])
+    })
+
     it('stays a trace step when nothing names its helper, as an Astra call from before pairs or a result that recorded none', () => {
       const unnamed = (entries: ChatEntry[]) => buildChat(entries, false).flatMap((item) => (item.kind === 'trace' ? item.lines : []))
       const oldAstra: ChatEntry[] = [

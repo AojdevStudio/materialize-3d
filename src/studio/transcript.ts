@@ -133,7 +133,16 @@ const NO_HELPERS: LiveHelpers = { handoffs: [], helper: null }
 export function buildChat(entries: ChatEntry[], running = true, live: LiveHelpers = NO_HELPERS): ChatItem[] {
   const items: ChatItem[] = []
   const tools = new Map<string, ToolItem | HandoffItem>()
-  const results = new Map(entries.flatMap((entry) => (entry.kind === 'tool' ? [[entry.callId, entry] as const] : [])))
+  // Each call's result, by the assistant entry that made the call and the call's id. A provider can give calls in
+  // different turns the same id, so a result belongs to the newest call with its id before it.
+  const results = new Map<string, Extract<ChatEntry, { kind: 'tool' }>>()
+  const madeBy = new Map<string, number>()
+  for (const entry of entries) {
+    if (entry.kind === 'assistant') for (const call of entry.calls) madeBy.set(call.id, entry.id)
+    if (entry.kind !== 'tool') continue
+    const owner = madeBy.get(entry.callId)
+    if (owner !== undefined) results.set(`${owner}:${entry.callId}`, entry)
+  }
   // The open turn is the one after the newest message, so only its calls may take the turn's helper.
   const openTurn = entries.map((entry) => entry.kind).lastIndexOf('user')
   /** The trace the next step joins. A message or an answer without steps closes it. */
@@ -156,15 +165,16 @@ export function buildChat(entries: ChatEntry[], running = true, live: LiveHelper
     }
   }
   /** A `helper` call as its handoff entry, or undefined when nothing names its helper. */
-  const handoffItem = (call: { id: string; args: unknown }, lead: ModelChoice, inOpenTurn: boolean): HandoffItem | undefined => {
+  const handoffItem = (call: { id: string; args: unknown }, made: { id: number; model: ModelChoice }, inOpenTurn: boolean): HandoffItem | undefined => {
     const task = describe(HELPER, call.args).detail
-    const recorded = results.get(call.id)
+    const lead = made.model
+    const recorded = results.get(`${made.id}:${call.id}`)
     if (recorded !== undefined) {
       if (recorded.handoff === undefined) return undefined
       const { helper, startedMs } = recorded.handoff
       return { kind: 'handoff', id: call.id, lead, helper, task, state: 'running', startedMs }
     }
-    const progress = live.handoffs.find((handoff) => handoff.callId === call.id)
+    const progress = inOpenTurn ? live.handoffs.find((handoff) => handoff.callId === call.id) : undefined
     if (progress !== undefined) {
       const { handoff, steps, last } = progress
       const newest = last === null ? undefined : describe(last.name, last.args)
@@ -210,7 +220,7 @@ export function buildChat(entries: ChatEntry[], running = true, live: LiveHelper
           else trace.lines.push({ kind: 'note', text: entry.text })
         }
         for (const call of entry.calls) {
-          const handoff = call.name === HELPER ? handoffItem(call, entry.model, i > openTurn) : undefined
+          const handoff = call.name === HELPER ? handoffItem(call, entry, i > openTurn) : undefined
           if (handoff !== undefined) {
             tools.set(call.id, handoff)
             items.push(handoff)

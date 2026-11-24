@@ -97,6 +97,21 @@ describe('a new chat', () => {
     await expect(startWith('a hook', { provider: 'faux', modelId: 'faux-z' })).rejects.toThrow('faux has no model faux-z')
     await app.quit()
   })
+
+  test('sent again after its first try failed, takes the helper picked on the start screen since', async () => {
+    const where = scratch()
+    const app = await start(where, 'helper')
+    await app.call('settings.set', { model: FAUX_A })
+    const { rev } = (await app.call('drafts.set', { key: 'new', text: 'make the project', attachments: [] })) as { rev: number }
+    // The first try makes the project, then an installing update refuses its message.
+    app.gate.installing = true
+    await expect(app.call('chat.send', { key: 'new', rev, helper: FAUX_B })).rejects.toThrow('An update is installing.')
+    app.gate.installing = false
+    const { project } = (await app.call('chat.send', { key: 'new', rev, helper: null })) as { project: Project }
+    expect(await projectIn(app, project.id)).toMatchObject({ helper: null })
+    expect((await view(app, project.id)).turn).toMatchObject({ model: FAUX_A, helper: null })
+    await app.quit()
+  })
 })
 
 describe('a pair', () => {

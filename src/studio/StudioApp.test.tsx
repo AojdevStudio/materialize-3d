@@ -969,7 +969,7 @@ describe('StudioApp', () => {
     fireEvent.click(screen.getByTestId('send'))
     await waitFor(() => expect(sends()).toHaveLength(1))
     expect(last(saves())).toEqual({ key: 'new', text: 'A clip', attachments: ['/Users/me/a.jpg'] })
-    expect(sends()).toEqual([{ key: 'new', rev: draftRevs, helper: null }])
+    expect(sends()).toEqual([{ key: 'new', rev: draftRevs }])
   })
 
   it("starts the start screen's helper at the newest Astra, sends its pick with the first message only, and saves a project's own pick", async () => {
@@ -1001,6 +1001,22 @@ describe('StudioApp', () => {
 
     fireEvent.click(screen.getByTestId('new-project'))
     expect(helper().textContent).toBe('Astra')
+  })
+
+  it('leaves the start helper to the sidecar until the person picks one, as before the model list arrives', async () => {
+    let answerModels: () => void = () => {}
+    mockSidecar({
+      'state.get': (_, real) => real().then((state) => ({ ...(state as AppState), settings: { ...(state as AppState).settings, astra: true } })),
+      'models.list': () => new Promise((resolve) => (answerModels = () => resolve([...models, { provider: 'openai-codex', modelId: 'gpt-6-astra', name: 'Astra' }]))),
+    })
+    render(<StudioApp />)
+    await screen.findByText('Engine 1.2.3')
+    type('A clip')
+    await waitFor(() => expect((screen.getByTestId('send') as HTMLButtonElement).disabled).toBe(false))
+    fireEvent.click(screen.getByTestId('send'))
+    await waitFor(() => expect(sends()).toHaveLength(1))
+    await act(async () => answerModels())
+    expect(sends()).toEqual([{ key: 'new', rev: draftRevs }])
   })
 
   it('never brings back a sent start picture from a saved state that was read before the send', async () => {
@@ -1356,7 +1372,7 @@ describe('StudioApp', () => {
     fireEvent.click(screen.getByTestId('send'))
     await waitFor(() => expect(sends()).toHaveLength(1))
     expect(last(saves())).toEqual({ key: 'new', text: 'Make this', attachments: files })
-    expect(sends()).toEqual([{ key: 'new', rev: draftRevs, helper: null }])
+    expect(sends()).toEqual([{ key: 'new', rev: draftRevs }])
   })
 
   it("lists the signed-in providers' models with their marks, and keeps each project's pick", async () => {

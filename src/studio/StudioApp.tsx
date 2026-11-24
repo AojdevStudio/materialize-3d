@@ -159,8 +159,10 @@ export default function StudioApp() {
       onSend={() => {
         if (running || notReady) return
         if (current) void drafts.send()
+        // Only a helper the person picked goes with the send. Without a pick the sidecar gives the default, which the
+        // window may not know yet, as before the model list arrives.
         else
-          void drafts.send(chosenHelper).then((project) => {
+          void drafts.send(startHelper?.pick).then((project) => {
             if (project !== undefined) setStartHelper(null)
           })
       }}
