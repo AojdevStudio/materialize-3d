@@ -1,0 +1,580 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		01EFD5B25F3F7516359B2EAF /* main.mm in Sources */ = {isa = PBXBuildFile; fileRef = 92FC95BF63F06FD948A37006 /* main.mm */; };
+		03A87DD1C0D28D1CF1D358AE /* QuartzCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AE798645D4E51C8B02FFD167 /* QuartzCore.framework */; };
+		496C50EB58C76DBFB00B64CA /* libapp.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 0F65D8DCEC6186608A342A25 /* libapp.a */; };
+		98E03ADDA8EDC2D8E4F2E32C /* MetalKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 195DBEA1E1E06F9613DCB0D9 /* MetalKit.framework */; };
+		9B482CC2522921E983744F6F /* Metal.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0B66F1F2092BE8CE9270BCFB /* Metal.framework */; };
+		D15CEAA7A45480A14A510959 /* assets in Resources */ = {isa = PBXBuildFile; fileRef = 23C05D2B65B16F8931E39012 /* assets */; };
+		D9A6D0158C147D051BD3AEEC /* CoreGraphics.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 7FE61AC9884AB9C748BF703B /* CoreGraphics.framework */; };
+		DB994F697AD89C73B32F2880 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B242456B8E1AA4864805F3F0 /* Assets.xcassets */; };
+		E3CC93364B51DC2D7328E0F7 /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 55909093CC6C9D82F27BB8FF /* LaunchScreen.storyboard */; };
+		EDFE677237F1F37673B6EA4F /* PairAndViewUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 01E87958EE407D2F779B6B19 /* PairAndViewUITests.swift */; };
+		F337EDC415EE0AB994AFB4E8 /* Security.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = C1C5EA306BCD8F23BB7964D3 /* Security.framework */; };
+		F3AE3717C1BCAE398A258507 /* WebKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = DC89DEE372E2C369A0105CDB /* WebKit.framework */; };
+		F9FD0766419BC4F8600840E5 /* UIKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B77DA21D63B7BD2F600B31C9 /* UIKit.framework */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		9A9A84C8B281D724D2B2FAD8 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 722D0FC64AC43AAC330FF13B /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 2CE5A901C6333D66F627A2E9;
+			remoteInfo = "materialize-3d-mobile_iOS";
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		01E87958EE407D2F779B6B19 /* PairAndViewUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairAndViewUITests.swift; sourceTree = "<group>"; };
+		0B66F1F2092BE8CE9270BCFB /* Metal.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Metal.framework; path = System/Library/Frameworks/Metal.framework; sourceTree = SDKROOT; };
+		0F65D8DCEC6186608A342A25 /* libapp.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; path = libapp.a; sourceTree = "<group>"; };
+		191B7B6104FA9D1683302AB8 /* bindings.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = bindings.h; sourceTree = "<group>"; };
+		195DBEA1E1E06F9613DCB0D9 /* MetalKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = MetalKit.framework; path = System/Library/Frameworks/MetalKit.framework; sourceTree = SDKROOT; };
+		1D612E2DC66E0E93133C871F /* materialize-3d-mobile_iOS.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = "materialize-3d-mobile_iOS.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		23C05D2B65B16F8931E39012 /* assets */ = {isa = PBXFileReference; lastKnownFileType = folder; path = assets; sourceTree = SOURCE_ROOT; };
+		55909093CC6C9D82F27BB8FF /* LaunchScreen.storyboard */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; path = LaunchScreen.storyboard; sourceTree = "<group>"; };
+		7FE61AC9884AB9C748BF703B /* CoreGraphics.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreGraphics.framework; path = System/Library/Frameworks/CoreGraphics.framework; sourceTree = SDKROOT; };
+		92FC95BF63F06FD948A37006 /* main.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = main.mm; sourceTree = "<group>"; };
+		930ED371BA05B46AD1CCDCFE /* materialize-3d-mobile_UITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = "materialize-3d-mobile_UITests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
+		AE798645D4E51C8B02FFD167 /* QuartzCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = QuartzCore.framework; path = System/Library/Frameworks/QuartzCore.framework; sourceTree = SDKROOT; };
+		B242456B8E1AA4864805F3F0 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		B77DA21D63B7BD2F600B31C9 /* UIKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UIKit.framework; path = System/Library/Frameworks/UIKit.framework; sourceTree = SDKROOT; };
+		C1C5EA306BCD8F23BB7964D3 /* Security.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Security.framework; path = System/Library/Frameworks/Security.framework; sourceTree = SDKROOT; };
+		CBC70D381FC29FE265F52AE9 /* lib.rs */ = {isa = PBXFileReference; path = lib.rs; sourceTree = "<group>"; };
+		DC89DEE372E2C369A0105CDB /* WebKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WebKit.framework; path = System/Library/Frameworks/WebKit.framework; sourceTree = SDKROOT; };
+		DCEF108C31486B30694C1672 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		EA88559C9CA6DC914DCC66E6 /* remote.rs */ = {isa = PBXFileReference; path = remote.rs; sourceTree = "<group>"; };
+		EA9DF2C749D12C0383587F97 /* paired.rs */ = {isa = PBXFileReference; path = paired.rs; sourceTree = "<group>"; };
+		F3033581A3187D0DAD0E1FC4 /* materialize-3d-mobile_iOS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "materialize-3d-mobile_iOS.entitlements"; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		1121FD4B1E60B764BAD83F78 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				496C50EB58C76DBFB00B64CA /* libapp.a in Frameworks */,
+				D9A6D0158C147D051BD3AEEC /* CoreGraphics.framework in Frameworks */,
+				9B482CC2522921E983744F6F /* Metal.framework in Frameworks */,
+				98E03ADDA8EDC2D8E4F2E32C /* MetalKit.framework in Frameworks */,
+				03A87DD1C0D28D1CF1D358AE /* QuartzCore.framework in Frameworks */,
+				F337EDC415EE0AB994AFB4E8 /* Security.framework in Frameworks */,
+				F9FD0766419BC4F8600840E5 /* UIKit.framework in Frameworks */,
+				F3AE3717C1BCAE398A258507 /* WebKit.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		11DEA9C3388653DFB6C727D4 /* bindings */ = {
+			isa = PBXGroup;
+			children = (
+				191B7B6104FA9D1683302AB8 /* bindings.h */,
+			);
+			path = bindings;
+			sourceTree = "<group>";
+		};
+		128A92C4C3A9296EDC8FC338 /* materialize-3d-mobile_iOS */ = {
+			isa = PBXGroup;
+			children = (
+				DCEF108C31486B30694C1672 /* Info.plist */,
+				F3033581A3187D0DAD0E1FC4 /* materialize-3d-mobile_iOS.entitlements */,
+			);
+			path = "materialize-3d-mobile_iOS";
+			sourceTree = "<group>";
+		};
+		384CDB9A1197A8505348DB9A /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				7FE61AC9884AB9C748BF703B /* CoreGraphics.framework */,
+				0F65D8DCEC6186608A342A25 /* libapp.a */,
+				0B66F1F2092BE8CE9270BCFB /* Metal.framework */,
+				195DBEA1E1E06F9613DCB0D9 /* MetalKit.framework */,
+				AE798645D4E51C8B02FFD167 /* QuartzCore.framework */,
+				C1C5EA306BCD8F23BB7964D3 /* Security.framework */,
+				B77DA21D63B7BD2F600B31C9 /* UIKit.framework */,
+				DC89DEE372E2C369A0105CDB /* WebKit.framework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		3D2774FEED813AAA1E60E4D9 /* UITests */ = {
+			isa = PBXGroup;
+			children = (
+				01E87958EE407D2F779B6B19 /* PairAndViewUITests.swift */,
+			);
+			path = UITests;
+			sourceTree = "<group>";
+		};
+		59DE07B76D0525FB2D2E233F /* src */ = {
+			isa = PBXGroup;
+			children = (
+				CBC70D381FC29FE265F52AE9 /* lib.rs */,
+				EA9DF2C749D12C0383587F97 /* paired.rs */,
+				EA88559C9CA6DC914DCC66E6 /* remote.rs */,
+			);
+			name = src;
+			path = ../../src;
+			sourceTree = "<group>";
+		};
+		A6FEF3CA63183926F2640C34 /* materialize-3d-mobile */ = {
+			isa = PBXGroup;
+			children = (
+				92FC95BF63F06FD948A37006 /* main.mm */,
+				11DEA9C3388653DFB6C727D4 /* bindings */,
+			);
+			path = "materialize-3d-mobile";
+			sourceTree = "<group>";
+		};
+		B172E10EEA50F51B04523194 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				1D612E2DC66E0E93133C871F /* materialize-3d-mobile_iOS.app */,
+				930ED371BA05B46AD1CCDCFE /* materialize-3d-mobile_UITests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		B3839D56A438122A991B76B5 = {
+			isa = PBXGroup;
+			children = (
+				23C05D2B65B16F8931E39012 /* assets */,
+				B242456B8E1AA4864805F3F0 /* Assets.xcassets */,
+				55909093CC6C9D82F27BB8FF /* LaunchScreen.storyboard */,
+				C7BFA1BD3A1D0CC6D307D70D /* Externals */,
+				128A92C4C3A9296EDC8FC338 /* materialize-3d-mobile_iOS */,
+				BC27BE82DA08AC0B066B77E4 /* Sources */,
+				59DE07B76D0525FB2D2E233F /* src */,
+				3D2774FEED813AAA1E60E4D9 /* UITests */,
+				384CDB9A1197A8505348DB9A /* Frameworks */,
+				B172E10EEA50F51B04523194 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		BC27BE82DA08AC0B066B77E4 /* Sources */ = {
+			isa = PBXGroup;
+			children = (
+				A6FEF3CA63183926F2640C34 /* materialize-3d-mobile */,
+			);
+			path = Sources;
+			sourceTree = "<group>";
+		};
+		C7BFA1BD3A1D0CC6D307D70D /* Externals */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			path = Externals;
+			sourceTree = "<group>";
+		};
+		"TEMP_74E19AC0-7383-4037-80EA-871B0A686BF5" /* arm64 */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			path = arm64;
+			sourceTree = "<group>";
+		};
+		"TEMP_ACE99AD6-D731-464B-82B9-3F83EFD2BBDC" /* x86_64 */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			path = x86_64;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		2CE5A901C6333D66F627A2E9 /* materialize-3d-mobile_iOS */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B7AFB4A6C94C2674BF0A73F3 /* Build configuration list for PBXNativeTarget "materialize-3d-mobile_iOS" */;
+			buildPhases = (
+				3371A999A3CB4588CF988DD5 /* Build Rust Code */,
+				010B25A7CAEFF7D46AD0B54F /* Sources */,
+				8B004512DA3871CA022FA184 /* Resources */,
+				1121FD4B1E60B764BAD83F78 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = "materialize-3d-mobile_iOS";
+			packageProductDependencies = (
+			);
+			productName = "materialize-3d-mobile_iOS";
+			productReference = 1D612E2DC66E0E93133C871F /* materialize-3d-mobile_iOS.app */;
+			productType = "com.apple.product-type.application";
+		};
+		9018FD817A7F8D9DBE11638F /* materialize-3d-mobile_UITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 2B3F5BE161ED4C9C921FDFA7 /* Build configuration list for PBXNativeTarget "materialize-3d-mobile_UITests" */;
+			buildPhases = (
+				6F4CF4D36A2D5B56BCD5F003 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				1D0DE89B4C21FE95D9371542 /* PBXTargetDependency */,
+			);
+			name = "materialize-3d-mobile_UITests";
+			packageProductDependencies = (
+			);
+			productName = "materialize-3d-mobile_UITests";
+			productReference = 930ED371BA05B46AD1CCDCFE /* materialize-3d-mobile_UITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		722D0FC64AC43AAC330FF13B /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					9018FD817A7F8D9DBE11638F = {
+						TestTargetID = 2CE5A901C6333D66F627A2E9;
+					};
+				};
+			};
+			buildConfigurationList = 75A03ACEA5EE4E74A84FF363 /* Build configuration list for PBXProject "materialize-3d-mobile" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = B3839D56A438122A991B76B5;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = B172E10EEA50F51B04523194 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				2CE5A901C6333D66F627A2E9 /* materialize-3d-mobile_iOS */,
+				9018FD817A7F8D9DBE11638F /* materialize-3d-mobile_UITests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		8B004512DA3871CA022FA184 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				DB994F697AD89C73B32F2880 /* Assets.xcassets in Resources */,
+				E3CC93364B51DC2D7328E0F7 /* LaunchScreen.storyboard in Resources */,
+				D15CEAA7A45480A14A510959 /* assets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		3371A999A3CB4588CF988DD5 /* Build Rust Code */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Build Rust Code";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(SRCROOT)/Externals/x86_64/${CONFIGURATION}/libapp.a",
+				"$(SRCROOT)/Externals/arm64/${CONFIGURATION}/libapp.a",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "# The repo holds two Tauri apps. This one is src-mobile, so the script must not look for src-tauri.\nTAURI_APP_PATH=\"${SRCROOT:?}/../..\" bun tauri ios xcode-script -v --platform \"${PLATFORM_DISPLAY_NAME:?}\" --sdk-root \"${SDKROOT:?}\" --framework-search-paths \"${FRAMEWORK_SEARCH_PATHS:?}\" --header-search-paths \"${HEADER_SEARCH_PATHS:?}\" --gcc-preprocessor-definitions \"${GCC_PREPROCESSOR_DEFINITIONS:-}\" --configuration \"${CONFIGURATION:?}\" ${FORCE_COLOR} ${ARCHS:?}\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		010B25A7CAEFF7D46AD0B54F /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				01EFD5B25F3F7516359B2EAF /* main.mm in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		6F4CF4D36A2D5B56BCD5F003 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				EDFE677237F1F37673B6EA4F /* PairAndViewUITests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		1D0DE89B4C21FE95D9371542 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 2CE5A901C6333D66F627A2E9 /* materialize-3d-mobile_iOS */;
+			targetProxy = 9A9A84C8B281D724D2B2FAD8 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		18FBE2BAB81DEEC4EA88386E /* debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = debug;
+		};
+		35CD28E8A3FB3C46135F8685 /* release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
+				ARCHS = (
+					arm64,
+				);
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = "materialize-3d-mobile_iOS/materialize-3d-mobile_iOS.entitlements";
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				ENABLE_BITCODE = NO;
+				"EXCLUDED_ARCHS[sdk=iphoneos*]" = x86_64;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"\".\"",
+				);
+				INFOPLIST_FILE = "materialize-3d-mobile_iOS/Info.plist";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				"LIBRARY_SEARCH_PATHS[arch=arm64]" = "$(inherited) $(PROJECT_DIR)/Externals/arm64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)";
+				"LIBRARY_SEARCH_PATHS[arch=x86_64]" = "$(inherited) $(PROJECT_DIR)/Externals/x86_64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)";
+				PRODUCT_BUNDLE_IDENTIFIER = com.aojdevstudio.materialize3d.mobile;
+				PRODUCT_NAME = "Materialize 3D";
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				VALID_ARCHS = arm64;
+			};
+			name = release;
+		};
+		69D8EBA6548020F46AFA3AD9 /* release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.aojdevstudio.materialize3d.mobile.uitests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = "materialize-3d-mobile_iOS";
+			};
+			name = release;
+		};
+		7A01D0CAAF75C8AD74C1071B /* debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
+				ARCHS = (
+					arm64,
+				);
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = "materialize-3d-mobile_iOS/materialize-3d-mobile_iOS.entitlements";
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				ENABLE_BITCODE = NO;
+				"EXCLUDED_ARCHS[sdk=iphoneos*]" = x86_64;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"\".\"",
+				);
+				INFOPLIST_FILE = "materialize-3d-mobile_iOS/Info.plist";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				"LIBRARY_SEARCH_PATHS[arch=arm64]" = "$(inherited) $(PROJECT_DIR)/Externals/arm64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)";
+				"LIBRARY_SEARCH_PATHS[arch=x86_64]" = "$(inherited) $(PROJECT_DIR)/Externals/x86_64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)";
+				PRODUCT_BUNDLE_IDENTIFIER = com.aojdevstudio.materialize3d.mobile;
+				PRODUCT_NAME = "Materialize 3D";
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				VALID_ARCHS = arm64;
+			};
+			name = debug;
+		};
+		BD68493F1F7BA950C0D69792 /* debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.aojdevstudio.materialize3d.mobile.uitests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = "materialize-3d-mobile_iOS";
+			};
+			name = debug;
+		};
+		D6EBFAD52DE488CA6FB61A25 /* release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+			};
+			name = release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		2B3F5BE161ED4C9C921FDFA7 /* Build configuration list for PBXNativeTarget "materialize-3d-mobile_UITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				BD68493F1F7BA950C0D69792 /* debug */,
+				69D8EBA6548020F46AFA3AD9 /* release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = debug;
+		};
+		75A03ACEA5EE4E74A84FF363 /* Build configuration list for PBXProject "materialize-3d-mobile" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				18FBE2BAB81DEEC4EA88386E /* debug */,
+				D6EBFAD52DE488CA6FB61A25 /* release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = debug;
+		};
+		B7AFB4A6C94C2674BF0A73F3 /* Build configuration list for PBXNativeTarget "materialize-3d-mobile_iOS" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				7A01D0CAAF75C8AD74C1071B /* debug */,
+				35CD28E8A3FB3C46135F8685 /* release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 722D0FC64AC43AAC330FF13B /* Project object */;
+}

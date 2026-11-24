@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { act, cleanup, render } from '@testing-library/react'
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import type { Color, Scene } from 'three'
 
 const { drawn } = vi.hoisted(() => ({ drawn: [] as Scene[] }))
@@ -23,9 +23,11 @@ import ModelView from './ModelView'
 import { useTheme } from './theme'
 
 // The model never arrives, so only the empty scene is drawn.
-vi.stubGlobal('fetch', () => new Promise(() => {}))
+const neverArrives = () => new Promise(() => {})
+vi.stubGlobal('fetch', neverArrives)
 
 afterEach(() => {
+  vi.stubGlobal('fetch', neverArrives)
   cleanup()
   drawn.length = 0
   useTheme.setState({ theme: 'light' })
@@ -41,6 +43,16 @@ describe('ModelView', () => {
     expect(background()).toBe(0x000000)
     act(() => useTheme.getState().toggle())
     expect(background()).toBe(0xf6f6f4)
+  })
+
+  it('names itself as loading until the model is drawn, which the mobile UI test waits on', async () => {
+    const triangle = 'solid t\nfacet normal 0 0 1\nouter loop\nvertex 0 0 0\nvertex 1 0 0\nvertex 0 1 0\nendloop\nendfacet\nendsolid t\n'
+    let arrive: (response: Response) => void = () => {}
+    vi.stubGlobal('fetch', () => new Promise<Response>((resolve) => (arrive = resolve)))
+    render(<ModelView url="m3dfile://2026-11-06-dock/parts.stl" ext="stl" />)
+    expect(screen.getByTestId('model-view').getAttribute('aria-label')).toBe('Loading the 3D model')
+    arrive(new Response(triangle))
+    await waitFor(() => expect(screen.getByTestId('model-view').getAttribute('aria-label')).toBe('3D model parts.stl'))
   })
 
   it('starts on true black in dark', () => {
