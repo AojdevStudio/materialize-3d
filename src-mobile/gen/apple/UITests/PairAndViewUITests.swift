@@ -57,6 +57,7 @@ final class PairAndViewUITests: XCTestCase {
         let chat = try XCTUnwrap(setting("M3D_CHAT"), "set M3D_CHAT")
         let line = try XCTUnwrap(setting("M3D_LINE"), "set M3D_LINE")
         let expected = try XCTUnwrap(setting("M3D_MODELS"), "set M3D_MODELS").split(separator: ";").map(String.init)
+        XCTAssertFalse(expected.isEmpty, "M3D_MODELS names no model file")
 
         app.launch()
         XCTAssertTrue(text("Pair with your computer").waitForExistence(timeout: 60))
@@ -84,7 +85,8 @@ final class PairAndViewUITests: XCTestCase {
         web.buttons[chat].tap()
         // The file buttons carry aria-pressed, so the web view shows them as switches.
         XCTAssertTrue(web.switches.firstMatch.waitForExistence(timeout: 30), "the chat lists its model files")
-        XCTAssertTrue(text(line).exists, "the chat shows its transcript")
+        // The transcript loads apart from the model files.
+        XCTAssertTrue(text(line).waitForExistence(timeout: 30), "the chat shows its transcript")
         for name in expected {
             let model = web.switches[name]
             XCTAssertTrue(model.exists, "the chat lists \(name)")

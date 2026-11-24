@@ -134,10 +134,11 @@ describe('MobileApp', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: 'Scan the code' }))
     fireEvent.click(await screen.findByRole('button', { name: 'Cancel' }))
-    allow('granted')
+    allow('prompt')
 
     expect(await screen.findByRole('button', { name: 'Scan the code' })).toBeTruthy()
     expect(scanner.scan).not.toHaveBeenCalled()
+    expect(scanner.requestPermissions).not.toHaveBeenCalled()
     expect(invoke).not.toHaveBeenCalledWith('pair', expect.anything())
     expect(screen.queryByRole('alert')).toBeNull()
   })

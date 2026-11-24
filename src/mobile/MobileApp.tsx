@@ -25,7 +25,9 @@ function errorText(err: unknown): string {
 
 /** The text of the QR code the camera sees, once the person allows the camera. A Cancel while iOS asks starts no scan. */
 async function scanCode(cancelled: () => boolean): Promise<string | null> {
-  const allowed = (await checkPermissions()) === 'granted' || (await requestPermissions()) === 'granted'
+  const granted = (await checkPermissions()) === 'granted'
+  if (cancelled()) return null
+  const allowed = granted || (await requestPermissions()) === 'granted'
   if (!allowed) throw new Error('Materialize 3D needs the camera to scan the code. Allow the camera in Settings, or choose a picture of the code.')
   if (cancelled()) return null
   return (await scan({ windowed: true, formats: [Format.QRCode] })).content

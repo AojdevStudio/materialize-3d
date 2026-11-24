@@ -42,7 +42,8 @@ build)
 test)
   pairing_qr=${3:A} out=${4:A}
   : ${M3D_COMPUTER:?} ${M3D_CHAT:?} ${M3D_LINE:?} ${M3D_MODELS:?}
-  [[ $(xcrun simctl list devices | grep -F "($device)") == *m3d-proof-* ]] || { echo "sim-proof: $device is not an m3d-proof-* simulator" >&2; exit 2; }
+  line=$(xcrun simctl list devices | grep -F "($device)" || true)
+  [[ ${line#"${line%%[![:space:]]*}"} == m3d-proof-* ]] || { echo "sim-proof: $device is not an m3d-proof-* simulator" >&2; exit 2; }
   xcrun simctl boot $device 2>/dev/null || true
   xcrun simctl addmedia $device $pairing_qr
   run() {
@@ -53,8 +54,8 @@ test)
       -scheme materialize-3d-mobile_iOS -derivedDataPath $out/derived -destination "id=$device" $sign \
       -only-testing:materialize-3d-mobile_UITests/PairAndViewUITests/$2 -resultBundlePath $out/$1.xcresult \
       test-without-building > $out/$1.log || result=$?
-    xcrun xcresulttool export attachments --path $out/$1.xcresult --output-path $out/attachments/$1 > /dev/null
-    (( result == 0 )) || { grep -E "error:|Test Case" $out/$1.log; exit $result; }
+    xcrun xcresulttool export attachments --path $out/$1.xcresult --output-path $out/attachments/$1 > /dev/null || echo "sim-proof: no attachments exported for $1" >&2
+    (( result == 0 )) || { grep -E "error:|Test Case" $out/$1.log || tail -20 $out/$1.log; exit $result; }
   }
   run pair testPairFromAPictureOpenTheModelsAndRelaunch
   # Only after a pass: the reset shows the pairing lived in the Keychain.

@@ -54,9 +54,22 @@ pub fn serve<R: Runtime>(context: UriSchemeContext<'_, R>, request: Request<Vec<
 }
 
 /// Whether the token may go with this request. Tailscale Serve can mount other services under other paths of the same
-/// origin, so the token goes only to the chat reads this window makes. `path` is the one sent, after `url` resolved it.
+/// origin, and it decodes a path before it picks a mount, so the token goes only with the four chat reads this window
+/// makes, segment by segment, and never with an encoded slash or backslash. `path` is the one sent, after `url`
+/// resolved it.
 fn carries_token(method: &Method, path: &str) -> bool {
-    *method == Method::GET && (path == "/api/v1/chats" || path.starts_with("/api/v1/chats/"))
+    let lower = path.to_ascii_lowercase();
+    if *method != Method::GET || lower.contains("%2f") || lower.contains("%5c") || path.contains('\\') {
+        return false;
+    }
+    let segments: Vec<&str> = path.split('/').skip(1).collect();
+    match segments.as_slice() {
+        ["api", "v1", "chats"] => true,
+        ["api", "v1", "chats", project] => !project.is_empty(),
+        ["api", "v1", "chats", project, "files"] => !project.is_empty(),
+        ["api", "v1", "chats", project, "files", rel @ ..] => !project.is_empty() && !rel.is_empty() && rel.iter().all(|part| !part.is_empty()),
+        _ => false,
+    }
 }
 
 async fn forward(pairing: &crate::paired::Pairing, request: Request<Vec<u8>>) -> Result<Response<Vec<u8>>, reqwest::Error> {
@@ -74,10 +87,15 @@ async fn forward(pairing: &crate::paired::Pairing, request: Request<Vec<u8>>) ->
         response = response.header(header::CONTENT_TYPE, kind);
     }
     // Counted as it arrives: a streamed answer has no length to check first.
-    let mut body = Vec::new();
+    let mut body: Vec<u8> = Vec::new();
     while let Some(chunk) = reply.chunk().await? {
-        if body.len() + chunk.len() > ANSWER_LIMIT {
+        let needed = body.len() + chunk.len();
+        if needed > ANSWER_LIMIT {
             return Ok(text(StatusCode::PAYLOAD_TOO_LARGE, format!("This is too large to show on this device (over {} MB).", ANSWER_LIMIT / (1024 * 1024))));
+        }
+        // Doubling, as Vec would, but never past the limit, so the buffer never holds more than the limit allows.
+        if needed > body.capacity() {
+            body.reserve_exact((body.capacity() * 2).clamp(needed, ANSWER_LIMIT) - body.len());
         }
         body.extend_from_slice(&chunk);
     }
@@ -107,9 +125,23 @@ mod tests {
     fn the_token_goes_only_with_chat_reads() {
         let origin = url::Url::parse("https://studio.tail1234.ts.net:47380/").expect("an origin");
         let sent = |method: Method, path: &str| carries_token(&method, url(&origin, path, None).path());
-        assert!(sent(Method::GET, "/api/v1/chats"));
-        assert!(sent(Method::GET, "/api/v1/chats/2026-11-08-cube/files/print/cube.3mf"));
-        for path in ["/", "/other/service", "/api/v1/chatsx", "/api/v1/chats/../../admin", "/api/v1/chats/%2e%2e/%2e%2e/admin", "/api/v1/computer"] {
+        for path in ["/api/v1/chats", "/api/v1/chats/2026-11-08-cube", "/api/v1/chats/2026-11-08-cube/files", "/api/v1/chats/2026-11-08-cube/files/print/cube.3mf"] {
+            assert!(sent(Method::GET, path), "{path}");
+        }
+        for path in [
+            "/",
+            "/other/service",
+            "/api/v1/chatsx",
+            "/api/v1/chats/",
+            "/api/v1/chats/../../admin",
+            "/api/v1/chats/%2e%2e/%2e%2e/admin",
+            "/api/v1/chats/2026-11-08-cube%2Fother",
+            "/api/v1/chats/2026-11-08-cube/files/a%2fb.stl",
+            "/api/v1/chats/2026-11-08-cube/files/a%5Cb.stl",
+            "/api/v1/chats/2026-11-08-cube/other",
+            "/api/v1/chats/2026-11-08-cube/files/",
+            "/api/v1/computer",
+        ] {
             assert!(!sent(Method::GET, path), "{path}");
         }
         assert!(!sent(Method::POST, "/api/v1/chats/2026-11-08-cube/send"));
