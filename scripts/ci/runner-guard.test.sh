@@ -80,7 +80,13 @@ fi
 if [ "$1" = "is-enabled" ]; then
   [ "$2" = "--quiet" ] && shift
   shift
-  [ "$(cat "$STUB_WORK/enabled")" = "enabled" ] && exit 0
+  state="$(cat "$STUB_WORK/enabled")"
+  if [ "$state" = "error" ]; then
+    printf 'Failed to get unit file state\n' >&2
+    exit 1
+  fi
+  printf '%s\n' "$state"
+  [ "$state" = "enabled" ] && exit 0
   exit 1
 fi
 if [ "$1" = "show" ]; then
@@ -109,6 +115,7 @@ if [ "$1" = "start" ]; then
   exit 0
 fi
 if [ "$1" = "disable" ]; then
+  if [ "${SYSTEMCTL_STUB_DISABLE:-ok}" = "fail" ]; then exit 1; fi
   printf 'disabled\n' > "$STUB_WORK/enabled"
   if [ "$2" = "--now" ]; then
     printf 'inactive\n' > "$STUB_WORK/unit_state"
@@ -153,7 +160,8 @@ if [ "$1" = "print" ]; then
     system/*|gui/*/*)
       case "$(cat "$STUB_WORK/unit_state")" in
         running)
-          printf '\tstate = running\n\tpid = 4242\n'
+          # Nested coalition state/pid come after the service-level fields, as on macOS 26.
+          printf '%s\n' "com.example.runner = {"             "	state = running"             "	pid = 4242"             "	jetsam coalition = {"             "		state = active"             "		pid = 0"             "	}"             "}"
           exit 0
           ;;
         loaded)
@@ -256,6 +264,33 @@ assert_not_contains "linux wrong policy: no start" "$(cmds "$work")" "systemctl 
 assert_not_contains "linux wrong policy: no enable" "$(cmds "$work")" "systemctl enable"
 assert_eq "linux wrong policy: now inactive" "$(cat "$work/unit_state")" "inactive"
 assert_eq "linux wrong policy: now disabled" "$(cat "$work/enabled")" "disabled"
+rm -rf "$work"
+
+# disable --now can fail while the unit is already down; an is-enabled probe error is not disablement.
+work="$(mktemp -d)"
+write_stubs "$work"
+printf 'inactive\n' > "$work/unit_state"
+printf '0\n' > "$work/main_pid"
+printf 'error\n' > "$work/enabled"
+: > "$work/cmds"
+run_guard "$work" linux fake.unit GH_STUB_POLICY=first_time_contributors SYSTEMCTL_STUB_DISABLE=fail
+assert_eq "linux disable unknown: exit 3" "$rc" "3"
+assert_contains "linux disable unknown: not confirmed" "$(out "$work")" "COULD NOT CONFIRM the runner is stopped"
+assert_not_contains "linux disable unknown: not claimed disabled" "$(out "$work")" "stopped and disabled"
+assert_eq "linux disable unknown: still inactive" "$(cat "$work/unit_state")" "inactive"
+assert_eq "linux disable unknown: enablement still error" "$(cat "$work/enabled")" "error"
+rm -rf "$work"
+
+# An already-inactive unit whose is-enabled output is disabled is a confirmed stop even if disable --now fails.
+work="$(mktemp -d)"
+write_stubs "$work"
+printf 'inactive\n' > "$work/unit_state"
+printf '0\n' > "$work/main_pid"
+printf 'disabled\n' > "$work/enabled"
+: > "$work/cmds"
+run_guard "$work" linux fake.unit GH_STUB_POLICY=first_time_contributors SYSTEMCTL_STUB_DISABLE=fail
+assert_eq "linux already disabled: exit 1" "$rc" "1"
+assert_contains "linux already disabled: claimed" "$(out "$work")" "stopped and disabled"
 rm -rf "$work"
 
 # A confirmed stop must stay down when later reads fail (the reboot case after disable).
@@ -388,17 +423,18 @@ assert_not_contains "daemon want + down: no kickstart" "$(cmds "$work")" "kickst
 assert_eq "daemon want + down: now running" "$(cat "$work/unit_state")" "running"
 rm -rf "$work"
 
+# A running print with a nested coalition after the service-level fields must stay up (no kickstart).
 work="$(mktemp -d)"
 write_stubs "$work"
 printf 'com.example.runner\n' > "$work/label"
 printf 'running\n' > "$work/unit_state"
 : > "$work/cmds"
 run_guard "$work" macos-daemon /tmp/fake.plist GH_STUB_POLICY=all_external_contributors
-assert_eq "daemon want + up: exit 0" "$rc" "0"
-assert_contains "daemon want + up: stays up" "$(out "$work")" "the runner stays up"
-assert_not_contains "daemon want + up: no bootstrap" "$(cmds "$work")" "bootstrap"
-assert_not_contains "daemon want + up: no kickstart" "$(cmds "$work")" "kickstart"
-assert_not_contains "daemon want + up: no bootout" "$(cmds "$work")" "bootout"
+assert_eq "daemon want + up nested coalition: exit 0" "$rc" "0"
+assert_contains "daemon want + up nested coalition: stays up" "$(out "$work")" "the runner stays up"
+assert_not_contains "daemon want + up nested coalition: no bootstrap" "$(cmds "$work")" "bootstrap"
+assert_not_contains "daemon want + up nested coalition: no kickstart" "$(cmds "$work")" "kickstart"
+assert_not_contains "daemon want + up nested coalition: no bootout" "$(cmds "$work")" "bootout"
 rm -rf "$work"
 
 # Loaded in launchd but not running: do not report stays up, and recover with kickstart, not bootstrap.

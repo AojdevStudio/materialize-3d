@@ -77,7 +77,9 @@ linux_is_running() {
 # Classifies a launchctl print of a service from $print_rc and $print_out: up (loaded and a live pid),
 # loaded (registered but not running), down (exit 113), or unknown (any other error).
 macos_state_from_print() {
-  local pid="" st="" line
+  # Use only the service-level state and pid (the shallowest of those keys). A nested
+  # coalition can print "state = active" after "state = running"; that must not win.
+  local pid="" st="" line raw indent min_indent=""
   if (( print_rc == 113 )); then
     state=down
     return
@@ -86,11 +88,24 @@ macos_state_from_print() {
     state=unknown
     return
   fi
-  while IFS= read -r line; do
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    raw="$line"
     line="${line#"${line%%[![:space:]]*}"}"
+    indent=$(( ${#raw} - ${#line} ))
     case "$line" in
-      "pid = "*) pid="${line#pid = }" ;;
-      "state = "*) st="${line#state = }" ;;
+      "pid = "*|"state = "*)
+        if [[ -z "$min_indent" || "$indent" -lt "$min_indent" ]]; then
+          min_indent=$indent
+          pid=""
+          st=""
+        fi
+        if (( indent == min_indent )); then
+          case "$line" in
+            "pid = "*) pid="${line#pid = }" ;;
+            "state = "*) st="${line#state = }" ;;
+          esac
+        fi
+        ;;
     esac
   done <<< "$print_out"
   if [[ "$st" == "running" && "$pid" =~ ^[1-9][0-9]*$ ]]; then
@@ -149,8 +164,11 @@ stop_runner() {
       if linux_is_running; then
         return
       fi
-      if systemctl is-enabled --quiet "$target"; then
-        log "systemctl is-enabled $target is still enabled; the stop would not survive a reboot"
+      # A nonzero is-enabled exit is not proof of disablement (the probe itself can fail).
+      # Only the printed word "disabled" confirms the stop would survive a reboot.
+      enabled_state="$(systemctl is-enabled "$target" 2>/dev/null || true)"
+      if [[ "$enabled_state" != "disabled" ]]; then
+        log "systemctl is-enabled $target is ${enabled_state:-unknown}; the stop would not survive a reboot"
         return
       fi
       stopped=1
