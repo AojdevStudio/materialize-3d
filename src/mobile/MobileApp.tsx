@@ -112,6 +112,8 @@ function deviceName(): string {
 
 function Pair({ step, onScan, onPicture }: { step: PairStep; onScan: () => void; onPicture: (picture: File) => void }) {
   const busy = step !== 'idle'
+  // A real button opens the native chooser, so the photo path is reachable by keyboard too.
+  const picker = useRef<HTMLInputElement>(null)
   return (
     <section className="mobile-pair">
       <h1>Pair with your computer</h1>
@@ -119,20 +121,24 @@ function Pair({ step, onScan, onPicture }: { step: PairStep; onScan: () => void;
       <button type="button" className="mobile-primary" disabled={busy} onClick={onScan}>
         {busy ? 'Pairing' : 'Scan the code'}
       </button>
-      <label className="mobile-secondary" aria-disabled={busy}>
+      <button type="button" className="mobile-secondary" disabled={busy} onClick={() => picker.current?.click()}>
         Choose a picture of the code
-        <input
-          type="file"
-          accept="image/*"
-          hidden
-          disabled={busy}
-          onChange={(event) => {
-            const picture = event.target.files?.[0]
-            event.target.value = ''
-            if (picture) onPicture(picture)
-          }}
-        />
-      </label>
+      </button>
+      <input
+        ref={picker}
+        type="file"
+        accept="image/*"
+        className="mobile-picker"
+        data-testid="picture-input"
+        tabIndex={-1}
+        aria-hidden
+        disabled={busy}
+        onChange={(event) => {
+          const picture = event.target.files?.[0]
+          event.target.value = ''
+          if (picture) onPicture(picture)
+        }}
+      />
     </section>
   )
 }

@@ -42,7 +42,7 @@ final class PairAndViewUITests: XCTestCase {
 
     /// Opens the photo picker from the pairing screen and picks the newest picture.
     private func pickNewestPicture() {
-        text("Choose a picture of the code").tap()
+        web.buttons["Choose a picture of the code"].tap()
         app.buttons["Photo Library"].tap()
         let photos = app.images.matching(identifier: "PXGGridLayout-Info")
         XCTAssertTrue(photos.firstMatch.waitForExistence(timeout: 20), "the photo picker shows the pictures")

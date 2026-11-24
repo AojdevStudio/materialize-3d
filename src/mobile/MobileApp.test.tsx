@@ -55,7 +55,7 @@ afterEach(() => {
 })
 
 const choosePicture = () =>
-  fireEvent.change(screen.getByLabelText('Choose a picture of the code'), { target: { files: [new File(['png'], 'code.png', { type: 'image/png' })] } })
+  fireEvent.change(screen.getByTestId('picture-input'), { target: { files: [new File(['png'], 'code.png', { type: 'image/png' })] } })
 
 describe('MobileApp', () => {
   it('pairs with the computer in a picture of its code, then lists that computer’s chats', async () => {
@@ -252,5 +252,24 @@ describe('MobileApp', () => {
     await new Promise((settle) => setTimeout(settle, 50))
     expect(screen.getByRole('button', { name: 'Wall hook' })).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Desk cable clip' })).toBeNull()
+  })
+
+  it('opens the photo chooser from a real button, which pairing in progress disables', async () => {
+    answer({ paired_computer: null })
+    const opened = vi.spyOn(HTMLInputElement.prototype, 'click').mockImplementation(() => {})
+    render(<MobileApp />)
+
+    const button = await screen.findByRole('button', { name: 'Choose a picture of the code' })
+    button.focus()
+    expect(document.activeElement).toBe(button)
+    fireEvent.click(button)
+    expect(opened).toHaveBeenCalledTimes(1)
+    opened.mockRestore()
+
+    invoke.mockImplementation(async (command: string) => (command === 'pair' ? new Promise(() => {}) : null))
+    qrText.value = link
+    choosePicture()
+    await screen.findByText('Pairing')
+    expect((screen.getByRole('button', { name: 'Choose a picture of the code' }) as HTMLButtonElement).disabled).toBe(true)
   })
 })

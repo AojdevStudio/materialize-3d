@@ -46,11 +46,22 @@ body,
 
 .mobile-secondary {
   border: 1px solid var(--s-line);
+  background: none;
+  color: inherit;
 }
 
 .mobile-primary:disabled,
-.mobile-secondary[aria-disabled='true'] {
+.mobile-secondary:disabled {
   opacity: 0.5;
+}
+
+/* The file input the picture button opens. It stays in the page, so a click from code reaches it, but out of sight. */
+.mobile-picker {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
 }
 
 .mobile-bar {
