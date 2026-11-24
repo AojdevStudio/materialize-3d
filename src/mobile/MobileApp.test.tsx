@@ -413,7 +413,7 @@ const reopen = async () => {
 /** Opens the chat on a paired device. The chat list from an earlier launch lets it open while the computer is away. */
 async function openChat() {
   answerWithDrafts({ paired_computer: computer })
-  localStorage.setItem('m3d.chats', JSON.stringify(computerSide.list))
+  localStorage.setItem('m3d.chats', JSON.stringify({ pairing: computer.id, chats: computerSide.list }))
   render(<MobileApp />)
   fireEvent.click(await screen.findByText('Desk cable clip'))
   return screen.findByLabelText<HTMLTextAreaElement>('Message')
@@ -766,6 +766,29 @@ describe('a draft and the link to the computer', () => {
 
     expect(await screen.findByText(/The Keychain refused the pairing/)).toBeTruthy()
     expect((await reopen()).value).toBe('Make the clip')
+  })
+
+  it('never shows the chat list kept for another pairing', async () => {
+    answerWithDrafts({ paired_computer: computer })
+    render(<MobileApp />)
+    expect(await screen.findByText('Desk cable clip')).toBeTruthy()
+    cleanup()
+
+    // The Keychain lost the pairing, so the device pairs with another computer that has a chat of the same id.
+    answerWithDrafts({ paired_computer: null, pair: { id: '49e2bb7eab54cf09', name: 'Workshop PC', origin: 'https://workshop.tail1234.ts.net/' } })
+    const release = hold('GET /chats')
+    render(<MobileApp />)
+    await screen.findByText('Pair with your computer')
+    qrText.value = link
+    choosePicture()
+    expect(await screen.findByRole('heading', { name: 'Workshop PC' })).toBeTruthy()
+    expect(screen.getByText('Loading chats')).toBeTruthy()
+    expect(screen.queryByText('Desk cable clip')).toBeNull()
+
+    computerSide.list = [{ id: 'desk-clip', title: 'Shelf bracket' }]
+    release()
+    expect(await screen.findByText('Shelf bracket')).toBeTruthy()
+    expect(screen.queryByText('Desk cable clip')).toBeNull()
   })
 
   it('shows a turn that ends after the chat was read, from the event stream alone, with Send still on', async () => {

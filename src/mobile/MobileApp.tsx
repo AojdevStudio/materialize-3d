@@ -162,13 +162,18 @@ function RemoteModelView(props: { url: string; ext: string }) {
 }
 const extOf = (rel: string) => rel.slice(rel.lastIndexOf('.') + 1).toLowerCase()
 
-/** The chat list as last read, so a person can open a chat and its draft while the computer is out of reach. */
+/**
+ * The chat list as last read, with the pairing it came from, so a person can open a chat and its draft while the
+ * computer is out of reach. A list kept for another pairing is never shown.
+ */
 const CHATS_KEY = 'm3d.chats'
 
-function savedChats(): MobileChat[] | null {
+function savedChats(pairing: string): MobileChat[] | null {
   try {
     const saved = localStorage.getItem(CHATS_KEY)
-    return saved === null ? null : (JSON.parse(saved) as MobileChat[])
+    if (saved === null) return null
+    const kept = JSON.parse(saved) as { pairing: string; chats: MobileChat[] }
+    return kept.pairing === pairing ? kept.chats : null
   } catch {
     // No storage, as in a private window: the list waits for the computer.
     return null
@@ -176,7 +181,7 @@ function savedChats(): MobileChat[] | null {
 }
 
 function Paired({ computer, onForget }: { computer: Computer; onForget: () => Promise<void> }) {
-  const [chats, setChats] = useState<MobileChat[] | null>(savedChats)
+  const [chats, setChats] = useState<MobileChat[] | null>(() => savedChats(computer.id))
   const [open, setOpen] = useState<MobileChat | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [tries, setTries] = useState(0)
@@ -203,7 +208,7 @@ function Paired({ computer, onForget }: { computer: Computer; onForget: () => Pr
       const change = chatEvent(message.event)
       if (change !== null) for (const heard of listeners.current) heard(change)
     }).catch((err) => setError(errorText(err)))
-  }, [computer.origin])
+  }, [computer.id])
 
   useEffect(() => {
     for (const sender of senders.current.values()) sender.link(link)
@@ -220,7 +225,7 @@ function Paired({ computer, onForget }: { computer: Computer; onForget: () => Pr
         if (!current || closing.current) return
         setChats(listed)
         try {
-          localStorage.setItem(CHATS_KEY, JSON.stringify(listed))
+          localStorage.setItem(CHATS_KEY, JSON.stringify({ pairing: computer.id, chats: listed }))
         } catch {
           // No storage: the next launch reads the list from the computer.
         }
@@ -232,7 +237,7 @@ function Paired({ computer, onForget }: { computer: Computer; onForget: () => Pr
     return () => {
       current = false
     }
-  }, [computer.origin, tries, up])
+  }, [computer.id, tries, up])
 
   const session = useMemo<Session>(
     () => ({
