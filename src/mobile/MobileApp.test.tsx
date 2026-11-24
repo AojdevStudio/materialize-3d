@@ -64,6 +64,8 @@ afterEach(async () => {
   await new Promise((resolve) => setTimeout(resolve, 0))
   invoke.mockReset()
   qrText.value = null
+  // The next test's screen makes its own link watcher, so a message never reaches this one's.
+  stream.heard = null
 })
 
 const choosePicture = () =>
@@ -385,7 +387,14 @@ const routeComputer = async (url: string, init?: { method?: string; body?: strin
   return new Response('Not found', { status: 404 })
 }
 
-const linkIs = (message: LinkMessage) => act(() => stream.heard?.(message))
+/**
+ * Hands the link watcher a message. A screen makes its watcher in an effect, which can run after its first render
+ * shows, so this waits for the watcher first.
+ */
+async function linkIs(message: LinkMessage) {
+  await waitFor(() => expect(stream.heard).not.toBeNull())
+  await act(() => stream.heard?.(message))
+}
 const sendButton = () => screen.getByRole<HTMLButtonElement>('button', { name: 'Send' })
 const messageBox = () => screen.getByLabelText<HTMLTextAreaElement>('Message')
 const settles = () => computerSide.requests.filter((r) => r === 'POST /chats/desk-clip/sends/41/settle').length
