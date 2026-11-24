@@ -181,6 +181,8 @@ describe('MobileApp', () => {
     fireEvent.click(screen.getByRole('button', { name: 'huge.stl' }))
 
     expect(await screen.findByText('huge.stl is too large to show on this device (over 64 MB).')).toBeTruthy()
+    // jsdom has no WebGL, so a mounted viewer would never fetch: the viewer must not mount at all.
+    expect(screen.queryByTestId('model-view')).toBeNull()
     expect(fetched.filter((url) => url.endsWith('/files/huge.stl'))).toEqual([])
   })
 
