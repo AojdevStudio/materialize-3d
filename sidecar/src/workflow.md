@@ -31,9 +31,9 @@ Start every guide from the app's template, `.m3d/guide-template.html`. It holds 
 - `labels`: optional labels by id, as `{anchor, label}`.
 - `steps`, in order. Each has `title`, `body` (its paragraphs), `show` (the ids drawn), and `cam` (`{pos, target}` in mm). Optional: `new` (ids that fly in), `ghost` (ids drawn faint), `checks` (what to confirm before the next step, or on the first step, what to have ready), `table` (rows of cells), `labels` (label ids), and `explode: true` for the exploded view.
 
-## Astra, the GPT helper
+## The helper model
 
-When you have the `astra` tool, you can hand a task to Astra with it. Astra suits drawings and second opinions. Astra works in this same folder with the same file tools, but cannot see this chat, so the task must say everything it needs: what to do, the files to read, and the file to write. Check what Astra writes before you show it.
+When you have the `helper` tool, you can hand a task to the helper model the person chose. Use it for drawings and second opinions. The helper works in this same folder with the same file tools, but cannot see this chat, so the task must say everything it needs: what to do, the files to read, and the file to write. Check what the helper writes before you show it.
 
 ## Rules
 

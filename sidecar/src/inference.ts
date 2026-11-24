@@ -66,13 +66,16 @@ const LOGIN_FAILURE = /not configured|\b401\b|unauthori[sz]ed|authentication|inv
 export const isLoginFailure = (detail: string) => LOGIN_FAILURE.test(detail)
 
 /**
- * A provider's answer that confirms the model version itself is gone, not that the request failed for now. It reads
- * only words a provider uses for a removed model, so an overload, a rate limit, a timeout, or a server error never
- * counts as one.
+ * A provider's answer that confirms the model version itself is gone, not that the request failed for now. A retired
+ * version is hidden from every chat, so the answer must say not found or removed, name a model, and say nothing of a
+ * failure for now or of access. An overload, a rate limit, a timeout, a server error, or a login that lacks the model
+ * never counts as one.
  */
-const RETIRED = /model_not_found|not_found_error|\bmodel\b[^\n]*?\b(not found|does not exist|(has been|was) (deprecated|retired|removed)|is no longer (available|supported))/i
+const REMOVED = /\b(404|not_found_error|model_not_found)\b|\b(deprecated|retired|decommissioned|no longer (available|supported))\b/i
+const NAMES_MODEL = /\bmodel\b/i
+const NOT_REMOVAL = /\b(5\d\d|429)\b|overload|rate.?limit|timed? ?out|temporar|access|permission/i
 
-export const isRetired = (detail: string) => RETIRED.test(detail)
+export const isRetired = (detail: string) => REMOVED.test(detail) && NAMES_MODEL.test(detail) && !NOT_REMOVAL.test(detail)
 
 /** A Keychain item as this app writes it, or undefined for any other text, which counts as signed out. */
 function savedLogin(secret: string): Credential | undefined {

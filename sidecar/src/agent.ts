@@ -405,11 +405,11 @@ export function agentTools({ host, projectOf, signedIn, loginSaves, printer, hel
         }
         const detail = typeof settled.detail === 'string' ? settled.detail : ''
         const modelError = settled.reason === 'model_error'
-        if (modelError && isRetired(detail)) {
-          await retired(model)
-          return { output: text(`${name}, the helper model, was retired by its provider.`), isError: true }
-        }
         if (!modelError || !isLoginFailure(detail)) {
+          if (modelError && isRetired(detail)) {
+            await retired(model)
+            return { output: text(`${name}, the helper model, was retired by its provider.`), isError: true }
+          }
           return { output: text(`Helper ${name} failed (${settled.reason}${detail === '' ? '' : `: ${detail}`}).`), isError: true }
         }
         // The sign-in was missing or refused, so the helper waits for a login saved after the one this request went

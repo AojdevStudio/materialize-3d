@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
 import { createModels, InMemoryCredentialStore } from '@earendil-works/pi-ai'
 import { AgentDoc, type ConversationId, createRegistry, defineDoc, type TaskId } from '@earendil-works/pi-durable'
-import type { AppState, ChatEntry, ChatView, ModelChoice, Need, Project } from '../src/protocol'
+import type { AppState, ChatEntry, ChatView, ModelChoice, Need, Project, Turn } from '../src/protocol'
 import { Store } from '../src/store'
 import { spawnSidecar } from './sidecar'
 
@@ -185,6 +185,47 @@ describe('chats from before pairs', () => {
     await old.close()
   }
 
+  test('an unfinished turn sent with Astra goes on after the update with Astra as its helper', async () => {
+    const where = scratch()
+    where.keychain.set('openai-codex', CODEX_KEY)
+    const first = spawnSidecar(where.data, where.projects, where.keychain, { script: 'models', env: where.env, version: '1.0.0' })
+    await first.next()
+    // Opus has no sign-in here, so the turn waits for one.
+    const { project: id } = await first.sendDraft('new', 'go')
+    await first.until((event) => event.type === 'chat' && event.project === id && event.waiting !== null)
+    const { conversation } = (await projectIn(first, id)) as Project
+    await first.quit()
+
+    // The turn as an app before pairs left it: Astra offered as the `astra` tool, and no helper recorded.
+    const old = await openStore(where)
+    const TurnBeforePairs = defineDoc<{ turn: Turn | null }>({
+      kind: 'm3d.turn',
+      version: 1,
+      scope: 'conversation',
+      history: 'latest',
+      fork: 'initial',
+      initial: () => ({ turn: null }),
+      checkpointWhen: () => true,
+    })
+    await old.harness.commit(async (tx) => {
+      const { turn } = await tx.doc(TurnBeforePairs, conversation as ConversationId)
+      if (turn === null) throw new Error('the turn is missing')
+      delete turn.helper
+      turn.tools = turn.tools.map((name) => (name === 'helper' ? 'astra' : name))
+      const agent = await tx.doc(AgentDoc, conversation as ConversationId)
+      agent.tools = (agent.tools as string[]).map((name) => (name === 'helper' ? 'astra' : name))
+    }, BACKGROUND_CONTEXT)
+    await old.close()
+
+    const second = spawnSidecar(where.data, where.projects, where.keychain, { script: 'models', env: where.env, version: '2.0.0' })
+    await second.next()
+    expect((await view(second, id)).waiting).toMatchObject({ fix: 'Go on' })
+    await second.call('chat.retry', { project: id })
+    expect((await view(second, id)).turn).toMatchObject({ model: OPUS, helper: ASTRA, tools: ['read', 'write', 'edit', 'run', 'slice', 'helper'] })
+    expect(await second.call('agent.tools', { project: id })).toContain('helper')
+    await second.quit()
+  })
+
   test('carry on with the lead they ran on and the helper the Astra setting gave them', async () => {
     for (const [astra, model, carried] of [
       [true, undefined, { model: FAUX_A, helper: ASTRA }],
@@ -240,6 +281,32 @@ describe('the catalog', () => {
     expect(answers(after.entries).map((entry) => entry.model.modelId)).toEqual(['gpt-6.1-sol', 'gpt-6.1-sol', 'gpt-6.3-sol'])
     await second.quit()
   }, 60_000)
+
+  test('a retry of a turn that failed for another reason waits for a new lead once any chat found its lead retired', async () => {
+    const where = scratch()
+    where.keychain.set('openai-codex', CODEX_KEY)
+    const first = await start(where, 'fails-after')
+    const failed = await project(first, FAUX_A, null)
+    await first.call('projects.setLead', { project: failed, model: SOL_6_1 })
+    await first.sendDraft(failed, 'go')
+    while (!existsSync(join(where.projects, failed, 'started'))) await Bun.sleep(25)
+    writeFileSync(join(where.projects, failed, 'go'), '')
+    await first.until((event) => event.type === 'chat' && event.project === failed && event.waiting !== null, 60_000)
+    await first.quit()
+
+    // Another chat finds 6.1 retired.
+    const second = await start(where, 'models', { M3D_RETIRED: 'gpt-6.1-sol' })
+    const other = await project(second, FAUX_A, null)
+    await second.call('projects.setLead', { project: other, model: SOL_6_1 })
+    await second.sendDraft(other, 'go')
+    await second.until((event) => event.type === 'chat' && event.project === other && (event.waiting as { retired?: unknown } | null)?.retired !== undefined)
+
+    await expect(second.call('chat.retry', { project: failed })).rejects.toThrow('GPT 6.1 Sol, the lead model, was retired. Choose GPT 6.3 Sol or another lead model.')
+    await second.call('projects.setLead', { project: failed, model: SOL_6_3 })
+    await second.call('chat.retry', { project: failed })
+    await answered(second, failed, 'answered by gpt-6.3-sol')
+    await second.quit()
+  }, 120_000)
 
   test('a retired helper fails its call, then holds the next message until the person replaces it or turns it off', async () => {
     const where = scratch()

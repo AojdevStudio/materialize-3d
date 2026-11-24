@@ -3,7 +3,7 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { InMemoryCredentialStore, type OAuthAuth } from '@earendil-works/pi-ai'
-import { inferenceModels, isLoginFailure, KeychainCredentials, keyCredential, Logins } from '../src/inference'
+import { inferenceModels, isLoginFailure, isRetired, KeychainCredentials, keyCredential, Logins } from '../src/inference'
 import { FLAGS, type LoginEvent } from '../src/protocol'
 import { spawnSidecar } from './sidecar'
 
@@ -90,6 +90,17 @@ describe('a refused request', () => {
     expect(
       isLoginFailure('403 {"type":"error","error":{"type":"permission_error","message":"Your API key does not have permission to use the specified resource."}}'),
     ).toBe(false)
+  })
+
+  test('counts as a retirement only when the provider says the model itself is gone', () => {
+    expect(isRetired('404 {"type":"error","error":{"type":"not_found_error","message":"model: claude-opus-4-1"}}')).toBe(true)
+    expect(isRetired("404 model_not_found: The model 'gpt-6.1-sol' does not exist")).toBe(true)
+    expect(isRetired('The model claude-opus-4-1 has been deprecated')).toBe(true)
+    // A failure for now, a missing resource that is not a model, or a login that lacks access is not one.
+    expect(isRetired('503 the model was not found in the routing table, try again')).toBe(false)
+    expect(isRetired('429 rate limit reached for model gpt-6.1-sol')).toBe(false)
+    expect(isRetired('404 {"type":"error","error":{"type":"not_found_error","message":"resource not found"}}')).toBe(false)
+    expect(isRetired("404 model_not_found: The model 'gpt-6.1-sol' does not exist or you do not have access to it")).toBe(false)
   })
 })
 

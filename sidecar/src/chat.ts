@@ -29,8 +29,10 @@ import type { Busy } from './busy'
 import { type SentMessage, UserMessage } from './entries'
 import { folderSummary } from './folder'
 import { copyAttachments } from './pictures'
-import { modelName, newest, replacementFor } from './offered'
+import { modelName, newest, replacementFor, versionKey } from './offered'
 import {
+  ASTRA,
+  ASTRA_MODEL,
   type ChatEntry,
   type ChatView,
   DEFAULT_PROVIDER,
@@ -375,7 +377,17 @@ export class Chats {
         const waiting = await tx.doc(WaitingDoc, conversation.id)
         if (login !== undefined && (waiting.waiting?.kind !== 'login' || waiting.failure !== login)) return
         const { turn } = await tx.doc(TurnDoc, conversation.id)
-        if (waiting.waiting?.kind === 'error' && waiting.waiting.retired?.role === 'lead') {
+        // A turn sent before pairs offered Astra as the `astra` tool, which this app calls `helper`.
+        if (turn !== null && turn.helper === undefined) {
+          turn.helper = turn.tools.includes(ASTRA) ? { ...ASTRA_MODEL } : null
+          if (turn.helper !== null) {
+            const names = turn.tools.map((name) => (name === ASTRA ? HELPER : name))
+            turn.tools = names
+            await configure(tx, conversation.id, { tools: this.#o.tools.filter((tool) => names.includes(tool.name)) })
+          }
+        }
+        // Any chat can find its provider retired the lead, so this turn's lead is read from the record, whatever it waits on.
+        if (turn !== null && (await store.retiredIn(tx))[versionKey(turn.model)] !== undefined) {
           const lead = await store.leadIn(tx, project)
           const [gone] = store.retiredRoles({ lead, helper: null }, await store.retiredIn(tx))
           if (gone !== undefined) throw new Error(store.retiredFix(gone))
