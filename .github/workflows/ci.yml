@@ -13,7 +13,8 @@
 #      (github.event.pull_request.head.repo.full_name == github.repository),
 #      and never for Dependabot, as the actor or as a pull request's author.
 # Outside the jobs, scripts/ci/runner-guard.sh on each runner host reads the
-# policy every 5 minutes and stops that host's runner if it ever changes.
+# policy every 5 minutes, stops that host's runner if the policy has changed,
+# and starts it again once the policy reads all_external_contributors.
 name: CI
 
 on:
@@ -48,6 +49,8 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev xvfb
       - uses: ./.github/actions/shared-checks
+      - name: Runner guard leaves the service alone on API errors and restarts it when the policy is OK
+        run: bash scripts/ci/runner-guard.test.sh
       - name: Release facts match their sources
         run: bun scripts/release/release-facts.ts && bun test scripts/release
       # Here and not in formal-verification.yml, whose own paths list decides whether it runs, so a PR that edits
