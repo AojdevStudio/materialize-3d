@@ -31,7 +31,7 @@ import MobileApp from './MobileApp'
 import { PREVIEW_LIMIT } from './remote'
 import remoteRs from '../../src-mobile/src/remote.rs?raw'
 
-const computer = { name: 'Studio Mac', origin: 'https://studio.tail1234.ts.net:47380/' }
+const computer = { id: 'a70bf50e531ce1a8', name: 'Studio Mac', origin: 'https://studio.tail1234.ts.net:47380/' }
 const link = 'https://studio.tail1234.ts.net:47380/pair?code=K7Q2'
 
 function answer(commands: Record<string, unknown>) {

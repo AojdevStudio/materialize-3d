@@ -2,6 +2,8 @@ import { Channel, invoke } from '@tauri-apps/api/core'
 
 /** The paired computer as Rust shows it to the window. The device token stays in Rust. */
 export interface Computer {
+  /** Names this pairing, and changes with every new one. Rust derives it from the token, which it cannot be turned back into. */
+  id: string
   name: string
   origin: string
 }

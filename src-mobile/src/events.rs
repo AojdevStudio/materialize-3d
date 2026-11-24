@@ -39,6 +39,15 @@ pub enum Link {
 #[derive(Default)]
 pub struct Watcher(Mutex<Option<JoinHandle<()>>>);
 
+impl Watcher {
+    /// Closes the link, as when the device forgets its computer.
+    pub fn stop(&self) {
+        if let Some(task) = self.0.lock().expect("watcher lock").take() {
+            task.abort();
+        }
+    }
+}
+
 #[tauri::command]
 pub fn link_watch(channel: Channel<Link>, app: AppHandle, watcher: tauri::State<'_, Watcher>) {
     let task = async_runtime::spawn(async move {

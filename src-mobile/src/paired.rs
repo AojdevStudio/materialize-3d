@@ -4,7 +4,11 @@ use std::sync::RwLock;
 
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use url::Url;
+
+use crate::drafts::Drafts;
+use crate::events::Watcher;
 
 /// Not the bundle id. Renaming either loses the pairing.
 const SERVICE: &str = "com.materialize3d.mobile";
@@ -18,16 +22,39 @@ pub struct Pairing {
     pub token: String,
 }
 
+impl Pairing {
+    pub fn id(&self) -> PairingId {
+        PairingId::of(&self.token)
+    }
+}
+
+/// Names one pairing: the first 16 characters of the lowercase hex SHA-256 of its token. Each pairing gets a new token,
+/// so a new pairing, even with the same computer, gets a new id, and the token cannot be read back from it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub struct PairingId(String);
+
+impl PairingId {
+    pub fn of(token: &str) -> Self {
+        PairingId(Sha256::digest(token.as_bytes()).iter().take(8).map(|byte| format!("{byte:02x}")).collect())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 /// What the window may know of the paired computer.
 #[derive(Serialize)]
 pub struct Computer {
+    id: PairingId,
     name: String,
     origin: String,
 }
 
 impl From<&Pairing> for Computer {
     fn from(pairing: &Pairing) -> Self {
-        Computer { name: pairing.name.clone(), origin: pairing.origin.to_string() }
+        Computer { id: pairing.id(), name: pairing.name.clone(), origin: pairing.origin.to_string() }
     }
 }
 
@@ -45,8 +72,6 @@ pub enum Error {
     Keychain(#[from] keyring::Error),
     #[error("The saved pairing is damaged. Pair again. {0}")]
     Damaged(#[from] serde_json::Error),
-    #[error(transparent)]
-    Drafts(#[from] crate::drafts::Error),
 }
 
 impl Serialize for Error {
@@ -103,22 +128,25 @@ fn parse_link(link: &str) -> Result<(Url, String), Error> {
     Ok((origin, code))
 }
 
-/// Reads the saved pairing. A Keychain that refuses, or a damaged item, reaches the window, which offers to pair again.
+/// Reads the saved pairing, and sweeps away the drafts of every other. A Keychain that refuses, or a damaged item,
+/// reaches the window, which offers to pair again.
 #[tauri::command]
-pub fn paired_computer(paired: tauri::State<'_, Paired>) -> Result<Option<Computer>, Error> {
+pub fn paired_computer(paired: tauri::State<'_, Paired>, drafts: tauri::State<'_, Drafts>) -> Result<Option<Computer>, Error> {
     let saved: Option<Pairing> = match entry()?.get_password() {
         Ok(json) => Some(serde_json::from_str(&json)?),
         Err(keyring::Error::NoEntry) => None,
         Err(err) => return Err(err.into()),
     };
     let computer = saved.as_ref().map(Computer::from);
+    drafts.sweep(saved.as_ref().map(Pairing::id).as_ref());
     *paired.0.write().expect("pairing lock") = saved;
     Ok(computer)
 }
 
-/// Redeems the code in a scanned link with the computer it names, then saves the grant.
+/// Redeems the code in a scanned link with the computer it names, saves the grant, and sweeps away the drafts of every
+/// other pairing.
 #[tauri::command]
-pub async fn pair(link: String, device: String, paired: tauri::State<'_, Paired>) -> Result<Computer, Error> {
+pub async fn pair(link: String, device: String, paired: tauri::State<'_, Paired>, drafts: tauri::State<'_, Drafts>) -> Result<Computer, Error> {
     let (origin, code) = parse_link(&link)?;
     let reply = crate::remote::client()
         .post(crate::remote::url(&origin, "/api/v1/pair", None))
@@ -135,26 +163,42 @@ pub async fn pair(link: String, device: String, paired: tauri::State<'_, Paired>
     // The Keychain and memory change together, so two scans that finish out of order leave one pairing in both.
     let mut current = paired.0.write().expect("pairing lock");
     entry()?.set_password(&serde_json::to_string(&pairing)?)?;
+    drafts.sweep(Some(&pairing.id()));
     *current = Some(pairing);
     Ok(computer)
 }
 
-/// Forgets the computer, and with it every draft written for its chats.
+/// Forgets the computer: its credential, its link, and every draft written for its chats.
 #[tauri::command]
-pub fn forget(paired: tauri::State<'_, Paired>, drafts: tauri::State<'_, crate::drafts::Drafts>) -> Result<(), Error> {
-    // The drafts go first, so any error leaves the pairing as it was and the window can go on with it.
-    drafts.clear()?;
+pub fn forget(paired: tauri::State<'_, Paired>, drafts: tauri::State<'_, Drafts>, watcher: tauri::State<'_, Watcher>) -> Result<(), Error> {
+    let mut current = paired.0.write().expect("pairing lock");
+    // The credential goes first, so an error leaves the pairing and its drafts as they were, and the window goes on with them.
     match entry()?.delete_credential() {
         Ok(()) | Err(keyring::Error::NoEntry) => {}
         Err(err) => return Err(err.into()),
     }
-    *paired.0.write().expect("pairing lock") = None;
+    let forgotten = current.take();
+    drop(current);
+    watcher.stop();
+    if let Some(forgotten) = forgotten {
+        drafts.remove(&forgotten.id());
+    }
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_window_gets_the_pairing_id_and_never_the_token() {
+        let pairing = Pairing { origin: Url::parse("https://studio.tail1234.ts.net:47380/").expect("an origin"), name: "Studio Mac".into(), token: "token-a".into() };
+        let shown = serde_json::to_value(Computer::from(&pairing)).expect("a computer");
+        // The first 16 hex characters of the SHA-256 of "token-a".
+        assert_eq!(shown, serde_json::json!({ "id": "a70bf50e531ce1a8", "name": "Studio Mac", "origin": "https://studio.tail1234.ts.net:47380/" }));
+        assert_eq!(pairing.id(), Pairing { token: "token-a".into(), ..pairing.clone() }.id());
+        assert_ne!(pairing.id(), Pairing { token: "token-b".into(), ..pairing }.id());
+    }
 
     #[test]
     fn a_pairing_link_gives_the_origin_with_its_port_and_the_code() {
