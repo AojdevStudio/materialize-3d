@@ -358,6 +358,19 @@ describe('settings', () => {
     expect(await phone.findByText('No phone or tablet is paired.')).toBeTruthy()
   })
 
+  it('shows a device that redeems the code on screen, and takes the spent code away', async () => {
+    mockApp()
+    render(<StudioApp />)
+    await openSettings()
+    const phone = within(await show('Phone and tablet'))
+    await phone.findByRole('img', { name: 'Pairing code' })
+    const iphone = { id: 'device-iphone', name: 'Test iPhone', pairedMs: 1_700_000_000_000 }
+    await emit({ type: 'paired', device: iphone, devices: [tablet, iphone] })
+    expect(await phone.findByText('Test iPhone is paired. Show a new code to pair another device.')).toBeTruthy()
+    expect(phone.queryByRole('img', { name: 'Pairing code' })).toBeNull()
+    expect(screen.getAllByTestId('settings-device').map((row) => within(row).getByText(/Test/).textContent)).toEqual(['Test iPad', 'Test iPhone'])
+  })
+
   it('Close returns to the project it was opened from', async () => {
     mockApp()
     render(<StudioApp />)

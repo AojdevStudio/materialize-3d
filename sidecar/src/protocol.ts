@@ -357,6 +357,8 @@ export type SidecarEvent =
   | ({ type: 'chat' } & ChatView)
   /** A project whose roles changed, from the window or a paired device, as it is now. */
   | { type: 'project'; project: Project }
+  /** A device redeemed the pairing code, which is spent now, and the devices paired after it. */
+  | { type: 'paired'; device: PairedDevice; devices: PairedDevice[] }
   | { type: 'engine'; state: (typeof ENGINE_STATES)[number]; detail: string }
 
 export const ENGINE_STATES = ['restarting', 'stopped'] as const

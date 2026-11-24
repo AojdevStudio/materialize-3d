@@ -16,7 +16,7 @@ tailscale serve --bg --https=47380 http://127.0.0.1:47380
 
 Who owns what:
 
-- The person's Tailscale client owns the HTTPS address, its certificate, and who on the tailnet can reach it. Materialize never changes Tailscale settings. It only reads `tailscale serve status --json` to learn the address.
+- The person's Tailscale client owns the HTTPS address, its certificate, and who on the tailnet can reach it. Materialize never changes Tailscale settings. It only reads `tailscale serve status --json` to learn the address. It takes only an HTTPS address that sends every path to the service, and refuses one Funnel makes public. A request Tailscale marks as from Funnel answers 403.
 - The sidecar owns the loopback listener, the pairing code, and the list of paired devices. The service lives in the sidecar because the sidecar already owns the chats, the drafts, and the project folders. Rust is unchanged.
 
 Each request but the pairing one must carry a device token. A device on the tailnet with no token reads nothing, so Tailscale access alone is not enough.
@@ -35,7 +35,7 @@ Every route takes and answers JSON, except where noted. Every request but `pair`
 
 | Route | Body | Answer |
 |---|---|---|
-| `POST /api/v1/pair` | `{ code, name }` | `{ token, device, computer }`. 403 for a code that is wrong, expired, or used. |
+| `POST /api/v1/pair` | `{ code, name }` | `{ token, device, computer }`. 403 for a code that is wrong, expired, or used. 413 for a body over 4 KB. |
 | `GET /api/v1/computer` | | `{ id, name, version, device }` |
 | `GET /api/v1/models` | | The models both roles offer, as `models.list` answers the window. |
 | `GET /api/v1/chats` | | Each chat with its pair and status, newest activity first. |

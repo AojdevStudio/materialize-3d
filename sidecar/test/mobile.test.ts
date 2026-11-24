@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { chmodSync, mkdirSync, mkdtempSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, renameSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { handlers, type Services } from '../src/methods'
@@ -35,7 +35,8 @@ async function start(serve: (port: number) => object, env: Record<string, string
   mkdirSync(bin)
   writeFileSync(join(bin, 'uv'), '#!/bin/sh\n[ "$1" = run ] && shift\nexec "$@"\n')
   const config = join(dir, 'serve.json')
-  writeFileSync(join(bin, 'tailscale'), `#!/bin/sh\n[ "$*" = "serve status --json" ] || exit 64\ncat '${config}'\n`)
+  // Like the Mac app's executable, it answers as the command line only with TAILSCALE_BE_CLI set.
+  writeFileSync(join(bin, 'tailscale'), `#!/bin/sh\n[ "$TAILSCALE_BE_CLI" = 1 ] || exit 65\n[ "$*" = "serve status --json" ] || exit 64\ncat '${config}'\n`)
   for (const tool of ['uv', 'tailscale']) chmodSync(join(bin, tool), 0o755)
   const port = await freePort()
   const setServe = (value: object) => writeFileSync(config, JSON.stringify(value))
@@ -142,6 +143,8 @@ describe('pairing', () => {
     expect([first.status, second.status].sort()).toEqual([200, 403])
     const again = await redeem(base, once)
     const wrong = await redeem(base, 'not-the-code')
+    // A pairing request comes before any token, so a large one is refused before it is read whole.
+    expect((await fetch(`${base}/pair`, { method: 'POST', body: JSON.stringify({ code: 'x'.repeat(10_000), name: 'iPhone' }) })).status).toBe(413)
     expect([again.status, wrong.status]).toEqual([403, 403])
     expect(await again.json()).toEqual(await wrong.json())
     expect(await devices(app)).toHaveLength(1)
@@ -156,6 +159,15 @@ describe('pairing', () => {
     // A plain HTTP listener cannot answer the https address a QR would name.
     setServe({ TCP: { [port]: { HTTP: true } }, Web: forwarding(port).Web })
     expect((await pairing(app)).kind).toBe('setup')
+    // Tailscale prefers a longer mount, so an address that sends any path elsewhere could take the code or a token.
+    const served = forwarding(port)
+    const key = `${HOST}:${port}`
+    setServe({ ...served, Web: { ...served.Web, [key]: { Handlers: { '/': { Proxy: `http://127.0.0.1:${port}` }, '/api/': { Proxy: 'http://127.0.0.1:9' } } } } })
+    expect((await pairing(app)).kind).toBe('setup')
+    // Funnel makes the address public, so no code is shown for it.
+    setServe({ ...served, AllowFunnel: { [key]: true } })
+    const funnel = await pairing(app)
+    expect([funnel.kind, funnel.kind === 'off' && funnel.detail.includes('Funnel')]).toEqual(['off', true])
 
     setServe(forwarding(port))
     const ready = await pairing(app)
@@ -181,6 +193,9 @@ describe('a paired device', () => {
     expect((await fetch(`${base}/chats/${project}`)).status).toBe(401)
     // A second client on the tailnet that never paired.
     expect((await as(base, 'a-token-never-given')(`/chats/${project}`)).status).toBe(401)
+    // A request Tailscale marks as from Funnel, the public internet, is refused even with a token.
+    const funnel = await fetch(`${base}/chats/${project}`, { headers: { authorization: `Bearer ${token}`, 'tailscale-funnel-request': '?1' } })
+    expect(funnel.status).toBe(403)
     // Without a token, no path says whether it is a route, or whether it parses.
     for (const path of ['/no-such-route', `/chats/${project}/files/%E0%A4%A`]) expect([path, (await fetch(`${base}${path}`)).status]).toEqual([path, 401])
     expect((await as(base, token)('/chats')).status).toBe(200)
@@ -230,6 +245,8 @@ describe('a paired device', () => {
     const { token, device, computer } = await pair(app, base)
     expect(device.name).toBe('iPhone')
     expect(await devices(app)).toEqual([device])
+    // The window hears the new device, so Settings shows it and takes the spent code away.
+    expect(await app.until((event) => event.type === 'paired')).toEqual({ type: 'paired', device, devices: [device] })
     const call = as(base, token)
 
     expect(await (await call('/computer')).json()).toEqual({ ...computer, version: '9.9.9', device })
@@ -331,6 +348,12 @@ describe('a paired device', () => {
       expect([rel, answer.status]).toEqual([rel, 404])
     }
     expect((await call(`/chats/${project}/files/part.stl`)).status).toBe(200)
+
+    // A chat folder that became a link reads nothing, listed or by name.
+    renameSync(folder, join(dir, 'moved'))
+    symlinkSync(join(dir, 'moved'), folder)
+    expect((await call(`/chats/${project}/files`)).status).toBe(404)
+    expect((await call(`/chats/${project}/files/part.stl`)).status).toBe(404)
     await app.quit()
   })
 

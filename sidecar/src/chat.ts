@@ -225,7 +225,9 @@ export class Chats {
     const conversation = await this.#conversation(project)
     await this.#watch(project, conversation)
     const entries = await this.#entries(conversation)
-    this.#sent.set(project, Math.max(this.#sent.get(project) ?? 0, entries.at(-1)?.id ?? 0))
+    // The first read sets where the chat's changes start. A later read, as from a paired phone, leaves it, so an entry
+    // another window has not heard yet still reaches it. A window merges entries by id, so one it holds is harmless.
+    if (!this.#sent.has(project)) this.#sent.set(project, entries.at(-1)?.id ?? 0)
     return view(project, entries, await this.#state(conversation))
   }
 
@@ -324,11 +326,16 @@ export class Chats {
     const saved = started === undefined ? key : project.id
     const conversation = await this.#conversation(project.id)
     const requestId = sendName(rev)
-    if ((await store.harness.commit((tx) => tx.submissionByRequest(conversation.id, requestId), context)) !== undefined) {
+    const sent = async () => (await store.harness.commit((tx) => tx.submissionByRequest(conversation.id, requestId), context)) !== undefined
+    // An overlapping send of this revision, as a phone's retry, can commit and take the draft between the two reads, so
+    // a draft that is gone is checked against the sends again.
+    const draft = (await sent()) ? undefined : (started?.draft ?? (await store.draft(saved, rev).catch(async (error: unknown) => {
+      if (!(await sent())) throw error
+    })))
+    if (draft === undefined) {
       await this.#watch(project.id, conversation)
       return project
     }
-    const draft = started?.draft ?? (await store.draft(saved, rev))
     const folder = store.projectFolder(project.id)
     const attachments = await copyAttachments(folder, rev, draft.attachments)
     // The chat entry keeps the split the model got: a picture it could not read is shown as a file, by its path.

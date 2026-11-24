@@ -5,7 +5,7 @@
  * phone only `chat` and `project` events.
  */
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
-import { existsSync, readdirSync, realpathSync, statSync } from 'node:fs'
+import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { hostname } from 'node:os'
 import { extname, join } from 'node:path'
 import type { Models } from '@earendil-works/pi-ai'
@@ -32,12 +32,19 @@ const KEEPALIVE_MS = 15_000
 /** The one answer to a code that is wrong, expired, or used, so a guess learns nothing about the live one. */
 const BAD_CODE = 'This code is wrong, expired, or used. Show a new code on the computer.'
 
-/** What `tailscale serve status --json` says, as far as this app reads it: each served address and where `/` goes. */
+/** The most a pairing request may carry, since it comes before any token. */
+const PAIR_BODY_BYTES = 4096
+
+/**
+ * What `tailscale serve status --json` says, as far as this app reads it: which ports take HTTPS, where each path of
+ * each served address goes, and which addresses Funnel makes public.
+ */
 const serveStatus = compile(
   obj(
     {
       TCP: opt(map(obj({ HTTPS: opt(bool()) }, { open: true }))),
       Web: opt(map(obj({ Handlers: opt(map(obj({ Proxy: opt(str()) }, { open: true }))) }, { open: true }))),
+      AllowFunnel: opt(map(bool())),
     },
     { open: true },
   ),
@@ -48,7 +55,7 @@ const sha256 = (text: string) => createHash('sha256').update(text).digest()
 /** A refusal with its HTTP status. Every other error answers 500. */
 class Refused extends Error {
   constructor(
-    readonly status: 400 | 401 | 403 | 404,
+    readonly status: 400 | 401 | 403 | 404 | 413,
     message: string,
   ) {
     super(message)
@@ -180,11 +187,26 @@ function match(pattern: string, path: string): Params | undefined {
   return got.length === want.length ? params : undefined
 }
 
-async function body<T>(request: Request, schema: Validator<T>): Promise<T> {
+/** The request's body as text, refused once it passes `limit` bytes, before the rest is read. */
+async function capped(request: Request, limit: number): Promise<string> {
+  const tooLarge = new Refused(413, `The body is over ${limit} bytes.`)
+  if (Number(request.headers.get('content-length') ?? 0) > limit) throw tooLarge
+  const chunks: Uint8Array[] = []
+  let read = 0
+  for await (const chunk of request.body ?? []) {
+    read += chunk.byteLength
+    if (read > limit) throw tooLarge
+    chunks.push(chunk)
+  }
+  return Buffer.concat(chunks).toString('utf8')
+}
+
+async function body<T>(request: Request, schema: Validator<T>, limit = Number.POSITIVE_INFINITY): Promise<T> {
   let value: unknown
   try {
-    value = await request.json()
-  } catch {
+    value = JSON.parse(await capped(request, limit))
+  } catch (error) {
+    if (error instanceof Refused) throw error
     throw new Refused(400, 'The body is not JSON.')
   }
   if (!schema.check(value)) throw new Refused(400, schema.errors(value).map((e) => `${e.path || '/'} ${e.message}`).join('; '))
@@ -207,7 +229,7 @@ function modelFiles(root: string): ModelFile[] {
       }
     }
   }
-  if (existsSync(root)) walk('')
+  walk('')
   return files.sort((a, b) => b.modifiedMs - a.modifiedMs)
 }
 
@@ -230,9 +252,15 @@ export class Mobile {
       const server = Bun.serve({
         hostname: '127.0.0.1',
         port: options.port,
+        // Bun's development mode answers routes of its own before `fetch`, and a shared port lets another process take
+        // requests, so neither is left to Bun's defaults.
+        development: false,
+        reusePort: false,
         fetch: async (request, server) => {
           const path = new URL(request.url).pathname
           try {
+            // Tailscale marks a request that came in over Funnel, from the public internet. The service is the tailnet's.
+            if (request.headers.has('tailscale-funnel-request')) throw new Refused(403, 'This service answers only on your tailnet.')
             if (request.method === 'POST' && path === PAIR) return await this.#pair(request)
             // Every other request, to a route or not, shows a paired device's token first, so a stranger learns nothing.
             const device = await this.#device(request)
@@ -265,6 +293,18 @@ export class Mobile {
       const found = (await store.projects()).find((p) => p.id === id)
       if (found === undefined) throw new Refused(404, `no project ${id}`)
       return found
+    }
+    /**
+     * A chat's folder where it really is, or undefined before the agent made it. A folder that is a link is refused, so
+     * the files a phone lists and reads stay under the projects folder.
+     */
+    const folderOf = async (params: Params) => {
+      const { id } = await project(params)
+      const folder = join(store.projectsDir, id)
+      if (!existsSync(folder)) return undefined
+      const real = join(realpathSync.native(store.projectsDir), id)
+      if (realpathSync.native(folder) !== real) throw new Refused(404, `${id} is not a chat folder here`)
+      return real
     }
     return [
       { method: 'GET', path: '/api/v1/computer', run: async (_, __, device) => json({ ...(await this.#computer()), device }) },
@@ -312,25 +352,40 @@ export class Mobile {
           return json({ lead, helper })
         },
       },
-      { method: 'GET', path: '/api/v1/chats/:project/files', run: async (_, params) => json(modelFiles(join(store.projectsDir, (await project(params)).id))) },
+      {
+        method: 'GET',
+        path: '/api/v1/chats/:project/files',
+        run: async (_, params) => {
+          const folder = await folderOf(params)
+          return json(folder === undefined ? [] : modelFiles(folder))
+        },
+      },
       {
         method: 'GET',
         path: '/api/v1/chats/:project/files/*rel',
         run: async (_, params) => {
-          const folder = join(store.projectsDir, (await project(params)).id)
+          const folder = await folderOf(params)
           const rel = params.rel ?? ''
           const type = MODEL_TYPES[extname(rel).toLowerCase()]
           const missing = new Refused(404, `${rel} is not a model file in this chat`)
-          if (type === undefined || rel.split('/').some(skipped)) throw missing
-          let path: string
+          if (folder === undefined || type === undefined || rel.split('/').some(skipped)) throw missing
+          const named = join(folder, rel)
           try {
-            path = inside(folder, rel)
+            // The list leaves links out, so a read takes only the file the name spells, with no link on its way.
+            if (realpathSync.native(inside(folder, rel)) !== named) throw missing
           } catch {
             throw missing
           }
-          // The list leaves links out, so a read takes only the file the name spells, with no link on its way.
-          if (realpathSync.native(path) !== join(realpathSync.native(folder), rel)) throw missing
-          return new Response(Bun.file(path), { headers: { 'content-type': type } })
+          // The bytes come from the file opened here, checked to be the one named, so a swap after the check serves nothing.
+          const fd = openSync(named, constants.O_RDONLY | constants.O_NOFOLLOW)
+          try {
+            const opened = fstatSync(fd)
+            const there = lstatSync(named)
+            if (!opened.isFile() || opened.ino !== there.ino || opened.dev !== there.dev || realpathSync.native(named) !== named) throw missing
+            return new Response(readFileSync(fd), { headers: { 'content-type': type } })
+          } finally {
+            closeSync(fd)
+          }
         },
       },
     ]
@@ -338,10 +393,13 @@ export class Mobile {
 
   /** Pairs a device with the live code. The code is taken before anything waits, so two redeems of it cannot both pair. */
   async #pair(request: Request): Promise<Response> {
-    const { code, name } = await body(request, pairs)
+    const { code, name } = await body(request, pairs, PAIR_BODY_BYTES)
     if (!this.#pairing.redeem(code)) throw new Refused(403, BAD_CODE)
     const token = randomBytes(32).toString('base64url')
-    const device = await this.#o.store.addDevice(name, sha256(token).toString('hex'))
+    const { store, emit } = this.#o
+    const device = await store.addDevice(name, sha256(token).toString('hex'))
+    // Settings shows the new device, and that its code is spent, without being asked.
+    emit({ type: 'paired', device, devices: await store.devices() })
     return json({ token, device, computer: await this.#computer() })
   }
 
@@ -366,16 +424,25 @@ export class Mobile {
     const port = this.#listening.server.port
     const cli = Bun.which('tailscale') ?? (existsSync(MAC_TAILSCALE) ? MAC_TAILSCALE : undefined)
     if (cli === undefined) return { kind: 'off', detail: 'Tailscale is not installed on this computer. Install it, sign in, and try again.' }
-    const run = Bun.spawn([cli, 'serve', 'status', '--json'], { stdout: 'pipe', stderr: 'pipe' })
+    // The Mac app's own executable answers as the command line only when told to, and the sidecar's shell gives no hint.
+    const run = Bun.spawn([cli, 'serve', 'status', '--json'], { stdout: 'pipe', stderr: 'pipe', env: { ...process.env, TAILSCALE_BE_CLI: '1' } })
     const [out, err, exit] = await Promise.all([new Response(run.stdout).text(), new Response(run.stderr).text(), run.exited])
     if (exit !== 0) return { kind: 'off', detail: `Tailscale did not answer: ${err.trim() || `it stopped with exit ${exit}`}` }
     const status: unknown = out.trim() === '' ? {} : JSON.parse(out)
     if (!serveStatus.check(status)) throw new Error(`tailscale serve status --json printed what this app cannot read: ${out.slice(0, 200)}`)
+    const tailscale = cli === MAC_TAILSCALE ? `'${MAC_TAILSCALE}'` : 'tailscale'
     const forwards = [`http://127.0.0.1:${port}`, `http://localhost:${port}`]
-    // Only an HTTPS listener gives the phone the address the QR names. A plain HTTP one is passed over.
-    const https = (served: string) => status.TCP?.[served.slice(served.lastIndexOf(':') + 1)]?.HTTPS === true
-    const served = Object.entries(status.Web ?? {}).find(([at, web]) => https(at) && forwards.includes(web.Handlers?.['/']?.Proxy ?? ''))?.[0]
-    if (served === undefined) return { kind: 'setup', command: `tailscale serve --bg --https=${port} http://127.0.0.1:${port}` }
+    const portOf = (served: string) => served.slice(served.lastIndexOf(':') + 1)
+    // An address the QR can name takes HTTPS, and sends every path to this service, so no other mount Tailscale prefers
+    // takes the pairing code or a device's token. A plain HTTP listener, or one shared with other paths, is passed over.
+    const served = Object.entries(status.Web ?? {}).find(([at, web]) => {
+      const handlers = Object.entries(web.Handlers ?? {})
+      return status.TCP?.[portOf(at)]?.HTTPS === true && handlers.length === 1 && handlers[0]?.[0] === '/' && forwards.includes(handlers[0][1].Proxy ?? '')
+    })?.[0]
+    if (served === undefined) return { kind: 'setup', command: `${tailscale} serve --bg --https=${port} http://127.0.0.1:${port}` }
+    if (status.AllowFunnel?.[served] === true) {
+      return { kind: 'off', detail: `Tailscale Funnel makes ${served} public on the internet. Turn Funnel off for it with ${tailscale} funnel --https=${portOf(served)} off, then check again.` }
+    }
     const { code, expiresMs } = this.#pairing.issue()
     const url = `https://${served.replace(/:443$/, '')}/pair?code=${code}`
     return { kind: 'ready', url, svg: renderSVG(url), expiresMs }

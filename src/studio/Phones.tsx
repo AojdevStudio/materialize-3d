@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { MobilePairing, PairedDevice } from '../../sidecar/src/protocol'
-import { sidecar } from './api'
+import { onSidecarEvent, sidecar } from './api'
 
 const time = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
 const day = (ms: number) => new Date(ms).toLocaleDateString([], { dateStyle: 'medium' })
@@ -9,10 +9,13 @@ const day = (ms: number) => new Date(ms).toLocaleDateString([], { dateStyle: 'me
 export default function Phones({ onError }: { onError: (message: string) => void }) {
   const [pairing, setPairing] = useState<MobilePairing | null>(null)
   const [devices, setDevices] = useState<PairedDevice[] | null>(null)
+  /** The device that redeemed the code on screen, which is spent now. */
+  const [paired, setPaired] = useState<PairedDevice | null>(null)
 
   // A new code, and the devices again, since one may have paired with the last code.
   const refresh = (current = () => true) => {
     setPairing(null)
+    setPaired(null)
     const failed = (err: unknown) => current() && onError(String(err))
     void sidecar('mobile.pair', {}).then((value) => current() && setPairing(value), failed)
     void sidecar('mobile.devices', {}).then((value) => current() && setDevices(value), failed)
@@ -26,14 +29,26 @@ export default function Phones({ onError }: { onError: (message: string) => void
     }
   }, [])
 
+  // A phone that scans the code shows here at once, and its spent code goes away.
+  useEffect(
+    () =>
+      onSidecarEvent((event) => {
+        if (event.type !== 'paired') return
+        setDevices(event.devices)
+        setPaired(event.device)
+      }).stop,
+    [],
+  )
+
   const forget = (device: string) => void sidecar('mobile.forget', { device }).then(setDevices, (err: unknown) => onError(String(err)))
 
   return (
     <>
       <section className="setup-group" aria-label="Pair a device">
         <h2>Pair a device</h2>
-        {pairing === null && <p className="setup-detail">Checking…</p>}
-        {pairing?.kind === 'ready' && (
+        {paired !== null && <p className="setup-detail">{paired.name} is paired. Show a new code to pair another device.</p>}
+        {paired === null && pairing === null && <p className="setup-detail">Checking…</p>}
+        {paired === null && pairing?.kind === 'ready' && (
           <div className="settings-pair">
             <img alt="Pairing code" src={`data:image/svg+xml,${encodeURIComponent(pairing.svg)}`} />
             <p className="setup-detail">Scan it in the Materialize 3D app on your iPhone or iPad. It works once, until {time(pairing.expiresMs)}.</p>
@@ -48,9 +63,9 @@ export default function Phones({ onError }: { onError: (message: string) => void
           </>
         )}
         {pairing?.kind === 'off' && <p className="setup-detail">{pairing.detail}</p>}
-        {pairing !== null && (
+        {(pairing !== null || paired !== null) && (
           <button type="button" className="settings-pair-again" onClick={() => refresh()}>
-            {pairing.kind === 'ready' ? 'New code' : 'Check again'}
+            {paired !== null || pairing?.kind === 'ready' ? 'New code' : 'Check again'}
           </button>
         )}
       </section>
