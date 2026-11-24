@@ -1367,6 +1367,18 @@ describe('StudioApp', () => {
     expect(store.model).toEqual({ provider: 'anthropic', modelId: 'claude-sonnet-5-5' })
   })
 
+  it('shows a lead a paired phone chose for the open project', async () => {
+    mockSidecar({}, [projectA, projectB])
+    render(<StudioApp />)
+    const picked = () => screen.getByTestId('model-picker').textContent
+    fireEvent.click(await projectList().findByText('Project A'))
+    await waitFor(() => expect(openTitle()).toBe('Project A'))
+    await waitFor(() => expect(picked()).toBe('Opus 5.5'))
+
+    emit({ type: 'project', project: { ...projectA, model: { provider: 'openai-codex', modelId: 'gpt-6.1-sol' } } })
+    await waitFor(() => expect(picked()).toBe('GPT 6.1 Sol'))
+  })
+
   it("shows the chosen model's short name and mark before any sign-in", async () => {
     mockSidecar({ 'models.list': () => Promise.resolve([]) })
     render(<StudioApp />)

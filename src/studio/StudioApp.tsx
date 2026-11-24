@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { AppState, ModelChoice, Project, Setup } from '../../sidecar/src/protocol'
-import { sidecar } from './api'
+import { onSidecarEvent, sidecar } from './api'
 import { ChatView } from './Chat'
 import { Composer } from './Composer'
 import { useDrafts } from './drafts'
@@ -46,6 +46,14 @@ export default function StudioApp() {
   const running = view?.running ?? false
 
   useStudioEvents(projects)
+  // A paired phone can change a chat's roles too, so the window takes each project the sidecar says changed.
+  useEffect(
+    () =>
+      onSidecarEvent((event) => {
+        if (event.type === 'project') setProjects((all) => all.map((p) => (p.id === event.project.id ? event.project : p)))
+      }).stop,
+    [],
+  )
   useUpdateEvents()
   useWindowTheme()
   useEffect(() => {
