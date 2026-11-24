@@ -56,6 +56,7 @@ final class PairAndViewUITests: XCTestCase {
         let computer = try XCTUnwrap(setting("M3D_COMPUTER"), "set M3D_COMPUTER")
         let chat = try XCTUnwrap(setting("M3D_CHAT"), "set M3D_CHAT")
         let line = try XCTUnwrap(setting("M3D_LINE"), "set M3D_LINE")
+        let expected = try XCTUnwrap(setting("M3D_MODELS"), "set M3D_MODELS").split(separator: ";").map(String.init)
 
         app.launch()
         XCTAssertTrue(text("Pair with your computer").waitForExistence(timeout: 60))
@@ -82,12 +83,11 @@ final class PairAndViewUITests: XCTestCase {
 
         web.buttons[chat].tap()
         // The file buttons carry aria-pressed, so the web view shows them as switches.
-        let models = web.switches.matching(NSPredicate(format: "label ENDSWITH[c] '.stl' OR label ENDSWITH[c] '.3mf' OR label ENDSWITH[c] '.glb'"))
-        XCTAssertTrue(models.firstMatch.waitForExistence(timeout: 30), "the chat lists its model files")
+        XCTAssertTrue(web.switches.firstMatch.waitForExistence(timeout: 30), "the chat lists its model files")
         XCTAssertTrue(text(line).exists, "the chat shows its transcript")
-        for index in 0..<models.count {
-            let model = models.element(boundBy: index)
-            let name = model.label
+        for name in expected {
+            let model = web.switches[name]
+            XCTAssertTrue(model.exists, "the chat lists \(name)")
             model.tap()
             // ModelView names itself after the file, without its folder, once that file is drawn.
             let file = name.split(separator: "/").last.map(String.init) ?? name

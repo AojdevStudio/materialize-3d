@@ -74,6 +74,13 @@ body,
   padding: 8px 0;
 }
 
+/* The page itself never scrolls (studio.css clips it), so the chat list scrolls inside the screen. */
+.mobile-chats {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
 .mobile-chats ul,
 .mobile-transcript {
   list-style: none;

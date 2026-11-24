@@ -5,9 +5,11 @@
 #   scripts/mobile/sim-proof.sh build <simulator-udid> <out>
 #   scripts/mobile/sim-proof.sh test <simulator-udid> <pairing-qr.png> <out>
 #
-# A pairing code lasts 5 minutes, less than a first build, so build first, then show a new code and test with it. Use a
-# fresh simulator, so the pairing picture is the newest in Photos. `test` needs M3D_COMPUTER, M3D_CHAT, and M3D_LINE:
-# the computer's name, a chat with model files, and a line of that chat.
+# A pairing code lasts 5 minutes, less than a first build, so build first, then show a new code and test with it.
+# `test` erases the simulator's Keychain, so it runs only on a simulator made for the proof, named m3d-proof-*:
+#   xcrun simctl create m3d-proof-iphone "iPhone 18 Pro"
+# Erase it before each run, so the pairing picture is the newest in Photos. `test` needs M3D_COMPUTER, M3D_CHAT, M3D_LINE,
+# and M3D_MODELS: the computer's name, a chat, a line of that chat, and its model files separated by `;`.
 set -euo pipefail
 mode=$1 device=$2
 repo=${0:A:h:h:h}
@@ -39,23 +41,25 @@ build)
   ;;
 test)
   pairing_qr=${3:A} out=${4:A}
-  : ${M3D_COMPUTER:?} ${M3D_CHAT:?} ${M3D_LINE:?}
+  : ${M3D_COMPUTER:?} ${M3D_CHAT:?} ${M3D_LINE:?} ${M3D_MODELS:?}
+  [[ $(xcrun simctl list devices | grep -F "($device)") == *m3d-proof-* ]] || { echo "sim-proof: $device is not an m3d-proof-* simulator" >&2; exit 2; }
   xcrun simctl boot $device 2>/dev/null || true
   xcrun simctl addmedia $device $pairing_qr
   run() {
     rm -rf $out/$1.xcresult $out/attachments/$1
-    TEST_RUNNER_M3D_COMPUTER=$M3D_COMPUTER TEST_RUNNER_M3D_CHAT=$M3D_CHAT TEST_RUNNER_M3D_LINE=$M3D_LINE \
+    local result=0
+    TEST_RUNNER_M3D_COMPUTER=$M3D_COMPUTER TEST_RUNNER_M3D_CHAT=$M3D_CHAT TEST_RUNNER_M3D_LINE=$M3D_LINE TEST_RUNNER_M3D_MODELS=$M3D_MODELS \
       xcodebuild -project $project \
       -scheme materialize-3d-mobile_iOS -derivedDataPath $out/derived -destination "id=$device" $sign \
       -only-testing:materialize-3d-mobile_UITests/PairAndViewUITests/$2 -resultBundlePath $out/$1.xcresult \
-      test-without-building > $out/$1.log || { grep -E "error:|Test Case" $out/$1.log; failed=1; }
+      test-without-building > $out/$1.log || result=$?
     xcrun xcresulttool export attachments --path $out/$1.xcresult --output-path $out/attachments/$1 > /dev/null
+    (( result == 0 )) || { grep -E "error:|Test Case" $out/$1.log; exit $result; }
   }
-  failed=0
   run pair testPairFromAPictureOpenTheModelsAndRelaunch
+  # Only after a pass: the reset shows the pairing lived in the Keychain.
   xcrun simctl keychain $device reset
   run keychain testAKeychainResetForgetsThePairing
-  exit $failed
   ;;
 *)
   echo "usage: sim-proof.sh build <udid> <out> | test <udid> <pairing-qr.png> <out>" >&2

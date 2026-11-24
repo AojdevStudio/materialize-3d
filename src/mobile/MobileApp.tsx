@@ -23,10 +23,11 @@ function errorText(err: unknown): string {
   return JSON.stringify(err)
 }
 
-/** The text of the QR code the camera sees, once the person allows the camera. */
-async function scanCode(): Promise<string> {
+/** The text of the QR code the camera sees, once the person allows the camera. A Cancel while iOS asks starts no scan. */
+async function scanCode(cancelled: () => boolean): Promise<string | null> {
   const allowed = (await checkPermissions()) === 'granted' || (await requestPermissions()) === 'granted'
   if (!allowed) throw new Error('Materialize 3D needs the camera to scan the code. Allow the camera in Settings, or choose a picture of the code.')
+  if (cancelled()) return null
   return (await scan({ windowed: true, formats: [Format.QRCode] })).content
 }
 
@@ -56,6 +57,8 @@ export default function MobileApp() {
     setScreen({ kind: 'unpaired', step })
     try {
       const link = await read()
+      // A Cancel during the read wins: a late result redeems nothing.
+      if (cancelled.current) return setScreen({ kind: 'unpaired', step: 'idle' })
       if (link === null) throw new Error('No pairing code was found in that picture.')
       setScreen({ kind: 'unpaired', step: 'redeeming' })
       setScreen({ kind: 'paired', computer: await pairing.pair(link, deviceName()) })
@@ -85,7 +88,7 @@ export default function MobileApp() {
       {screen.kind === 'unpaired' && screen.step !== 'scanning' && (
         <Pair
           step={screen.step}
-          onScan={() => pairFrom('scanning', scanCode)}
+          onScan={() => pairFrom('scanning', () => scanCode(() => cancelled.current))}
           onPicture={(picture) => pairFrom('reading', () => readQrPicture(picture))}
         />
       )}
@@ -190,15 +193,17 @@ function Chat({ chat, onBack }: { chat: MobileChat; onBack: () => void }) {
   const [files, setFiles] = useState<ModelFile[]>([])
   const [model, setModel] = useState<ModelFile | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [filesError, setFilesError] = useState<string | null>(null)
 
+  // The transcript and the model files load apart, so one failing leaves the other on screen.
   useEffect(() => {
-    Promise.all([remoteJson<ChatView>(chatPath(chat.id)), remoteJson<ModelFile[]>(`${chatPath(chat.id)}/files`)]).then(
-      ([opened, models]) => {
-        setView(opened)
+    remoteJson<ChatView>(chatPath(chat.id)).then(setView, (err) => setError(errorText(err)))
+    remoteJson<ModelFile[]>(`${chatPath(chat.id)}/files`).then(
+      (models) => {
         setFiles(models)
         setModel(models[0] ?? null)
       },
-      (err) => setError(errorText(err)),
+      (err) => setFilesError(`The model files did not load. ${errorText(err)}`),
     )
   }, [chat.id])
 
@@ -211,6 +216,7 @@ function Chat({ chat, onBack }: { chat: MobileChat; onBack: () => void }) {
         <h1>{chat.title}</h1>
       </header>
       {error && <p className="mobile-error">{error}</p>}
+      {filesError && <p className="mobile-error">{filesError}</p>}
       {model && (
         <div className="mobile-model">
           <ModelView url={remoteUrl(`${chatPath(chat.id)}/files/${model.rel.split('/').map(encodeURIComponent).join('/')}`)} ext={extOf(model.rel)} />

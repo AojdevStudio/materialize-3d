@@ -2,9 +2,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 
-const { invoke, qrText } = vi.hoisted(() => ({ invoke: vi.fn(), qrText: { value: null as string | Error | null } }))
+const { invoke, qrText, scanner } = vi.hoisted(() => ({
+  invoke: vi.fn(),
+  qrText: { value: null as string | Error | null },
+  scanner: { checkPermissions: vi.fn(), requestPermissions: vi.fn(), scan: vi.fn(), cancel: vi.fn() },
+}))
 vi.mock('@tauri-apps/api/core', () => ({ invoke }))
-vi.mock('@tauri-apps/plugin-barcode-scanner', () => ({ Format: { QRCode: 'QR_CODE' }, scan: vi.fn() }))
+vi.mock('@tauri-apps/plugin-barcode-scanner', () => ({ Format: { QRCode: 'QR_CODE' }, ...scanner }))
 // jsdom draws no pictures, so the picture's QR text is set by each test.
 vi.mock('./qr', () => ({
   readQrPicture: async () => {
@@ -23,12 +27,26 @@ function answer(commands: Record<string, unknown>) {
 }
 
 const chats = () => Response.json([{ id: 'desk-clip', title: 'Desk cable clip' }])
-const computerAnswers = (answer: () => Response) =>
-  vi.stubGlobal('fetch', async (url: string) => (url === 'm3dremote://localhost/api/v1/chats' ? answer() : new Response('Not found', { status: 404 })))
+const deskClip = {
+  project: 'desk-clip',
+  entries: [{ id: 1, kind: 'user', text: 'Make a clip that holds a cable on the edge of my desk.', images: [], files: [] }],
+  running: false,
+  waiting: null,
+  turn: null,
+  seq: 1,
+}
+/** The computer's answers by path. A path it does not list answers 404. */
+const computerAnswers = (answer: () => Response, routes: Record<string, () => Response> = {}) =>
+  vi.stubGlobal('fetch', async (url: string) => {
+    const path = url.replace('m3dremote://localhost', '')
+    if (path === '/api/v1/chats') return answer()
+    return routes[path]?.() ?? new Response('Not found', { status: 404 })
+  })
 computerAnswers(chats)
 
 afterEach(() => {
   computerAnswers(chats)
+  Object.values(scanner).forEach((mock) => mock.mockReset())
   cleanup()
   invoke.mockReset()
   qrText.value = null
@@ -106,5 +124,34 @@ describe('MobileApp', () => {
     choosePicture()
 
     expect((await screen.findByRole('alert')).textContent).toBe('This device could not read the picture.')
+  })
+
+  it('starts no scan and redeems nothing after Cancel while iOS asks for the camera', async () => {
+    answer({ paired_computer: null })
+    let allow: (state: string) => void = () => {}
+    scanner.checkPermissions.mockReturnValue(new Promise((resolve) => (allow = resolve)))
+    render(<MobileApp />)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Scan the code' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Cancel' }))
+    allow('granted')
+
+    expect(await screen.findByRole('button', { name: 'Scan the code' })).toBeTruthy()
+    expect(scanner.scan).not.toHaveBeenCalled()
+    expect(invoke).not.toHaveBeenCalledWith('pair', expect.anything())
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('shows the transcript when the model files fail to load', async () => {
+    answer({ paired_computer: computer })
+    computerAnswers(chats, {
+      '/api/v1/chats/desk-clip': () => Response.json(deskClip),
+      '/api/v1/chats/desk-clip/files': () => new Response('A folder could not be read.', { status: 500 }),
+    })
+    render(<MobileApp />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Desk cable clip' }))
+
+    expect(await screen.findByText('Make a clip that holds a cable on the edge of my desk.')).toBeTruthy()
+    expect(await screen.findByText('The model files did not load. A folder could not be read.')).toBeTruthy()
   })
 })

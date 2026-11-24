@@ -4,7 +4,7 @@
 use std::sync::LazyLock;
 use std::time::Duration;
 
-use tauri::http::{header, Request, Response, StatusCode};
+use tauri::http::{header, Method, Request, Response, StatusCode};
 use tauri::{Manager, Runtime, UriSchemeContext, UriSchemeResponder};
 
 use crate::paired::Paired;
@@ -12,6 +12,9 @@ use crate::paired::Paired;
 pub const SCHEME: &str = "m3dremote";
 /// The window's origin on iOS. Its reads of `m3dremote://` cross origins, so every answer names it.
 const WINDOW_ORIGIN: &str = "tauri://localhost";
+/// The most of one answer the phone holds. A larger model would exhaust its memory before the person could pick a
+/// smaller one, so it is refused and the rest of the chat stays usable.
+const ANSWER_LIMIT: usize = 64 * 1024 * 1024;
 
 /// No redirects, so the token goes only to the paired origin. The deadlines turn a computer that stops answering into
 /// an error the window can show, over cellular too.
@@ -50,18 +53,35 @@ pub fn serve<R: Runtime>(context: UriSchemeContext<'_, R>, request: Request<Vec<
     });
 }
 
+/// Whether the token may go with this request. Tailscale Serve can mount other services under other paths of the same
+/// origin, so the token goes only to the chat reads this window makes. `path` is the one sent, after `url` resolved it.
+fn carries_token(method: &Method, path: &str) -> bool {
+    *method == Method::GET && (path == "/api/v1/chats" || path.starts_with("/api/v1/chats/"))
+}
+
 async fn forward(pairing: &crate::paired::Pairing, request: Request<Vec<u8>>) -> Result<Response<Vec<u8>>, reqwest::Error> {
     let target = url(&pairing.origin, request.uri().path(), request.uri().query());
+    if !carries_token(request.method(), target.path()) {
+        return Ok(text(StatusCode::FORBIDDEN, format!("This app does not send {} {} to the computer.", request.method(), target.path())));
+    }
     let mut outgoing = client().request(request.method().clone(), target).bearer_auth(&pairing.token);
     if let Some(kind) = request.headers().get(header::CONTENT_TYPE) {
         outgoing = outgoing.header(header::CONTENT_TYPE, kind);
     }
-    let reply = outgoing.body(request.into_body()).send().await?;
+    let mut reply = outgoing.body(request.into_body()).send().await?;
     let mut response = Response::builder().status(reply.status());
     if let Some(kind) = reply.headers().get(header::CONTENT_TYPE) {
         response = response.header(header::CONTENT_TYPE, kind);
     }
-    Ok(response.body(reply.bytes().await?.to_vec()).expect("a status and a content type make a response"))
+    // Counted as it arrives: a streamed answer has no length to check first.
+    let mut body = Vec::new();
+    while let Some(chunk) = reply.chunk().await? {
+        if body.len() + chunk.len() > ANSWER_LIMIT {
+            return Ok(text(StatusCode::PAYLOAD_TOO_LARGE, format!("This is too large to show on this device (over {} MB).", ANSWER_LIMIT / (1024 * 1024))));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(response.body(body).expect("a status and a content type make a response"))
 }
 
 fn text(status: StatusCode, body: String) -> Response<Vec<u8>> {
@@ -70,7 +90,8 @@ fn text(status: StatusCode, body: String) -> Response<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
-    use super::url;
+    use super::{carries_token, url};
+    use tauri::http::Method;
 
     #[test]
     fn a_request_path_never_leaves_the_paired_computer() {
@@ -80,5 +101,17 @@ mod tests {
             assert_eq!(target.host_str(), Some("studio.tail1234.ts.net"), "{path}");
             assert_eq!(target.port(), Some(47380), "{path}");
         }
+    }
+
+    #[test]
+    fn the_token_goes_only_with_chat_reads() {
+        let origin = url::Url::parse("https://studio.tail1234.ts.net:47380/").expect("an origin");
+        let sent = |method: Method, path: &str| carries_token(&method, url(&origin, path, None).path());
+        assert!(sent(Method::GET, "/api/v1/chats"));
+        assert!(sent(Method::GET, "/api/v1/chats/2026-11-08-cube/files/print/cube.3mf"));
+        for path in ["/", "/other/service", "/api/v1/chatsx", "/api/v1/chats/../../admin", "/api/v1/chats/%2e%2e/%2e%2e/admin", "/api/v1/computer"] {
+            assert!(!sent(Method::GET, path), "{path}");
+        }
+        assert!(!sent(Method::POST, "/api/v1/chats/2026-11-08-cube/send"));
     }
 }
