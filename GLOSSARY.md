@@ -35,3 +35,16 @@ The model version a chat keeps for a role. An existing chat keeps its selected v
 
 **Retired version**:
 A saved version that its provider has retired. A missing login or temporary provider failure is different from a retired version.
+
+### Phones and tablets
+
+**Paired device**:
+An iPhone or iPad that redeemed a pairing code on one computer. It can open, read, and send to that computer's chats until the computer forgets it.
+
+**Pairing code**:
+The code the computer shows as a QR image in Settings. It works once, for 5 minutes, and pairs one device.
+_Avoid_: PIN, password
+
+**Phone service**:
+The small service on the computer that paired devices reach through the person's Tailscale Serve. It offers only what the mobile app needs.
+_Avoid_: server, API (when talking to a person)
