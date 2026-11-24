@@ -186,7 +186,8 @@ function Paired({ computer, onForget }: { computer: Computer; onForget: () => Pr
   const [error, setError] = useState<string | null>(null)
   /** Why the last Forget failed. Its own line, so the chat list's reread after it does not clear it. */
   const [forgetError, setForgetError] = useState<string | null>(null)
-  const [tries, setTries] = useState(0)
+  const [loads, setLoads] = useState(0)
+  const reload = () => setLoads((n) => n + 1)
   const [link, setLink] = useState<Link>('connecting')
   const [sends, setSends] = useState(0)
   /** Set the moment the person taps Forget. From then on the old pairing opens no chat, keeps no list, and hears no chat event. */
@@ -200,8 +201,6 @@ function Paired({ computer, onForget }: { computer: Computer; onForget: () => Pr
   })
   const up = link === 'connected'
 
-  // The list reads the computer again each time it shows, after a chat or Refresh, so a chat made on the computer
-  // meanwhile appears.
   useEffect(() => {
     watchLink((message) => {
       // The link stays current while Forget waits, so a Forget that fails leaves it right.
@@ -217,10 +216,12 @@ function Paired({ computer, onForget }: { computer: Computer; onForget: () => Pr
     for (const sender of senders.current.values()) sender.link(link)
   }, [link])
 
-  // Read at once, and again each time the link comes up, so a list that failed while the computer was away comes back.
+  // The list reads the computer again each time it shows, after a chat or Refresh, so a chat made on the computer
+  // meanwhile appears, and each time the link comes up, so a list that failed while the computer was away comes back.
   // While it is away, the list from the last read stands, and the link says why it is not newer. A read that fails while
   // the link is up shows why. A read that ends after the device forgot the computer keeps nothing.
   useEffect(() => {
+    if (open !== null) return
     let current = true
     setError(null)
     remoteJson<MobileChat[]>(api('/chats')).then(
@@ -240,7 +241,7 @@ function Paired({ computer, onForget }: { computer: Computer; onForget: () => Pr
     return () => {
       current = false
     }
-  }, [computer.id, tries, up])
+  }, [computer.id, loads, up, open])
 
   const session = useMemo<Session>(
     () => ({
@@ -274,7 +275,7 @@ function Paired({ computer, onForget }: { computer: Computer; onForget: () => Pr
       for (const sender of paused) sender.resume()
       setForgetError(errorText(err))
       // A list the computer sent while Forget waited was dropped, so read it again.
-      setTries((n) => n + 1)
+      reload()
       return
     }
     for (const sender of paused) sender.close()
@@ -291,6 +292,9 @@ function Paired({ computer, onForget }: { computer: Computer; onForget: () => Pr
     <section className="mobile-chats">
       <header className="mobile-bar">
         <h1>{computer.name}</h1>
+        <button type="button" className="mobile-link" onClick={reload}>
+          Refresh
+        </button>
         <button type="button" className="mobile-link" onClick={forget}>
           Forget
         </button>
@@ -417,10 +421,6 @@ function Chat({ chat, onBack }: { chat: MobileChat; onBack: () => void }) {
       current = false
     }
   }, [chat.id, link, sends, tries, turnsEnded])
-
-  // A newer model read replaces the last one in Rust. Leaving the chat stops the one still running, and a reread on
-  // reconnect does not.
-  useEffect(() => () => void stopModelReads(), [chat.id])
 
   const editable = outbox.kind === 'draft'
   const saved = useSyncExternalStore(sender.subscribe, sender.saved)
