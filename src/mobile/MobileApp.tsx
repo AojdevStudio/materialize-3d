@@ -264,6 +264,8 @@ function Paired({ computer, onForget }: { computer: Computer; onForget: () => Pr
   // Every sender pauses before anything waits, so nothing goes to the computer. Its draft writes already queued land
   // before Rust clears the drafts. A Forget that fails lets the same senders go on, with their newest words.
   const forget = async () => {
+    // A second tap while a Forget runs would pause senders the first one may yet resume.
+    if (closing.current) return
     setForgetError(null)
     closing.current = true
     const paused = [...senders.current.values()]

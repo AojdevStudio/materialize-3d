@@ -85,7 +85,7 @@ export async function remoteJson<T>(path: string, write?: { method: 'PUT' | 'POS
   } catch (err) {
     throw new Unreachable(`The computer did not answer. ${err instanceof Error ? err.message : String(err)}`)
   }
-  if (response.status === 502) throw new Unreachable(await response.text())
+  if (response.status === 502) throw new Unreachable((await response.text()) || 'The computer did not answer.')
   if (!response.ok) {
     const body = await response.text()
     const words = errorWords(body)

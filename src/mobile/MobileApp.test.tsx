@@ -222,6 +222,18 @@ describe('MobileApp', () => {
     expect(await screen.findByText('Desk cable clip')).toBeTruthy()
   })
 
+  it('shows a chat list read that fails with an empty answer while the link is up, with Try again', async () => {
+    answer({ paired_computer: computer })
+    computerAnswers(() => new Response('', { status: 502 }))
+    render(<MobileApp />)
+    await linkIs({ kind: 'connected' })
+    expect(await screen.findByText(/The computer did not answer/)).toBeTruthy()
+
+    computerAnswers(chats)
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
+    expect(await screen.findByText('Desk cable clip')).toBeTruthy()
+  })
+
   it('shows a transcript read that fails while the link is up, and reads it again on Try again', async () => {
     answerWithDrafts({ paired_computer: computer })
     let reached = false
@@ -838,6 +850,22 @@ describe('a draft and the link to the computer', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Forget' }))
 
     expect(await screen.findByText(/The Keychain refused the pairing/)).toBeTruthy()
+    expect((await reopen()).value).toBe('Make the clip')
+  })
+
+  it('takes a second tap on Forget while one runs as nothing', async () => {
+    const message = await openChat()
+    fireEvent.change(message, { target: { value: 'Make the clip' } })
+    const release = holdSave()
+    backToChats()
+    device.forgetFails = 'The Keychain refused the pairing. User interaction is not allowed.'
+    const forgetButton = await screen.findByRole('button', { name: 'Forget' })
+    fireEvent.click(forgetButton)
+    fireEvent.click(forgetButton)
+    release()
+
+    expect(await screen.findByText(/The Keychain refused the pairing/)).toBeTruthy()
+    expect(invoke.mock.calls.filter(([command]) => command === 'forget')).toHaveLength(1)
     expect((await reopen()).value).toBe('Make the clip')
   })
 
