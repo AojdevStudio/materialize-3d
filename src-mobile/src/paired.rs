@@ -1,5 +1,6 @@
 //! The one computer this device is paired with. The Keychain holds it, so a relaunch needs no new pairing.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::RwLock;
 
 use reqwest::StatusCode;
@@ -72,6 +73,8 @@ pub enum Error {
     Keychain(#[from] keyring::Error),
     #[error("The saved pairing is damaged. Pair again. {0}")]
     Damaged(#[from] serde_json::Error),
+    #[error("A newer pairing or a Forget took this pairing's place, so it changed nothing.")]
+    Superseded,
 }
 
 impl Serialize for Error {
@@ -80,13 +83,24 @@ impl Serialize for Error {
     }
 }
 
-/// The pairing in memory. `paired_computer`, which the window calls first, reads it from the Keychain.
+/// The pairing in memory, and the number of the newest pairing attempt or Forget. `paired_computer`, which the window
+/// calls first, reads the pairing from the Keychain.
 #[derive(Default)]
-pub struct Paired(RwLock<Option<Pairing>>);
+pub struct Paired(RwLock<Option<Pairing>>, AtomicU64);
 
 impl Paired {
     pub fn current(&self) -> Option<Pairing> {
         self.0.read().expect("pairing lock").clone()
+    }
+
+    /// Starts a pairing attempt, or a Forget, and answers its number. Every one before it is superseded.
+    fn begin(&self) -> u64 {
+        self.1.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    /// Whether `attempt` is still the newest. Read under the pairing lock, so no attempt can start in between.
+    fn is_newest(&self, attempt: u64) -> bool {
+        self.1.load(Ordering::SeqCst) == attempt
     }
 }
 
@@ -147,6 +161,7 @@ pub fn paired_computer(paired: tauri::State<'_, Paired>, drafts: tauri::State<'_
 /// other pairing.
 #[tauri::command]
 pub async fn pair(link: String, device: String, paired: tauri::State<'_, Paired>, drafts: tauri::State<'_, Drafts>) -> Result<Computer, Error> {
+    let attempt = paired.begin();
     let (origin, code) = parse_link(&link)?;
     let reply = crate::remote::client()
         .post(crate::remote::url(&origin, "/api/v1/pair", None))
@@ -162,6 +177,11 @@ pub async fn pair(link: String, device: String, paired: tauri::State<'_, Paired>
     let computer = Computer::from(&pairing);
     // The Keychain and memory change together, so two scans that finish out of order leave one pairing in both.
     let mut current = paired.0.write().expect("pairing lock");
+    // A pairing that finishes after a newer one started, as when a reloaded window pairs again, or after a Forget,
+    // changes nothing, so it can never sweep away the drafts of the pairing that took its place.
+    if !paired.is_newest(attempt) {
+        return Err(Error::Superseded);
+    }
     entry()?.set_password(&serde_json::to_string(&pairing)?)?;
     drafts.sweep(Some(&pairing.id()));
     *current = Some(pairing);
@@ -178,6 +198,8 @@ pub fn forget(paired: tauri::State<'_, Paired>, drafts: tauri::State<'_, Drafts>
         Err(err) => return Err(err.into()),
     }
     let forgotten = current.take();
+    // A pairing still on its way when the person forgot the computer changes nothing when it lands.
+    paired.begin();
     drop(current);
     watcher.stop();
     if let Some(forgotten) = forgotten {
@@ -189,6 +211,18 @@ pub fn forget(paired: tauri::State<'_, Paired>, drafts: tauri::State<'_, Drafts>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_the_newest_pairing_attempt_may_land() {
+        let paired = Paired::default();
+        let first = paired.begin();
+        let second = paired.begin();
+        assert!(!paired.is_newest(first), "a pairing a newer one replaced");
+        assert!(paired.is_newest(second));
+        // Forget starts its own number, so a pairing still on its way lands as nothing.
+        paired.begin();
+        assert!(!paired.is_newest(second), "a pairing that a Forget overtook");
+    }
 
     #[test]
     fn the_window_gets_the_pairing_id_and_never_the_token() {
