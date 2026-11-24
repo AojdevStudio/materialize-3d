@@ -158,7 +158,7 @@ const asked = new Set<string>()
 
 /** Any model's answer, in either role. */
 const answer = (context: Context, model: Model<string>): AssistantMessage => {
-  if (retired.has(model.id)) return fails(`404 model_not_found: The model '${model.id}' does not exist`)
+  if (retired.has(model.id)) return fails(`404 model_not_found: The model '${model.id}' has been deprecated`)
   if (flaky && !asked.has(model.id)) {
     asked.add(model.id)
     return fails('529 overloaded_error: Overloaded')

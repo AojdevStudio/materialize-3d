@@ -92,15 +92,17 @@ describe('a refused request', () => {
     ).toBe(false)
   })
 
-  test('counts as a retirement only when the provider says the model itself is gone', () => {
-    expect(isRetired('404 {"type":"error","error":{"type":"not_found_error","message":"model: claude-opus-4-1"}}')).toBe(true)
-    expect(isRetired("404 model_not_found: The model 'gpt-6.1-sol' does not exist")).toBe(true)
-    expect(isRetired('The model claude-opus-4-1 has been deprecated')).toBe(true)
-    // A failure for now, a missing resource that is not a model, or a login that lacks access is not one.
-    expect(isRetired('503 the model was not found in the routing table, try again')).toBe(false)
+  test('counts as a retirement only when the provider says the model was removed', () => {
+    expect(isRetired("404 model_not_found: The model 'gpt-6.1-sol' has been deprecated")).toBe(true)
+    expect(isRetired('The model claude-opus-4-1 was retired on 2026-10-01')).toBe(true)
+    expect(isRetired('400 invalid_request_error: model gpt-6.1-sol is no longer available')).toBe(true)
+    // Not found alone can mean this account lacks the model, which another account or a later sign-in can change.
+    expect(isRetired('404 {"type":"error","error":{"type":"not_found_error","message":"model: claude-fable-5-2"}}')).toBe(false)
+    expect(isRetired("404 model_not_found: The model 'gpt-6.1-sol' does not exist")).toBe(false)
+    // A failure for now, or a login that lacks access, is not one either.
+    expect(isRetired('503 the model was deprecated from this region for now, try again')).toBe(false)
     expect(isRetired('429 rate limit reached for model gpt-6.1-sol')).toBe(false)
-    expect(isRetired('404 {"type":"error","error":{"type":"not_found_error","message":"resource not found"}}')).toBe(false)
-    expect(isRetired("404 model_not_found: The model 'gpt-6.1-sol' does not exist or you do not have access to it")).toBe(false)
+    expect(isRetired("The model 'gpt-6.1-sol' was removed from your plan's access")).toBe(false)
   })
 })
 

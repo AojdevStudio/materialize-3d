@@ -104,6 +104,24 @@ describe('a pair', () => {
     await app.quit()
   })
 
+  test("runs lead-alone while the Settings Astra switch is off, and keeps the chat's helper for when it is on again", async () => {
+    const where = scratch()
+    const app = await start(where, 'models')
+    const id = await project(app, FAUX_A, FAUX_B)
+    await app.call('settings.set', { astra: false })
+    await app.sendDraft(id, 'which model?')
+    await answered(app, id, 'answered by faux-a')
+    expect((await view(app, id)).turn).toMatchObject({ model: FAUX_A, helper: null })
+    expect(await app.call('agent.tools', { project: id })).not.toContain('helper')
+    expect(await projectIn(app, id)).toMatchObject({ helper: FAUX_B })
+
+    await app.call('settings.set', { astra: true })
+    await app.sendDraft(id, 'and now?')
+    await app.until((event) => event.type === 'chat' && event.project === id && (event.turn as { helper?: unknown } | null)?.helper !== null)
+    expect((await view(app, id)).turn).toMatchObject({ model: FAUX_A, helper: FAUX_B })
+    await app.quit()
+  })
+
   test('is frozen for its turn: an edit and a crash before the helper runs leave the turn on its pair, and the next message takes the edit', async () => {
     const where = scratch()
     const first = await start(where, 'wait-then-helper')
@@ -324,6 +342,28 @@ describe('the catalog', () => {
     await app.call('projects.setHelper', { project: id, model: null })
     await app.call('chat.send', { key: id, rev })
     expect((await view(app, id)).turn).toMatchObject({ model: FAUX_A, helper: null })
+    await app.quit()
+  }, 60_000)
+
+  test('keeps a start-screen draft on the start screen when its lead was found retired, until the person picks another', async () => {
+    const where = scratch()
+    where.keychain.set('openai-codex', CODEX_KEY)
+    const app = await start(where, 'models', { M3D_RETIRED: 'gpt-6.1-sol' })
+    const other = await project(app, FAUX_A, null)
+    await app.call('projects.setLead', { project: other, model: SOL_6_1 })
+    await app.sendDraft(other, 'go')
+    await app.until((event) => event.type === 'chat' && event.project === other && (event.waiting as { retired?: unknown } | null)?.retired !== undefined)
+
+    await app.call('settings.set', { model: SOL_6_1 })
+    const { rev } = (await app.call('drafts.set', { key: 'new', text: 'a bracket', attachments: [] })) as { rev: number }
+    await expect(app.call('chat.send', { key: 'new', rev })).rejects.toThrow('GPT 6.1 Sol, the lead model, was retired. Choose GPT 6.3 Sol or another lead model.')
+    const before = (await app.call('state.get')) as AppState
+    expect(before.drafts.new).toMatchObject({ text: 'a bracket', rev })
+    expect(before.projects).toHaveLength(1)
+
+    await app.call('settings.set', { model: SOL_6_3 })
+    const { project: made } = (await app.call('chat.send', { key: 'new', rev })) as { project: Project }
+    expect(made).toMatchObject({ title: 'a bracket', model: SOL_6_3 })
     await app.quit()
   }, 60_000)
 

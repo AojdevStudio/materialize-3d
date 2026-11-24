@@ -66,12 +66,13 @@ const LOGIN_FAILURE = /not configured|\b401\b|unauthori[sz]ed|authentication|inv
 export const isLoginFailure = (detail: string) => LOGIN_FAILURE.test(detail)
 
 /**
- * A provider's answer that confirms the model version itself is gone, not that the request failed for now. A retired
- * version is hidden from every chat, so the answer must say not found or removed, name a model, and say nothing of a
- * failure for now or of access. An overload, a rate limit, a timeout, a server error, or a login that lacks the model
- * never counts as one.
+ * A provider's answer that confirms the model version itself was removed, not that the request failed for now. A
+ * retired version is hidden from every chat, so the answer must say the model was removed and say nothing of a failure
+ * for now or of access. Not found alone is not enough: a provider answers so for a model this account lacks, which
+ * another account or a later sign-in can change. Such an answer waits for a retry with its detail shown, and the person
+ * can choose another model.
  */
-const REMOVED = /\b(404|not_found_error|model_not_found)\b|\b(deprecated|retired|decommissioned|no longer (available|supported))\b/i
+const REMOVED = /\b(deprecated|retired|decommissioned|removed|no longer (available|supported))\b/i
 const NAMES_MODEL = /\bmodel\b/i
 const NOT_REMOVAL = /\b(5\d\d|429)\b|overload|rate.?limit|timed? ?out|temporar|access|permission/i
 

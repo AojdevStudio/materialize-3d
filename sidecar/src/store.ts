@@ -309,6 +309,11 @@ export class Store {
       const { drafts } = await tx.doc(DraftsDoc, this.root.id)
       const draft = drafts[START]
       if (!holds(draft, rev)) throw new Error(DRAFT_CHANGED)
+      // A lead found retired since the start screen's check is refused before anything moves, so the draft stays on the
+      // start screen and a send after the person picks another lead makes the project then.
+      const { model, astra } = await tx.doc(SettingsDoc, this.root.id)
+      const [gone] = this.retiredRoles({ lead: model, helper: null }, await this.retiredIn(tx))
+      if (gone !== undefined) throw new Error(this.retiredFix(gone))
       const title = (draft.text.split('\n')[0] ?? '').trim().slice(0, 80) || 'New part'
       const base = `${today}-${slug(title)}`
       const taken = new Set(index.projects.map((p) => p.id))
@@ -319,7 +324,6 @@ export class Store {
       const conversation = await tx.createConversation({ ownership: { kind: 'ownerless' } })
       // The project keeps the lead picked on the start screen, so a later pick there leaves it alone. It gets `helper`
       // while the Astra setting is on.
-      const { model, astra } = await tx.doc(SettingsDoc, this.root.id)
       const created: Project = { id, conversation: conversation.id, title, createdMs: now.getTime(), model: copy(model), helper: astra && helper !== null ? copy(helper) : null }
       index.projects.push(created)
       const moved: SavedDraft = { text: draft.text, attachments: [...draft.attachments], rev }
@@ -349,8 +353,8 @@ export class Store {
    * A pair with a retired version is refused, with the fix, and nothing changes.
    */
   async send(tx: Tx, project: string, rev: number): Promise<{ lead: ModelChoice; helper: ModelChoice | null; thinking: Thinking; saves: number }> {
-    const { thinking } = await tx.doc(SettingsDoc, this.root.id)
-    const { model, helper } = await this.#projectIn(tx, project)
+    const { thinking, astra } = await tx.doc(SettingsDoc, this.root.id)
+    const { model, helper } = this.#gated(await this.#projectIn(tx, project), astra)
     const [gone] = this.retiredRoles({ lead: model, helper }, await this.retiredIn(tx))
     if (gone !== undefined) throw new Error(this.retiredFix(gone))
     const { drafts } = await tx.doc(DraftsDoc, this.root.id)
@@ -375,6 +379,14 @@ export class Store {
     return `${modelName(model, this.catalog)}, the ${role} model, was retired. ${choose}${other}.`
   }
 
+  /**
+   * A project's pair as its next turn runs it: lead-alone while the Settings Astra switch is off. Until each chat gets
+   * its own helper control (#350), that switch is the window's only way to stop handoffs.
+   */
+  #gated(project: Project, astra: boolean): Pick<Project, 'model' | 'helper'> {
+    return { model: project.model, helper: astra ? project.helper : null }
+  }
+
   async #projectIn(tx: Tx, id: string): Promise<Project> {
     const project = (await tx.doc(ProjectsDoc, this.root.id)).projects.find((p) => p.id === id)
     if (project === undefined) throw new Error(`no project ${id}`)
@@ -388,7 +400,7 @@ export class Store {
   async pairFor(project?: string): Promise<{ lead: ModelChoice; helper: ModelChoice | null }> {
     return this.harness.commit(async (tx) => {
       if (project === undefined) return { lead: copy((await tx.doc(SettingsDoc, this.root.id)).model), helper: null }
-      const { model, helper } = await this.#projectIn(tx, project)
+      const { model, helper } = this.#gated(await this.#projectIn(tx, project), (await tx.doc(SettingsDoc, this.root.id)).astra)
       return { lead: copy(model), helper: helper === null ? null : copy(helper) }
     }, context)
   }
