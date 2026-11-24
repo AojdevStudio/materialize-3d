@@ -14,6 +14,8 @@ The Bun sidecar runs a small HTTP service on `127.0.0.1:47380`. It listens on lo
 tailscale serve --bg --https=47380 http://127.0.0.1:47380
 ```
 
+Two ports are in play. The loopback port, `47380`, is fixed. The Serve HTTPS port is the one in that command, usually also `47380`. When Serve already shares an address with other services, Settings suggests another free HTTPS port that forwards to the same loopback port.
+
 Who owns what:
 
 - The person's Tailscale client owns the HTTPS address, its certificate, and who on the tailnet can reach it. Materialize never changes Tailscale settings. It only reads `tailscale serve status --json` to learn the address. It takes only an HTTPS address that sends every path to the service, and refuses one Funnel makes public. A request Tailscale marks as from Funnel answers 403.
@@ -23,7 +25,7 @@ Each request but the pairing one must carry a device token. A device on the tail
 
 ### Pairing
 
-1. In Settings, the computer shows a QR image. The QR holds one URL: `https://<host>.<tailnet>.ts.net:47380/pair?code=<code>`. The app takes the origin and the code from it.
+1. In Settings, the computer shows a QR image. The QR holds one URL: `https://<host>.<tailnet>.ts.net[:<serve port>]/pair?code=<code>`, for example `https://studio.tail0000.ts.net:47380/pair?code=…`. The Serve HTTPS port shows when it is not 443. The app uses the origin exactly as scanned, its port included, and never assumes `47380`. It takes the code from the same URL.
 2. The code works once and for 5 minutes. Settings shows it only when Serve gives the service an HTTPS address. A new code replaces the last one. Codes live only in the sidecar's memory, so a restart ends them.
 3. The app sends `POST /api/v1/pair` with the code and a device name. The reply holds a device token. The app keeps the origin and the token in the iOS Keychain.
 4. The computer keeps only the SHA-256 hash of each token, in its store. A copy of the store cannot act as a device.
