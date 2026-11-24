@@ -86,7 +86,7 @@ export default function MobileApp() {
         <Pair
           step={screen.step}
           onScan={() => pairFrom('scanning', scanCode)}
-          onPicture={(picture) => pairFrom('reading', () => readQrPicture(picture).catch(() => null))}
+          onPicture={(picture) => pairFrom('reading', () => readQrPicture(picture))}
         />
       )}
       {screen.kind === 'paired' && (

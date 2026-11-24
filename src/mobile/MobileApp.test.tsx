@@ -2,11 +2,16 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 
-const { invoke, qrText } = vi.hoisted(() => ({ invoke: vi.fn(), qrText: { value: null as string | null } }))
+const { invoke, qrText } = vi.hoisted(() => ({ invoke: vi.fn(), qrText: { value: null as string | Error | null } }))
 vi.mock('@tauri-apps/api/core', () => ({ invoke }))
 vi.mock('@tauri-apps/plugin-barcode-scanner', () => ({ Format: { QRCode: 'QR_CODE' }, scan: vi.fn() }))
 // jsdom draws no pictures, so the picture's QR text is set by each test.
-vi.mock('./qr', () => ({ readQrPicture: async () => qrText.value }))
+vi.mock('./qr', () => ({
+  readQrPicture: async () => {
+    if (qrText.value instanceof Error) throw qrText.value
+    return qrText.value
+  },
+}))
 
 import MobileApp from './MobileApp'
 
@@ -90,5 +95,16 @@ describe('MobileApp', () => {
     computerAnswers(chats)
     fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
     expect(await screen.findByText('Desk cable clip')).toBeTruthy()
+  })
+
+  it('shows why a picture could not be read, instead of saying it holds no code', async () => {
+    answer({ paired_computer: null })
+    render(<MobileApp />)
+    await screen.findByText('Pair with your computer')
+
+    qrText.value = new Error('This device could not read the picture.')
+    choosePicture()
+
+    expect((await screen.findByRole('alert')).textContent).toBe('This device could not read the picture.')
   })
 })
