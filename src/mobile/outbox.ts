@@ -1,4 +1,4 @@
-import { deviceDrafts, Refused, remoteJson, saveDraft, sendAccepted, Unreachable, type DeviceDraft, type Picture } from './remote'
+import { deviceDrafts, Refused, saveDraft, sendDraft, settleSend, type Picture } from './remote'
 
 /** The link to the paired computer, as the event stream shows it. */
 export type Link = 'connecting' | 'connected' | 'offline'
@@ -11,19 +11,19 @@ export interface Message {
 
 /**
  * The message of one chat on its way to the computer. Only `draft` takes edits.
- * - `draft`: on this device. `retry` is the revision a send of it already went out as, whose fate the computer said it
- *   does not hold, so a send of the unchanged draft posts that revision again and the computer still starts one job.
- * - `sending`: the draft or send request is in flight.
+ * - `draft`: on this device, and no send of it is open. The next send saves it on the computer as a new revision.
+ * - `sending`: the saves and the send are in flight.
  * - `unconfirmed`: the send went out as `rev`, and no answer said whether the computer took it: none came, the computer
- *   failed after it may have taken it, or the answer could not be read. The computer is asked about it when it is back.
- * - `checking`: that question is in flight.
+ *   failed after it may have taken it, or the answer could not be read. It is settled when the link comes up, or when
+ *   the person checks again.
+ * - `checking`: the settle is in flight. Its answer is final: the computer holds the message, or it never will.
  * - `broken`: the device file could not be read. Nothing is written over it until a read of it works.
- * `refused` is the last words the computer gave about this message, shown until a send of it goes out again.
+ * `refused` is the last words the computer or the link gave about this message.
  */
 export type Outbox =
   | { kind: 'loading' }
   | { kind: 'broken'; detail: string }
-  | { kind: 'draft'; message: Message; retry: number | null; refused: string | null }
+  | { kind: 'draft'; message: Message; refused: string | null }
   | { kind: 'sending'; message: Message }
   | { kind: 'unconfirmed'; message: Message; rev: number; refused: string | null }
   | { kind: 'checking'; message: Message; rev: number; refused: string | null }
@@ -32,8 +32,8 @@ const EMPTY: Message = { text: '', pictures: [] }
 
 /** Text saves wait this long after the last key, so typing writes the file once. */
 const SAVE_AFTER_MS = 400
-/** The wait before the computer is asked again about a send whose answer was lost, while the link still reads up. */
-const RECHECK_MS = 2_000
+
+const FORGOT = 'This device forgot the computer, so the draft was not kept.'
 
 export const canSend = (link: Link, outbox: Outbox) =>
   link === 'connected' && outbox.kind === 'draft' && (outbox.message.text.trim() !== '' || outbox.message.pictures.length > 0)
@@ -50,7 +50,9 @@ export class Sender {
   #saving: ReturnType<typeof setTimeout> | undefined
   /** The device file's writes go out one at a time, in order, so an older draft never lands after a newer one. */
   #writes: Promise<unknown> = Promise.resolve()
-  /** Set once the device forgets its computer. No write goes out after it. */
+  /** The message the device file holds, as the last write that landed wrote it. */
+  #written: Message | null = null
+  /** Set once the device forgets its computer. No write, save, or send goes out after it. */
   #closed = false
   readonly #heard = new Set<() => void>()
   readonly #chat: string
@@ -72,8 +74,9 @@ export class Sender {
     deviceDrafts.load(this.project).then(
       (saved) => {
         const message = saved === null ? EMPTY : { text: saved.text, pictures: saved.pictures }
-        this.#set(saved?.sent ? { kind: 'unconfirmed', message, rev: saved.sent.rev, refused: null } : { kind: 'draft', message, retry: null, refused: null })
-        void this.#reconcile()
+        this.#written = message
+        this.#set(saved?.sent ? { kind: 'unconfirmed', message, rev: saved.sent.rev, refused: null } : { kind: 'draft', message, refused: null })
+        void this.settle()
       },
       (err) => this.#set({ kind: 'broken', detail: errorText(err) }),
     )
@@ -93,47 +96,45 @@ export class Sender {
 
   outbox = () => this.#outbox
 
-  #set(outbox: Outbox) {
-    this.#outbox = outbox
-    for (const heard of this.#heard) heard()
+  /** Whether this device's file holds the message as it reads now, with words or a picture in it. An edit makes it false until its write lands. */
+  saved = () => {
+    const outbox = this.#outbox
+    if (outbox.kind === 'loading' || outbox.kind === 'broken' || outbox.message !== this.#written) return false
+    return outbox.message.text !== '' || outbox.message.pictures.length > 0
   }
 
-  /** The draft as the device file keeps it. */
-  #saved(): DeviceDraft | null {
-    const outbox = this.#outbox
-    switch (outbox.kind) {
-      case 'loading':
-      case 'broken':
-      case 'sending':
-        return null
-      case 'draft':
-        return { ...outbox.message, sent: outbox.retry === null ? null : { rev: outbox.retry } }
-      case 'unconfirmed':
-      case 'checking':
-        return { ...outbox.message, sent: { rev: outbox.rev } }
-    }
+  #set(outbox: Outbox) {
+    this.#outbox = outbox
+    this.#tell()
+  }
+
+  #tell() {
+    for (const heard of this.#heard) heard()
   }
 
   /** Writes the draft now, in place of any text save still waiting. */
   flush = () => {
     clearTimeout(this.#saving)
     this.#saving = undefined
-    const draft = this.#saved()
-    if (draft !== null) this.#write(draft)
+    const outbox = this.#outbox
+    if (outbox.kind === 'draft') this.#write(outbox.message, null)
+    if (outbox.kind === 'unconfirmed' || outbox.kind === 'checking') this.#write(outbox.message, outbox.rev)
   }
 
-  #write(draft: DeviceDraft) {
-    this.#save(draft).catch((err) => {
+  #write(message: Message, rev: number | null) {
+    this.#save(message, rev).catch((err) => {
       const outbox = this.#outbox
       if (outbox.kind === 'draft') this.#set({ ...outbox, refused: errorText(err) })
     })
   }
 
-  /** Writes `draft` to the device file after every write before it. Rejects once the sender is closed. */
-  #save(draft: DeviceDraft): Promise<void> {
-    const saved = this.#writes.then(() => {
-      if (this.#closed) throw new Error('This device forgot the computer, so the draft was not kept.')
-      return deviceDrafts.save(this.project, draft)
+  /** Writes `message`, sent as `rev` or not sent, to the device file after every write before it. Rejects once the sender is closed. */
+  #save(message: Message, rev: number | null): Promise<void> {
+    const saved = this.#writes.then(async () => {
+      if (this.#closed) throw new Error(FORGOT)
+      await deviceDrafts.save(this.project, { ...message, sent: rev === null ? null : { rev } })
+      this.#written = message
+      this.#tell()
     })
     // The next write waits for this one whether it lands or not. Its caller hears how it went.
     this.#writes = saved.catch(() => {})
@@ -141,8 +142,8 @@ export class Sender {
   }
 
   /**
-   * Stops every later write and check, as when the device forgets its computer, and resolves once the last write
-   * already under way is done, so the drafts can be cleared after it.
+   * Stops every later write, save, send, and settle, as when the device forgets its computer, and resolves once the
+   * last write already under way is done, so the drafts can be cleared after it.
    */
   close(): Promise<unknown> {
     this.#closed = true
@@ -152,13 +153,12 @@ export class Sender {
 
   link(link: Link) {
     this.#link = link
-    if (link === 'connected') void this.#reconcile()
+    if (link === 'connected') void this.settle()
   }
 
   #edit(message: Message) {
     if (this.#outbox.kind !== 'draft') return
-    // An edited draft is a new message, so it goes out as a new revision.
-    this.#set({ kind: 'draft', message, retry: null, refused: null })
+    this.#set({ kind: 'draft', message, refused: null })
   }
 
   write(text: string) {
@@ -181,8 +181,8 @@ export class Sender {
   }
 
   /**
-   * Sends the draft. The computer saves it as a revision, and the device saves that revision before the send goes, so
-   * a send whose answer is lost, even across a relaunch, is asked about by its revision and never sent as a second job.
+   * Sends the draft. The computer saves it as a new revision, and the device saves that revision before the send goes,
+   * so a send whose answer is lost, even across a relaunch, is settled by its revision and never sent as a second job.
    */
   async send() {
     const outbox = this.#outbox
@@ -190,69 +190,60 @@ export class Sender {
     const { message } = outbox
     clearTimeout(this.#saving)
     this.#set({ kind: 'sending', message })
-    let rev = outbox.retry
+    let rev: number
     try {
-      if (rev === null) {
-        // The words as typed reach the device first, so a computer that never answers loses none of them.
-        await this.#save({ ...message, sent: null })
-        rev = await saveDraft(this.#chat, message)
-        await this.#save({ ...message, sent: { rev } })
-      }
+      // The words as typed reach the device first, so a computer that never answers loses none of them.
+      await this.#save(message, null)
+      if (this.#closed) throw new Error(FORGOT)
+      rev = await saveDraft(this.#chat, message)
+      await this.#save(message, rev)
     } catch (err) {
       // No send went out, so the draft stays as it was.
-      this.#set({ kind: 'draft', message, retry: null, refused: errorText(err) })
+      this.#set({ kind: 'draft', message, refused: errorText(err) })
       this.flush()
       return
     }
+    if (this.#closed) return
     try {
-      await remoteJson(`${this.#chat}/send`, { method: 'POST', body: { rev } })
+      await sendDraft(this.#chat, this.project, rev)
     } catch (err) {
       if (err instanceof Refused) {
-        // Refused before it committed, so this revision never goes out and the next send saves the draft again.
-        this.#set({ kind: 'draft', message, retry: null, refused: errorText(err) })
+        // Refused before it committed, so this revision never goes out, and the next send saves the draft again.
+        this.#set({ kind: 'draft', message, refused: errorText(err) })
         this.flush()
         return
       }
-      if (err instanceof Unreachable) {
-        this.#set({ kind: 'unconfirmed', message, rev, refused: null })
-        this.#recheck()
-        return
-      }
-      // The computer answered, so it is asked at once whether it took the send.
       this.#set({ kind: 'unconfirmed', message, rev, refused: errorText(err) })
-      return this.#reconcile()
+      return this.settle()
     }
     this.#done()
   }
 
   #done() {
-    this.#set({ kind: 'draft', message: EMPTY, retry: null, refused: null })
+    this.#set({ kind: 'draft', message: EMPTY, refused: null })
     this.flush()
     this.#sent()
   }
 
-  #recheck() {
-    setTimeout(() => void this.#reconcile(), RECHECK_MS)
-  }
-
-  /** Asks the computer whether it holds the unconfirmed send, once the link is up. */
-  async #reconcile() {
+  /**
+   * Asks the computer for its final word on the unconfirmed send, while the link is up. A settle that gets no answer
+   * leaves the send unconfirmed until the link comes up again or the person checks again.
+   */
+  settle = async () => {
     const outbox = this.#outbox
     if (this.#closed || outbox.kind !== 'unconfirmed' || this.#link !== 'connected') return
     const { message, rev, refused } = outbox
     this.#set({ kind: 'checking', message, rev, refused })
+    let accepted: boolean
     try {
-      if (await sendAccepted(this.#chat, rev)) return this.#done()
-      this.#set({ kind: 'draft', message, retry: rev, refused })
+      accepted = await settleSend(this.#chat, rev)
     } catch (err) {
-      if (err instanceof Refused) {
-        // A send of the same revision is safe to retry, so the draft comes back with it.
-        this.#set({ kind: 'draft', message, retry: rev, refused: errorText(err) })
-        return
-      }
-      // No answer, or one this app cannot read, says nothing about the send, so it is asked about again.
-      this.#set({ kind: 'unconfirmed', message, rev, refused: err instanceof Unreachable ? refused : errorText(err) })
-      this.#recheck()
+      this.#set({ kind: 'unconfirmed', message, rev, refused: errorText(err) })
+      return
     }
+    if (accepted) return this.#done()
+    // The computer retired the revision, so the draft comes back, and the next send saves it as a new one.
+    this.#set({ kind: 'draft', message, refused })
+    this.flush()
   }
 }

@@ -291,8 +291,15 @@ describe('MobileApp', () => {
 
 /** The drafts this device keeps, by chat, as Rust's draft files hold them across launches. */
 const kept = new Map<string, DeviceDraft>()
-/** Rust's answer to a draft load, when it cannot read the file. */
-const device = { loadFails: null as string | null }
+/** Rust's answer to a draft load, when it cannot read the file, and to a draft save, when it cannot write it or the test holds it. */
+const device = { loadFails: null as string | null, saveFails: null as string | null, saveWaits: null as Promise<void> | null }
+
+/** Holds the next draft write until the returned function lets it go. */
+function holdSave(): () => void {
+  let release = () => {}
+  device.saveWaits = new Promise<void>((resolve) => (release = resolve))
+  return () => release()
+}
 
 function answerWithDrafts(commands: Record<string, unknown>) {
   invoke.mockImplementation(async (command: string, args: { project: string; draft: DeviceDraft }) => {
@@ -301,6 +308,10 @@ function answerWithDrafts(commands: Record<string, unknown>) {
       return kept.get(args.project) ?? null
     }
     if (command === 'draft_save') {
+      const waits = device.saveWaits
+      device.saveWaits = null
+      await waits
+      if (device.saveFails !== null) throw device.saveFails
       const empty = args.draft.text === '' && args.draft.pictures.length === 0 && args.draft.sent === null
       if (empty) kept.delete(args.project)
       else kept.set(args.project, args.draft)
@@ -322,9 +333,12 @@ const computerSide = {
   sent: [] as number[],
   /** How the computer meets the next send: whether it commits it, and what the device hears back. */
   nextSend: null as { commits: boolean; answer: () => Response } | null,
-  /** What the device hears when it asks about a send, in place of the computer's answer. */
-  acceptedAnswer: null as (() => Response) | null,
+  /** What the device hears when it settles a send, in place of the computer's answer. */
+  settleAnswer: null as (() => Response) | null,
   accepted: new Set<number>(),
+  /** The revisions a settle took away, which the computer then refuses to send. */
+  retired: new Set<number>(),
+  list: [{ id: 'desk-clip', title: 'Desk cable clip' }],
   chat: { project: 'desk-clip', entries: [] as unknown[], running: false, waiting: null, turn: null as unknown, seq: 1 },
   /** Requests, as `METHOD /path`, the computer answers only once the test lets them go. */
   waits: new Map<string, Promise<void>>(),
@@ -353,26 +367,35 @@ const routeComputer = async (url: string, init?: { method?: string; body?: strin
   computerSide.waits.delete(request)
   await waiting
   if (!computerSide.reach) return new Response('The computer did not answer.', { status: 502 })
-  if (url === 'm3dremote://localhost/api/v1/chats') return Response.json([{ id: 'desk-clip', title: 'Desk cable clip' }])
+  if (url === 'm3dremote://localhost/api/v1/chats') return Response.json(computerSide.list)
   if (url === CHAT) return Response.json(computerSide.chat)
   if (url === `${CHAT}/files`) return Response.json([])
   if (url === `${CHAT}/draft` && method === 'PUT') return Response.json({ rev: ++computerSide.rev })
   if (url === `${CHAT}/send` && method === 'POST') {
     const { rev } = JSON.parse(init?.body ?? '{}') as { rev: number }
     computerSide.sent.push(rev)
+    if (computerSide.retired.has(rev)) return Response.json({ error: 'The draft changed before it went out. Send it again.' }, { status: 409 })
     const meet = computerSide.nextSend
     computerSide.nextSend = null
     if (meet?.commits !== false) computerSide.accepted.add(rev)
     return meet === null ? Response.json({ project: { id: 'desk-clip' } }) : meet.answer()
   }
-  const asked = /\/sends\/(\d+)$/.exec(url)
-  if (asked) return computerSide.acceptedAnswer?.() ?? Response.json({ accepted: computerSide.accepted.has(Number(asked[1])) })
+  const settling = /\/sends\/(\d+)\/settle$/.exec(url)
+  if (settling && method === 'POST') {
+    if (computerSide.settleAnswer !== null) return computerSide.settleAnswer()
+    const rev = Number(settling[1])
+    if (!computerSide.accepted.has(rev)) computerSide.retired.add(rev)
+    return Response.json({ accepted: computerSide.accepted.has(rev) })
+  }
   return new Response('Not found', { status: 404 })
 }
 
 const linkIs = (message: LinkMessage) => act(() => stream.heard?.(message))
 const sendButton = () => screen.getByRole<HTMLButtonElement>('button', { name: 'Send' })
 const messageBox = () => screen.getByLabelText<HTMLTextAreaElement>('Message')
+const settles = () => computerSide.requests.filter((r) => r === 'POST /chats/desk-clip/sends/41/settle').length
+/** Longer than any wait a send could take before it asks the computer again by itself. */
+const quietSpell = () => new Promise((resolve) => setTimeout(resolve, 2_100))
 const writes = () => computerSide.requests.filter((r) => r.startsWith('PUT') || r.startsWith('POST'))
 const puts = () => writes().filter((r) => r.startsWith('PUT'))
 const backToChats = () => fireEvent.click(screen.getByRole('button', { name: 'Chats' }))
@@ -384,7 +407,7 @@ const reopen = async () => {
 /** Opens the chat on a paired device. The chat list from an earlier launch lets it open while the computer is away. */
 async function openChat() {
   answerWithDrafts({ paired_computer: computer })
-  localStorage.setItem('m3d.chats', JSON.stringify([{ id: 'desk-clip', title: 'Desk cable clip' }]))
+  localStorage.setItem('m3d.chats', JSON.stringify(computerSide.list))
   render(<MobileApp />)
   fireEvent.click(await screen.findByText('Desk cable clip'))
   return screen.findByLabelText<HTMLTextAreaElement>('Message')
@@ -406,15 +429,17 @@ describe('a draft and the link to the computer', () => {
   afterEach(() => {
     kept.clear()
     localStorage.clear()
-    device.loadFails = null
+    Object.assign(device, { loadFails: null, saveFails: null, saveWaits: null })
     Object.assign(computerSide, {
       reach: true,
       requests: [],
       rev: 40,
       sent: [],
       nextSend: null,
-      acceptedAnswer: null,
+      settleAnswer: null,
       accepted: new Set(),
+      retired: new Set(),
+      list: [{ id: 'desk-clip', title: 'Desk cable clip' }],
       chat: view,
       waits: new Map(),
     })
@@ -456,88 +481,117 @@ describe('a draft and the link to the computer', () => {
     await waitFor(() => expect(kept.has('desk-clip')).toBe(false))
   })
 
-  it('asks the computer about a send whose answer was lost before it offers a retry, and starts no second job', async () => {
+  it('settles a send whose answer was lost once the link is back, and starts no second job', async () => {
     await readyToSend()
     computerSide.nextSend = { commits: true, answer: lost }
     fireEvent.click(sendButton())
     await screen.findByText('Sent, not confirmed yet. The app asks the computer when it is back.')
     expect(kept.get('desk-clip')?.sent).toEqual({ rev: 41 })
+    // The settle the send asked for at once found no computer, so it waits for the link.
+    await waitFor(() => expect(settles()).toBe(1))
+    await quietSpell()
+    expect(settles()).toBe(1)
     await linkIs({ kind: 'offline', detail: 'The link dropped.' })
     expect(sendButton().disabled).toBe(true)
 
     computerSide.reach = true
     await linkIs({ kind: 'connected' })
     await waitFor(() => expect(kept.has('desk-clip')).toBe(false))
-    expect(computerSide.requests).toContain('GET /chats/desk-clip/sends/41')
+    expect(settles()).toBe(2)
     expect(computerSide.sent).toEqual([41])
     expect(messageBox().value).toBe('')
-  })
+  }, 10_000)
 
-  it('asks about a send the computer answered with an error, since it may have started it, and starts no second job', async () => {
+  it('settles a send the computer answered with an error, since it may have started it, and starts no second job', async () => {
     await readyToSend()
     computerSide.nextSend = { commits: true, answer: () => Response.json({ error: 'The chat could not be read after the send.' }, { status: 500 }) }
     fireEvent.click(sendButton())
     await waitFor(() => expect(kept.has('desk-clip')).toBe(false))
-    expect(computerSide.requests).toContain('GET /chats/desk-clip/sends/41')
+    expect(settles()).toBe(1)
     expect(computerSide.sent).toEqual([41])
   })
 
-  it('keeps the computer’s words when it does not hold a send, retries the same revision with no new save, and saves an edit as a new one', async () => {
+  it('gives back a send the settle says the computer never took, with its words, and sends it as a new revision next time', async () => {
     await readyToSend()
-    const busy = () => Response.json({ error: 'The agent is still working on the last message.' }, { status: 500 })
-    computerSide.nextSend = { commits: false, answer: busy }
+    computerSide.nextSend = { commits: false, answer: () => Response.json({ error: 'The store could not be read.' }, { status: 500 }) }
     fireEvent.click(sendButton())
-    expect(await screen.findByText('The agent is still working on the last message.')).toBeTruthy()
+    expect(await screen.findByText('The store could not be read.')).toBeTruthy()
     await waitFor(() => expect(sendButton().disabled).toBe(false))
-    expect(kept.get('desk-clip')?.sent).toEqual({ rev: 41 })
+    expect(settles()).toBe(1)
+    await waitFor(() => expect(kept.get('desk-clip')).toEqual({ text: 'Make the clip 2 mm thicker', pictures: [], sent: null }))
+    expect(messageBox().value).toBe('Make the clip 2 mm thicker')
 
-    // A retry of the unchanged draft goes out as the revision it already has.
-    computerSide.nextSend = { commits: false, answer: busy }
-    fireEvent.click(sendButton())
-    await waitFor(() => expect(computerSide.sent).toEqual([41, 41]))
-    await waitFor(() => expect(sendButton().disabled).toBe(false))
-    expect(puts()).toHaveLength(1)
-
-    // An edited draft is a new message, saved as a new revision.
-    fireEvent.change(messageBox(), { target: { value: 'Make the clip 3 mm thicker' } })
     fireEvent.click(sendButton())
     await waitFor(() => expect(kept.has('desk-clip')).toBe(false))
-    expect(computerSide.sent).toEqual([41, 41, 42])
+    expect(computerSide.sent).toEqual([41, 42])
     expect(puts()).toHaveLength(2)
   })
 
-  it('shows a refusal and sends the draft as a new revision next time', async () => {
+  it.each([
+    [409, 'The draft changed before it went out. Send it again.'],
+    [422, 'GPT 6.1 Sol, the lead model, was retired. Choose GPT 6.3 Sol or another lead model.'],
+    [423, 'The agent is still working on the last message.'],
+  ])('keeps the draft and the words of a %i refusal, settles nothing, and sends the draft as a new revision next time', async (status, words) => {
     await readyToSend()
-    computerSide.nextSend = { commits: false, answer: () => Response.json({ error: 'The draft changed before it went out. Send it again.' }, { status: 409 }) }
+    computerSide.nextSend = { commits: false, answer: () => Response.json({ error: words }, { status }) }
     fireEvent.click(sendButton())
-    expect(await screen.findByText('The draft changed before it went out. Send it again.')).toBeTruthy()
-    await waitFor(() => expect(kept.get('desk-clip')?.sent).toBeNull())
-    expect(computerSide.requests.filter((r) => r.includes('/sends/'))).toEqual([])
+    expect(await screen.findByText(words)).toBeTruthy()
+    await waitFor(() => expect(kept.get('desk-clip')).toEqual({ text: 'Make the clip 2 mm thicker', pictures: [], sent: null }))
+    expect(computerSide.requests.filter((r) => r.includes('/settle'))).toEqual([])
 
     fireEvent.click(sendButton())
     await waitFor(() => expect(kept.has('desk-clip')).toBe(false))
     expect(computerSide.sent).toEqual([41, 42])
   })
 
-  it('asks about a send whose answer it cannot read', async () => {
+  it('keeps a send unconfirmed when its settle fails, and settles again only when the link comes back or the person checks again', async () => {
+    await readyToSend()
+    computerSide.nextSend = { commits: true, answer: () => new Response('Upstream failed', { status: 500 }) }
+    computerSide.settleAnswer = () => Response.json({ error: 'The store is busy.' }, { status: 503 })
+    fireEvent.click(sendButton())
+    expect(await screen.findByText('The store is busy.')).toBeTruthy()
+    await quietSpell()
+    expect(settles()).toBe(1)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Check again' }))
+    await waitFor(() => expect(settles()).toBe(2))
+    expect(kept.get('desk-clip')?.sent).toEqual({ rev: 41 })
+
+    computerSide.settleAnswer = null
+    await linkIs({ kind: 'offline', detail: 'The link dropped.' })
+    await linkIs({ kind: 'connected' })
+    await waitFor(() => expect(kept.has('desk-clip')).toBe(false))
+    expect(settles()).toBe(3)
+    expect(computerSide.sent).toEqual([41])
+  }, 10_000)
+
+  it.each([['{}', {}], ['null', null], ['another chat', { project: { id: 'desk-drawer' } }]])('settles a send the computer answered with %s', async (_, body) => {
+    await readyToSend()
+    computerSide.nextSend = { commits: true, answer: () => Response.json(body) }
+    fireEvent.click(sendButton())
+    await waitFor(() => expect(kept.has('desk-clip')).toBe(false))
+    expect(settles()).toBe(1)
+  })
+
+  it('settles a send whose answer it cannot read', async () => {
     await readyToSend()
     computerSide.nextSend = { commits: true, answer: () => new Response('<html>Sign in</html>', { status: 200 }) }
     fireEvent.click(sendButton())
     await waitFor(() => expect(kept.has('desk-clip')).toBe(false))
-    expect(computerSide.requests).toContain('GET /chats/desk-clip/sends/41')
+    expect(settles()).toBe(1)
     expect(computerSide.sent).toEqual([41])
   })
 
-  it('never takes an answer about a send it cannot read as accepted', async () => {
+  it('never takes a settle it cannot read as accepted', async () => {
     await readyToSend()
     computerSide.nextSend = { commits: false, answer: lost }
-    computerSide.acceptedAnswer = () => Response.json({ accepted: 'yes' })
+    computerSide.settleAnswer = () => Response.json({ accepted: 'yes' })
     fireEvent.click(sendButton())
     await screen.findByText('Sent, not confirmed yet. The app asks the computer when it is back.')
     await linkIs({ kind: 'offline', detail: 'The link dropped.' })
     computerSide.reach = true
     await linkIs({ kind: 'connected' })
-    await waitFor(() => expect(computerSide.requests).toContain('GET /chats/desk-clip/sends/41'))
+    await waitFor(() => expect(settles()).toBe(2))
     expect(await screen.findByText(/cannot read/)).toBeTruthy()
     expect(kept.get('desk-clip')).toEqual({ text: 'Make the clip 2 mm thicker', pictures: [], sent: { rev: 41 } })
     expect(messageBox().value).toBe('Make the clip 2 mm thicker')
@@ -627,6 +681,54 @@ describe('a draft and the link to the computer', () => {
     release()
     await new Promise((resolve) => setTimeout(resolve, 50))
     expect(localStorage.getItem('m3d.chats')).toBeNull()
+  })
+
+  it('says the draft is saved on this device only once a write of the current words landed', async () => {
+    computerSide.reach = false
+    const message = await openChat()
+    await linkIs({ kind: 'offline', detail: 'The computer did not answer.' })
+    fireEvent.change(message, { target: { value: 'Make the clip 2 mm thicker' } })
+    // The text save waits 400 ms after the last key.
+    expect(screen.getByText('Computer not reachable')).toBeTruthy()
+    expect(await screen.findByText('Computer not reachable. Draft saved on this iPhone')).toBeTruthy()
+
+    device.saveFails = 'This device could not keep the draft. No space left on device'
+    fireEvent.change(message, { target: { value: 'Make the clip 3 mm thicker' } })
+    expect(screen.getByText('Computer not reachable')).toBeTruthy()
+    expect(await screen.findByText(/No space left on device/)).toBeTruthy()
+    expect(screen.getByText('Computer not reachable')).toBeTruthy()
+  })
+
+  it('forgets the computer while a send waits on this device’s write, and sends nothing after it', async () => {
+    await readyToSend()
+    const release = holdSave()
+    fireEvent.click(sendButton())
+    await screen.findByText('Sending')
+    backToChats()
+    fireEvent.click(await screen.findByRole('button', { name: 'Forget' }))
+    release()
+    await screen.findByText('Pair with your computer')
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(writes()).toEqual([])
+    expect(kept.has('desk-clip')).toBe(false)
+  })
+
+  it('opens no chat and writes no draft for it while Forget waits on a write', async () => {
+    computerSide.list = [...computerSide.list, { id: 'desk-drawer', title: 'Desk drawer' }]
+    const message = await openChat()
+    await linkIs({ kind: 'connected' })
+    fireEvent.change(message, { target: { value: 'Make the clip' } })
+    const release = holdSave()
+    backToChats()
+    fireEvent.click(await screen.findByRole('button', { name: 'Forget' }))
+    fireEvent.click(screen.getByText('Desk drawer'))
+    expect(screen.queryByLabelText('Message')).toBeNull()
+    release()
+    await screen.findByText('Pair with your computer')
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    const drawer = invoke.mock.calls.filter(([command, args]) => command.startsWith('draft_') && args.project === 'desk-drawer')
+    expect(drawer).toEqual([])
+    expect(kept.size).toBe(0)
   })
 
   it('shows a turn that ends after the chat was read, from the event stream alone, with Send still on', async () => {

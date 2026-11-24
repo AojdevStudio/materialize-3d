@@ -93,9 +93,23 @@ export async function saveDraft(chat: string, draft: { text: string; pictures: P
   throw new Error(`The computer saved the draft with an answer this app cannot read: ${JSON.stringify(saved)}`)
 }
 
-/** Whether the chat holds the message sent as `rev`. An answer this app cannot read throws, so it never counts as yes. */
-export async function sendAccepted(chat: string, rev: number): Promise<boolean> {
-  const answer = await remoteJson<unknown>(`${chat}/sends/${rev}`)
+/**
+ * Sends revision `rev` of the draft under `chat`, the path of chat `project`. Resolves once the computer answers with
+ * that chat. Any other answer throws, since it says nothing about whether the computer took the send.
+ */
+export async function sendDraft(chat: string, project: string, rev: number): Promise<void> {
+  const sent = await remoteJson<unknown>(`${chat}/send`, { method: 'POST', body: { rev } })
+  const to = typeof sent === 'object' && sent !== null && 'project' in sent ? sent.project : null
+  if (typeof to === 'object' && to !== null && 'id' in to && to.id === project) return
+  throw new Error(`The computer answered the send with something this app cannot read: ${JSON.stringify(sent)}`)
+}
+
+/**
+ * The computer's final word on the send of `rev`: whether the chat holds its message. A false answer retires `rev`, so
+ * it never goes out. An answer this app cannot read throws, so it never counts as either.
+ */
+export async function settleSend(chat: string, rev: number): Promise<boolean> {
+  const answer = await remoteJson<unknown>(`${chat}/sends/${rev}/settle`, { method: 'POST', body: {} })
   if (typeof answer === 'object' && answer !== null && 'accepted' in answer && typeof answer.accepted === 'boolean') return answer.accepted
-  throw new Error(`The computer answered whether it got the message with something this app cannot read: ${JSON.stringify(answer)}`)
+  throw new Error(`The computer settled the message with something this app cannot read: ${JSON.stringify(answer)}`)
 }

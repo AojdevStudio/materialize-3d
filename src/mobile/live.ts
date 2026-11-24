@@ -1,11 +1,16 @@
 import { createContext, useContext } from 'react'
 import type { ChatView } from '../../sidecar/src/protocol'
-import type { Link, Message, Sender } from './outbox'
+import type { Link, Sender } from './outbox'
 
-/** A `chat` event from the computer's stream, or null for any other event. */
+/** Whether `entry` has what `merge` and the chat screen read of every chat entry: a numeric `id` and a string `kind`. */
+const isEntry = (entry: unknown) =>
+  typeof entry === 'object' && entry !== null && 'id' in entry && typeof entry.id === 'number' && 'kind' in entry && typeof entry.kind === 'string'
+
+/** A `chat` event from the computer's stream, or null for any other event and for one whose entries are not entries. */
 export function chatEvent(event: unknown): ChatView | null {
   if (typeof event !== 'object' || event === null || !('type' in event) || event.type !== 'chat') return null
   if (!('project' in event && typeof event.project === 'string' && 'seq' in event && typeof event.seq === 'number' && 'entries' in event && Array.isArray(event.entries))) return null
+  if (!event.entries.every(isEntry)) return null
   return event as unknown as ChatView
 }
 
@@ -27,12 +32,14 @@ export function deviceName(): string {
   return /iPad|Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1 ? 'iPad' : 'iPhone'
 }
 
-/** The line under the chat title that says whether the computer can be reached, and what that means for the draft. */
-export function linkLine(link: Link, message: Message | null): { tone: 'ok' | 'off' | 'wait'; text: string } {
+/**
+ * The line under the chat title that says whether the computer can be reached, and what that means for the draft.
+ * `saved` is whether this device's file holds the draft as it reads now.
+ */
+export function linkLine(link: Link, saved: boolean): { tone: 'ok' | 'off' | 'wait'; text: string } {
   if (link === 'connected') return { tone: 'ok', text: 'Connected' }
   if (link === 'connecting') return { tone: 'wait', text: 'Connecting' }
-  const kept = message !== null && (message.text !== '' || message.pictures.length > 0)
-  return { tone: 'off', text: kept ? `Computer not reachable. Draft saved on this ${deviceName()}` : 'Computer not reachable' }
+  return { tone: 'off', text: saved ? `Computer not reachable. Draft saved on this ${deviceName()}` : 'Computer not reachable' }
 }
 
 export type ChatListener = (change: ChatView) => void

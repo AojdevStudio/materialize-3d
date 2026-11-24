@@ -186,6 +186,8 @@ function Paired({ computer, onForget }: { computer: Computer; onForget: () => vo
   const [tries, setTries] = useState(0)
   const [link, setLink] = useState<Link>('connecting')
   const [sends, setSends] = useState(0)
+  /** Set the moment the person taps Forget. From then on the old pairing opens no chat, keeps no list, and hears no link. */
+  const closing = useRef(false)
   /** One outbox per chat for this pairing, so a chat opened again finds the send it left going out. */
   const senders = useRef(new Map<string, Sender>())
   const listeners = useRef(new Set<ChatListener>())
@@ -199,6 +201,7 @@ function Paired({ computer, onForget }: { computer: Computer; onForget: () => vo
   // meanwhile appears.
   useEffect(() => {
     watchLink((message) => {
+      if (closing.current) return
       if (message.kind === 'connected') return setLink('connected')
       if (message.kind === 'offline') return setLink('offline')
       const change = chatEvent(message.event)
@@ -218,7 +221,7 @@ function Paired({ computer, onForget }: { computer: Computer; onForget: () => vo
     setError(null)
     remoteJson<MobileChat[]>(api('/chats')).then(
       (listed) => {
-        if (!current) return
+        if (!current || closing.current) return
         setChats(listed)
         try {
           localStorage.setItem(CHATS_KEY, JSON.stringify(listed))
@@ -243,6 +246,7 @@ function Paired({ computer, onForget }: { computer: Computer; onForget: () => vo
       sender: (project) => {
         let sender = senders.current.get(project)
         if (sender === undefined) {
+          if (closing.current) throw new Error('This device is forgetting the computer, so it opens no chat.')
           sender = new Sender(project, link, () => setSends((n) => n + 1))
           senders.current.set(project, sender)
         }
@@ -252,10 +256,11 @@ function Paired({ computer, onForget }: { computer: Computer; onForget: () => vo
     [link, sends, listen],
   )
 
-  // A draft write under way lands before Rust clears the drafts, and none goes out after.
+  // Every sender closes before anything waits. A draft write under way lands before Rust clears the drafts, and none
+  // goes out after.
   const forget = async () => {
+    closing.current = true
     await Promise.all([...senders.current.values()].map((sender) => sender.close()))
-    senders.current.clear()
     onForget()
   }
 
@@ -285,7 +290,7 @@ function Paired({ computer, onForget }: { computer: Computer; onForget: () => vo
       <ul>
         {chats?.map((chat) => (
           <li key={chat.id}>
-            <button type="button" onClick={() => setOpen(chat)}>
+            <button type="button" onClick={() => !closing.current && setOpen(chat)}>
               {chat.title}
             </button>
           </li>
@@ -377,8 +382,9 @@ function Chat({ chat, onBack }: { chat: MobileChat; onBack: () => void }) {
   useEffect(() => () => void stopModelReads(), [chat.id])
 
   const editable = outbox.kind === 'draft'
+  const saved = useSyncExternalStore(sender.subscribe, sender.saved)
   const message = outbox.kind === 'loading' || outbox.kind === 'broken' ? null : outbox.message
-  const shownLink = linkLine(link, message)
+  const shownLink = linkLine(link, saved)
 
   return (
     <section className="mobile-chat">
@@ -474,6 +480,11 @@ function Chat({ chat, onBack }: { chat: MobileChat; onBack: () => void }) {
               />
             </label>
             {OUTBOX_NOTE[outbox.kind] && <span className="preview-note">{OUTBOX_NOTE[outbox.kind]}</span>}
+            {outbox.kind === 'unconfirmed' && (
+              <button type="button" className="mobile-link" onClick={sender.settle}>
+                Check again
+              </button>
+            )}
             <button type="submit" className="mobile-primary" disabled={!canSend(link, outbox)}>
               Send
             </button>

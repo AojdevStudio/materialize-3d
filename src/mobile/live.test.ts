@@ -23,4 +23,10 @@ describe('a chat kept live from the event stream', () => {
     expect(chatEvent({ type: 'project', project: 'desk-clip' })).toBeNull()
     expect(chatEvent({ type: 'chat', project: 'desk-clip', seq: '6', entries: [] })).toBeNull()
   })
+
+  it('drops a chat event whose entries are not chat entries', () => {
+    expect(chatEvent({ type: 'chat', ...read, entries: [null] })).toBeNull()
+    expect(chatEvent({ type: 'chat', ...read, entries: [{ id: '1', kind: 'user', text: 'Draw it' }] })).toBeNull()
+    expect(chatEvent({ type: 'chat', ...read, entries: [{ id: 1, text: 'Draw it' }] })).toBeNull()
+  })
 })
