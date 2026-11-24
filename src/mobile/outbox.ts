@@ -38,8 +38,10 @@ const SAVE_AFTER_MS = 400
 
 const FORGOT = 'This device forgot the computer, so the draft was not kept.'
 
-export const canSend = (link: Link, outbox: Outbox) =>
+/** Whether the draft can go out now. `running` is whether the chat's last view says the agent still works on a turn. */
+export const canSend = (link: Link, outbox: Outbox, running: boolean) =>
   link === 'connected' &&
+  !running &&
   outbox.kind === 'draft' &&
   outbox.reading === 0 &&
   (outbox.message.text.trim() !== '' || outbox.message.pictures.length > 0)
@@ -60,6 +62,14 @@ export class Sender {
   #written: Message | null = null
   /** Set once the device forgets its computer. No write, save, or send goes out after it. */
   #closed = false
+  /**
+   * Network work, and the device writes queued while Forget runs, wait on this. It is settled except during Forget:
+   * `pause` makes a new one, a Forget that fails resolves it, and one that works rejects it.
+   */
+  #gate: Promise<void> = Promise.resolve()
+  #lift: ((forgot: boolean) => void) | null = null
+  /** Whether the chat's last view says the agent still works on a turn, so a send would be refused. */
+  #running = false
   /** Set when the link comes up again while a settle is under way. */
   #relinked = false
   readonly #heard = new Set<() => void>()
@@ -138,7 +148,9 @@ export class Sender {
 
   /** Writes `message`, sent as `rev` or not sent, to the device file after every write before it. Rejects once the sender is closed. */
   #save(message: Message, rev: number | null): Promise<void> {
+    const gate = this.#gate
     const saved = this.#writes.then(async () => {
+      await gate
       if (this.#closed) throw new Error(FORGOT)
       await deviceDrafts.save(this.project, { ...message, sent: rev === null ? null : { rev } })
       this.#written = message
@@ -150,13 +162,39 @@ export class Sender {
   }
 
   /**
-   * Stops every later write, save, send, and settle, as when the device forgets its computer, and resolves once the
-   * last write already under way is done, so the drafts can be cleared after it.
+   * Holds back every save, send, and settle, and every device write after the ones already queued, as when the device
+   * starts to forget its computer. A text save still waiting is queued first. Resolves once the queued writes landed,
+   * so Rust can clear the drafts after them.
    */
-  close(): Promise<unknown> {
+  pause(): Promise<unknown> {
+    if (this.#saving !== undefined) this.flush()
+    if (this.#lift === null) {
+      this.#gate = new Promise((resolve, reject) => {
+        this.#lift = (forgot) => (forgot ? reject(new Error(FORGOT)) : resolve())
+      })
+      // Only the work held behind it hears a Forget that worked.
+      this.#gate.catch(() => {})
+    }
+    return this.#writes
+  }
+
+  /** Lets go what `pause` held, after a Forget that failed, with the message as it was. */
+  resume() {
+    this.#lift?.(false)
+    this.#lift = null
+    this.#gate = Promise.resolve()
+    void this.settle()
+  }
+
+  /** Drops what `pause` held, and stops every later write, save, send, and settle, once the device forgot its computer after `pause`. */
+  close() {
     this.#closed = true
     clearTimeout(this.#saving)
-    return this.#writes
+    this.#lift?.(true)
+  }
+
+  running(running: boolean) {
+    this.#running = running
   }
 
   link(link: Link) {
@@ -208,7 +246,7 @@ export class Sender {
    */
   async send() {
     const outbox = this.#outbox
-    if (!canSend(this.#link, outbox) || outbox.kind !== 'draft') return
+    if (!canSend(this.#link, outbox, this.#running) || outbox.kind !== 'draft') return
     const { message } = outbox
     clearTimeout(this.#saving)
     this.#set({ kind: 'sending', message })
@@ -216,16 +254,16 @@ export class Sender {
     try {
       // The words as typed reach the device first, so a computer that never answers loses none of them.
       await this.#save(message, null)
-      if (this.#closed) throw new Error(FORGOT)
+      await this.#gate
       rev = await saveDraft(this.#chat, message)
       await this.#save(message, rev)
+      await this.#gate
     } catch (err) {
       // No send went out, so the draft stays as it was.
       this.#set(draft(message, errorText(err)))
       this.flush()
       return
     }
-    if (this.#closed) return
     try {
       await sendDraft(this.#chat, this.project, rev)
     } catch (err) {
@@ -253,7 +291,7 @@ export class Sender {
    */
   settle = async (): Promise<void> => {
     const outbox = this.#outbox
-    if (this.#closed || outbox.kind !== 'unconfirmed' || this.#link !== 'connected') return
+    if (this.#lift !== null || this.#closed || outbox.kind !== 'unconfirmed' || this.#link !== 'connected') return
     const { message, rev, refused } = outbox
     this.#relinked = false
     this.#set({ kind: 'checking', message, rev, refused })

@@ -218,8 +218,8 @@ function Paired({ computer, onForget }: { computer: Computer; onForget: () => Pr
   }, [link])
 
   // Read at once, and again each time the link comes up, so a list that failed while the computer was away comes back.
-  // While it is away, the list from the last read stands, and the link says why it is not newer. A read that ends after
-  // the device forgot the computer keeps nothing.
+  // While it is away, the list from the last read stands, and the link says why it is not newer. A read that fails while
+  // the link is up shows why. A read that ends after the device forgot the computer keeps nothing.
   useEffect(() => {
     let current = true
     setError(null)
@@ -234,7 +234,7 @@ function Paired({ computer, onForget }: { computer: Computer; onForget: () => Pr
         }
       },
       (err) => {
-        if (current && !(err instanceof Unreachable)) setError(errorText(err))
+        if (current && (up || !(err instanceof Unreachable))) setError(errorText(err))
       },
     )
     return () => {
@@ -260,23 +260,25 @@ function Paired({ computer, onForget }: { computer: Computer; onForget: () => Pr
     [link, sends, listen],
   )
 
-  // Every sender closes before anything waits. A draft write under way lands before Rust clears the drafts, and none
-  // goes out after.
+  // Every sender pauses before anything waits, so nothing goes to the computer. Its draft writes already queued land
+  // before Rust clears the drafts. A Forget that fails lets the same senders go on, with their newest words.
   const forget = async () => {
     setForgetError(null)
     closing.current = true
-    await Promise.all([...senders.current.values()].map((sender) => sender.close()))
-    // Every sender is closed. A Forget that fails leaves the pairing as it was, so the chats open again with new
-    // senders that read their drafts from this device.
-    senders.current.clear()
+    const paused = [...senders.current.values()]
+    await Promise.all(paused.map((sender) => sender.pause()))
     try {
       await onForget()
     } catch (err) {
       closing.current = false
+      for (const sender of paused) sender.resume()
       setForgetError(errorText(err))
       // A list the computer sent while Forget waited was dropped, so read it again.
       setTries((n) => n + 1)
+      return
     }
+    for (const sender of paused) sender.close()
+    senders.current.clear()
   }
 
   if (open !== null)
@@ -368,6 +370,17 @@ function Chat({ chat, onBack }: { chat: MobileChat; onBack: () => void }) {
 
   useEffect(() => listen((change) => change.project === chat.id && setView((kept) => merge(kept, change))), [listen, chat.id])
 
+  const running = view?.running === true
+  useEffect(() => sender.running(running), [sender, running])
+  // A turn that ends may have made a model, so the files are read again once, when it ends.
+  const ran = useRef(running)
+  const [turnsEnded, setTurnsEnded] = useState(0)
+  useEffect(() => {
+    if (ran.current && !running) setTurnsEnded((n) => n + 1)
+    ran.current = running
+  }, [running])
+  const [tries, setTries] = useState(0)
+
   // The chat is read whole each time the link comes up, since its changes while the link was down were not heard. The
   // transcript and the model files load apart, so one failing leaves the other on screen.
   useEffect(() => {
@@ -379,8 +392,16 @@ function Chat({ chat, onBack }: { chat: MobileChat; onBack: () => void }) {
         setView((kept) => merge(kept, opened))
         setError(null)
       },
-      (err) => current && !(err instanceof Unreachable) && setError(errorText(err)),
+      (err) => current && setError(errorText(err)),
     )
+    return () => {
+      current = false
+    }
+  }, [chat.id, link, sends, tries])
+
+  useEffect(() => {
+    if (link !== 'connected') return
+    let current = true
     remoteJson<ModelFile[]>(`${chatPath(chat.id)}/files`).then(
       (models) => {
         if (!current) return
@@ -390,12 +411,12 @@ function Chat({ chat, onBack }: { chat: MobileChat; onBack: () => void }) {
         setModel((shown) => models.find((file) => file.rel === shown?.rel && fits(file)) ?? models.find(fits) ?? models[0] ?? null)
         setFilesError(null)
       },
-      (err) => current && !(err instanceof Unreachable) && setFilesError(`The model files did not load. ${errorText(err)}`),
+      (err) => current && setFilesError(`The model files did not load. ${errorText(err)}`),
     )
     return () => {
       current = false
     }
-  }, [chat.id, link, sends])
+  }, [chat.id, link, sends, tries, turnsEnded])
 
   // A newer model read replaces the last one in Rust. Leaving the chat stops the one still running, and a reread on
   // reconnect does not.
@@ -417,6 +438,11 @@ function Chat({ chat, onBack }: { chat: MobileChat; onBack: () => void }) {
       <p className={`mobile-linkline mobile-linkline-${shownLink.tone}`}>{shownLink.text}</p>
       {error && <p className="mobile-error">{error}</p>}
       {filesError && <p className="mobile-error">{filesError}</p>}
+      {(error || filesError) && (
+        <button type="button" className="mobile-link" onClick={() => setTries((n) => n + 1)}>
+          Try again
+        </button>
+      )}
       {model && !fits(model) && (
         <p className="mobile-error">
           {model.rel} is too large to show on this device (over {PREVIEW_LIMIT / (1024 * 1024)} MB).
@@ -500,7 +526,7 @@ function Chat({ chat, onBack }: { chat: MobileChat; onBack: () => void }) {
                 Check again
               </button>
             )}
-            <button type="submit" className="mobile-primary" disabled={!canSend(link, outbox)}>
+            <button type="submit" className="mobile-primary" disabled={!canSend(link, outbox, running)}>
               Send
             </button>
           </div>

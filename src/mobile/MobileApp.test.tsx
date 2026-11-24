@@ -210,6 +210,36 @@ describe('MobileApp', () => {
     expect(remoteRs).toContain(`const ANSWER_LIMIT: usize = ${PREVIEW_LIMIT / (1024 * 1024)} * 1024 * 1024;`)
   })
 
+  it('shows a chat list read that fails while the link is up, and reads it again on Try again', async () => {
+    answer({ paired_computer: computer })
+    computerAnswers(() => new Response('The computer did not answer. connection reset', { status: 502 }))
+    render(<MobileApp />)
+    await linkIs({ kind: 'connected' })
+    expect(await screen.findByText(/connection reset/)).toBeTruthy()
+
+    computerAnswers(chats)
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
+    expect(await screen.findByText('Desk cable clip')).toBeTruthy()
+  })
+
+  it('shows a transcript read that fails while the link is up, and reads it again on Try again', async () => {
+    answerWithDrafts({ paired_computer: computer })
+    let reached = false
+    computerAnswers(chats, {
+      '/api/v1/chats/desk-clip': () => (reached ? Response.json(deskClip) : new Response('The computer did not answer. connection reset', { status: 502 })),
+      '/api/v1/chats/desk-clip/files': () => Response.json([]),
+    })
+    render(<MobileApp />)
+    const opens = await screen.findByRole('button', { name: 'Desk cable clip' })
+    await linkIs({ kind: 'connected' })
+    fireEvent.click(opens)
+    expect(await screen.findByText(/connection reset/)).toBeTruthy()
+
+    reached = true
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
+    expect(await screen.findByText('Make a clip that holds a cable on the edge of my desk.')).toBeTruthy()
+  })
+
   it("stops the chat's model download in Rust when the person leaves the chat", async () => {
     answerWithDrafts({ paired_computer: computer })
     computerAnswers(chats, { '/api/v1/chats/desk-clip': () => Response.json(deskClip) })
@@ -337,6 +367,7 @@ const computerSide = {
   retired: new Set<number>(),
   list: [{ id: 'desk-clip', title: 'Desk cable clip' }],
   chat: { project: 'desk-clip', entries: [] as unknown[], running: false, waiting: null, turn: null as unknown, seq: 1 },
+  files: [] as unknown[],
   /** Requests, as `METHOD /path`, the computer answers only once the test lets them go. */
   waits: new Map<string, Promise<void>>(),
 }
@@ -366,7 +397,7 @@ const routeComputer = async (url: string, init?: { method?: string; body?: strin
   if (!computerSide.reach) return new Response('The computer did not answer.', { status: 502 })
   if (url === 'm3dremote://localhost/api/v1/chats') return Response.json(computerSide.list)
   if (url === CHAT) return Response.json(computerSide.chat)
-  if (url === `${CHAT}/files`) return Response.json([])
+  if (url === `${CHAT}/files`) return Response.json(computerSide.files)
   if (url === `${CHAT}/draft` && method === 'PUT') return Response.json({ rev: ++computerSide.rev })
   if (url === `${CHAT}/send` && method === 'POST') {
     const { rev } = JSON.parse(init?.body ?? '{}') as { rev: number }
@@ -445,6 +476,7 @@ describe('a draft and the link to the computer', () => {
       retired: new Set(),
       list: [{ id: 'desk-clip', title: 'Desk cable clip' }],
       chat: view,
+      files: [],
       waits: new Map(),
     })
   })
@@ -778,6 +810,23 @@ describe('a draft and the link to the computer', () => {
     expect((await reopen()).value).toBe('Make the clip')
   })
 
+  it('keeps the newest edit when Forget fails while an older write of the draft is still landing', async () => {
+    const message = await openChat()
+    const release = holdSave()
+    fireEvent.change(message, { target: { value: 'Make the clip 2 mm thicker' } })
+    // The text save waits 400 ms after the last key, and this device holds that write.
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('draft_save', expect.objectContaining({ project: 'desk-clip' })))
+    fireEvent.change(message, { target: { value: 'Make the clip 3 mm thicker' } })
+    backToChats()
+    device.forgetFails = 'The Keychain refused the pairing. User interaction is not allowed.'
+    fireEvent.click(await screen.findByRole('button', { name: 'Forget' }))
+    release()
+
+    expect(await screen.findByText(/The Keychain refused the pairing/)).toBeTruthy()
+    expect((await reopen()).value).toBe('Make the clip 3 mm thicker')
+    await waitFor(() => expect(kept.get('desk-clip')?.text).toBe('Make the clip 3 mm thicker'))
+  })
+
   it('reads the chat list again after a Forget that fails, and keeps its words', async () => {
     const message = await openChat()
     fireEvent.change(message, { target: { value: 'Make the clip' } })
@@ -850,7 +899,7 @@ describe('a draft and the link to the computer', () => {
     expect(computerSide.sent).toEqual([41])
   })
 
-  it('shows a turn that ends after the chat was read, from the event stream alone, with Send still on', async () => {
+  it('keeps Send off while the turn runs, and shows a turn that ends after the chat was read from the event stream alone', async () => {
     const asked = { id: 1, kind: 'user', text: 'Draw it' }
     computerSide.chat = { ...view, entries: [asked], running: true, seq: 4 }
     const message = await openChat()
@@ -858,11 +907,31 @@ describe('a draft and the link to the computer', () => {
     expect(await screen.findByText('Draw it')).toBeTruthy()
     const reads = computerSide.requests.filter((r) => r === 'GET /chats/desk-clip').length
     fireEvent.change(message, { target: { value: 'Now make it blue' } })
+    expect(message.value).toBe('Now make it blue')
+    // The agent still works on the last message, so a send now would only be refused.
+    await act(() => new Promise((resolve) => setTimeout(resolve, 0)))
+    expect(sendButton().disabled).toBe(true)
 
     const answer = { id: 2, kind: 'assistant', text: 'Here is the page.', calls: [], model: { provider: 'faux', modelId: 'faux-a' } }
     await linkIs({ kind: 'event', event: { type: 'chat', ...view, entries: [answer], running: false, seq: 6 } })
     expect(await screen.findByText('Here is the page.')).toBeTruthy()
     expect(computerSide.requests.filter((r) => r === 'GET /chats/desk-clip')).toHaveLength(reads)
     await waitFor(() => expect(sendButton().disabled).toBe(false))
+  })
+
+  it('reads the model files again once a running turn ends, and only then', async () => {
+    computerSide.chat = { ...view, entries: [{ id: 1, kind: 'user', text: 'Draw it' }], running: true, seq: 4 }
+    await openChat()
+    await linkIs({ kind: 'connected' })
+    expect(await screen.findByText('Draw it')).toBeTruthy()
+    const fileReads = () => computerSide.requests.filter((r) => r === 'GET /chats/desk-clip/files').length
+    await waitFor(() => expect(fileReads()).toBe(1))
+
+    computerSide.files = [{ rel: 'new.stl', size: 1000, modifiedMs: 2 }]
+    await linkIs({ kind: 'event', event: { type: 'chat', ...view, running: false, seq: 6 } })
+    expect(await screen.findByRole('button', { name: 'new.stl' })).toBeTruthy()
+    await linkIs({ kind: 'event', event: { type: 'chat', ...view, running: false, seq: 7 } })
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(fileReads()).toBe(2)
   })
 })
