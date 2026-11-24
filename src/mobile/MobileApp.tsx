@@ -184,6 +184,8 @@ function Paired({ computer, onForget }: { computer: Computer; onForget: () => Pr
   const [chats, setChats] = useState<MobileChat[] | null>(() => savedChats(computer.id))
   const [open, setOpen] = useState<MobileChat | null>(null)
   const [error, setError] = useState<string | null>(null)
+  /** Why the last Forget failed. Its own line, so the chat list's reread after it does not clear it. */
+  const [forgetError, setForgetError] = useState<string | null>(null)
   const [tries, setTries] = useState(0)
   const [link, setLink] = useState<Link>('connecting')
   const [sends, setSends] = useState(0)
@@ -261,6 +263,7 @@ function Paired({ computer, onForget }: { computer: Computer; onForget: () => Pr
   // Every sender closes before anything waits. A draft write under way lands before Rust clears the drafts, and none
   // goes out after.
   const forget = async () => {
+    setForgetError(null)
     closing.current = true
     await Promise.all([...senders.current.values()].map((sender) => sender.close()))
     // Every sender is closed. A Forget that fails leaves the pairing as it was, so the chats open again with new
@@ -270,7 +273,9 @@ function Paired({ computer, onForget }: { computer: Computer; onForget: () => Pr
       await onForget()
     } catch (err) {
       closing.current = false
-      setError(errorText(err))
+      setForgetError(errorText(err))
+      // A list the computer sent while Forget waited was dropped, so read it again.
+      setTries((n) => n + 1)
     }
   }
 
@@ -288,6 +293,11 @@ function Paired({ computer, onForget }: { computer: Computer; onForget: () => Pr
           Forget
         </button>
       </header>
+      {forgetError && (
+        <p className="mobile-error" role="alert">
+          {forgetError}
+        </p>
+      )}
       {error && (
         <p className="mobile-error">
           {error}{' '}

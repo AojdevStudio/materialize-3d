@@ -782,6 +782,22 @@ describe('a draft and the link to the computer', () => {
     expect((await reopen()).value).toBe('Make the clip')
   })
 
+  it('reads the chat list again after a Forget that fails, and keeps its words', async () => {
+    const message = await openChat()
+    fireEvent.change(message, { target: { value: 'Make the clip' } })
+    const release = holdSave()
+    backToChats()
+    device.forgetFails = 'The Keychain refused the pairing. User interaction is not allowed.'
+    computerSide.list = [...computerSide.list, { id: 'desk-drawer', title: 'Desk drawer' }]
+    fireEvent.click(await screen.findByRole('button', { name: 'Forget' }))
+    // The computer answers while Forget waits, and that list is dropped.
+    await linkIs({ kind: 'connected' })
+    release()
+
+    expect(await screen.findByText('Desk drawer')).toBeTruthy()
+    expect(screen.getByRole('alert').textContent).toContain('The Keychain refused the pairing')
+  })
+
   it('keeps the link current while Forget waits, so a Forget that fails leaves Send on', async () => {
     const message = await openChat()
     fireEvent.change(message, { target: { value: 'Make the clip' } })
