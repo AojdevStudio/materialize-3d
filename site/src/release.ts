@@ -24,7 +24,7 @@ export type Release = {
 };
 
 /** The last published release. It trails package.json while the next release is built. */
-const version = "0.3.2";
+const version = "0.3.3";
 /** The build `VALIDATED_VERSIONS` names in src-tauri/src/bambu/locate.rs at the published release's tag. */
 const bambuStudio = "02.08.02.61";
 
@@ -34,7 +34,7 @@ export const release: Release = {
   releasesUrl: "https://github.com/AojdevStudio/materialize-3d/releases",
   docsUrl: "https://github.com/AojdevStudio/materialize-3d#readme",
   dmgUrl: `https://github.com/AojdevStudio/materialize-3d/releases/download/v${version}/Materialize-3D-${version}-macos-arm64.dmg`,
-  sha256: "5f883a5f5f88983da486c895ff059a72b1628847194be5e352b2f564c2f8b06a",
+  sha256: "6dc52b3135fd26353cc963996cd8145a463c5f3de317090f7724ecee76732483",
   testedMacOS: "macOS 26.7.2",
   minimumMacOS: "26.0",
   architecture: "Apple Silicon",
