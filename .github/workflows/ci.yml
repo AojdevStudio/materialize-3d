@@ -70,6 +70,42 @@ jobs:
         working-directory: src-tauri
         run: cargo test --lib --locked studio::slice -- --ignored --nocapture
 
+  # The iPhone and iPad app's crate builds Tauri on its own, so its tests run beside the Linux job, not inside its hour.
+  mobile:
+    name: Mobile app checks
+    if: >-
+      github.actor != 'dependabot[bot]' && (
+      github.event_name == 'push' ||
+      (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+      && github.event.pull_request.user.login != 'dependabot[bot]'))
+    runs-on: [self-hosted, Linux, X64, m3d-linux-kvm]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Tauri system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev
+      - uses: actions/setup-node@v6.2.0
+        with:
+          node-version: "24"
+      - uses: ./.github/actions/setup-bun
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-mobile
+          cache-bin: false
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Install JavaScript dependencies (frozen lockfile)
+        run: bun install --frozen-lockfile
+      # The crate embeds the mobile window build, so that build comes first.
+      - name: Mobile window build
+        run: bun run build:mobile
+      - name: Mobile Rust tests
+        working-directory: src-mobile
+        run: cargo test --lib --locked
+
   macos:
     name: macOS desktop build gate
     if: >-

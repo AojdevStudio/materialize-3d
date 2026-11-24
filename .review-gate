@@ -19,6 +19,10 @@ cd src-tauri && cargo test --lib --locked
 test -x "${BAMBU_STUDIO_CLI:?Export BAMBU_STUDIO_CLI for the validated Bambu Studio build.}"
 cd src-tauri && cargo test --lib --locked studio::slice -- --ignored --nocapture
 
+# Mobile app checks. The crate embeds the mobile window build.
+bun run build:mobile
+cd src-mobile && cargo test --lib --locked
+
 # macOS desktop build gate. CI covers these commands for a Linux receipt.
 case "$(uname -s)" in Darwin) bun tauri build --bundles app ;; *) echo 'macOS desktop app build runs in macOS CI' ;; esac
 case "$(uname -s)" in Darwin) product="$(bun -p "require('./src-tauri/tauri.conf.json').productName")" && bun scripts/release/check-no-e2e-harness.ts "${CARGO_TARGET_DIR:-src-tauri/target}/release/bundle/macos/$product.app" ;; *) echo 'macOS release harness check runs in macOS CI' ;; esac
