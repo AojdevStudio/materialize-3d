@@ -1,0 +1,313 @@
+import { describe, expect, test } from 'bun:test'
+import { chmodSync, mkdirSync, mkdtempSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { handlers, type Services } from '../src/methods'
+import type { ChatEntry, ChatView, MobileChat, MobilePairing, ModelFile, PairedDevice, StoredState } from '../src/protocol'
+import { spawnSidecar } from './sidecar'
+
+type App = ReturnType<typeof spawnSidecar>
+
+const HOST = 'computer.tail0000.ts.net'
+/** Another service Tailscale Serve already forwards, which pairing must pass over. */
+const OTHER = { [`${HOST}:443`]: { Handlers: { '/': { Proxy: 'http://127.0.0.1:8788' } } } }
+const forwarding = (port: number, served = `${HOST}:${port}`) => ({ TCP: { [port]: { HTTPS: true } }, Web: { ...OTHER, [served]: { Handlers: { '/': { Proxy: `http://127.0.0.1:${port}` } } } } })
+const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII='
+
+async function freePort(): Promise<number> {
+  const probe = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: () => new Response() })
+  const { port } = probe
+  await probe.stop(true)
+  if (port === undefined) throw new Error('no free port')
+  return port
+}
+
+/**
+ * A sidecar whose phone service listens on a free port, and a `tailscale` on its PATH that prints `serve` as its
+ * Serve config, which `setServe` changes.
+ */
+async function start(serve: (port: number) => object, env: Record<string, string> = {}) {
+  const dir = mkdtempSync(join(tmpdir(), 'm3d-mobile-'))
+  const bin = join(dir, 'bin')
+  mkdirSync(bin)
+  writeFileSync(join(bin, 'uv'), '#!/bin/sh\n[ "$1" = run ] && shift\nexec "$@"\n')
+  const config = join(dir, 'serve.json')
+  writeFileSync(join(bin, 'tailscale'), `#!/bin/sh\n[ "$*" = "serve status --json" ] || exit 64\ncat '${config}'\n`)
+  for (const tool of ['uv', 'tailscale']) chmodSync(join(bin, tool), 0o755)
+  const port = await freePort()
+  const setServe = (value: object) => writeFileSync(config, JSON.stringify(value))
+  setServe(serve(port))
+  const projects = join(dir, 'projects')
+  const app = spawnSidecar(join(dir, 'state'), projects, new Map(), {
+    script: 'models',
+    env: { PATH: `${bin}:${process.env.PATH}`, M3D_MOBILE_PORT: String(port), ...env },
+  })
+  await app.next()
+  await app.call('settings.set', { model: { provider: 'faux', modelId: 'faux-a' } })
+  const base = `http://127.0.0.1:${port}/api/v1`
+  return { app, dir, port, projects, base, setServe }
+}
+
+const pairing = async (app: App) => (await app.call('mobile.pair')) as MobilePairing
+
+async function code(app: App): Promise<string> {
+  const shown = await pairing(app)
+  if (shown.kind !== 'ready') throw new Error(`pairing is ${shown.kind}`)
+  const found = new URL(shown.url).searchParams.get('code')
+  if (found === null) throw new Error(`no code in ${shown.url}`)
+  return found
+}
+
+const redeem = (base: string, code: string, name = 'iPhone') => fetch(`${base}/pair`, { method: 'POST', body: JSON.stringify({ code, name }) })
+
+async function pair(app: App, base: string) {
+  const answer = await redeem(base, await code(app))
+  expect(answer.status).toBe(200)
+  return (await answer.json()) as { token: string; device: PairedDevice; computer: { id: string; name: string; version: string } }
+}
+
+/** Calls the service as the device with this token. */
+const as =
+  (base: string, token: string) =>
+  (path: string, init: { method?: string; body?: unknown } = {}) =>
+    fetch(`${base}${path}`, {
+      method: init.method ?? 'GET',
+      headers: { authorization: `Bearer ${token}` },
+      ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }),
+    })
+
+/** Waits until the chat holds this answer and its turn has ended. */
+async function settled(app: App, project: string, text: string) {
+  const done = (view: { entries: ChatEntry[]; running: boolean }) => !view.running && view.entries.some((e) => e.kind === 'assistant' && e.text === text)
+  if (done((await app.call('chat.open', { project })) as ChatView)) return
+  for (;;) {
+    await app.until((event) => event.type === 'chat' && event.project === project && (event.entries as ChatEntry[]).some((e) => e.kind === 'assistant' && e.text === text), 30_000)
+    if (done((await app.call('chat.open', { project })) as ChatView)) return
+  }
+}
+
+/** A chat with one finished turn, made from the computer. */
+async function chat(app: App): Promise<string> {
+  const { project } = await app.sendDraft('new', 'make the project')
+  await settled(app, project, 'made')
+  return project
+}
+
+/** Reads a `text/event-stream` answer, each `data:` line as one event. */
+function eventStream(response: Response) {
+  if (response.body === null) throw new Error('no stream')
+  const reader = response.body.pipeThrough(new TextDecoderStream()).getReader()
+  const events: Record<string, unknown>[] = []
+  let buffered = ''
+  const until = async (match: (event: Record<string, unknown>) => boolean, ms = 30_000) => {
+    const deadline = Date.now() + ms
+    for (let at = 0; ; ) {
+      for (; at < events.length; at++) {
+        const event = events[at]
+        if (event !== undefined && match(event)) return event
+      }
+      const read = await Promise.race([reader.read(), Bun.sleep(Math.max(0, deadline - Date.now())).then(() => 'timeout' as const)])
+      if (read === 'timeout') throw new Error('no matching event in time')
+      if (read.done) throw new Error('the stream ended')
+      buffered += read.value
+      for (let end = buffered.indexOf('\n\n'); end >= 0; end = buffered.indexOf('\n\n')) {
+        for (const line of buffered.slice(0, end).split('\n')) if (line.startsWith('data: ')) events.push(JSON.parse(line.slice('data: '.length)))
+        buffered = buffered.slice(end + 2)
+      }
+    }
+  }
+  return { events, until, close: () => reader.cancel() }
+}
+
+const devices = async (app: App) => (await app.call('mobile.devices')) as PairedDevice[]
+
+describe('pairing', () => {
+  test('an expired code cannot pair', async () => {
+    const { app, base } = await start(forwarding, { M3D_PAIRING_TTL_MS: '200' })
+    const expired = await code(app)
+    await Bun.sleep(400)
+    const answer = await redeem(base, expired)
+    expect(answer.status).toBe(403)
+    expect(await devices(app)).toEqual([])
+    await app.quit()
+  })
+
+  test('a used code cannot pair again, and gets the same answer as a wrong one', async () => {
+    const { app, base } = await start(forwarding)
+    const once = await code(app)
+    const [first, second] = await Promise.all([redeem(base, once, 'iPhone'), redeem(base, once, 'iPad')])
+    expect([first.status, second.status].sort()).toEqual([200, 403])
+    const again = await redeem(base, once)
+    const wrong = await redeem(base, 'not-the-code')
+    expect([again.status, wrong.status]).toEqual([403, 403])
+    expect(await again.json()).toEqual(await wrong.json())
+    expect(await devices(app)).toHaveLength(1)
+    await app.quit()
+  })
+
+  test('answers setup until Serve forwards to the service, then a QR of its address', async () => {
+    const { app, port, setServe } = await start(() => ({}))
+    expect(await pairing(app)).toEqual({ kind: 'setup', command: `tailscale serve --bg --https=${port} http://127.0.0.1:${port}` })
+    setServe({ Web: OTHER })
+    expect((await pairing(app)).kind).toBe('setup')
+
+    setServe(forwarding(port))
+    const ready = await pairing(app)
+    if (ready.kind !== 'ready') throw new Error(`pairing is ${ready.kind}`)
+    expect(ready.url).toMatch(new RegExp(`^https://${HOST}:${port}/pair\\?code=[A-Za-z0-9_-]{22}$`))
+    expect(ready.svg).toStartWith('<svg')
+    expect(ready.expiresMs).toBeGreaterThan(Date.now())
+
+    // Served on the default HTTPS port, the address names no port.
+    setServe(forwarding(port, `${HOST}:443`))
+    const plain = await pairing(app)
+    expect(plain.kind === 'ready' && plain.url.startsWith(`https://${HOST}/pair?code=`)).toBe(true)
+    await app.quit()
+  })
+})
+
+describe('a paired device', () => {
+  test('reads nothing without a token, with an unknown one, or once forgotten', async () => {
+    const { app, base } = await start(forwarding)
+    const project = await chat(app)
+    const { token, device } = await pair(app, base)
+    expect((await as(base, token)(`/chats/${project}`)).status).toBe(200)
+    expect((await fetch(`${base}/chats/${project}`)).status).toBe(401)
+    // A second client on the tailnet that never paired.
+    expect((await as(base, 'a-token-never-given')(`/chats/${project}`)).status).toBe(401)
+    expect((await as(base, token)('/chats')).status).toBe(200)
+
+    expect(await app.call('mobile.forget', { device: device.id })).toEqual([])
+    expect((await as(base, token)(`/chats/${project}`)).status).toBe(401)
+    expect((await as(base, token)('/computer')).status).toBe(401)
+    await app.quit()
+  })
+
+  test('reaches no sign-in, setting, or window method, and hears only chat events', async () => {
+    const { app, base, projects } = await start(forwarding)
+    const project = await chat(app)
+    writeFileSync(join(projects, project, 'part.stl'), 'solid part')
+    const { token } = await pair(app, base)
+    const call = as(base, token)
+    const methods = Object.keys(handlers({} as Services))
+    const probes = ['/auth/status', '/settings', '/setup', '/printer', '/keychain', ...methods.flatMap((m) => [`/${m}`, `/${m.replace('.', '/')}`])]
+    for (const path of probes) {
+      for (const method of ['GET', 'POST', 'PUT']) expect([path, method, (await call(path, method === 'GET' ? {} : { method, body: {} })).status]).toEqual([path, method, 404])
+    }
+
+    const stream = eventStream(await call('/events'))
+    const MARKER = 'sk-marker-5d1f0c9e'
+    await app.call('auth.setKey', { provider: 'anthropic', key: MARKER })
+    const { rev } = (await (await call(`/chats/${project}/draft`, { method: 'PUT', body: { text: 'hello', pictures: [] } })).json()) as { rev: number }
+    expect((await call(`/chats/${project}/send`, { method: 'POST', body: { rev } })).status).toBe(200)
+    await stream.until((event) => (event.entries as ChatEntry[]).some((e) => e.kind === 'assistant' && e.text === 'answered by faux-a'))
+    expect(stream.events.map((event) => event.type)).toEqual(stream.events.map(() => 'chat'))
+    void stream.close()
+
+    const gets = ['/computer', '/models', '/chats', `/chats/${project}`, `/chats/${project}/files`, `/chats/${project}/files/part.stl`]
+    for (const path of gets) {
+      const answer = await call(path)
+      expect([path, answer.status]).toEqual([path, 200])
+      expect(await answer.text()).not.toContain(MARKER)
+    }
+    await app.quit()
+  })
+
+  test('pairs, reads, drafts with a picture, sends once, changes both roles, and reads a model file', async () => {
+    const { app, base, projects } = await start(forwarding)
+    const project = await chat(app)
+    const { token, device, computer } = await pair(app, base)
+    expect(device.name).toBe('iPhone')
+    expect(await devices(app)).toEqual([device])
+    const call = as(base, token)
+
+    expect(await (await call('/computer')).json()).toEqual({ ...computer, version: '9.9.9', device })
+    const listed = (await (await call('/chats')).json()) as MobileChat[]
+    expect(listed.map(({ id, lead, helper }) => ({ id, lead, helper }))).toEqual([{ id: project, lead: { provider: 'faux', modelId: 'faux-a' }, helper: null }])
+    expect(Array.isArray(await (await call('/models')).json())).toBe(true)
+
+    const stream = eventStream(await call('/events'))
+    const opened = (await (await call(`/chats/${project}`)).json()) as ChatView
+    expect(opened.entries.map((e) => e.kind)).toEqual(['user', 'assistant'])
+
+    const saved = await call(`/chats/${project}/draft`, { method: 'PUT', body: { text: 'From the phone', pictures: [{ name: 'shot.png', data: PNG }] } })
+    const { rev } = (await saved.json()) as { rev: number }
+    const send = () => call(`/chats/${project}/send`, { method: 'POST', body: { rev } })
+    const sent = await send()
+    expect(sent.status).toBe(200)
+    expect(((await sent.json()) as { project: { id: string } }).project.id).toBe(project)
+    const answered = await stream.until((event) => (event.entries as ChatEntry[]).some((e) => e.kind === 'assistant' && e.text === 'answered by faux-a'))
+    expect(answered.project).toBe(project)
+    await settled(app, project, 'answered by faux-a')
+
+    // Sent again with the same revision, as after a lost answer, it sends nothing more.
+    expect((await send()).status).toBe(200)
+    const asked = ((await (await call(`/chats/${project}`)).json()) as ChatView).entries.flatMap((e) => (e.kind === 'user' ? [e] : []))
+    expect(asked.map(({ text, images }) => ({ text, images }))).toEqual([
+      { text: 'make the project', images: [] },
+      { text: 'From the phone', images: [`refs/draft-${rev}/shot.png`] },
+    ])
+
+    const roles = await call(`/chats/${project}/roles`, { method: 'PUT', body: { lead: { provider: 'faux', modelId: 'faux-b' }, helper: { provider: 'faux', modelId: 'faux-a' } } })
+    expect(await roles.json()).toEqual({ lead: { provider: 'faux', modelId: 'faux-b' }, helper: { provider: 'faux', modelId: 'faux-a' } })
+    const alone = await call(`/chats/${project}/roles`, { method: 'PUT', body: { helper: null } })
+    expect(await alone.json()).toEqual({ lead: { provider: 'faux', modelId: 'faux-b' }, helper: null })
+    expect((await call(`/chats/${project}/roles`, { method: 'PUT', body: { lead: { provider: 'faux', modelId: 'no-such' } } })).status).toBe(500)
+
+    const folder = join(projects, project)
+    mkdirSync(join(folder, 'print'), { recursive: true })
+    writeFileSync(join(folder, 'part.STL'), 'solid part')
+    writeFileSync(join(folder, 'print', 'plate.3mf'), 'PK3mf')
+    writeFileSync(join(folder, 'notes.txt'), 'not a model')
+    utimesSync(join(folder, 'part.STL'), 1_000, 1_000)
+    const files = (await (await call(`/chats/${project}/files`)).json()) as ModelFile[]
+    expect(files.map((file) => file.rel)).toEqual(['print/plate.3mf', 'part.STL'])
+    expect(files[1]).toEqual({ rel: 'part.STL', size: 'solid part'.length, modifiedMs: 1_000_000 })
+    const read = await call(`/chats/${project}/files/print/plate.3mf`)
+    expect([read.status, read.headers.get('content-type'), await read.text()]).toEqual([200, 'model/3mf', 'PK3mf'])
+    expect(read.headers.get('access-control-allow-origin')).toBeNull()
+    expect((await call(`/chats/${project}/files/part.STL`)).headers.get('content-type')).toBe('model/stl')
+    expect((await call('/chats/no-such-project')).status).toBe(404)
+    expect((await call(`/chats/${project}/send`, { method: 'POST', body: { rev: 'one' } })).status).toBe(400)
+    void stream.close()
+    await app.quit()
+  }, 60_000)
+
+  test("drafts and sends apart from the computer's own unsent message, which state.get alone shows", async () => {
+    const { app, base } = await start(forwarding)
+    const project = await chat(app)
+    const { token } = await pair(app, base)
+    const call = as(base, token)
+    const { rev: desk } = (await app.call('drafts.set', { key: project, text: 'Typed on the computer', attachments: [] })) as { rev: number }
+
+    const { rev } = (await (await call(`/chats/${project}/draft`, { method: 'PUT', body: { text: 'From the phone', pictures: [] } })).json()) as { rev: number }
+    const shown = async () => ((await app.call('state.get')) as StoredState).drafts
+    expect(await shown()).toEqual({ [project]: { text: 'Typed on the computer', attachments: [], rev: desk } })
+    expect((await call(`/chats/${project}/send`, { method: 'POST', body: { rev } })).status).toBe(200)
+    await settled(app, project, 'answered by faux-a')
+    expect(await shown()).toEqual({ [project]: { text: 'Typed on the computer', attachments: [], rev: desk } })
+    await app.quit()
+  }, 60_000)
+
+  test('reads no file outside the chat, through a link, in the app records, or that is not a model', async () => {
+    const { app, base, dir, projects } = await start(forwarding)
+    const project = await chat(app)
+    const { token } = await pair(app, base)
+    const call = as(base, token)
+    const folder = join(projects, project)
+    writeFileSync(join(projects, 'escape.stl'), 'outside the chat')
+    writeFileSync(join(dir, 'outside.stl'), 'outside the projects')
+    symlinkSync(join(dir, 'outside.stl'), join(folder, 'linked.stl'))
+    writeFileSync(join(folder, '.m3d', 'hidden.stl'), 'the app records')
+    writeFileSync(join(folder, 'notes.txt'), 'not a model')
+    writeFileSync(join(folder, 'part.stl'), 'solid part')
+
+    expect(((await (await call(`/chats/${project}/files`)).json()) as ModelFile[]).map((f) => f.rel)).toEqual(['part.stl'])
+    for (const rel of ['..%2Fescape.stl', '%2E%2E/escape.stl', 'linked.stl', '.m3d/hidden.stl', '.m3d%2Fhidden.stl', 'notes.txt', 'missing.stl']) {
+      const answer = await call(`/chats/${project}/files/${rel}`)
+      expect([rel, answer.status]).toEqual([rel, 404])
+    }
+    expect((await call(`/chats/${project}/files/part.stl`)).status).toBe(200)
+    await app.quit()
+  })
+})
