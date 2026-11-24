@@ -190,17 +190,30 @@ describe('MobileApp', () => {
     expect(remoteRs).toContain(`const ANSWER_LIMIT: usize = ${PREVIEW_LIMIT / (1024 * 1024)} * 1024 * 1024;`)
   })
 
-  it("stops the chat's model download in Rust when the person leaves the chat", async () => {
+  it('stops the model download in Rust whenever its viewer goes away: a too-large file, then leaving the chat', async () => {
     answer({ paired_computer: computer })
-    computerAnswers(chats, { '/api/v1/chats/desk-clip': () => Response.json(deskClip) })
+    const files = [
+      { rel: 'clip.stl', size: 1000, modifiedMs: 2 },
+      { rel: 'huge.stl', size: PREVIEW_LIMIT + 1, modifiedMs: 1 },
+    ]
+    computerAnswers(chats, {
+      '/api/v1/chats/desk-clip': () => Response.json(deskClip),
+      '/api/v1/chats/desk-clip/files': () => Response.json(files),
+    })
+    const stops = () => invoke.mock.calls.filter(([command]) => command === 'stop_model_reads').length
     render(<MobileApp />)
     fireEvent.click(await screen.findByRole('button', { name: 'Desk cable clip' }))
-    await screen.findByText('Make a clip that holds a cable on the edge of my desk.')
-    expect(invoke).not.toHaveBeenCalledWith('stop_model_reads')
+    expect(await screen.findByTestId('model-view')).toBeTruthy()
+    expect(stops()).toBe(0)
 
+    fireEvent.click(screen.getByRole('button', { name: 'huge.stl' }))
+    await screen.findByText('huge.stl is too large to show on this device (over 64 MB).')
+    expect(stops()).toBe(1)
+
+    fireEvent.click(screen.getByRole('button', { name: 'clip.stl' }))
+    expect(await screen.findByTestId('model-view')).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: 'Chats' }))
-
     expect(await screen.findByRole('button', { name: 'Desk cable clip' })).toBeTruthy()
-    expect(invoke).toHaveBeenCalledWith('stop_model_reads')
+    expect(stops()).toBe(2)
   })
 })

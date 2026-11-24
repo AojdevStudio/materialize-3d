@@ -140,6 +140,15 @@ function Pair({ step, onScan, onPicture }: { step: PairStep; onScan: () => void;
 const api = (path: string) => `/api/v1${path}`
 const chatPath = (project: string) => api(`/chats/${encodeURIComponent(project)}`)
 const fits = (file: ModelFile) => file.size <= PREVIEW_LIMIT
+
+/**
+ * The shared viewer, with its download tied to it: when the viewer goes away (another chat, Chats, or a file too large
+ * to show), Rust stops the download it started. A newer model read replaces the last one in Rust on its own.
+ */
+function RemoteModelView(props: { url: string; ext: string }) {
+  useEffect(() => () => void stopModelReads(), [])
+  return <ModelView {...props} />
+}
 const extOf = (rel: string) => rel.slice(rel.lastIndexOf('.') + 1).toLowerCase()
 
 function Paired({ computer, onForget }: { computer: Computer; onForget: () => void }) {
@@ -209,8 +218,6 @@ function Chat({ chat, onBack }: { chat: MobileChat; onBack: () => void }) {
       },
       (err) => setFilesError(`The model files did not load. ${errorText(err)}`),
     )
-    // A newer model read replaces the last one in Rust. Leaving the chat stops the one still running.
-    return () => void stopModelReads()
   }, [chat.id])
 
   return (
@@ -230,7 +237,7 @@ function Chat({ chat, onBack }: { chat: MobileChat; onBack: () => void }) {
       )}
       {model && fits(model) && (
         <div className="mobile-model">
-          <ModelView url={remoteUrl(`${chatPath(chat.id)}/files/${model.rel.split('/').map(encodeURIComponent).join('/')}`)} ext={extOf(model.rel)} />
+          <RemoteModelView url={remoteUrl(`${chatPath(chat.id)}/files/${model.rel.split('/').map(encodeURIComponent).join('/')}`)} ext={extOf(model.rel)} />
         </div>
       )}
       {files.length > 0 && (
