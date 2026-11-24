@@ -1850,6 +1850,23 @@ fieldset.setup-group {
   background: none;
 }
 
+.settings-pair {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.settings-pair img {
+  flex: none;
+  width: 180px;
+  height: 180px;
+  border-radius: 6px;
+}
+
+.settings-pair-again {
+  margin-top: 12px;
+}
+
 .sessions-footer .icon-button .side-icon {
   width: 18px;
   height: 18px;

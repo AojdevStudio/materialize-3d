@@ -15,7 +15,7 @@ vi.mock('@tauri-apps/api/event', () => ({
 vi.mock('@tauri-apps/plugin-opener', () => ({ openUrl: () => Promise.resolve(), revealItemInDir: revealMock }))
 vi.mock('@tauri-apps/api/webview', () => ({ getCurrentWebview: () => ({ onDragDropEvent: () => Promise.resolve(() => {}) }) }))
 
-import type { Login, ModelChoice, ModelOption, Printer, Project, Settings, Toolchain } from '../../sidecar/src/protocol'
+import type { Login, MobilePairing, ModelChoice, ModelOption, PairedDevice, Printer, Project, Settings, Toolchain } from '../../sidecar/src/protocol'
 import type { BambuLastUsed, PrinterChoice, SlicerCheck } from './api'
 import StudioApp from './StudioApp'
 
@@ -71,10 +71,14 @@ let slicerAnswer: (() => Promise<SlicerCheck>) | undefined
 /** When set, printer.set answers only once this settles. */
 let printerSaved: Promise<void> | undefined
 
+const pairing: MobilePairing = { kind: 'ready', url: 'https://computer.tail0000.ts.net:47380/pair?code=abc', svg: '<svg xmlns="http://www.w3.org/2000/svg"/>', expiresMs: 1 }
+const tablet: PairedDevice = { id: 'device-1', name: 'Test iPad', pairedMs: 1 }
+
 function mockApp(machine: Machine = ready, logins: Login[] = claudeOnly, waiting: object | null = null) {
   revealMock.mockResolvedValue(undefined)
-  const store: { settings: Settings; logins: Login[] } = {
+  const store: { settings: Settings; logins: Login[]; devices: PairedDevice[] } = {
     logins,
+    devices: [tablet],
     settings: {
       model: { provider: 'anthropic', modelId: 'claude-opus-5-5' },
       thinking: 'high',
@@ -100,6 +104,12 @@ function mockApp(machine: Machine = ready, logins: Login[] = claudeOnly, waiting
     'projects.status': () => ({}),
     'app.ping': () => ({ version: '1.2.3' }),
     'chat.open': () => ({ project: project.id, entries: [], running: false, waiting, turn: null, seq: 0 }),
+    'mobile.pair': () => pairing,
+    'mobile.devices': () => store.devices,
+    'mobile.forget': (params) => {
+      store.devices = store.devices.filter((device) => device.id !== params.device)
+      return store.devices
+    },
   }
   invokeMock.mockImplementation((command: string, args: { method: string; params: Record<string, unknown> }) => {
     if (command === 'studio_slicer') return slicerAnswer?.() ?? Promise.resolve(machine.slicer)
@@ -129,12 +139,12 @@ async function show(name: string) {
 }
 
 describe('settings', () => {
-  it('opens from the gear on the four sections, without Agent tools', async () => {
+  it('opens from the gear on the five sections, without Agent tools', async () => {
     mockApp()
     render(<StudioApp />)
     await openSettings()
     const nav = within(screen.getByRole('navigation', { name: 'Settings' }))
-    expect(nav.getAllByRole('button').map((item) => item.textContent?.trim())).toEqual(['Agents and models', 'Slicer and printer', 'Build tools', 'Projects folder'])
+    expect(nav.getAllByRole('button').map((item) => item.textContent?.trim())).toEqual(['Agents and models', 'Slicer and printer', 'Build tools', 'Projects folder', 'Phone and tablet'])
     expect(nav.getByRole('button', { name: 'Agents and models' }).getAttribute('aria-current')).toBe('page')
     expect(screen.queryByText(/Agent tools/)).toBeNull()
     expect(screen.queryByTestId('start-screen')).toBeNull()
@@ -330,6 +340,22 @@ describe('settings', () => {
     expect(await within(folder).findByText(FOLDER)).toBeTruthy()
     fireEvent.click(within(folder).getByRole('button', { name: 'Reveal' }))
     expect(revealMock).toHaveBeenCalledWith(FOLDER)
+  })
+
+  it('shows the pairing code as a QR image, and Forget unpairs a device through mobile.forget', async () => {
+    mockApp()
+    render(<StudioApp />)
+    await openSettings()
+    const phone = within(await show('Phone and tablet'))
+    const qr = (await phone.findByRole('img', { name: 'Pairing code' })) as HTMLImageElement
+    expect(qr.getAttribute('src')).toBe(`data:image/svg+xml,${encodeURIComponent(pairing.svg)}`)
+    const row = within(await screen.findByTestId('settings-device'))
+    expect(row.getByText('Test iPad')).toBeTruthy()
+    fireEvent.click(row.getByRole('button', { name: 'Forget' }))
+    await waitFor(() => expect(screen.queryByTestId('settings-device')).toBeNull())
+    const forgets = invokeMock.mock.calls.filter(([command, args]) => command === 'sidecar' && args.method === 'mobile.forget').map(([, args]) => args.params)
+    expect(forgets).toEqual([{ device: tablet.id }])
+    expect(await phone.findByText('No phone or tablet is paired.')).toBeTruthy()
   })
 
   it('Close returns to the project it was opened from', async () => {
