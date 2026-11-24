@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use tauri::http::{header, Method, Request, Response, StatusCode};
 use tauri::{Manager, Runtime, UriSchemeContext, UriSchemeResponder};
+use tokio::sync::watch;
 
 use crate::paired::Paired;
 
@@ -40,12 +41,63 @@ pub fn url(origin: &url::Url, path: &str, query: Option<&str>) -> url::Url {
     url
 }
 
+/// The model download the window wants now. Each model-file read takes the next number, and a newer model read, or
+/// the window leaving the chat, makes the older ones stale. A stale read stops at once and drops its connection, so a
+/// phone on cellular never keeps downloading a preview it will not show.
+pub struct ModelReads(watch::Sender<u64>);
+
+impl Default for ModelReads {
+    fn default() -> Self {
+        ModelReads(watch::channel(0).0)
+    }
+}
+
+impl ModelReads {
+    /// A ticket for a new model read, and the watch that says when it went stale.
+    fn start(&self) -> (u64, watch::Receiver<u64>) {
+        let mut ticket = 0;
+        self.0.send_modify(|current| {
+            *current += 1;
+            ticket = *current;
+        });
+        (ticket, self.0.subscribe())
+    }
+
+    fn stop(&self) {
+        self.0.send_modify(|current| *current += 1);
+    }
+}
+
+/// The window calls this when it leaves a chat, so that chat's model download stops.
+#[tauri::command]
+pub fn stop_model_reads(reads: tauri::State<'_, ModelReads>) {
+    reads.stop();
+}
+
+/// Whether a read fetches a model file, the one kind of read a newer one replaces.
+fn is_model_read(path: &str) -> bool {
+    matches!(path.split('/').skip(1).collect::<Vec<_>>().as_slice(), ["api", "v1", "chats", _, "files", _, ..])
+}
+
 pub fn serve<R: Runtime>(context: UriSchemeContext<'_, R>, request: Request<Vec<u8>>, responder: UriSchemeResponder) {
-    let pairing = context.app_handle().state::<Paired>().current();
+    let app = context.app_handle();
+    let pairing = app.state::<Paired>().current();
+    let model_read = is_model_read(request.uri().path()).then(|| app.state::<ModelReads>().start());
     tauri::async_runtime::spawn(async move {
         let response = match pairing {
             None => text(StatusCode::UNAUTHORIZED, "This device is not paired with a computer.".into()),
-            Some(pairing) => forward(&pairing, request).await.unwrap_or_else(|err| text(StatusCode::BAD_GATEWAY, format!("The computer did not answer. {err}"))),
+            Some(pairing) => {
+                let answer = forward(&pairing, request);
+                let answer = match model_read {
+                    // Dropping the forward stops the download where it is.
+                    Some((ticket, mut current)) => tokio::select! {
+                        answer = answer => answer,
+                        _ = current.wait_for(|now| *now != ticket) => Ok(text(StatusCode::CONFLICT, "A newer model read took this one's place.".into())),
+                    },
+                    None => answer.await,
+                };
+                answer.unwrap_or_else(|err| text(StatusCode::BAD_GATEWAY, format!("The computer did not answer. {err}")))
+            }
         };
         let (mut parts, body) = response.into_parts();
         parts.headers.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, header::HeaderValue::from_static(WINDOW_ORIGIN));
@@ -108,7 +160,7 @@ fn text(status: StatusCode, body: String) -> Response<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{carries_token, url};
+    use super::{carries_token, is_model_read, url, ModelReads};
     use tauri::http::Method;
 
     #[test]
@@ -145,5 +197,26 @@ mod tests {
             assert!(!sent(Method::GET, path), "{path}");
         }
         assert!(!sent(Method::POST, "/api/v1/chats/2026-11-08-cube/send"));
+    }
+
+    #[test]
+    fn a_newer_model_read_or_leaving_the_chat_makes_the_older_read_stale() {
+        let reads = ModelReads::default();
+        let (first, watch_first) = reads.start();
+        assert_eq!(*watch_first.borrow(), first, "a read is current when it starts");
+        let (second, watch_second) = reads.start();
+        assert_ne!(*watch_first.borrow(), first, "a newer read makes the first stale");
+        assert_eq!(*watch_second.borrow(), second);
+        reads.stop();
+        assert_ne!(*watch_second.borrow(), second, "leaving the chat makes the last read stale");
+    }
+
+    #[test]
+    fn only_model_file_reads_replace_each_other() {
+        assert!(is_model_read("/api/v1/chats/2026-11-08-cube/files/cube.stl"));
+        assert!(is_model_read("/api/v1/chats/2026-11-08-cube/files/print/cube.3mf"));
+        for path in ["/api/v1/chats", "/api/v1/chats/2026-11-08-cube", "/api/v1/chats/2026-11-08-cube/files"] {
+            assert!(!is_model_read(path), "{path}");
+        }
     }
 }

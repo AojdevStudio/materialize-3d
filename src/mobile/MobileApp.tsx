@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { cancel, checkPermissions, Format, requestPermissions, scan } from '@tauri-apps/plugin-barcode-scanner'
 import ModelView from '../studio/ModelView'
 import { useWindowTheme } from '../studio/theme'
-import { pairing, PREVIEW_LIMIT, remoteJson, remoteUrl, type Computer } from './remote'
+import { pairing, PREVIEW_LIMIT, remoteJson, remoteUrl, stopModelReads, type Computer } from './remote'
 import { readQrPicture } from './qr'
 import type { ChatEntry, ChatView, MobileChat, ModelFile } from '../../sidecar/src/protocol'
 import '../studio/studio.css'
@@ -209,6 +209,8 @@ function Chat({ chat, onBack }: { chat: MobileChat; onBack: () => void }) {
       },
       (err) => setFilesError(`The model files did not load. ${errorText(err)}`),
     )
+    // A newer model read replaces the last one in Rust. Leaving the chat stops the one still running.
+    return () => void stopModelReads()
   }, [chat.id])
 
   return (

@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "The iPhone and iPad window",
   "webviews": ["main"],
-  "permissions": ["core:default", "allow-paired-computer", "allow-pair", "allow-forget"]
+  "permissions": ["core:default", "allow-paired-computer", "allow-pair", "allow-forget", "allow-stop-model-reads"]
 }

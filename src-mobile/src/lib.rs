@@ -12,8 +12,9 @@ pub fn run() {
     let builder = builder.plugin(tauri_plugin_barcode_scanner::init());
     builder
         .manage(paired::Paired::default())
+        .manage(remote::ModelReads::default())
         .register_asynchronous_uri_scheme_protocol(remote::SCHEME, remote::serve)
-        .invoke_handler(tauri::generate_handler![paired::paired_computer, paired::pair, paired::forget])
+        .invoke_handler(tauri::generate_handler![paired::paired_computer, paired::pair, paired::forget, remote::stop_model_reads])
         .run(tauri::generate_context!())
         .expect("error while running Materialize 3D");
 }

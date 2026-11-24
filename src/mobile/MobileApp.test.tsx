@@ -189,4 +189,18 @@ describe('MobileApp', () => {
   it('refuses the same answer size in Rust as the window does', () => {
     expect(remoteRs).toContain(`const ANSWER_LIMIT: usize = ${PREVIEW_LIMIT / (1024 * 1024)} * 1024 * 1024;`)
   })
+
+  it("stops the chat's model download in Rust when the person leaves the chat", async () => {
+    answer({ paired_computer: computer })
+    computerAnswers(chats, { '/api/v1/chats/desk-clip': () => Response.json(deskClip) })
+    render(<MobileApp />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Desk cable clip' }))
+    await screen.findByText('Make a clip that holds a cable on the edge of my desk.')
+    expect(invoke).not.toHaveBeenCalledWith('stop_model_reads')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Chats' }))
+
+    expect(await screen.findByRole('button', { name: 'Desk cable clip' })).toBeTruthy()
+    expect(invoke).toHaveBeenCalledWith('stop_model_reads')
+  })
 })

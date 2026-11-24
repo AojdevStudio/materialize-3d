@@ -12,6 +12,9 @@ export const pairing = {
   forget: () => invoke<void>('forget'),
 }
 
+/** Stops the model download a chat left behind, in Rust, where the download runs. */
+export const stopModelReads = () => invoke<void>('stop_model_reads')
+
 /**
  * The paired computer's service, through Rust's `m3dremote://` protocol (`src-mobile/src/remote.rs`). Rust adds the
  * device token. iOS serves a custom scheme on `localhost`.
