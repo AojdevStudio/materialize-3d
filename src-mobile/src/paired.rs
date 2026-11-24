@@ -83,8 +83,8 @@ impl Serialize for Error {
     }
 }
 
-/// The pairing in memory, and the number of the newest pairing attempt or Forget. `paired_computer`, which the window
-/// calls first, reads the pairing from the Keychain.
+/// The pairing in memory, and its generation: how many pairings landed and Forgets succeeded. `paired_computer`, which
+/// the window calls first, reads the pairing from the Keychain.
 #[derive(Default)]
 pub struct Paired(RwLock<Option<Pairing>>, AtomicU64);
 
@@ -93,14 +93,33 @@ impl Paired {
         self.0.read().expect("pairing lock").clone()
     }
 
-    /// Starts a pairing attempt, or a Forget, and answers its number. Every one before it is superseded.
-    fn begin(&self) -> u64 {
-        self.1.fetch_add(1, Ordering::SeqCst) + 1
+    /// The generation a pairing attempt starts from.
+    fn generation(&self) -> u64 {
+        self.1.load(Ordering::SeqCst)
     }
 
-    /// Whether `attempt` is still the newest. Read under the pairing lock, so no attempt can start in between.
-    fn is_newest(&self, attempt: u64) -> bool {
-        self.1.load(Ordering::SeqCst) == attempt
+    /// Lands a pairing that started at `generation`. Under the pairing lock, `save` keeps it, and it becomes the current
+    /// pairing. A pairing that landed, or a Forget that succeeded, since the attempt started supersedes it, and then
+    /// nothing changes, so a pairing that finishes late never sweeps away the drafts of the one that took its place. An
+    /// attempt that was refused supersedes nothing, so a second scan of a spent code leaves the first to land.
+    fn land(&self, generation: u64, pairing: Pairing, save: impl FnOnce(&Pairing) -> Result<(), Error>) -> Result<(), Error> {
+        let mut current = self.0.write().expect("pairing lock");
+        if self.generation() != generation {
+            return Err(Error::Superseded);
+        }
+        save(&pairing)?;
+        self.1.fetch_add(1, Ordering::SeqCst);
+        *current = Some(pairing);
+        Ok(())
+    }
+
+    /// Forgets the pairing once `delete` takes it out of the Keychain, and answers it. A `delete` that fails changes
+    /// nothing. One that succeeds supersedes every pairing still on its way.
+    fn forget(&self, delete: impl FnOnce() -> Result<(), Error>) -> Result<Option<Pairing>, Error> {
+        let mut current = self.0.write().expect("pairing lock");
+        delete()?;
+        self.1.fetch_add(1, Ordering::SeqCst);
+        Ok(current.take())
     }
 }
 
@@ -161,7 +180,7 @@ pub fn paired_computer(paired: tauri::State<'_, Paired>, drafts: tauri::State<'_
 /// other pairing.
 #[tauri::command]
 pub async fn pair(link: String, device: String, paired: tauri::State<'_, Paired>, drafts: tauri::State<'_, Drafts>) -> Result<Computer, Error> {
-    let attempt = paired.begin();
+    let generation = paired.generation();
     let (origin, code) = parse_link(&link)?;
     let reply = crate::remote::client()
         .post(crate::remote::url(&origin, "/api/v1/pair", None))
@@ -176,31 +195,22 @@ pub async fn pair(link: String, device: String, paired: tauri::State<'_, Paired>
     let pairing = Pairing { origin, name: grant.computer.name, token: grant.token };
     let computer = Computer::from(&pairing);
     // The Keychain and memory change together, so two scans that finish out of order leave one pairing in both.
-    let mut current = paired.0.write().expect("pairing lock");
-    // A pairing that finishes after a newer one started, as when a reloaded window pairs again, or after a Forget,
-    // changes nothing, so it can never sweep away the drafts of the pairing that took its place.
-    if !paired.is_newest(attempt) {
-        return Err(Error::Superseded);
-    }
-    entry()?.set_password(&serde_json::to_string(&pairing)?)?;
-    drafts.sweep(Some(&pairing.id()));
-    *current = Some(pairing);
+    paired.land(generation, pairing, |pairing| {
+        entry()?.set_password(&serde_json::to_string(pairing)?)?;
+        drafts.sweep(Some(&pairing.id()));
+        Ok(())
+    })?;
     Ok(computer)
 }
 
 /// Forgets the computer: its credential, its link, and every draft written for its chats.
 #[tauri::command]
 pub fn forget(paired: tauri::State<'_, Paired>, drafts: tauri::State<'_, Drafts>, watcher: tauri::State<'_, Watcher>) -> Result<(), Error> {
-    let mut current = paired.0.write().expect("pairing lock");
     // The credential goes first, so an error leaves the pairing and its drafts as they were, and the window goes on with them.
-    match entry()?.delete_credential() {
-        Ok(()) | Err(keyring::Error::NoEntry) => {}
-        Err(err) => return Err(err.into()),
-    }
-    let forgotten = current.take();
-    // A pairing still on its way when the person forgot the computer changes nothing when it lands.
-    paired.begin();
-    drop(current);
+    let forgotten = paired.forget(|| match entry()?.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(err) => Err(err.into()),
+    })?;
     watcher.stop();
     if let Some(forgotten) = forgotten {
         drafts.remove(&forgotten.id());
@@ -212,16 +222,60 @@ pub fn forget(paired: tauri::State<'_, Paired>, drafts: tauri::State<'_, Drafts>
 mod tests {
     use super::*;
 
+    fn pairing(token: &str) -> Pairing {
+        Pairing { origin: Url::parse("https://studio.tail1234.ts.net:47380/").expect("an origin"), name: "Studio Mac".into(), token: token.into() }
+    }
+
+    fn token(paired: &Paired) -> Option<String> {
+        paired.current().map(|pairing| pairing.token)
+    }
+
     #[test]
-    fn only_the_newest_pairing_attempt_may_land() {
+    fn a_pairing_that_finishes_after_a_newer_one_landed_changes_nothing() {
         let paired = Paired::default();
-        let first = paired.begin();
-        let second = paired.begin();
-        assert!(!paired.is_newest(first), "a pairing a newer one replaced");
-        assert!(paired.is_newest(second));
-        // Forget starts its own number, so a pairing still on its way lands as nothing.
-        paired.begin();
-        assert!(!paired.is_newest(second), "a pairing that a Forget overtook");
+        let first = paired.generation();
+        let second = paired.generation();
+        paired.land(second, pairing("token-b"), |_| Ok(())).expect("the newer pairing lands");
+        let mut saved = false;
+        let late = paired.land(first, pairing("token-a"), |_| {
+            saved = true;
+            Ok(())
+        });
+        assert!(matches!(late, Err(Error::Superseded)));
+        assert!(!saved, "the late pairing reached the Keychain and the drafts");
+        assert_eq!(token(&paired), Some("token-b".into()));
+    }
+
+    #[test]
+    fn a_refused_second_scan_leaves_the_first_pairing_to_land() {
+        let paired = Paired::default();
+        let first = paired.generation();
+        // A second scan of the same code starts, and the computer refuses it, so it never lands.
+        let _second = paired.generation();
+        paired.land(first, pairing("token-a"), |_| Ok(())).expect("the first pairing lands");
+        assert_eq!(token(&paired), Some("token-a".into()));
+    }
+
+    #[test]
+    fn a_pairing_on_its_way_when_forget_succeeds_changes_nothing() {
+        let paired = Paired::default();
+        paired.land(paired.generation(), pairing("token-a"), |_| Ok(())).expect("a pairing");
+        let on_its_way = paired.generation();
+        let forgotten = paired.forget(|| Ok(())).expect("a forget");
+        assert_eq!(forgotten.map(|pairing| pairing.token), Some("token-a".into()));
+        assert!(matches!(paired.land(on_its_way, pairing("token-b"), |_| Ok(())), Err(Error::Superseded)));
+        assert_eq!(token(&paired), None);
+    }
+
+    #[test]
+    fn a_forget_whose_keychain_delete_fails_changes_nothing() {
+        let paired = Paired::default();
+        paired.land(paired.generation(), pairing("token-a"), |_| Ok(())).expect("a pairing");
+        let on_its_way = paired.generation();
+        assert!(paired.forget(|| Err(Error::Superseded)).is_err());
+        assert_eq!(token(&paired), Some("token-a".into()));
+        // Nothing was forgotten, so a pairing on its way still lands.
+        paired.land(on_its_way, pairing("token-b"), |_| Ok(())).expect("the pairing lands");
     }
 
     #[test]
