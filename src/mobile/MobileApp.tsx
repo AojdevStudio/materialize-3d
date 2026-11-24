@@ -155,18 +155,25 @@ function Paired({ computer, onForget }: { computer: Computer; onForget: () => vo
   const [chats, setChats] = useState<MobileChat[] | null>(null)
   const [open, setOpen] = useState<MobileChat | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [tries, setTries] = useState(0)
+  const [loads, setLoads] = useState(0)
+  const reload = () => setLoads((n) => n + 1)
 
+  // The list reads the computer again each time it shows, after a chat or Refresh, so a chat made on the computer
+  // meanwhile appears.
   useEffect(() => {
+    if (open !== null) return
     setError(null)
     remoteJson<MobileChat[]>(api('/chats')).then(setChats, (err) => setError(errorText(err)))
-  }, [computer.origin, tries])
+  }, [computer.origin, loads, open])
 
   if (open !== null) return <Chat chat={open} onBack={() => setOpen(null)} />
   return (
     <section className="mobile-chats">
       <header className="mobile-bar">
         <h1>{computer.name}</h1>
+        <button type="button" className="mobile-link" onClick={reload}>
+          Refresh
+        </button>
         <button type="button" className="mobile-link" onClick={onForget}>
           Forget
         </button>
@@ -174,7 +181,7 @@ function Paired({ computer, onForget }: { computer: Computer; onForget: () => vo
       {error && (
         <p className="mobile-error">
           {error}{' '}
-          <button type="button" className="mobile-link" onClick={() => setTries((n) => n + 1)}>
+          <button type="button" className="mobile-link" onClick={reload}>
             Try again
           </button>
         </p>

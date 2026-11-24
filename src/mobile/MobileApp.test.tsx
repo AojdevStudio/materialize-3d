@@ -216,4 +216,21 @@ describe('MobileApp', () => {
     expect(await screen.findByRole('button', { name: 'Desk cable clip' })).toBeTruthy()
     expect(stops()).toBe(2)
   })
+
+  it('shows a chat made on the computer meanwhile, after a chat and after Refresh', async () => {
+    answer({ paired_computer: computer })
+    let listed = [{ id: 'desk-clip', title: 'Desk cable clip' }]
+    computerAnswers(() => Response.json(listed), { '/api/v1/chats/desk-clip': () => Response.json(deskClip) })
+    render(<MobileApp />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Desk cable clip' }))
+    await screen.findByText('Make a clip that holds a cable on the edge of my desk.')
+
+    listed = [{ id: 'hook', title: 'Wall hook' }, ...listed]
+    fireEvent.click(screen.getByRole('button', { name: 'Chats' }))
+    expect(await screen.findByRole('button', { name: 'Wall hook' })).toBeTruthy()
+
+    listed = [{ id: 'stand', title: 'Phone stand' }, ...listed]
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))
+    expect(await screen.findByRole('button', { name: 'Phone stand' })).toBeTruthy()
+  })
 })
