@@ -55,6 +55,10 @@ The phone calls the service from Rust, not from its web view, so the service sen
 - Name a file on the computer. A phone draft takes uploaded pictures only, never a path. A file read stays inside the project folder, takes model files only, skips the app's own records, and follows no link.
 - Overwrite the computer's unsent message. Each device keeps its own draft for a chat, apart from the desktop's.
 
+### Who is trusted with the chat folder
+
+The phone is not trusted. It names a chat and a path inside it, and nothing else. The person and their agent are trusted with the chat folder: either can already copy any file into it for the phone to read. So the file rules stop the phone, and they do not try to stop a local writer. Node and Bun have no `openat`, so a walk or a read cannot hold a folder open while it resolves the next name. Each folder is read, and each file opened, only while its real path matches its name, and a read checks the file it opened again after the open. A local writer who swaps a folder twice within that window can still redirect one read. That writer gains nothing it could not get with a copy.
+
 ## Consequences
 
 - A person sets up Tailscale Serve once with the command above. Settings shows that command until Serve forwards to the service.

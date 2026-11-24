@@ -244,9 +244,13 @@ export type Computer = { id: string; name: string; version: string }
 
 /**
  * Where pairing a phone stands. `ready` shows a QR image of `url`, whose code works once until `expiresMs`. `setup`
- * names the command that makes Tailscale Serve forward to the phone service. `off` says why no phone can reach it.
+ * names the command that makes Tailscale Serve forward to the phone service, and `reason` says why the Serve already
+ * set up does not do. `off` says why no phone can reach it.
  */
-export type MobilePairing = { kind: 'ready'; url: string; svg: string; expiresMs: number } | { kind: 'setup'; command: string } | { kind: 'off'; detail: string }
+export type MobilePairing =
+  | { kind: 'ready'; url: string; svg: string; expiresMs: number }
+  | { kind: 'setup'; command: string; reason?: string }
+  | { kind: 'off'; detail: string }
 
 /** A chat as the phone lists it: its pair and its status. */
 export type MobileChat = { id: string; title: string; createdMs: number; lead: ModelChoice; helper: ModelChoice | null; status: ProjectStatus }

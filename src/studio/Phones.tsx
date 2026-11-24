@@ -58,7 +58,7 @@ export default function Phones({ onError }: { onError: (message: string) => void
         )}
         {pairing?.kind === 'setup' && (
           <>
-            <p className="setup-detail">Let Tailscale reach this app once. Run this in Terminal, then check again.</p>
+            <p className="setup-detail">{pairing.reason ?? 'Let Tailscale reach this app once.'} Run this in Terminal, then check again.</p>
             <div className="settings-folder">
               <code>{pairing.command}</code>
             </div>

@@ -5,7 +5,7 @@
  * phone only `chat` and `project` events.
  */
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
-import { closeSync, constants, createReadStream, existsSync, fstatSync, lstatSync, openSync, readdirSync, realpathSync, statSync } from 'node:fs'
+import { closeSync, constants, createReadStream, existsSync, fstatSync, lstatSync, openSync, readdirSync, realpathSync } from 'node:fs'
 import { hostname } from 'node:os'
 import { extname, join } from 'node:path'
 import { Readable } from 'node:stream'
@@ -219,18 +219,30 @@ const json = (value: unknown) => Response.json(value)
 /** The model files in a project folder, newest first. Names the file list skips, and links, are left out. */
 function modelFiles(root: string): ModelFile[] {
   const files: ModelFile[] = []
-  const walk = (rel: string) => {
-    for (const entry of readdirSync(join(root, rel), { withFileTypes: true })) {
+  // A folder is read, and a file measured, only while its real path is the one its name spells, so a folder swapped for
+  // a link during the walk is passed over, not followed. One removed meanwhile is passed over too.
+  const here = (path: string) => {
+    try {
+      return realpathSync.native(path) === path
+    } catch (error) {
+      if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return false
+      throw error
+    }
+  }
+  const walk = (dir: string, rel: string) => {
+    if (!here(dir)) return
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
       if (skipped(entry.name)) continue
-      const path = rel === '' ? entry.name : `${rel}/${entry.name}`
-      if (entry.isDirectory()) walk(path)
+      const path = join(dir, entry.name)
+      const name = rel === '' ? entry.name : `${rel}/${entry.name}`
+      if (entry.isDirectory()) walk(path, name)
       else if (entry.isFile() && MODEL_TYPES[extname(entry.name).toLowerCase()] !== undefined) {
-        const { size, mtimeMs } = statSync(join(root, path))
-        files.push({ rel: path, size, modifiedMs: mtimeMs })
+        const found = lstatSync(path, { throwIfNoEntry: false })
+        if (found?.isFile() === true && here(path)) files.push({ rel: name, size: found.size, modifiedMs: found.mtimeMs })
       }
     }
   }
-  walk('')
+  walk(root, '')
   return files.sort((a, b) => b.modifiedMs - a.modifiedMs)
 }
 
@@ -243,7 +255,7 @@ const pairs = compile(obj({ code: str(), name: str({ minLength: 1, maxLength: 10
 export class Mobile {
   readonly #o: MobileOptions
   readonly #pairing: Pairing
-  readonly #listening: { on: true; server: Server<undefined> } | { on: false; detail: string }
+  readonly #listening: { on: true; server: Server<undefined>; port: number } | { on: false; detail: string }
 
   constructor(options: MobileOptions) {
     this.#o = options
@@ -279,7 +291,9 @@ export class Mobile {
           }
         },
       })
-      this.#listening = { on: true, server }
+      // A server on a host and port always has its port. Bun's type also covers a Unix socket, which has none.
+      if (server.port === undefined) throw new Error('it has no port')
+      this.#listening = { on: true, server, port: server.port }
     } catch (error) {
       const detail = `The phone service could not listen on port ${options.port}: ${error instanceof Error ? error.message : String(error)}. Another copy of the app may be serving phones.`
       console.error(detail)
@@ -379,7 +393,8 @@ export class Mobile {
           }
           // The bytes stream from the file opened here, checked to be the one named, so a swap after the check serves
           // nothing, and a large model is never held in memory whole. The stream closes the file when it ends.
-          const fd = openSync(named, constants.O_RDONLY | constants.O_NOFOLLOW)
+          // Opened without waiting, so a pipe put in the file's place cannot hold the sidecar before the check refuses it.
+          const fd = openSync(named, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
           try {
             const opened = fstatSync(fd)
             const there = lstatSync(named)
@@ -425,7 +440,7 @@ export class Mobile {
    */
   async pair(): Promise<MobilePairing> {
     if (!this.#listening.on) return { kind: 'off', detail: this.#listening.detail }
-    const port = this.#listening.server.port
+    const { port } = this.#listening
     const cli = Bun.which('tailscale') ?? (existsSync(MAC_TAILSCALE) ? MAC_TAILSCALE : undefined)
     if (cli === undefined) return { kind: 'off', detail: 'Tailscale is not installed on this computer. Install it, sign in, and try again.' }
     // The Mac app's own executable answers as the command line only when told to, and the sidecar's shell gives no hint.
@@ -439,15 +454,25 @@ export class Mobile {
     const portOf = (served: string) => served.slice(served.lastIndexOf(':') + 1)
     // An address the QR can name takes HTTPS, and sends every path to this service, so no other mount Tailscale prefers
     // takes the pairing code or a device's token. A plain HTTP listener, or one shared with other paths, is passed over.
-    const ours = Object.entries(status.Web ?? {}).flatMap(([at, web]) => {
-      const handlers = Object.entries(web.Handlers ?? {})
-      return status.TCP?.[portOf(at)]?.HTTPS === true && handlers.length === 1 && handlers[0]?.[0] === '/' && forwards.includes(handlers[0][1].Proxy ?? '') ? [at] : []
-    })
+    const https = Object.entries(status.Web ?? {}).filter(([at, web]) => status.TCP?.[portOf(at)]?.HTTPS === true && forwards.includes(web.Handlers?.['/']?.Proxy ?? ''))
+    const ours = https.flatMap(([at, web]) => (Object.keys(web.Handlers ?? {}).length === 1 ? [at] : []))
     // A private address wins over a public one, in whatever order Serve lists them.
     const served = ours.find((at) => status.AllowFunnel?.[at] !== true)
     const [open] = ours
     if (served === undefined && open !== undefined) {
       return { kind: 'off', detail: `Tailscale Funnel makes ${open} public on the internet. Turn Funnel off for it with ${tailscale} funnel --https=${portOf(open)} off, then check again.` }
+    }
+    // An address that sends other paths elsewhere too cannot be fixed by setting its `/` again, since Serve changes only the
+    // mount it is given. The phone service gets an HTTPS port of its own instead.
+    const [shared] = https
+    if (served === undefined && shared !== undefined) {
+      const taken = new Set(Object.keys(status.TCP ?? {}))
+      const free = Array.from({ length: 100 }, (_, n) => port + n).find((candidate) => !taken.has(String(candidate)))
+      return {
+        kind: 'setup',
+        reason: `Serve on ${shared[0]} also sends other paths to other services, so a phone could reach the wrong one. Give this app an HTTPS port of its own.`,
+        command: `${tailscale} serve --bg --https=${free} http://127.0.0.1:${port}`,
+      }
     }
     if (served === undefined) return { kind: 'setup', command: `${tailscale} serve --bg --https=${port} http://127.0.0.1:${port}` }
     const { code, expiresMs } = this.#pairing.issue()

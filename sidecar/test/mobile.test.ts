@@ -163,7 +163,9 @@ describe('pairing', () => {
     const served = forwarding(port)
     const key = `${HOST}:${port}`
     setServe({ ...served, Web: { ...served.Web, [key]: { Handlers: { '/': { Proxy: `http://127.0.0.1:${port}` }, '/api/': { Proxy: 'http://127.0.0.1:9' } } } } })
-    expect((await pairing(app)).kind).toBe('setup')
+    // Setting `/` again on that port cannot help, so the command names a port of the app's own, which nothing serves.
+    const shared = await pairing(app)
+    expect(shared).toEqual({ kind: 'setup', reason: expect.stringContaining('other services'), command: `tailscale serve --bg --https=${port + 1} http://127.0.0.1:${port}` })
     // Funnel makes the address public, so no code is shown for it.
     setServe({ ...served, AllowFunnel: { [key]: true } })
     const funnel = await pairing(app)
