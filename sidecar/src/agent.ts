@@ -264,8 +264,8 @@ export interface AgentHost {
   printer(): Promise<Printer>
   /** The helper model the turn of `conversation` froze when it was sent. */
   helperOf(conversation: number): Promise<ModelChoice>
-  /** Records that `model`'s provider removed it. */
-  retired(model: ModelChoice): Promise<void>
+  /** Records that a provider reported `model` removed while it ran as the helper of `conversation`'s turn. */
+  retired(conversation: number, model: ModelChoice): Promise<void>
 }
 
 /**
@@ -407,7 +407,7 @@ export function agentTools({ host, projectOf, signedIn, loginSaves, printer, hel
         const modelError = settled.reason === 'model_error'
         if (!modelError || !isLoginFailure(detail)) {
           if (modelError && isRetired(detail)) {
-            await retired(model)
+            await retired(api.conversationId, model)
             return { output: text(`${name}, the helper model, was retired by its provider.`), isError: true }
           }
           return { output: text(`Helper ${name} failed (${settled.reason}${detail === '' ? '' : `: ${detail}`}).`), isError: true }

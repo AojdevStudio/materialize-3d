@@ -113,7 +113,7 @@ function mockApp(setup: Setup, machine: Machine, overrides: Calls = {}) {
     'setup.tools': () => machine.toolchain,
     'auth.status': () => store.logins,
     'setup.check': () => [],
-    'models.list': () => offered(CATALOG, {}).filter((model) => store.logins.some((login) => login.provider === model.provider && login.login !== null)),
+    'models.list': () => offered(CATALOG).filter((model) => store.logins.some((login) => login.provider === model.provider && login.login !== null)),
     'projects.status': () => ({}),
     'app.ping': () => ({ version: '1.2.3' }),
   }

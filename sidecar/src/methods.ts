@@ -66,9 +66,9 @@ export function handlers({ host, store, models, logins, chats, version, legacy, 
     'setup.check': {
       params: compile(obj({ project: opt(str()) })),
       run: async ({ project }) => {
-        const pair = await store.pairFor(project)
-        const replace = store.retiredRoles(pair, await store.retired()).map((retired): Need => ({ kind: 'model', fix: store.retiredFix(retired), retired }))
-        return [...replace, ...(await logins.needsFor(pair.lead)), ...(await toolchainNeeds())]
+        const retired = project === undefined ? [] : await store.retiredFor(project)
+        const replace = retired.map((r): Need => ({ kind: 'model', fix: store.retiredFix(r), retired: r }))
+        return [...replace, ...(await logins.needsFor((await store.pairFor(project)).lead)), ...(await toolchainNeeds())]
       },
     },
     'setup.tools': { params: compile(obj({})), run: () => toolchain() },
@@ -129,7 +129,7 @@ export function handlers({ host, store, models, logins, chats, version, legacy, 
         return null
       },
     },
-    'models.list': { params: compile(obj({})), run: async () => logins.runnable(offered(store.catalog, await store.retired())) },
+    'models.list': { params: compile(obj({})), run: () => logins.runnable(offered(store.catalog)) },
     'projects.setLead': {
       params: compile(obj({ project: str(), model })),
       run: async ({ project, model }) => {

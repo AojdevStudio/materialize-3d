@@ -103,6 +103,9 @@ describe('a refused request', () => {
     expect(isRetired('503 the model was deprecated from this region for now, try again')).toBe(false)
     expect(isRetired('429 rate limit reached for model gpt-6.1-sol')).toBe(false)
     expect(isRetired("The model 'gpt-6.1-sol' was removed from your plan's access")).toBe(false)
+    // A request the model refuses, such as a parameter it dropped, is not one either.
+    expect(isRetired('400 invalid_request_error: temperature is no longer supported for this model')).toBe(false)
+    expect(isRetired('400 invalid_request_error: the model claude-opus-5-5 no longer supports the temperature parameter')).toBe(false)
   })
 })
 

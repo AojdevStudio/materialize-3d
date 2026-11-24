@@ -122,6 +122,28 @@ describe('a pair', () => {
     await app.quit()
   })
 
+  test('a start-screen send with the Astra switch off reads no ChatGPT login, so a slow Keychain never holds it', async () => {
+    const where = scratch()
+    // The ChatGPT login read never answers, as a Keychain that waits on the person.
+    const app = spawnSidecar(where.data, where.projects, where.keychain, {
+      script: 'models',
+      env: where.env,
+      hold: (request, answer) => {
+        if (request.method === 'keychain.get' && (request.params as { account: string }).account === 'openai-codex') return
+        answer()
+      },
+    })
+    await app.next()
+    await app.call('settings.set', { model: FAUX_A, astra: false })
+    const sent = app.sendDraft('new', 'which model?')
+    const result = await Promise.race([sent.then(() => 'sent'), Bun.sleep(10_000).then(() => 'held')])
+    expect(result).toBe('sent')
+    const { project: id } = await sent
+    await answered(app, id, 'answered by faux-a')
+    expect(await projectIn(app, id)).toMatchObject({ model: FAUX_A, helper: null })
+    app.child.kill('SIGKILL')
+  }, 30_000)
+
   test('is frozen for its turn: an edit and a crash before the helper runs leave the turn on its pair, and the next message takes the edit', async () => {
     const where = scratch()
     const first = await start(where, 'wait-then-helper')
@@ -263,6 +285,9 @@ describe('the catalog', () => {
   /** What `setup.check` names for the project's models: their sign-ins and replacements, not the build tools. */
   const needs = async (app: App, id: string) =>
     ((await app.call('setup.check', { project: id })) as Need[]).filter((need) => need.kind === 'model' || need.kind === 'login')
+  /** The roles `setup.check` names as retired in this chat. */
+  const retiredRoles = async (app: App, id: string) =>
+    ((await app.call('setup.check', { project: id })) as Need[]).flatMap((need) => (need.kind === 'model' && need.retired !== undefined ? [need.retired.role] : []))
 
   test("offers a family's newest version, while a chat saved on an older one keeps it until its provider retires it", async () => {
     const where = scratch()
@@ -288,7 +313,6 @@ describe('the catalog', () => {
     expect(await needs(second, id)).toContainEqual({ kind: 'model', fix, retired: { role: 'lead', model: SOL_6_1, replacement: SOL_6_3 } })
     expect(((await second.call('models.list')) as ModelChoice[]).map((m) => m.modelId)).toEqual(['gpt-6.3-sol', 'gpt-6-astra'])
     await expect(second.call('chat.retry', { project: id })).rejects.toThrow(fix)
-    await expect(second.call('projects.setLead', { project: id, model: SOL_6_1 })).rejects.toThrow('GPT 6.1 Sol was retired by its provider.')
 
     await second.call('projects.setLead', { project: id, model: SOL_6_3 })
     await second.call('chat.retry', { project: id })
@@ -299,32 +323,6 @@ describe('the catalog', () => {
     expect(answers(after.entries).map((entry) => entry.model.modelId)).toEqual(['gpt-6.1-sol', 'gpt-6.1-sol', 'gpt-6.3-sol'])
     await second.quit()
   }, 60_000)
-
-  test('a retry of a turn that failed for another reason waits for a new lead once any chat found its lead retired', async () => {
-    const where = scratch()
-    where.keychain.set('openai-codex', CODEX_KEY)
-    const first = await start(where, 'fails-after')
-    const failed = await project(first, FAUX_A, null)
-    await first.call('projects.setLead', { project: failed, model: SOL_6_1 })
-    await first.sendDraft(failed, 'go')
-    while (!existsSync(join(where.projects, failed, 'started'))) await Bun.sleep(25)
-    writeFileSync(join(where.projects, failed, 'go'), '')
-    await first.until((event) => event.type === 'chat' && event.project === failed && event.waiting !== null, 60_000)
-    await first.quit()
-
-    // Another chat finds 6.1 retired.
-    const second = await start(where, 'models', { M3D_RETIRED: 'gpt-6.1-sol' })
-    const other = await project(second, FAUX_A, null)
-    await second.call('projects.setLead', { project: other, model: SOL_6_1 })
-    await second.sendDraft(other, 'go')
-    await second.until((event) => event.type === 'chat' && event.project === other && (event.waiting as { retired?: unknown } | null)?.retired !== undefined)
-
-    await expect(second.call('chat.retry', { project: failed })).rejects.toThrow('GPT 6.1 Sol, the lead model, was retired. Choose GPT 6.3 Sol or another lead model.')
-    await second.call('projects.setLead', { project: failed, model: SOL_6_3 })
-    await second.call('chat.retry', { project: failed })
-    await answered(second, failed, 'answered by gpt-6.3-sol')
-    await second.quit()
-  }, 120_000)
 
   test('a retired helper fails its call, then holds the next message until the person replaces it or turns it off', async () => {
     const where = scratch()
@@ -339,31 +337,27 @@ describe('the catalog', () => {
     const { rev } = (await app.call('drafts.set', { key: id, text: 'once more', attachments: [] })) as { rev: number }
     await expect(app.call('chat.send', { key: id, rev })).rejects.toThrow(fix)
 
+    // The removal holds this chat only: the list still offers every family, and another chat on 6.1 sends.
+    const other = await project(app, FAUX_A, SOL_6_1)
+    expect(await retiredRoles(app, other)).toEqual([])
+    expect(((await app.call('models.list')) as ModelChoice[]).map((m) => m.modelId)).toEqual(['gpt-6.3-sol', 'gpt-6-astra'])
+
     await app.call('projects.setHelper', { project: id, model: null })
     await app.call('chat.send', { key: id, rev })
     expect((await view(app, id)).turn).toMatchObject({ model: FAUX_A, helper: null })
     await app.quit()
   }, 60_000)
 
-  test('keeps a start-screen draft on the start screen when its lead was found retired, until the person picks another', async () => {
+  test('lets a chat go on with the same version once the person chooses it again, as after a misread removal', async () => {
     const where = scratch()
     where.keychain.set('openai-codex', CODEX_KEY)
-    const app = await start(where, 'models', { M3D_RETIRED: 'gpt-6.1-sol' })
-    const other = await project(app, FAUX_A, null)
-    await app.call('projects.setLead', { project: other, model: SOL_6_1 })
-    await app.sendDraft(other, 'go')
-    await app.until((event) => event.type === 'chat' && event.project === other && (event.waiting as { retired?: unknown } | null)?.retired !== undefined)
-
-    await app.call('settings.set', { model: SOL_6_1 })
-    const { rev } = (await app.call('drafts.set', { key: 'new', text: 'a bracket', attachments: [] })) as { rev: number }
-    await expect(app.call('chat.send', { key: 'new', rev })).rejects.toThrow('GPT 6.1 Sol, the lead model, was retired. Choose GPT 6.3 Sol or another lead model.')
-    const before = (await app.call('state.get')) as AppState
-    expect(before.drafts.new).toMatchObject({ text: 'a bracket', rev })
-    expect(before.projects).toHaveLength(1)
-
-    await app.call('settings.set', { model: SOL_6_3 })
-    const { project: made } = (await app.call('chat.send', { key: 'new', rev })) as { project: Project }
-    expect(made).toMatchObject({ title: 'a bracket', model: SOL_6_3 })
+    const app = await start(where, 'helper', { M3D_RETIRED: 'gpt-6.1-sol' })
+    const id = await project(app, FAUX_A, SOL_6_1)
+    await app.sendDraft(id, 'go')
+    await answered(app, id, 'parent saw: GPT 6.1 Sol, the helper model, was retired by its provider.')
+    expect(await retiredRoles(app, id)).toEqual(['helper'])
+    await app.call('projects.setHelper', { project: id, model: SOL_6_1 })
+    expect(await retiredRoles(app, id)).toEqual([])
     await app.quit()
   }, 60_000)
 

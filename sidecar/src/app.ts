@@ -54,7 +54,7 @@ export async function runSidecar({ argv, addProviders, catalog }: SidecarOptions
     loginSaves: async (provider) => (await opened.promise).store.loginSaves(provider),
     printer: async () => (await opened.promise).store.printer(),
     helperOf: async (conversation) => (await opened.promise).chats.helperOf(conversation),
-    retired: async (model) => (await opened.promise).chats.retired(model),
+    retired: async (conversation, model) => (await opened.promise).chats.retired(conversation, model),
   })
   const extension = agentExtension(tools)
   registry.install(extension)

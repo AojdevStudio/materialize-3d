@@ -66,17 +66,15 @@ const LOGIN_FAILURE = /not configured|\b401\b|unauthori[sz]ed|authentication|inv
 export const isLoginFailure = (detail: string) => LOGIN_FAILURE.test(detail)
 
 /**
- * A provider's answer that confirms the model version itself was removed, not that the request failed for now. A
- * retired version is hidden from every chat, so the answer must say the model was removed and say nothing of a failure
- * for now or of access. Not found alone is not enough: a provider answers so for a model this account lacks, which
- * another account or a later sign-in can change. Such an answer waits for a retry with its detail shown, and the person
- * can choose another model.
+ * A provider's answer that says the model version itself was removed, not that the request failed for now. The line
+ * must name the model, then say it was removed, and say nothing of a failure for now, of access, or of a
+ * parameter. Not found alone is not enough: a provider answers so for a model this account lacks. A misread answer
+ * costs little, since the removal holds only that role of that chat until the person chooses again.
  */
-const REMOVED = /\b(deprecated|retired|decommissioned|removed|no longer (available|supported))\b/i
-const NAMES_MODEL = /\bmodel\b/i
-const NOT_REMOVAL = /\b(5\d\d|429)\b|overload|rate.?limit|timed? ?out|temporar|access|permission/i
+const MODEL_REMOVED = /\bmodel\b[^\n]{0,80}?\b(deprecated|retired|decommissioned|removed|no longer (available|supported))\b/i
+const NOT_REMOVAL = /\b(5\d\d|429)\b|overload|rate.?limit|timed? ?out|temporar|access|permission|parameter|argument|field|option|feature/i
 
-export const isRetired = (detail: string) => REMOVED.test(detail) && NAMES_MODEL.test(detail) && !NOT_REMOVAL.test(detail)
+export const isRetired = (detail: string) => MODEL_REMOVED.test(detail) && !NOT_REMOVAL.test(detail)
 
 /** A Keychain item as this app writes it, or undefined for any other text, which counts as signed out. */
 function savedLogin(secret: string): Credential | undefined {

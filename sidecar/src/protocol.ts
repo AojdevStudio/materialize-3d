@@ -12,7 +12,10 @@ export type ModelChoice = { provider: string; modelId: string }
 /** The two parts a model plays in a chat: the lead answers the person, and the helper takes tasks the lead hands it. */
 export type Role = 'lead' | 'helper'
 
-/** A model version its provider removed, the role it held, and the newest version of its family still offered. */
+/**
+ * A model version a provider reported removed while a chat ran it, the role it held there, and the newest version of its
+ * family, or null when that is the removed one.
+ */
 export type Retired = { role: Role; model: ModelChoice; replacement: ModelChoice | null }
 
 /** A model the picker offers, with the short name the app shows and one line on what it suits. */
@@ -52,9 +55,19 @@ export type Settings = {
  * `conversation` is the project's Pi conversation id. `printed` is set once the person marks the project printed.
  * `model` is the lead model the project's next turn runs on, and `helper` the helper model that turn can hand tasks to,
  * or null when the lead works alone. A project gets the start screen's pair when it is made. A project from before
- * pairs gets the lead it ran on and the helper the Astra setting gave it.
+ * pairs gets the lead it ran on and the helper the Astra setting gave it. `retired` holds each role whose version a
+ * provider reported removed in this chat, until the person chooses that role again.
  */
-export type Project = { id: string; conversation: number; title: string; createdMs: number; printed?: boolean; model: ModelChoice; helper: ModelChoice | null }
+export type Project = {
+  id: string
+  conversation: number
+  title: string
+  createdMs: number
+  printed?: boolean
+  model: ModelChoice
+  helper: ModelChoice | null
+  retired?: Retired[]
+}
 
 /**
  * What the sidebar groups a project by. `printFiles` counts the `.3mf` files in its folder, outside `refs/`. `lastMs` is

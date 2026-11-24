@@ -29,7 +29,7 @@ import type { Busy } from './busy'
 import { type SentMessage, UserMessage } from './entries'
 import { folderSummary } from './folder'
 import { copyAttachments } from './pictures'
-import { modelName, newest, replacementFor, versionKey } from './offered'
+import { modelName, newest } from './offered'
 import {
   ASTRA,
   ASTRA_MODEL,
@@ -275,7 +275,8 @@ export class Chats {
 
   /**
    * Reads why a run stopped: a provider with no login, or a refused one, waits for a sign-in. A lead its provider
-   * confirmed removed is recorded retired, and waits for the person to choose another. Anything else waits for a retry.
+   * reported removed is recorded retired in this chat, and waits for the person to choose a lead again. Anything else
+   * waits for a retry.
    * Resolves true when the login was missing or refused but a newer one was saved since the turn went out, so the
    * wait can be let go at once. The login read here may be older than that save, so only the save count, read in the
    * commit, decides. A turn from another version of the app is left to wait.
@@ -287,20 +288,16 @@ export class Chats {
     const auth = await models.getAuth(provider).catch(() => undefined)
     const detail = typeof failure.detail === 'string' ? failure.detail : failure.reason
     const login = auth === undefined || (failure.reason === 'model_error' && isLoginFailure(detail))
-    const gone = !login && turn !== null && failure.reason === 'model_error' && isRetired(detail) ? turn.model : undefined
+    const removed = !login && turn !== null && failure.reason === 'model_error' && isRetired(detail) ? turn.model : undefined
+    const project = removed === undefined ? undefined : await store.projectOf(conversation.id)
     return store.harness.commit(async (tx) => {
       // A send that came after this failure started a new turn, which this failure must not hold.
       if ((await tx.doc(TurnDoc, conversation.id)).turn?.requestId !== turn?.requestId) return false
-      if (gone !== undefined) await store.retire(tx, gone)
+      const retired = removed === undefined || project === undefined ? undefined : await store.retire(tx, project, 'lead', removed)
       const waiting: Waiting = login
         ? { kind: 'login', provider, name, fix: `Sign in to ${name}. The message picks up where it stopped.` }
-        : gone !== undefined
-          ? {
-              kind: 'error',
-              detail: `${modelName(gone, store.catalog)}, the lead model, was retired by its provider.`,
-              fix: 'Try again',
-              retired: { role: 'lead', model: gone, replacement: replacementFor(store.catalog, gone, await store.retiredIn(tx)) },
-            }
+        : retired !== undefined
+          ? { kind: 'error', detail: `${modelName(retired.model, store.catalog)}, the lead model, was retired by its provider.`, fix: 'Try again', retired }
           : { kind: 'error', detail, fix: 'Try again' }
       await wait(tx, conversation.id, waiting, { failure: failure.taskId })
       const sent = (await tx.doc(WaitingDoc, conversation.id)).saves
@@ -386,13 +383,13 @@ export class Chats {
             await configure(tx, conversation.id, { tools: this.#o.tools.filter((tool) => names.includes(tool.name)) })
           }
         }
-        // Any chat can find its provider retired the lead, so this turn's lead is read from the record, whatever it waits on.
-        if (turn !== null && (await store.retiredIn(tx))[versionKey(turn.model)] !== undefined) {
-          const lead = await store.leadIn(tx, project)
-          const [gone] = store.retiredRoles({ lead, helper: null }, await store.retiredIn(tx))
+        // A lead this chat found retired goes on with the lead the person chose since, and waits until they choose one.
+        if (turn !== null && waiting.waiting?.kind === 'error' && waiting.waiting.retired?.role === 'lead') {
+          const gone = (await store.retiredIn(tx, project)).find((r) => r.role === 'lead')
           if (gone !== undefined) throw new Error(store.retiredFix(gone))
+          const lead = await store.leadIn(tx, project)
           await configure(tx, conversation.id, { model: lead })
-          if (turn !== null) turn.model = lead
+          turn.model = lead
         }
         await conversation.submit(tx, { type: 'continue' })
         if (turn !== null) turn.app = version
@@ -459,14 +456,16 @@ export class Chats {
   }
 
   /**
-   * The helper a chat made on the start screen gets while the Astra setting is on: the newest Astra its provider has
-   * not retired, when the person is signed in to it and pi-ai can run it. Otherwise none, and the lead works alone.
+   * The helper a chat made on the start screen gets: the newest Astra while the Astra setting is on, when the person
+   * is signed in to it and pi-ai can run it. Otherwise none, and the lead works alone. With the setting off, no login
+   * is read, so a slow Keychain never holds a send that runs no helper.
    */
   async #newHelper(): Promise<ModelChoice | null> {
     const { models, store } = this.#o
     const family = store.catalog.families[store.catalog.helper]
-    const astra = family === undefined ? undefined : newest(family, await store.retired())
-    if (astra === undefined || models.getModel(astra.provider, astra.modelId) === undefined) return null
+    if (family === undefined || !(await store.astra())) return null
+    const astra = newest(family)
+    if (models.getModel(astra.provider, astra.modelId) === undefined) return null
     if ((await models.getAuth(astra.provider).catch(() => undefined)) === undefined) return null
     return { provider: astra.provider, modelId: astra.modelId }
   }
@@ -478,9 +477,10 @@ export class Chats {
     return helper
   }
 
-  /** Records that `model`'s provider removed it, as a helper call found. */
-  async retired(model: ModelChoice): Promise<void> {
-    await this.#o.store.harness.commit((tx) => this.#o.store.retire(tx, model), context)
+  /** Records that a provider reported `model` removed, as the helper call of `conversation`'s turn found. */
+  async retired(conversation: number, model: ModelChoice): Promise<void> {
+    const project = await this.#o.store.projectOf(conversation)
+    await this.#o.store.harness.commit((tx) => this.#o.store.retire(tx, project, 'helper', model), context)
   }
 
   /** Sends the window a chat's state, for a change its watch does not see. */
