@@ -36,6 +36,8 @@ import {
   type ChatEntry,
   type ChatView,
   DEFAULT_PROVIDER,
+  type Handoff,
+  type HandoffProgress,
   HELPER,
   type ModelChoice,
   type Project,
@@ -167,10 +169,25 @@ function userContent(
 }
 
 /** A chat's state as one read found it, and that read's place in the order of reads. */
-type State = { running: boolean; waiting: Waiting | null; turn: Turn | null; failure: RunFailure | undefined; seq: number }
+type State = {
+  running: boolean
+  waiting: Waiting | null
+  turn: Turn | null
+  handoffs: HandoffProgress[]
+  failure: RunFailure | undefined
+  seq: number
+}
 
 /** What the window sees of a chat. Every view and `chat` event is made here. */
-const view = (project: string, entries: ChatEntry[], { running, waiting, turn, seq }: State): ChatView => ({ project, entries, running, waiting, turn, seq })
+const view = (project: string, entries: ChatEntry[], { running, waiting, turn, handoffs, seq }: State): ChatView => ({
+  project,
+  entries,
+  running,
+  waiting,
+  turn,
+  handoffs,
+  seq,
+})
 
 /**
  * A send refused before it committed: the agent still works on the last message, or the role it would run with is
@@ -188,6 +205,8 @@ export class SendRefused extends Error {
 export class Chats {
   readonly #o: ChatsOptions
   readonly #watches = new Map<string, WatchHandle<ConversationView>>()
+  /** The watches on helper conversations whose call still runs, by that conversation's id, with the chat they show in. */
+  readonly #helperWatches = new Map<number, { project: string; watch: WatchHandle<ConversationView> }>()
   /** The newest entry each watched chat has sent the window. */
   readonly #sent = new Map<string, number>()
   #seq = 0
@@ -230,7 +249,45 @@ export class Chats {
       harness.snapshot(WaitingDoc, conversation.id, context),
       harness.snapshot(TurnDoc, conversation.id, context),
     ])
-    return { running: live?.run !== undefined, waiting: waiting?.waiting ?? null, turn: turn?.turn ?? null, failure: live?.runFailure, seq: this.#nextSeq() }
+    const seq = this.#nextSeq()
+    // A helper call publishes its handoff in its details before the helper starts, so a call without one has not begun.
+    const calls = (live?.tools ?? []).flatMap((slot) => {
+      const handoff = slot.name === HELPER && slot.status !== 'done' ? (slot.details as { handoff?: Handoff } | undefined)?.handoff : undefined
+      return handoff === undefined ? [] : [{ callId: slot.callId, handoff }]
+    })
+    const handoffs = await Promise.all(calls.map(({ callId, handoff }) => this.#progress(callId, handoff)))
+    return { running: live?.run !== undefined, waiting: waiting?.waiting ?? null, turn: turn?.turn ?? null, handoffs, failure: live?.runFailure, seq }
+  }
+
+  /** How far a running helper call got: the steps its helper took so far, and the newest. */
+  async #progress(callId: string, handoff: Handoff): Promise<HandoffProgress> {
+    const child = await this.#o.store.harness.conversation(handoff.conversation as ConversationId, context)
+    const calls = child === undefined ? [] : (await this.#entries(child)).flatMap((entry) => (entry.kind === 'assistant' ? entry.calls : []))
+    const last = calls.at(-1)
+    return { callId, handoff, steps: calls.length, last: last === undefined ? null : { name: last.name, args: last.args } }
+  }
+
+  /**
+   * Keeps a watch on each helper conversation of `handoffs`, the chat's helper calls that still run, so each step a
+   * helper takes reaches the window. The lead's watch does not see them. A watch whose call ended is dropped.
+   */
+  async #followHelpers(project: string, lead: Conversation, handoffs: HandoffProgress[]): Promise<void> {
+    const live = new Set(handoffs.map(({ handoff }) => handoff.conversation))
+    for (const [id, followed] of this.#helperWatches) {
+      if (followed.project !== project || live.has(id)) continue
+      this.#helperWatches.delete(id)
+      await followed.watch.stop()
+    }
+    for (const id of live) {
+      if (this.#helperWatches.has(id)) continue
+      const child = await this.#o.store.harness.conversation(id as ConversationId, context)
+      if (child === undefined) continue
+      const watch = await child.watch(context)
+      this.#helperWatches.set(id, { project, watch })
+      watch.start(async (call) => {
+        if (call.kind === 'value') await this.#changed(project, lead)
+      })
+    }
   }
 
   /** The whole chat, and from now on its changes as `chat` events. */
@@ -241,7 +298,9 @@ export class Chats {
     // The first read sets where the chat's changes start. A later read, as from a paired phone, leaves it, so an entry
     // another window has not heard yet still reaches it. A window merges entries by id, so one it holds is harmless.
     if (!this.#sent.has(project)) this.#sent.set(project, entries.at(-1)?.id ?? 0)
-    return view(project, entries, await this.#state(conversation))
+    const state = await this.#state(conversation)
+    await this.#followHelpers(project, conversation, state.handoffs)
+    return view(project, entries, state)
   }
 
   async #watch(project: string, conversation: Conversation): Promise<void> {
@@ -272,6 +331,7 @@ export class Chats {
       if (await this.#read(conversation, failure, state.turn)) this.#resume(project, failure.taskId)
       state = await this.#state(conversation)
     }
+    await this.#followHelpers(project, conversation, state.handoffs)
     const entries = await this.#entries(conversation, this.#sent.get(project) ?? 0)
     if (entries.length > 0) this.#sent.set(project, entries.at(-1)?.id ?? 0)
     this.#o.emit({ type: 'chat', ...view(project, entries, state) })
@@ -344,13 +404,14 @@ export class Chats {
    * Each step is safe to run again after a crash or a lost answer: the project a start screen revision made is found,
    * not made again, a message already committed as `draft-<rev>` is not sent again, and the files are copied once.
    * The message, the settings its turn runs with, and the removal of the draft commit together. Only that revision's
-   * content goes out. A draft saved after it is the next message and stays, even one that reads the same.
+   * content goes out. A draft saved after it is the next message and stays, even one that reads the same. A project
+   * the start screen makes gets `helper` when given, which the person chose there, and the default helper otherwise.
    */
-  async send(key: string, rev: number, to = key): Promise<Project> {
+  async send(key: string, rev: number, to = key, helper?: ModelChoice | null): Promise<Project> {
     const { store, extension, tools, version, busy } = this.#o
     // A start screen send goes out as the draft its project took, even if the project's draft changed since, as after a
     // crash before the message. Any other send goes out as its draft, only while that is still this revision.
-    const started = key === START ? await store.startProject(rev, await this.#newHelper()) : undefined
+    const started = key === START ? await store.startProject(rev, helper === undefined ? await this.#newHelper() : helper) : undefined
     const project = started?.project ?? (await store.project(to))
     const saved = started === undefined ? key : project.id
     const conversation = await this.#conversation(project.id)
@@ -501,6 +562,7 @@ export class Chats {
    */
   async #newHelper(): Promise<ModelChoice | null> {
     const { models, store } = this.#o
+    if (!(await store.state()).settings.astra) return null
     const family = store.catalog.families[store.catalog.helper]
     if (family === undefined || !(await store.astra())) return null
     const astra = newest(family)
@@ -643,6 +705,6 @@ export class Chats {
   }
 
   async close(): Promise<void> {
-    await Promise.all([...this.#watches.values()].map((watch) => watch.stop()))
+    await Promise.all([...this.#watches.values(), ...[...this.#helperWatches.values()].map(({ watch }) => watch)].map((watch) => watch.stop()))
   }
 }

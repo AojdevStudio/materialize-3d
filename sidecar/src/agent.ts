@@ -374,6 +374,7 @@ export function agentTools({ host, projectOf, signedIn, loginSaves, printer, hel
     execute: async ({ task }, api, context) => {
       // The model is kept with the call, so a rerun after a restart runs the helper the turn started with.
       const model = await api.memo('helper', await helperOf(api.conversationId), context)
+      const startedMs = await api.memo('started', Date.now(), context)
       const name = modelName(model)
       // The helper's conversation is owned by this call, so a rerun finds the same one and the same request. It gets
       // the file tools and `run` only, so it cannot slice or hand the task on.
@@ -384,7 +385,7 @@ export function agentTools({ host, projectOf, signedIn, loginSaves, printer, hel
         await configure(tx, created.id, { model, tools: [read, write, edit, run] })
         return created.id
       }, context)
-      await api.details({ handoff: { task: String(api.taskId), conversation: child, helper: model } satisfies Handoff }, context)
+      await api.details({ handoff: { task: String(api.taskId), conversation: child, helper: model, startedMs } satisfies Handoff }, context)
       const conversation = await api.conversation(child, context)
       if (conversation === undefined) throw new Error("the helper's conversation is gone")
       const { provider } = model

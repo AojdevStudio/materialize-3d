@@ -134,8 +134,11 @@ export function handlers(services: Services) {
     },
     'chat.open': { params: compile(obj({ project: str() })), run: ({ project }) => chats.open(project) },
     'chat.send': {
-      params: compile(obj({ key: str({ minLength: 1 }), rev: int() })),
-      run: async ({ key, rev }) => ({ project: await chats.send(key, rev) }),
+      params: compile(obj({ key: str({ minLength: 1 }), rev: int(), helper: opt(nullable(model)) })),
+      run: async ({ key, rev, helper }) => {
+        if (helper !== undefined && helper !== null && services.models.getModel(helper.provider, helper.modelId) === undefined) throw new Error(`${helper.provider} has no model ${helper.modelId}`)
+        return { project: await chats.send(key, rev, key, helper) }
+      },
     },
     'chat.stop': {
       params: compile(obj({ project: str() })),

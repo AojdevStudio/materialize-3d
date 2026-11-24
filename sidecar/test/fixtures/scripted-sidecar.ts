@@ -24,6 +24,8 @@ export const DRAW = 'Draw it as an HTML page.'
 export const HAND_ON = 'Hand this on.'
 /** The task a helper fails, with an error that is neither a missing login nor a retired model. */
 export const FAIL = 'Fail.'
+/** The task a helper takes two steps on: the first waits for a `next` file, the second for `go`. Then it says it waited. */
+export const STEPS = 'Take two steps.'
 
 /** The messages since the person's newest message, and that message's text. */
 function sinceUser(messages: Message[]) {
@@ -171,6 +173,11 @@ const answer = (context: Context, model: Model<string>): AssistantMessage => {
   if (text === HAND_ON) return results.length === 0 ? call('helper', { task: DRAW }) : fauxAssistantMessage(fauxText(`child saw: ${resultText(results[0])}`))
   // Pi retries a provider's temporary failures, such as a 500, by itself. This one it does not.
   if (text === FAIL) return fails('400 invalid_request_error: the helper could not do this task')
+  if (text === STEPS) {
+    if (results.length === 0) return run('touch first; while [ ! -f next ]; do sleep 0.05; done')
+    if (results.length === 1) return run('touch second; while [ ! -f go ]; do sleep 0.05; done')
+    return fauxAssistantMessage(fauxText('waited'))
+  }
   return script(context.messages, model)
 }
 

@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
 import { createModels, InMemoryCredentialStore } from '@earendil-works/pi-ai'
 import { AgentDoc, type ConversationId, createRegistry, defineDoc, type TaskId } from '@earendil-works/pi-durable'
-import type { AppState, ChatEntry, ChatView, ModelChoice, Need, Project, Turn } from '../src/protocol'
+import type { AppState, ChatEntry, ChatView, HandoffProgress, ModelChoice, Need, Project, Turn } from '../src/protocol'
 import { CATALOG, type Catalog } from '../src/offered'
 import { Store } from '../src/store'
 import { spawnSidecar } from './sidecar'
@@ -20,6 +20,8 @@ const SOL_6_1 = { provider: 'openai-codex', modelId: 'gpt-6.1-sol' }
 const SOL_6_3 = { provider: 'openai-codex', modelId: 'gpt-6.3-sol' }
 const OPUS = { provider: 'anthropic', modelId: 'claude-opus-5-5' }
 const CODEX_KEY = JSON.stringify({ type: 'api_key', key: 'codex-key' })
+/** The scripted helper task that takes two steps, as `STEPS` in the scripted sidecar. Importing that file would run it. */
+const STEPS = 'Take two steps.'
 
 /** A scratch store, project root, and a `uv` that runs what follows `uv run`, so tests need neither uv nor Python. */
 function scratch() {
@@ -79,6 +81,20 @@ describe('a new chat', () => {
     const { project: paired } = await app.sendDraft('new', 'a knob')
     expect(await projectIn(app, alone)).toMatchObject({ model: OPUS, helper: null })
     expect(await projectIn(app, paired)).toMatchObject({ model: OPUS, helper: ASTRA })
+    await app.quit()
+  })
+
+  test('takes the helper chosen on the start screen, none included, in place of the default, and refuses one the app cannot run', async () => {
+    const where = scratch()
+    const app = await start(where, 'models')
+    await app.call('auth.setKey', { provider: 'openai-codex', key: 'codex-key' })
+    const startWith = async (text: string, helper: ModelChoice | null) => {
+      const { rev } = (await app.call('drafts.set', { key: 'new', text, attachments: [] })) as { rev: number }
+      return ((await app.call('chat.send', { key: 'new', rev, helper })) as { project: Project }).project.id
+    }
+    expect(await projectIn(app, await startWith('a clip', FAUX_B))).toMatchObject({ model: OPUS, helper: FAUX_B })
+    expect(await projectIn(app, await startWith('a knob', null))).toMatchObject({ model: OPUS, helper: null })
+    await expect(startWith('a hook', { provider: 'faux', modelId: 'faux-z' })).rejects.toThrow('faux has no model faux-z')
     await app.quit()
   })
 })
@@ -204,6 +220,43 @@ describe('the helper call', () => {
     expect(owned.items.map((conversation) => conversation.id)).toEqual([handoff?.conversation as ConversationId])
     await store.close()
   })
+})
+
+describe('a helper call that runs', () => {
+  test('shows in the chat with its task, conversation, and helper, grows with each helper step, comes back on a reopen, and goes once it ends', async () => {
+    const where = scratch()
+    const app = await start(where, 'helper')
+    const id = await project(app, FAUX_A, FAUX_B)
+    const sentMs = Date.now()
+    await app.sendDraft(id, `ask: ${STEPS}`)
+    const at = async (steps: number) => {
+      const event = await app.until((e) => e.type === 'chat' && e.project === id && (e.handoffs as HandoffProgress[])[0]?.steps === steps, 30_000)
+      // The event matched only with a first handoff.
+      const [progress] = event.handoffs as [HandoffProgress]
+      return progress
+    }
+    const step = (script: string) => ({ name: 'run', args: { args: ['run', 'sh', '-c', script] } })
+
+    const first = await at(1)
+    expect(first).toMatchObject({ handoff: { helper: FAUX_B }, last: step('touch first; while [ ! -f next ]; do sleep 0.05; done') })
+    expect(first.handoff.startedMs).toBeGreaterThanOrEqual(sentMs)
+    writeFileSync(join(where.projects, id, 'next'), '')
+    const second = await at(2)
+    expect(second).toEqual({ ...first, steps: 2, last: step('touch second; while [ ! -f go ]; do sleep 0.05; done') })
+    expect((await view(app, id)).handoffs).toEqual([second])
+
+    writeFileSync(join(where.projects, id, 'go'), '')
+    await answered(app, id, 'parent saw: waited')
+    const ended = await view(app, id)
+    expect(ended.handoffs).toEqual([])
+    expect(ended.entries.find((entry) => entry.kind === 'tool' && entry.name === 'helper')).toMatchObject({ callId: first.callId, handoff: first.handoff })
+    await app.quit()
+
+    const store = await openStore(where)
+    const owned = await store.harness.commit((tx) => tx.scanConversations({ ownerTaskId: Number(first.handoff.task) as TaskId }, 5), BACKGROUND_CONTEXT)
+    expect(owned.items.map((conversation) => conversation.id)).toEqual([first.handoff.conversation as ConversationId])
+    await store.close()
+  }, 60_000)
 })
 
 describe('chats from before pairs', () => {

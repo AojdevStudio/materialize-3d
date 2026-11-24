@@ -127,9 +127,12 @@ export type ImportedEntry =
 
 /**
  * What a `helper` call ran: `task` is the durable task id of the call, which owns the helper's conversation,
- * `conversation` is that conversation's id, and `helper` is the model it ran on.
+ * `conversation` is that conversation's id, `helper` is the model it ran on, and `startedMs` is when the call started.
  */
-export type Handoff = { task: string; conversation: number; helper: ModelChoice }
+export type Handoff = { task: string; conversation: number; helper: ModelChoice; startedMs: number }
+
+/** A helper call that still runs: its call, its handoff, and how far the helper got: its step count and newest step. */
+export type HandoffProgress = { callId: string; handoff: Handoff; steps: number; last: { name: string; args: unknown } | null }
 
 /**
  * One committed line of a chat. Tool calls fold under their assistant line; each result is its own line. A person's
@@ -170,7 +173,16 @@ export type Turn = {
  * earlier, such as a change that arrives after `chat.open` answered, never takes the place of a newer one's `running`,
  * `waiting`, and `turn`.
  */
-export type ChatView = { project: string; entries: ChatEntry[]; running: boolean; waiting: Waiting | null; turn: Turn | null; seq: number }
+export type ChatView = {
+  project: string
+  entries: ChatEntry[]
+  running: boolean
+  waiting: Waiting | null
+  turn: Turn | null
+  /** The turn's helper calls that still run. */
+  handoffs: HandoffProgress[]
+  seq: number
+}
 
 /** What the store keeps of the app. */
 export type StoredState = { setup: Setup; settings: Settings; projects: Project[]; drafts: Record<string, SavedDraft> }
@@ -293,9 +305,10 @@ export interface Methods {
   /**
    * Sends the draft saved as revision `rev` under `key`, and answers the project it went to. From the start screen it
    * makes that project first. Sent again with the same revision, as after a lost answer, it sends nothing more and
-   * answers the same project.
+   * answers the same project. `helper`, from the start screen only, is the helper that project gets in place of the
+   * default, or null for none.
    */
-  'chat.send': { params: { key: string; rev: number }; result: { project: Project } }
+  'chat.send': { params: { key: string; rev: number; helper?: ModelChoice | null }; result: { project: Project } }
   'chat.stop': { params: { project: string }; result: null }
   'chat.retry': { params: { project: string }; result: null }
   /** The newest version of each model family, for the providers the person signed in to. Both roles offer this list. */

@@ -328,7 +328,7 @@ export class Store {
    * start screen draft is never sent in its place. The folder is made inside that commit, before anything is kept, so a
    * folder that cannot be made keeps nothing. A crash after the folder leaves an empty folder, which the next id skips.
    * Asked again for the same revision, as after a lost answer or a crash before the message, it answers the project
-   * that revision made and the draft it moved, and changes nothing.
+   * that revision made and the draft it moved, and changes nothing. The project gets `helper`. A retired one is refused.
    */
   async startProject(rev: number, helper: ModelChoice | null): Promise<{ project: Project; draft: SavedDraft }> {
     const now = new Date()
@@ -351,10 +351,9 @@ export class Store {
       for (let n = 2; taken.has(id) || existsSync(join(this.projectsDir, id)); n++) id = `${base}-${n}`
       this.projectFolder(id)
       const conversation = await tx.createConversation({ ownership: { kind: 'ownerless' } })
-      // The project keeps the lead picked on the start screen, so a later pick there leaves it alone. It gets `helper`
-      // while the Astra setting is on.
-      const { model, astra } = await tx.doc(SettingsDoc, this.root.id)
-      const created: Project = { id, conversation: conversation.id, title, createdMs: now.getTime(), model: copy(model), helper: astra && helper !== null ? copy(helper) : null }
+      // The project keeps the lead picked on the start screen, so a later pick there leaves it alone.
+      const { model } = await tx.doc(SettingsDoc, this.root.id)
+      const created: Project = { id, conversation: conversation.id, title, createdMs: now.getTime(), model: copy(model), helper: helper === null ? null : copy(helper) }
       index.projects.push(created)
       const moved: SavedDraft = { text: draft.text, attachments: [...draft.attachments], rev }
       index.madeFor[rev] = { project: id, draft: moved }
