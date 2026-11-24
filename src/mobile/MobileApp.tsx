@@ -187,7 +187,7 @@ function Paired({ computer, onForget }: { computer: Computer; onForget: () => Pr
   const [tries, setTries] = useState(0)
   const [link, setLink] = useState<Link>('connecting')
   const [sends, setSends] = useState(0)
-  /** Set the moment the person taps Forget. From then on the old pairing opens no chat, keeps no list, and hears no link. */
+  /** Set the moment the person taps Forget. From then on the old pairing opens no chat, keeps no list, and hears no chat event. */
   const closing = useRef(false)
   /** One outbox per chat for this pairing, so a chat opened again finds the send it left going out. */
   const senders = useRef(new Map<string, Sender>())
@@ -202,9 +202,10 @@ function Paired({ computer, onForget }: { computer: Computer; onForget: () => Pr
   // meanwhile appears.
   useEffect(() => {
     watchLink((message) => {
-      if (closing.current) return
+      // The link stays current while Forget waits, so a Forget that fails leaves it right.
       if (message.kind === 'connected') return setLink('connected')
       if (message.kind === 'offline') return setLink('offline')
+      if (closing.current) return
       const change = chatEvent(message.event)
       if (change !== null) for (const heard of listeners.current) heard(change)
     }).catch((err) => setError(errorText(err)))

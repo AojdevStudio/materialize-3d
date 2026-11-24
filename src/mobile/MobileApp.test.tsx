@@ -295,12 +295,25 @@ describe('MobileApp', () => {
 /** The drafts this device keeps, by chat, as Rust's draft files hold them across launches. */
 const kept = new Map<string, DeviceDraft>()
 /** Rust's answer to a draft load, when it cannot read the file, and to a draft save, when it cannot write it or the test holds it. */
-const device = { loadFails: null as string | null, saveFails: null as string | null, saveWaits: null as Promise<void> | null, forgetFails: null as string | null }
+const device = {
+  loadFails: null as string | null,
+  saveFails: null as string | null,
+  saveWaits: null as Promise<void> | null,
+  forgetFails: null as string | null,
+  forgetWaits: null as Promise<void> | null,
+}
 
 /** Holds the next draft write until the returned function lets it go. */
 function holdSave(): () => void {
   let release = () => {}
   device.saveWaits = new Promise<void>((resolve) => (release = resolve))
+  return () => release()
+}
+
+/** Holds the next Forget until the returned function lets it go. */
+function holdForget(): () => void {
+  let release = () => {}
+  device.forgetWaits = new Promise<void>((resolve) => (release = resolve))
   return () => release()
 }
 
@@ -322,6 +335,7 @@ function answerWithDrafts(commands: Record<string, unknown>) {
     }
     // Rust removes every draft when the device forgets its computer.
     if (command === 'forget') {
+      await device.forgetWaits
       if (device.forgetFails !== null) throw device.forgetFails
       return kept.clear()
     }
@@ -435,7 +449,7 @@ describe('a draft and the link to the computer', () => {
   afterEach(() => {
     kept.clear()
     localStorage.clear()
-    Object.assign(device, { loadFails: null, saveFails: null, saveWaits: null, forgetFails: null })
+    Object.assign(device, { loadFails: null, saveFails: null, saveWaits: null, forgetFails: null, forgetWaits: null })
     Object.assign(computerSide, {
       reach: true,
       requests: [],
@@ -766,6 +780,23 @@ describe('a draft and the link to the computer', () => {
 
     expect(await screen.findByText(/The Keychain refused the pairing/)).toBeTruthy()
     expect((await reopen()).value).toBe('Make the clip')
+  })
+
+  it('keeps the link current while Forget waits, so a Forget that fails leaves Send on', async () => {
+    const message = await openChat()
+    fireEvent.change(message, { target: { value: 'Make the clip' } })
+    backToChats()
+    device.forgetFails = 'The Keychain refused the pairing. User interaction is not allowed.'
+    const release = holdForget()
+    fireEvent.click(await screen.findByRole('button', { name: 'Forget' }))
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('forget'))
+    await linkIs({ kind: 'connected' })
+    release()
+
+    expect(await screen.findByText(/The Keychain refused the pairing/)).toBeTruthy()
+    await reopen()
+    expect(screen.getByText('Connected')).toBeTruthy()
+    await waitFor(() => expect(sendButton().disabled).toBe(false))
   })
 
   it('never shows the chat list kept for another pairing', async () => {
