@@ -15,7 +15,7 @@ vi.mock('@tauri-apps/api/event', () => ({
 vi.mock('@tauri-apps/plugin-opener', () => ({ openUrl: () => Promise.resolve() }))
 vi.mock('@tauri-apps/api/webview', () => ({ getCurrentWebview: () => ({ onDragDropEvent: () => Promise.resolve(() => {}) }) }))
 
-import { OFFERED } from '../../sidecar/src/offered'
+import { CATALOG, offered } from '../../sidecar/src/offered'
 import type { Login, Printer, Settings, Setup, Toolchain } from '../../sidecar/src/protocol'
 import type { BambuLastUsed, PrinterChoice, SlicerCheck } from './api'
 import StudioApp from './StudioApp'
@@ -113,7 +113,7 @@ function mockApp(setup: Setup, machine: Machine, overrides: Calls = {}) {
     'setup.tools': () => machine.toolchain,
     'auth.status': () => store.logins,
     'setup.check': () => [],
-    'models.list': () => OFFERED.filter((model) => store.logins.some((login) => login.provider === model.provider && login.login !== null)),
+    'models.list': () => offered(CATALOG, {}).filter((model) => store.logins.some((login) => login.provider === model.provider && login.login !== null)),
     'projects.status': () => ({}),
     'app.ping': () => ({ version: '1.2.3' }),
   }
@@ -360,7 +360,7 @@ describe('setup: pick a model', () => {
     mockApp({ step: 'model', done: false }, { ...ready, logins: signIn(signedOut, 'openai-codex') })
     render(<StudioApp />)
     expect((await screen.findByRole('radio', { name: /^GPT 6.1 Sol/ }) as HTMLInputElement).checked).toBe(true)
-    expect(radios()).toEqual(['GPT 6.1 Sol'])
+    expect(radios()).toEqual(['GPT 6.1 Sol', 'Astra'])
     fireEvent.click(button('Continue'))
     fireEvent.click(await screen.findByRole('button', { name: 'Looks right' }))
     expect(await screen.findByText('ChatGPT, GPT 6.1 Sol. Astra helps with drawings.')).toBeTruthy()

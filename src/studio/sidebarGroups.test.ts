@@ -3,7 +3,7 @@ import type { Project, ProjectStatus } from '../../sidecar/src/protocol'
 import { ago, detail, groupOf, groupProjects } from './sidebarGroups'
 
 const status = (more: Partial<ProjectStatus> = {}): ProjectStatus => ({ running: false, printed: false, printFiles: 0, lastMs: 0, ...more })
-const project = (id: string, createdMs = 0): Project => ({ id, conversation: 1, title: id, createdMs })
+const project = (id: string, createdMs = 0): Project => ({ id, conversation: 1, title: id, createdMs, model: { provider: 'anthropic', modelId: 'claude-opus-5-5' }, helper: null })
 
 describe('sidebar groups', () => {
   it('puts a project with a running turn in Working, even with print files or a printed mark', () => {

@@ -9,6 +9,12 @@
 
 export type ModelChoice = { provider: string; modelId: string }
 
+/** The two parts a model plays in a chat: the lead answers the person, and the helper takes tasks the lead hands it. */
+export type Role = 'lead' | 'helper'
+
+/** A model version its provider removed, the role it held, and the newest version of its family still offered. */
+export type Retired = { role: Role; model: ModelChoice; replacement: ModelChoice | null }
+
 /** A model the picker offers, with the short name the app shows and one line on what it suits. */
 export type ModelOption = ModelChoice & { name: string; description: string }
 
@@ -32,7 +38,8 @@ export type Printer = { machine: string; process: string; filament: string; plat
 
 /**
  * What the next turn starts with. A running turn keeps the model and thinking it started with. Each slice reads the
- * printer when it starts. `astra` lets the main agent hand a task to Astra, the GPT helper.
+ * printer when it starts. `model` is the lead a chat made on the start screen gets. `astra` gives such a chat the
+ * newest Astra as its helper, when Astra can run.
  */
 export type Settings = {
   model: ModelChoice
@@ -43,10 +50,11 @@ export type Settings = {
 
 /**
  * `conversation` is the project's Pi conversation id. `printed` is set once the person marks the project printed.
- * `model` is the model the project's next turn runs on. A project gets the app's default when it is made. A project
- * from before the picker has none, and runs on the default until the person picks one.
+ * `model` is the lead model the project's next turn runs on, and `helper` the helper model that turn can hand tasks to,
+ * or null when the lead works alone. A project gets the start screen's pair when it is made. A project from before
+ * pairs gets the lead it ran on and the helper the Astra setting gave it.
  */
-export type Project = { id: string; conversation: number; title: string; createdMs: number; printed?: boolean; model?: ModelChoice }
+export type Project = { id: string; conversation: number; title: string; createdMs: number; printed?: boolean; model: ModelChoice; helper: ModelChoice | null }
 
 /**
  * What the sidebar groups a project by. `printFiles` counts the `.3mf` files in its folder, outside `refs/`. `lastMs` is
@@ -104,25 +112,38 @@ export type ImportedEntry =
   | { role: 'tool'; name: string; text: string; result: string; failed: boolean }
 
 /**
+ * What a `helper` call ran: `task` is the durable task id of the call, which owns the helper's conversation,
+ * `conversation` is that conversation's id, and `helper` is the model it ran on.
+ */
+export type Handoff = { task: string; conversation: number; helper: ModelChoice }
+
+/**
  * One committed line of a chat. Tool calls fold under their assistant line; each result is its own line. A person's
  * message holds the paths of its pictures, which went to the model as pictures, and of its other files, which the
- * message named. An assistant line holds the model its turn ran on.
+ * message named. An assistant line holds the model its turn ran on. A `helper` call's result holds its handoff.
  */
 export type ChatEntry =
   | ({ id: number; kind: 'imported' } & ImportedEntry)
   | { id: number; kind: 'user'; text: string; images: string[]; files: string[] }
   | { id: number; kind: 'assistant'; text: string; calls: { id: string; name: string; args: unknown }[]; model: ModelChoice }
-  | { id: number; kind: 'tool'; callId: string; name: string; text: string; failed: boolean; durationMs?: number }
+  | { id: number; kind: 'tool'; callId: string; name: string; text: string; failed: boolean; durationMs?: number; handoff?: Handoff }
 
-/** Why a turn stopped before its answer, and the one thing that lets it go on. */
+/**
+ * Why a turn stopped before its answer, and the one thing that lets it go on. `retired` marks a lead its provider
+ * removed while the turn ran: it goes on once the person chooses another lead.
+ */
 export type Waiting =
   | { kind: 'login'; provider: string; name: string; fix: string }
-  | { kind: 'error'; detail: string; fix: string }
+  | { kind: 'error'; detail: string; fix: string; retired?: Retired }
 
-/** What a turn runs with, frozen when it was sent. */
+/**
+ * What a turn runs with, frozen when it was sent: `model` is its lead and `helper` its helper, or null when the lead
+ * works alone. A turn sent before pairs has no `helper`.
+ */
 export type Turn = {
   requestId: string
   model: ModelChoice
+  helper?: ModelChoice | null
   thinking: Thinking
   tools: string[]
   instructions: string
@@ -155,7 +176,7 @@ export type Toolchain = { uv: null } | { uv: string; python: string | null }
 /** Something the agent needs before a message can go out, and the one thing that gives it. */
 export type Need =
   | { kind: 'login'; provider: ProviderId; name: string; fix: string }
-  | { kind: 'model'; fix: string }
+  | { kind: 'model'; fix: string; retired?: Retired }
   | { kind: 'uv'; fix: string }
   | { kind: 'python'; fix: string }
 
@@ -169,14 +190,19 @@ export type ToolArgs = {
   edit: { path: string; edits: { oldText: string; newText: string }[] }
   run: { args: string[]; timeoutSeconds?: number }
   slice: { inputs: string[]; output: string }
+  helper: { task: string }
+  /** The tool that handed Astra a task before pairs. Older chats still hold its calls. */
   astra: { task: string }
 }
 export type ToolName = keyof ToolArgs
 
-/** The tool that hands a task to Astra. The person can turn it off in Settings. */
+/** The tool that hands a task to the chat's helper model. A turn whose chat has no helper is not offered it. */
+export const HELPER = 'helper' satisfies ToolName
+
+/** The tool older chats called Astra by. No turn is offered it now. */
 export const ASTRA = 'astra' satisfies ToolName
 
-/** Astra, the GPT helper: OpenAI's model on the person's ChatGPT plan. */
+/** Astra, the GPT helper before pairs: OpenAI's model on the person's ChatGPT plan. A chat from then keeps it. */
 export const ASTRA_MODEL = { provider: 'openai-codex', modelId: 'gpt-6-astra' } as const
 
 /** The program the `run` tool runs. Its `args` go after it. */
@@ -189,6 +215,7 @@ export const STEP_LINES = {
   edit: { label: 'Edited', doing: 'Editing' },
   run: { label: 'Ran', doing: 'Running' },
   slice: { label: 'Sliced', doing: 'Slicing' },
+  helper: { label: 'Asked the helper', doing: 'Asking the helper' },
   astra: { label: 'Asked Astra (GPT)', doing: 'Asking Astra (GPT)' },
 } as const satisfies Record<ToolName, { label: string; doing: string }>
 
@@ -208,8 +235,9 @@ export interface Methods {
   /** Keeps a pasted picture in a file of its own, outside any project, and answers its path, for a draft to keep. */
   'drafts.picture': { params: { name: string; data: string }; result: string }
   /**
-   * What the agent needs before a send from the project, or from the start screen without one: its model's sign-in,
-   * uv, and a Python uv can run. Empty when ready.
+   * What the agent needs before a send from the project, or from the start screen without one: a replacement for each
+   * of the project's models its provider retired, lead first, its lead's sign-in, uv, and a Python uv can run. Empty
+   * when ready.
    */
   'setup.check': { params: { project?: string }; result: Need[] }
   /** The build tools setup's check shows. */
@@ -231,10 +259,12 @@ export interface Methods {
   'chat.send': { params: { key: string; rev: number }; result: { project: Project } }
   'chat.stop': { params: { project: string }; result: null }
   'chat.retry': { params: { project: string }; result: null }
-  /** The models of each provider the person signed in to, as that provider lists them. */
+  /** The newest version of each model family, for the providers the person signed in to. Both roles offer this list. */
   'models.list': { params: Record<string, never>; result: ModelOption[] }
-  /** Saves the model a project's next turn runs on. */
-  'projects.setModel': { params: { project: string; model: ModelChoice }; result: null }
+  /** Saves the lead model a project's next turn runs on. A model the app cannot run, or a retired one, is refused. */
+  'projects.setLead': { params: { project: string; model: ModelChoice }; result: null }
+  /** Saves the helper model a project's next turn can hand tasks to, or null for the lead alone. Refused as `setLead`. */
+  'projects.setHelper': { params: { project: string; model: ModelChoice | null }; result: null }
   /** Each project's status for the sidebar, by project id. */
   'projects.status': { params: Record<string, never>; result: Record<string, ProjectStatus> }
   /** Marks a project printed, which moves it to the sidebar's Printed group. */

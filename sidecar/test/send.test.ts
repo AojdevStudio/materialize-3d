@@ -57,7 +57,7 @@ describe('a send from the start screen', () => {
         throw new Error('no conversation runs here')
       },
     })
-    const { project: made } = await store.startProject(rev)
+    const { project: made } = await store.startProject(rev, null)
     await store.close()
     const app = await start(where)
     // The person found the project and saved a newer draft there before sending from the start screen again.

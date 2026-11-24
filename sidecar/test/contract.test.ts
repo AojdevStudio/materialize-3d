@@ -115,7 +115,7 @@ describe('project ids', () => {
     const today = new Date(now.getTime() - now.getTimezoneOffset() * 60_000).toISOString().slice(0, 10)
     for (const { title, slug } of contract.projects.made) {
       const rev = await store.setDraft('new', { text: title, attachments: [] })
-      expect((await store.startProject(rev)).project.id).toBe(`${today}-${slug}`)
+      expect((await store.startProject(rev, null)).project.id).toBe(`${today}-${slug}`)
     }
   })
 

@@ -74,8 +74,9 @@ describe('a send', () => {
     expect(view.turn).toMatchObject({
       requestId: `draft-${rev}`,
       model: { provider: 'faux', modelId: 'faux-a' },
+      helper: null,
       thinking: 'high',
-      tools: ['read', 'write', 'edit', 'run', 'slice', 'astra'],
+      tools: ['read', 'write', 'edit', 'run', 'slice'],
       app: '9.9.9',
     })
     await answered(app, project, 'answered by faux-a')
@@ -183,7 +184,7 @@ describe("a project's model", () => {
     await app.next()
     const project = await firstSend(app, 'please wait')
     await waitForFile(join(where.projects, project, 'started'))
-    await app.call('projects.setModel', { project, model: { provider: 'faux', modelId: 'faux-b' } })
+    await app.call('projects.setLead', { project, model: { provider: 'faux', modelId: 'faux-b' } })
     writeFileSync(join(where.projects, project, 'go'), '')
     await answered(app, project, 'answered by faux-a')
     expect(((await app.call('chat.open', { project })) as ChatView).turn?.model.modelId).toBe('faux-a')
@@ -201,24 +202,12 @@ describe('the agent', () => {
     const app = start(where, 'escape')
     await app.next()
     const project = await firstSend(app, 'read the hostname')
-    expect(await app.call('agent.tools', { project })).toEqual(['read', 'write', 'edit', 'run', 'slice', 'astra'])
+    expect(await app.call('agent.tools', { project })).toEqual(['read', 'write', 'edit', 'run', 'slice'])
     await answered(app, project, 'tried')
     const view = (await app.call('chat.open', { project })) as ChatView
     const read = view.entries.find((entry) => entry.kind === 'tool')
     expect(read).toMatchObject({ kind: 'tool', name: 'read', failed: true })
     expect(read?.kind === 'tool' && read.text).toContain('outside the project folder')
-    await app.quit()
-  })
-
-  test('gets no Astra tool when the person turned Astra off', async () => {
-    const where = scratch()
-    const app = start(where, 'models')
-    await app.next()
-    await app.call('settings.set', { astra: false })
-    const project = await firstSend(app, 'A 20 mm cube')
-    expect(await app.call('agent.tools', { project })).toEqual(['read', 'write', 'edit', 'run', 'slice'])
-    expect(((await app.call('chat.open', { project })) as ChatView).turn?.tools).toEqual(['read', 'write', 'edit', 'run', 'slice'])
-    await answered(app, project, 'answered by faux-a')
     await app.quit()
   })
 

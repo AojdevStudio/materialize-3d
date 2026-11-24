@@ -29,11 +29,13 @@ import type { Busy } from './busy'
 import { type SentMessage, UserMessage } from './entries'
 import { folderSummary } from './folder'
 import { copyAttachments } from './pictures'
+import { modelName, newest, replacementFor } from './offered'
 import {
-  ASTRA,
   type ChatEntry,
   type ChatView,
   DEFAULT_PROVIDER,
+  HELPER,
+  type ModelChoice,
   type Project,
   type ProjectStatus,
   type SidecarEvent,
@@ -41,7 +43,7 @@ import {
   type Turn,
   type Waiting,
 } from './protocol'
-import { isLoginFailure } from './inference'
+import { isLoginFailure, isRetired } from './inference'
 import { sendName, type Store } from './store'
 import { chatEntry } from './transcript'
 
@@ -270,7 +272,8 @@ export class Chats {
   }
 
   /**
-   * Reads why a run stopped: a provider with no login, or a refused one, waits for a sign-in; anything else for a retry.
+   * Reads why a run stopped: a provider with no login, or a refused one, waits for a sign-in. A lead its provider
+   * confirmed removed is recorded retired, and waits for the person to choose another. Anything else waits for a retry.
    * Resolves true when the login was missing or refused but a newer one was saved since the turn went out, so the
    * wait can be let go at once. The login read here may be older than that save, so only the save count, read in the
    * commit, decides. A turn from another version of the app is left to wait.
@@ -282,13 +285,21 @@ export class Chats {
     const auth = await models.getAuth(provider).catch(() => undefined)
     const detail = typeof failure.detail === 'string' ? failure.detail : failure.reason
     const login = auth === undefined || (failure.reason === 'model_error' && isLoginFailure(detail))
-    const waiting: Waiting =
-      login
-        ? { kind: 'login', provider, name, fix: `Sign in to ${name}. The message picks up where it stopped.` }
-        : { kind: 'error', detail, fix: 'Try again' }
+    const gone = !login && turn !== null && failure.reason === 'model_error' && isRetired(detail) ? turn.model : undefined
     return store.harness.commit(async (tx) => {
       // A send that came after this failure started a new turn, which this failure must not hold.
       if ((await tx.doc(TurnDoc, conversation.id)).turn?.requestId !== turn?.requestId) return false
+      if (gone !== undefined) await store.retire(tx, gone)
+      const waiting: Waiting = login
+        ? { kind: 'login', provider, name, fix: `Sign in to ${name}. The message picks up where it stopped.` }
+        : gone !== undefined
+          ? {
+              kind: 'error',
+              detail: `${modelName(gone, store.catalog)}, the lead model, was retired by its provider.`,
+              fix: 'Try again',
+              retired: { role: 'lead', model: gone, replacement: replacementFor(store.catalog, gone, await store.retiredIn(tx)) },
+            }
+          : { kind: 'error', detail, fix: 'Try again' }
       await wait(tx, conversation.id, waiting, { failure: failure.taskId })
       const sent = (await tx.doc(WaitingDoc, conversation.id)).saves
       // Read in this commit, so a sign-in either lands before it and is seen here, or after it and finds this wait.
@@ -308,7 +319,7 @@ export class Chats {
     const { store, extension, tools, version, busy } = this.#o
     // A start screen send goes out as the draft its project took, even if the project's draft changed since, as after a
     // crash before the message. A project's own send goes out as its draft, only while that is still this revision.
-    const started = key === START ? await store.startProject(rev) : undefined
+    const started = key === START ? await store.startProject(rev, await this.#newHelper()) : undefined
     const project = started?.project ?? (await store.project(key))
     const conversation = await this.#conversation(project.id)
     const requestId = sendName(rev)
@@ -324,8 +335,9 @@ export class Chats {
     try {
       await busy.during(() => store.harness.commit(async (tx) => {
         if ((await tx.submissionByRequest(conversation.id, requestId)) !== undefined) return
-        const { model, thinking, astra, saves } = await store.send(tx, project.id, rev)
-        const offered = astra ? tools : tools.filter((tool) => tool.name !== ASTRA)
+        // Both roles freeze here: the lead in the conversation's model, and the helper in the turn the helper call reads.
+        const { lead, helper, thinking, saves } = await store.send(tx, project.id, rev)
+        const offered = helper === null ? tools.filter((tool) => tool.name !== HELPER) : tools
         await conversation.submit(tx, {
           type: 'input',
           content,
@@ -333,8 +345,8 @@ export class Chats {
           whenBusy: 'reject',
           entry: { kind: UserMessage.kind, data: { text: draft.text, images: shown, files: named } satisfies SentMessage },
         })
-        await configure(tx, conversation.id, { model, thinkingLevel: thinking, extensions: [extension], tools: offered, instructions: WORKFLOW, cwd: folder })
-        const turn: Turn = { requestId, model, thinking, tools: offered.map((t) => t.name), instructions: WORKFLOW_VERSION, app: version, startedMs: Date.now() }
+        await configure(tx, conversation.id, { model: lead, thinkingLevel: thinking, extensions: [extension], tools: offered, instructions: WORKFLOW, cwd: folder })
+        const turn: Turn = { requestId, model: lead, helper, thinking, tools: offered.map((t) => t.name), instructions: WORKFLOW_VERSION, app: version, startedMs: Date.now() }
         ;(await tx.doc(TurnDoc, conversation.id)).turn = turn
         await wait(tx, conversation.id, null, { saves })
       }, context))
@@ -348,11 +360,12 @@ export class Chats {
 
   /**
    * Goes on from where the turn stopped, with the model, tools, and instructions it started with, and clears what it
-   * waited on. The turn records the app version that goes on with it. With `login`, the run failure a sign-in wait was
-   * recorded for, it goes on only while the turn still waits on that one, so when two paths let one wait go, as a
-   * sign-in and the read of a failure that crossed it, the turn goes on once, and a late one never lets go a newer
-   * wait from the same refused login. Such a turn goes on by itself, so it waits for the pass while an update
-   * installs, instead of failing and being left waiting when the install fails.
+   * waited on. A turn whose lead was retired goes on with the lead the person chose since, which the turn then records,
+   * and is refused with the fix until they choose one. The turn records the app version that goes on with it. With
+   * `login`, the run failure a sign-in wait was recorded for, it goes on only while the turn still waits on that one, so
+   * when two paths let one wait go, as a sign-in and the read of a failure that crossed it, the turn goes on once, and
+   * a late one never lets go a newer wait from the same refused login. Such a turn goes on by itself, so it waits for
+   * the pass while an update installs, instead of failing and being left waiting when the install fails.
    */
   async #continue(project: string, login?: number): Promise<void> {
     const { store, version } = this.#o
@@ -361,8 +374,15 @@ export class Chats {
       store.harness.commit(async (tx) => {
         const waiting = await tx.doc(WaitingDoc, conversation.id)
         if (login !== undefined && (waiting.waiting?.kind !== 'login' || waiting.failure !== login)) return
-        await conversation.submit(tx, { type: 'continue' })
         const { turn } = await tx.doc(TurnDoc, conversation.id)
+        if (waiting.waiting?.kind === 'error' && waiting.waiting.retired?.role === 'lead') {
+          const lead = await store.leadIn(tx, project)
+          const [gone] = store.retiredRoles({ lead, helper: null }, await store.retiredIn(tx))
+          if (gone !== undefined) throw new Error(store.retiredFix(gone))
+          await configure(tx, conversation.id, { model: lead })
+          if (turn !== null) turn.model = lead
+        }
+        await conversation.submit(tx, { type: 'continue' })
         if (turn !== null) turn.app = version
         const saves = turn === null ? undefined : await store.loginSavesIn(tx, turn.model.provider)
         await wait(tx, conversation.id, null, { tool: 'kept', saves })
@@ -396,7 +416,9 @@ export class Chats {
     const ready = async () =>
       after === undefined ? (await models.getAuth(provider).catch(() => undefined)) !== undefined : (await store.loginSaves(provider)) > after
     const fix =
-      after === undefined ? `Sign in to ${name}. Astra picks up where it stopped.` : `${name} refused the saved sign-in. Sign in again. Astra picks up where it stopped.`
+      after === undefined
+        ? `Sign in to ${name}. The helper picks up where it stopped.`
+        : `${name} refused the saved sign-in. Sign in again. The helper picks up where it stopped.`
     let held = (await store.harness.snapshot(WaitingDoc, id, context))?.tool ?? false
     try {
       for (;;) {
@@ -422,6 +444,31 @@ export class Chats {
         await this.#show(project)
       }
     }
+  }
+
+  /**
+   * The helper a chat made on the start screen gets while the Astra setting is on: the newest Astra its provider has
+   * not retired, when the person is signed in to it and pi-ai can run it. Otherwise none, and the lead works alone.
+   */
+  async #newHelper(): Promise<ModelChoice | null> {
+    const { models, store } = this.#o
+    const family = store.catalog.families[store.catalog.helper]
+    const astra = family === undefined ? undefined : newest(family, await store.retired())
+    if (astra === undefined || models.getModel(astra.provider, astra.modelId) === undefined) return null
+    if ((await models.getAuth(astra.provider).catch(() => undefined)) === undefined) return null
+    return { provider: astra.provider, modelId: astra.modelId }
+  }
+
+  /** The helper the turn of `conversation` froze when it was sent, for its helper call. A turn with none has no call. */
+  async helperOf(conversation: number): Promise<ModelChoice> {
+    const helper = (await this.#o.store.harness.snapshot(TurnDoc, conversation as ConversationId, context))?.turn?.helper
+    if (helper === undefined || helper === null) throw new Error('this turn has no helper model')
+    return helper
+  }
+
+  /** Records that `model`'s provider removed it, as a helper call found. */
+  async retired(model: ModelChoice): Promise<void> {
+    await this.#o.store.harness.commit((tx) => this.#o.store.retire(tx, model), context)
   }
 
   /** Sends the window a chat's state, for a change its watch does not see. */

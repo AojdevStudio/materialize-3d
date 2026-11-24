@@ -36,8 +36,8 @@ Element.prototype.scrollIntoView = vi.fn()
 URL.createObjectURL = vi.fn(() => 'blob:preview')
 URL.revokeObjectURL = vi.fn()
 
-const projectA = { id: '2026-11-06-a', conversation: 2, title: 'Project A', createdMs: 2 }
-const projectB = { id: '2026-11-06-b', conversation: 3, title: 'Project B', createdMs: 1 }
+const projectA = { id: '2026-11-06-a', conversation: 2, title: 'Project A', createdMs: 2, model: { provider: 'anthropic', modelId: 'claude-opus-5-5' }, helper: null }
+const projectB = { id: '2026-11-06-b', conversation: 3, title: 'Project B', createdMs: 1, model: { provider: 'anthropic', modelId: 'claude-opus-5-5' }, helper: null }
 const view = (project: string, more: object = {}) => ({ project, entries: [], running: false, waiting: null, turn: null, seq: 1, ...more })
 const settings = { model: { provider: 'anthropic', modelId: 'claude-opus-5-5' }, thinking: 'high', printer: { machine: 'Bambu Lab P2S 0.4 nozzle', process: '0.20mm Standard @BBL P2S', filament: 'Bambu PETG Basic @BBL P2S' } }
 const models = [
@@ -87,7 +87,7 @@ function held() {
 }
 
 /** The project a send from the start screen makes. */
-const made = { id: '2026-11-06-a-clip', conversation: 10, title: 'A clip', createdMs: 10 }
+const made = { id: '2026-11-06-a-clip', conversation: 10, title: 'A clip', createdMs: 10, model: { provider: 'anthropic', modelId: 'claude-opus-5-5' }, helper: null }
 
 /**
  * The sidecar as the window sees it: one `sidecar` command, by method. A save answers a new revision, and a send
@@ -112,7 +112,7 @@ function mockSidecar(overrides: Calls = {}, projects: Project[] = [projectB], dr
       case 'settings.set':
         store.model = params.model as typeof settings.model
         return defaults('state.get', {})
-      case 'projects.setModel':
+      case 'projects.setLead':
         store.projects = store.projects.map((p) => (p.id === params.project ? { ...p, model: params.model as typeof settings.model } : p))
         return Promise.resolve(null)
       case 'chat.open':
@@ -426,7 +426,7 @@ describe('StudioApp', () => {
   })
 
   it('groups the projects by status, with a count on each group, and hides an empty group', async () => {
-    const projectC = { id: '2026-11-06-c', conversation: 4, title: 'Project C', createdMs: 0 }
+    const projectC = { id: '2026-11-06-c', conversation: 4, title: 'Project C', createdMs: 0, model: { provider: 'anthropic', modelId: 'claude-opus-5-5' }, helper: null }
     const now = Date.now()
     mockSidecar({
       'projects.status': () => Promise.resolve({
@@ -450,7 +450,7 @@ describe('StudioApp', () => {
   })
 
   it('counts every project on the Projects row', async () => {
-    const projectC = { id: '2026-11-06-c', conversation: 4, title: 'Project C', createdMs: 0 }
+    const projectC = { id: '2026-11-06-c', conversation: 4, title: 'Project C', createdMs: 0, model: { provider: 'anthropic', modelId: 'claude-opus-5-5' }, helper: null }
     mockSidecar({
       'projects.status': () => Promise.resolve({ [projectA.id]: { running: true, printed: false, printFiles: 0, lastMs: Date.now() } }),
     }, [projectA, projectB, projectC])
@@ -460,7 +460,7 @@ describe('StudioApp', () => {
   })
 
   it('narrows the projects to titles that match the search, and shows them all again when it ends', async () => {
-    const clip = { id: '2026-11-06-clip', conversation: 4, title: 'Cable clip', createdMs: 0 }
+    const clip = { id: '2026-11-06-clip', conversation: 4, title: 'Cable clip', createdMs: 0, model: { provider: 'anthropic', modelId: 'claude-opus-5-5' }, helper: null }
     mockSidecar({
       'projects.status': () => Promise.resolve({ [projectA.id]: { running: false, printed: false, printFiles: 1, lastMs: Date.now() } }),
     }, [projectA, projectB, clip])
@@ -1244,8 +1244,8 @@ describe('StudioApp', () => {
   })
 
   it('fills the prompt from a suggestion, and offers the newest projects with their newest render and their status', async () => {
-    const projectC = { id: '2026-11-06-c', conversation: 4, title: 'Project C', createdMs: 0 }
-    const projectD = { id: '2026-11-06-d', conversation: 5, title: 'Project D', createdMs: 0 }
+    const projectC = { id: '2026-11-06-c', conversation: 4, title: 'Project C', createdMs: 0, model: { provider: 'anthropic', modelId: 'claude-opus-5-5' }, helper: null }
+    const projectD = { id: '2026-11-06-d', conversation: 5, title: 'Project D', createdMs: 0, model: { provider: 'anthropic', modelId: 'claude-opus-5-5' }, helper: null }
     const status = (lastMs: number, more: object = {}) => ({ running: false, printed: false, printFiles: 0, lastMs, ...more })
     mockSidecar(
       {
@@ -1346,7 +1346,7 @@ describe('StudioApp', () => {
     // The Claude mark in its own color, and the OpenAI mark in the text color.
     expect(items.map((item) => item.querySelector('.model-mark svg')?.getAttribute('fill'))).toEqual(['#D97757', '#D97757', 'currentColor'])
     fireEvent.click(items[2])
-    await waitFor(() => expect(sidecarCalls('projects.setModel')).toEqual([{ project: projectA.id, model: { provider: 'openai-codex', modelId: 'gpt-6.1-sol' } }]))
+    await waitFor(() => expect(sidecarCalls('projects.setLead')).toEqual([{ project: projectA.id, model: { provider: 'openai-codex', modelId: 'gpt-6.1-sol' } }]))
     await waitFor(() => expect(picked()).toBe('GPT 6.1 Sol'))
     // Send waits for the sign-in of the project's own model, so the check asks about this project.
     await waitFor(() => expect(last(sidecarCalls('setup.check'))).toEqual({ project: projectA.id }))

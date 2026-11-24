@@ -96,7 +96,7 @@ export default function StudioApp() {
         .catch((err: unknown) => setError(String(err)))
       return
     }
-    void sidecar('projects.setModel', { project, model })
+    void sidecar('projects.setLead', { project, model })
       .then(() => {
         setProjects((all) => all.map((p) => (p.id === project ? { ...p, model } : p)))
         checkReady()

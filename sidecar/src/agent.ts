@@ -25,8 +25,9 @@ import { NodeExecutionEnv } from '@earendil-works/pi-durable/env/node'
 import { createEditTool, createReadTool, createWriteTool } from '@earendil-works/pi-durable/tools'
 import { arr, int, obj, opt, str } from '@earendil-works/pi-schema'
 import type { Host } from './host'
-import { ASTRA, ASTRA_MODEL, KEPT_ENV, META_DIR, type Need, type Plate, type Printer, RUN_PROGRAM, type Toolchain } from './protocol'
-import { isLoginFailure } from './inference'
+import { modelName } from './offered'
+import { type Handoff, HELPER, KEPT_ENV, META_DIR, type ModelChoice, type Need, type Plate, type Printer, RUN_PROGRAM, type Toolchain } from './protocol'
+import { isLoginFailure, isRetired } from './inference'
 import { textOf } from './transcript'
 import workflow from './workflow.md' with { type: 'text' }
 
@@ -261,6 +262,10 @@ export interface AgentHost {
   loginSaves(provider: string): Promise<number>
   /** The printer chosen in the app, for a slice that starts now. */
   printer(): Promise<Printer>
+  /** The helper model the turn of `conversation` froze when it was sent. */
+  helperOf(conversation: number): Promise<ModelChoice>
+  /** Records that `model`'s provider removed it. */
+  retired(model: ModelChoice): Promise<void>
 }
 
 /**
@@ -273,7 +278,7 @@ export const operationId = (taskId: string, callId: string) => createHash('sha25
 /** A tool call's operation: its id, its receipt file in the project's hidden folder, and Pi's memo of it. */
 function operation<T extends JsonValue>(api: ToolExecutionApi, context: Context) {
   const env = api.env
-  // Astra's conversation is not a project, so the folder is the one its tools work in, which it shares.
+  // The helper's conversation is not a project, so the folder is the one its tools work in, which it shares.
   if (!(env instanceof ProjectEnv)) throw new NoProjectFolder()
   const id = operationId(String(api.taskId), api.callId)
   const memo: Memo<T> = { get: () => api.memo<T>('receipt', context), set: (value) => api.memo('receipt', value, context) }
@@ -281,7 +286,7 @@ function operation<T extends JsonValue>(api: ToolExecutionApi, context: Context)
 }
 
 /** The agent's tools, in the order the model is offered them, with the args `ToolArgs` names. */
-export function agentTools({ host, projectOf, signedIn, loginSaves, printer }: AgentHost) {
+export function agentTools({ host, projectOf, signedIn, loginSaves, printer, helperOf, retired }: AgentHost) {
   const read = createReadTool()
   const write = { ...createWriteTool(), replay: 'safe' as const }
   const edit = createEditTool()
@@ -359,31 +364,35 @@ export function agentTools({ host, projectOf, signedIn, loginSaves, printer }: A
     },
   })
 
-  const astra = defineTool({
-    name: ASTRA,
+  const helper = defineTool({
+    name: HELPER,
     description:
-      'Hand a task to Astra, the GPT helper, who works in this project folder with the same file tools and `run`. ' +
-      'Astra cannot see this chat, so say everything: what to do, the files to read, and the file to write.',
+      'Hand a task to the helper model the person chose, which works in this project folder with the same file tools ' +
+      'and `run`. The helper cannot see this chat, so say everything: what to do, the files to read, and the file to write.',
     parameters: obj({ task: str({ minLength: 1 }) }),
     replay: 'safe',
     execute: async ({ task }, api, context) => {
-      // Astra's conversation is owned by this call, so a rerun finds the same one and the same request.
+      // The model is kept with the call, so a rerun after a restart runs the helper the turn started with.
+      const model = await api.memo('helper', await helperOf(api.conversationId), context)
+      const name = modelName(model)
+      // The helper's conversation is owned by this call, so a rerun finds the same one and the same request. It gets
+      // the file tools and `run` only, so it cannot slice or hand the task on.
       const child = await api.commit(async (tx) => {
         const existing = (await tx.scanConversations({ ownerTaskId: api.taskId }, 1)).items[0]
         if (existing !== undefined) return existing.id
         const created = await tx.createConversation({ ownership: { kind: 'task', taskId: api.taskId } })
-        await configure(tx, created.id, { model: ASTRA_MODEL, tools: [read, write, edit, run] })
+        await configure(tx, created.id, { model, tools: [read, write, edit, run] })
         return created.id
       }, context)
-      await api.details({ astra: child }, context)
+      await api.details({ handoff: { task: String(api.taskId), conversation: child, helper: model } satisfies Handoff }, context)
       const conversation = await api.conversation(child, context)
-      if (conversation === undefined) throw new Error("Astra's conversation is gone")
-      const { provider } = ASTRA_MODEL
+      if (conversation === undefined) throw new Error("the helper's conversation is gone")
+      const { provider } = model
       // The login save each request goes out with, kept with the request, so a rerun after a crash finds the same one.
       const savedWith = async (requestId: string) => api.memo<number>(`login:${requestId}`, await loginSaves(provider), context)
-      // Astra runs on the person's ChatGPT sign-in. Without it the turn waits here, with the fix named, and goes on.
+      // The helper runs on the person's sign-in to its provider. Without it the turn waits here, with the fix named, and goes on.
       await signedIn(api.conversationId, String(api.taskId), provider, context, undefined)
-      const first = `astra:${api.taskId}`
+      const first = `helper:${api.taskId}`
       let saves = await savedWith(first)
       let submission = await conversation.submit({ type: 'input', content: task, requestId: first }, context)
       // Each continue has its own request id, so a rerun after a crash finds the same one instead of sending another.
@@ -392,16 +401,21 @@ export function agentTools({ host, projectOf, signedIn, loginSaves, printer }: A
         if (settled.status === 'done' && settled.type !== 'write') {
           const { answer } = settled
           const entry = await api.commit((tx) => tx.entry(AssistantEntry, answer), context)
-          return { output: text(textOf(entry?.model?.[0]?.content) || 'Astra finished without a message.') }
+          return { output: text(textOf(entry?.model?.[0]?.content) || `${name} finished without a message.`) }
         }
         const detail = typeof settled.detail === 'string' ? settled.detail : ''
-        if (settled.reason !== 'model_error' || !isLoginFailure(detail)) {
-          return { output: text(`Astra did not answer (${settled.reason}${detail === '' ? '' : `: ${detail}`}).`), isError: true }
+        const modelError = settled.reason === 'model_error'
+        if (modelError && isRetired(detail)) {
+          await retired(model)
+          return { output: text(`${name}, the helper model, was retired by its provider.`), isError: true }
         }
-        // The sign-in was missing or refused, so Astra waits for a login saved after the one this request went out
-        // with, which may have landed while it was out, then goes on from where it stopped. A rerun after a crash takes
-        // a continue it already sent as it was, without waiting again.
-        const requestId = `astra:${api.taskId}:continue:${resumed}`
+        if (!modelError || !isLoginFailure(detail)) {
+          return { output: text(`Helper ${name} failed (${settled.reason}${detail === '' ? '' : `: ${detail}`}).`), isError: true }
+        }
+        // The sign-in was missing or refused, so the helper waits for a login saved after the one this request went
+        // out with, which may have landed while it was out, then goes on from where it stopped. A rerun after a crash
+        // takes a continue it already sent as it was, without waiting again.
+        const requestId = `helper:${api.taskId}:continue:${resumed}`
         const sent = await api.commit((tx) => tx.submissionByRequest(child, requestId), context)
         if (sent === undefined) await signedIn(api.conversationId, String(api.taskId), provider, context, saves)
         saves = await savedWith(requestId)
@@ -410,7 +424,7 @@ export function agentTools({ host, projectOf, signedIn, loginSaves, printer }: A
     },
   })
 
-  return [read, write, edit, run, slice, astra] as const satisfies readonly ToolRegistration[]
+  return [read, write, edit, run, slice, helper] as const satisfies readonly ToolRegistration[]
 }
 
 /** The one extension the app installs. Nothing else is registered, so the agent has these tools and no others. */

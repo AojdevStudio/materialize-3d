@@ -9,6 +9,7 @@ import { Host } from './host'
 import { inferenceModels, KeychainCredentials, Logins } from './inference'
 import { legacyProjects } from './legacy'
 import { handlers } from './methods'
+import type { Catalog } from './offered'
 import { sweepPictures } from './pictures'
 import { EXIT, FLAGS, PICTURES_FOLDER } from './protocol'
 import { Store, StoreInUse } from './store'
@@ -17,10 +18,12 @@ export interface SidecarOptions {
   argv: string[]
   /** Tests only: providers beside the app's three, such as a scripted model. */
   addProviders?(models: MutableModels): void
+  /** Tests only: a model catalog in place of the app's, such as one with a newer version. */
+  catalog?: Catalog
 }
 
 /** The sidecar from start to quit: open the store, serve the pipe until stdin closes, then close the store. */
-export async function runSidecar({ argv, addProviders }: SidecarOptions): Promise<never> {
+export async function runSidecar({ argv, addProviders, catalog }: SidecarOptions): Promise<never> {
   // Stdout carries protocol lines only, so a library that logs cannot corrupt the pipe.
   console.log = console.error
   console.info = console.error
@@ -50,6 +53,8 @@ export async function runSidecar({ argv, addProviders }: SidecarOptions): Promis
     signedIn: async (conversation, task, provider, context, after) => (await opened.promise).chats.loginFor(conversation, task, provider, context, after),
     loginSaves: async (provider) => (await opened.promise).store.loginSaves(provider),
     printer: async () => (await opened.promise).store.printer(),
+    helperOf: async (conversation) => (await opened.promise).chats.helperOf(conversation),
+    retired: async (model) => (await opened.promise).chats.retired(model),
   })
   const extension = agentExtension(tools)
   registry.install(extension)
@@ -61,6 +66,7 @@ export async function runSidecar({ argv, addProviders }: SidecarOptions): Promis
       projectsDir: projects,
       models,
       registry,
+      ...(catalog === undefined ? {} : { catalog }),
       env: ({ cwd }) => {
         if (cwd === undefined) throw new NoProjectFolder()
         return new ProjectEnv({ cwd })

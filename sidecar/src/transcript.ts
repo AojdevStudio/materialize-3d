@@ -4,7 +4,7 @@
  */
 import type { EntryRecord } from '@earendil-works/pi-durable'
 import { Imported, UserMessage } from './entries'
-import type { ChatEntry } from './protocol'
+import { type ChatEntry, type Handoff, HELPER } from './protocol'
 
 type Content = string | readonly ({ type: string; text?: string } | { type: 'toolCall'; id: string; name: string; arguments: unknown })[]
 
@@ -36,6 +36,8 @@ export function chatEntry(entry: EntryRecord): ChatEntry | undefined {
     case 'pi.tool-result': {
       if (message?.role !== 'toolResult') return undefined
       const { durationMs } = message
+      // A helper call keeps its handoff in its details from before it runs, so a result that failed holds it too.
+      const handoff = message.toolName === HELPER ? (message.details as { handoff?: Handoff } | undefined)?.handoff : undefined
       return {
         id: entry.id,
         kind: 'tool',
@@ -44,6 +46,7 @@ export function chatEntry(entry: EntryRecord): ChatEntry | undefined {
         text: textOf(message.content),
         failed: message.isError,
         ...(durationMs === undefined ? {} : { durationMs }),
+        ...(handoff === undefined ? {} : { handoff }),
       }
     }
     default:

@@ -21,7 +21,6 @@ import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-code
 import { opencodeGoProvider } from '@earendil-works/pi-ai/providers/opencode-go'
 import { compile, lit, map, num, obj, opt, str, union } from '@earendil-works/pi-schema'
 import type { Host } from './host'
-import { OFFERED } from './offered'
 import { type Login, type LoginEvent, type LoginKind, type ModelChoice, type ModelOption, type Need, PROVIDERS, type ProviderId } from './protocol'
 
 /** Auth sees an empty world: every env var is unset and no file exists. */
@@ -65,6 +64,15 @@ const credential = compile(
 const LOGIN_FAILURE = /not configured|\b401\b|unauthori[sz]ed|authentication|invalid (api )?(key|token)|expired/i
 
 export const isLoginFailure = (detail: string) => LOGIN_FAILURE.test(detail)
+
+/**
+ * A provider's answer that confirms the model version itself is gone, not that the request failed for now. It reads
+ * only words a provider uses for a removed model, so an overload, a rate limit, a timeout, or a server error never
+ * counts as one.
+ */
+const RETIRED = /model_not_found|not_found_error|\bmodel\b[^\n]*?\b(not found|does not exist|(has been|was) (deprecated|retired|removed)|is no longer (available|supported))/i
+
+export const isRetired = (detail: string) => RETIRED.test(detail)
 
 /** A Keychain item as this app writes it, or undefined for any other text, which counts as signed out. */
 function savedLogin(secret: string): Credential | undefined {
@@ -218,12 +226,12 @@ export class Logins {
   }
 
   /**
-   * The short list's models of each provider the person signed in to. The pi-ai catalog can lack a model on the short
-   * list. That model cannot run, so its row stays out.
+   * The models of `options` the person can run: each of a provider they signed in to. The pi-ai catalog can lack a
+   * model the app's catalog lists. That model cannot run, so it stays out.
    */
-  async offered(): Promise<ModelOption[]> {
-    const signedIn = new Set((await this.status()).flatMap((login) => (login.login === null ? [] : [login.provider])))
-    return OFFERED.filter((m) => signedIn.has(m.provider) && this.#models.getModel(m.provider, m.modelId) !== undefined)
+  async runnable(options: readonly ModelOption[]): Promise<ModelOption[]> {
+    const signedIn = new Set<string>((await this.status()).flatMap((login) => (login.login === null ? [] : [login.provider])))
+    return options.filter((m) => signedIn.has(m.provider) && this.#models.getModel(m.provider, m.modelId) !== undefined)
   }
 
   /** Saves a key as the provider's login. A provider that has no key sign-in refuses it before its login changes. */
