@@ -387,7 +387,11 @@ export class Store {
   async send(tx: Tx, project: string, key: string, rev: number, pick?: ModelChoice | null): Promise<{ lead: ModelChoice; helper: ModelChoice | null; thinking: Thinking; saves: number }> {
     const { thinking } = await tx.doc(SettingsDoc, this.root.id)
     const saved = await this.#projectIn(tx, project)
-    if (pick !== undefined) saved.helper = pick === null ? null : copy(pick)
+    // A pick lets go a helper the chat found retired, as a pick in the chat does (`setHelper`).
+    if (pick !== undefined) {
+      saved.helper = pick === null ? null : copy(pick)
+      saved.retired = (saved.retired ?? []).filter((r) => r.role !== 'helper')
+    }
     const { model, helper } = saved
     const [gone] = this.#retiredRoles(saved)
     if (gone !== undefined) throw new RoleRetired(this.retiredFix(gone))

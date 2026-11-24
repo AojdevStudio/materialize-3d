@@ -112,6 +112,20 @@ describe('a new chat', () => {
     await app.quit()
   })
 
+  test('sent again with a new helper, lets go of a retirement its chat recorded for the old one', async () => {
+    const where = scratch()
+    const store = await openStore(where)
+    await store.setSettings({ model: FAUX_A })
+    const rev = await store.setDraft('new', { text: 'a clip', attachments: [] })
+    const { project } = await store.startProject(rev, FAUX_B)
+    await store.harness.commit((tx) => store.retire(tx, project.id, 'helper', FAUX_B), BACKGROUND_CONTEXT)
+    const sent = await store.harness.commit((tx) => store.send(tx, project.id, project.id, rev, null), BACKGROUND_CONTEXT)
+    expect(sent).toMatchObject({ lead: FAUX_A, helper: null })
+    expect(await store.retiredFor(project.id)).toEqual([])
+    expect((await store.project(project.id)).helper).toBeNull()
+    await store.close()
+  })
+
   test('sent again after its first try failed, takes the helper picked on the start screen since', async () => {
     const where = scratch()
     const app = await start(where, 'helper')
