@@ -11,7 +11,10 @@ type App = ReturnType<typeof spawnSidecar>
 const HOST = 'computer.tail0000.ts.net'
 /** Another service Tailscale Serve already forwards, which pairing must pass over. */
 const OTHER = { [`${HOST}:443`]: { Handlers: { '/': { Proxy: 'http://127.0.0.1:8788' } } } }
-const forwarding = (port: number, served = `${HOST}:${port}`) => ({ TCP: { [port]: { HTTPS: true } }, Web: { ...OTHER, [served]: { Handlers: { '/': { Proxy: `http://127.0.0.1:${port}` } } } } })
+const forwarding = (port: number, served = `${HOST}:${port}`) => ({
+  TCP: { 443: { HTTPS: true }, [served.slice(served.lastIndexOf(':') + 1)]: { HTTPS: true } },
+  Web: { ...OTHER, [served]: { Handlers: { '/': { Proxy: `http://127.0.0.1:${port}` } } } },
+})
 const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII='
 
 async function freePort(): Promise<number> {
@@ -150,6 +153,9 @@ describe('pairing', () => {
     expect(await pairing(app)).toEqual({ kind: 'setup', command: `tailscale serve --bg --https=${port} http://127.0.0.1:${port}` })
     setServe({ Web: OTHER })
     expect((await pairing(app)).kind).toBe('setup')
+    // A plain HTTP listener cannot answer the https address a QR would name.
+    setServe({ TCP: { [port]: { HTTP: true } }, Web: forwarding(port).Web })
+    expect((await pairing(app)).kind).toBe('setup')
 
     setServe(forwarding(port))
     const ready = await pairing(app)
@@ -175,9 +181,14 @@ describe('a paired device', () => {
     expect((await fetch(`${base}/chats/${project}`)).status).toBe(401)
     // A second client on the tailnet that never paired.
     expect((await as(base, 'a-token-never-given')(`/chats/${project}`)).status).toBe(401)
+    // Without a token, no path says whether it is a route, or whether it parses.
+    for (const path of ['/no-such-route', `/chats/${project}/files/%E0%A4%A`]) expect([path, (await fetch(`${base}${path}`)).status]).toEqual([path, 401])
     expect((await as(base, token)('/chats')).status).toBe(200)
+    const stream = eventStream(await as(base, token)('/events'))
 
     expect(await app.call('mobile.forget', { device: device.id })).toEqual([])
+    // The stream it opened before ends, so it hears no chat after it was forgotten.
+    await expect(stream.until(() => false, 5_000)).rejects.toThrow('the stream ended')
     expect((await as(base, token)(`/chats/${project}`)).status).toBe(401)
     expect((await as(base, token)('/computer')).status).toBe(401)
     await app.quit()
@@ -201,7 +212,7 @@ describe('a paired device', () => {
     const { rev } = (await (await call(`/chats/${project}/draft`, { method: 'PUT', body: { text: 'hello', pictures: [] } })).json()) as { rev: number }
     expect((await call(`/chats/${project}/send`, { method: 'POST', body: { rev } })).status).toBe(200)
     await stream.until((event) => (event.entries as ChatEntry[]).some((e) => e.kind === 'assistant' && e.text === 'answered by faux-a'))
-    expect(stream.events.map((event) => event.type)).toEqual(stream.events.map(() => 'chat'))
+    expect(stream.events.filter((event) => event.type !== 'chat' && event.type !== 'project')).toEqual([])
     void stream.close()
 
     const gets = ['/computer', '/models', '/chats', `/chats/${project}`, `/chats/${project}/files`, `/chats/${project}/files/part.stl`]
@@ -233,8 +244,9 @@ describe('a paired device', () => {
     const saved = await call(`/chats/${project}/draft`, { method: 'PUT', body: { text: 'From the phone', pictures: [{ name: 'shot.png', data: PNG }] } })
     const { rev } = (await saved.json()) as { rev: number }
     const send = () => call(`/chats/${project}/send`, { method: 'POST', body: { rev } })
-    const sent = await send()
-    expect(sent.status).toBe(200)
+    // Two sends of one revision at once, as a retry that overlaps a slow answer, both answer and send it once.
+    const [sent, overlapping] = await Promise.all([send(), send()])
+    expect([sent.status, overlapping.status]).toEqual([200, 200])
     expect(((await sent.json()) as { project: { id: string } }).project.id).toBe(project)
     const answered = await stream.until((event) => (event.entries as ChatEntry[]).some((e) => e.kind === 'assistant' && e.text === 'answered by faux-a'))
     expect(answered.project).toBe(project)
@@ -250,6 +262,10 @@ describe('a paired device', () => {
 
     const roles = await call(`/chats/${project}/roles`, { method: 'PUT', body: { lead: { provider: 'faux', modelId: 'faux-b' }, helper: { provider: 'faux', modelId: 'faux-a' } } })
     expect(await roles.json()).toEqual({ lead: { provider: 'faux', modelId: 'faux-b' }, helper: { provider: 'faux', modelId: 'faux-a' } })
+    // The window and the phone's stream both hear the change, so neither shows a stale pair.
+    const changed = (event: Record<string, unknown>) => event.type === 'project' && (event.project as { model: { modelId: string } }).model.modelId === 'faux-b'
+    await app.until(changed)
+    await stream.until(changed)
     const alone = await call(`/chats/${project}/roles`, { method: 'PUT', body: { helper: null } })
     expect(await alone.json()).toEqual({ lead: { provider: 'faux', modelId: 'faux-b' }, helper: null })
     expect((await call(`/chats/${project}/roles`, { method: 'PUT', body: { lead: { provider: 'faux', modelId: 'no-such' } } })).status).toBe(500)
@@ -301,13 +317,29 @@ describe('a paired device', () => {
     writeFileSync(join(folder, '.m3d', 'hidden.stl'), 'the app records')
     writeFileSync(join(folder, 'notes.txt'), 'not a model')
     writeFileSync(join(folder, 'part.stl'), 'solid part')
+    // Links that stay in the chat but name a model: one to the app records, one to a file that is not a model.
+    symlinkSync(join(folder, '.m3d', 'hidden.stl'), join(folder, 'records.stl'))
+    symlinkSync(join(folder, 'notes.txt'), join(folder, 'notes.glb'))
 
     expect(((await (await call(`/chats/${project}/files`)).json()) as ModelFile[]).map((f) => f.rel)).toEqual(['part.stl'])
-    for (const rel of ['..%2Fescape.stl', '%2E%2E/escape.stl', 'linked.stl', '.m3d/hidden.stl', '.m3d%2Fhidden.stl', 'notes.txt', 'missing.stl']) {
+    for (const rel of ['..%2Fescape.stl', '%2E%2E/escape.stl', 'linked.stl', 'records.stl', 'notes.glb', '.m3d/hidden.stl', '.m3d%2Fhidden.stl', 'notes.txt', 'missing.stl']) {
       const answer = await call(`/chats/${project}/files/${rel}`)
       expect([rel, answer.status]).toEqual([rel, 404])
     }
     expect((await call(`/chats/${project}/files/part.stl`)).status).toBe(200)
     await app.quit()
   })
+
+  test('changes neither role when one of them is refused', async () => {
+    const { app, base } = await start(forwarding)
+    const project = await chat(app)
+    const { token } = await pair(app, base)
+    const call = as(base, token)
+
+    const refused = await call(`/chats/${project}/roles`, { method: 'PUT', body: { lead: { provider: 'faux', modelId: 'faux-b' }, helper: { provider: 'faux', modelId: 'no-such' } } })
+    expect(refused.status).toBe(500)
+    const listed = ((await (await call('/chats')).json()) as MobileChat[]).find((row) => row.id === project)
+    expect([listed?.lead, listed?.helper]).toEqual([{ provider: 'faux', modelId: 'faux-a' }, null])
+    await app.quit()
+  }, 60_000)
 })

@@ -513,24 +513,18 @@ export class Store {
     return imported
   }
 
-  /** Saves the lead the next turn of project `id` runs on. The choice lets go a lead the chat found retired. */
-  async setLead(id: string, model: ModelChoice): Promise<void> {
-    await this.harness.commit(async (tx) => {
-      const project = await this.#projectIn(tx, id)
-      project.model = copy(model)
-      project.retired = (project.retired ?? []).filter((r) => r.role !== 'lead')
-    }, context)
-  }
-
   /**
-   * Saves the helper the next turn of project `id` can hand tasks to, or null for none. The choice lets go a helper the
-   * chat found retired.
+   * Saves the roles given for the next turn of project `id`: its lead, and its helper or null for none, and answers the
+   * project. Choosing a role lets go a version the chat found retired in it, the same version included.
    */
-  async setHelper(id: string, model: ModelChoice | null): Promise<void> {
-    await this.harness.commit(async (tx) => {
+  async setRoles(id: string, { lead, helper }: { lead?: ModelChoice; helper?: ModelChoice | null }): Promise<Project> {
+    return this.harness.commit(async (tx) => {
       const project = await this.#projectIn(tx, id)
-      project.helper = model === null ? null : copy(model)
-      project.retired = (project.retired ?? []).filter((r) => r.role !== 'helper')
+      if (lead !== undefined) project.model = copy(lead)
+      if (helper !== undefined) project.helper = helper === null ? null : copy(helper)
+      project.retired = (project.retired ?? []).filter((r) => (r.role === 'lead' ? lead : helper) === undefined)
+      // A plain copy, since the documents a commit hands out are only valid inside it.
+      return JSON.parse(JSON.stringify(project))
     }, context)
   }
 

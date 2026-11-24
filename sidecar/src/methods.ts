@@ -7,7 +7,7 @@ import type { Logins } from './inference'
 import type { Mobile } from './mobile'
 import { offered } from './offered'
 import { savePicture } from './pictures'
-import { type AppState, type ModelChoice, type Need, PLATES, PROVIDERS, SETUP_STEPS, THINKING } from './protocol'
+import { type AppState, type ModelChoice, type Need, PLATES, type Project, PROVIDERS, SETUP_STEPS, type SidecarEvent, THINKING } from './protocol'
 import type { Store } from './store'
 
 export interface Services {
@@ -22,6 +22,8 @@ export interface Services {
   /** The folder pasted pictures are kept in until they are sent, outside every project. */
   pictures: string
   mobile: Mobile
+  /** Tells the window and every paired device's open stream. */
+  emit(event: SidecarEvent): void
 }
 
 const step = union(SETUP_STEPS.map((value) => lit(value)))
@@ -31,9 +33,21 @@ const plate = union(PLATES.map((value) => lit(value)))
 const printer = obj({ machine: str({ minLength: 1 }), process: str({ minLength: 1 }), filament: str({ minLength: 1 }), plate: opt(plate) })
 const provider = union(PROVIDERS.map((value) => lit(value)))
 
-/** Refuses a model pi-ai cannot run, before a role is saved with it. The store refuses a retired one. */
-export function refuseUnrunnable(models: Models, model: ModelChoice): void {
-  if (models.getModel(model.provider, model.modelId) === undefined) throw new Error(`${model.provider} has no model ${model.modelId}`)
+/**
+ * Saves a project's roles, from the window or a paired device, and tells both. A model pi-ai cannot run is refused here,
+ * and a retired one by the store. Either refusal saves neither role.
+ */
+export async function saveRoles(
+  { store, models, emit }: Pick<Services, 'store' | 'models' | 'emit'>,
+  id: string,
+  change: { lead?: ModelChoice; helper?: ModelChoice | null },
+): Promise<Project> {
+  for (const model of [change.lead, change.helper]) {
+    if (model !== undefined && model !== null && models.getModel(model.provider, model.modelId) === undefined) throw new Error(`${model.provider} has no model ${model.modelId}`)
+  }
+  const project = await store.setRoles(id, change)
+  emit({ type: 'project', project })
+  return project
 }
 
 /** The models both roles offer: the newest version of each family, for the providers the person signed in to. */
@@ -43,7 +57,8 @@ export const offeredModels = async (store: Store, logins: Logins) => logins.runn
  * Every method the window can call, each parsed at the pipe before it runs. `sidecar/test/protocol.test.ts` checks that
  * each params schema takes exactly what `Methods` names.
  */
-export function handlers({ host, store, models, logins, chats, version, legacy, pictures, mobile }: Services) {
+export function handlers(services: Services) {
+  const { host, store, logins, chats, version, legacy, pictures, mobile } = services
   const state = async (): Promise<AppState> => ({ ...(await store.state()), importBlocked: legacy.blocked() })
   return {
     'app.ping': { params: compile(obj({})), run: async () => ({ version }) },
@@ -140,16 +155,14 @@ export function handlers({ host, store, models, logins, chats, version, legacy, 
     'projects.setLead': {
       params: compile(obj({ project: str(), model })),
       run: async ({ project, model }) => {
-        refuseUnrunnable(models, model)
-        await store.setLead(project, model)
+        await saveRoles(services, project, { lead: model })
         return null
       },
     },
     'projects.setHelper': {
       params: compile(obj({ project: str(), model: nullable(model) })),
       run: async ({ project, model }) => {
-        if (model !== null) refuseUnrunnable(models, model)
-        await store.setHelper(project, model)
+        await saveRoles(services, project, { helper: model })
         return null
       },
     },
@@ -164,6 +177,6 @@ export function handlers({ host, store, models, logins, chats, version, legacy, 
     'agent.tools': { params: compile(obj({ project: str() })), run: ({ project }) => chats.tools(project) },
     'mobile.pair': { params: compile(obj({})), run: () => mobile.pair() },
     'mobile.devices': { params: compile(obj({})), run: () => store.devices() },
-    'mobile.forget': { params: compile(obj({ device: str() })), run: ({ device }) => store.forgetDevice(device) },
+    'mobile.forget': { params: compile(obj({ device: str() })), run: ({ device }) => mobile.forget(device) },
   } satisfies Handlers
 }

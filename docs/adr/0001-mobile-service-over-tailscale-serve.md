@@ -24,14 +24,14 @@ Each request but the pairing one must carry a device token. A device on the tail
 ### Pairing
 
 1. In Settings, the computer shows a QR image. The QR holds one URL: `https://<host>.<tailnet>.ts.net:47380/pair?code=<code>`. The app takes the origin and the code from it.
-2. The code works once and for 5 minutes. A new code replaces the last one. Codes live only in the sidecar's memory, so a restart ends them.
+2. The code works once and for 5 minutes. Settings shows it only when Serve gives the service an HTTPS address. A new code replaces the last one. Codes live only in the sidecar's memory, so a restart ends them.
 3. The app sends `POST /api/v1/pair` with the code and a device name. The reply holds a device token. The app keeps the origin and the token in the iOS Keychain.
 4. The computer keeps only the SHA-256 hash of each token, in its store. A copy of the store cannot act as a device.
-5. Forget, in Settings, removes the device. Its token stops working on the next request.
+5. Forget, in Settings, removes the device. Its token stops working on the next request, and its open event stream ends.
 
 ### The API
 
-Every route takes and answers JSON, except where noted. Every route but `pair` needs `Authorization: Bearer <token>` and answers 401 without a valid one. A route not in this table answers 404.
+Every route takes and answers JSON, except where noted. Every request but `pair` needs `Authorization: Bearer <token>`. Without a valid token, every path answers 401, a route or not. With one, a route not in this table answers 404.
 
 | Route | Body | Answer |
 |---|---|---|
@@ -40,10 +40,10 @@ Every route takes and answers JSON, except where noted. Every route but `pair` n
 | `GET /api/v1/models` | | The models both roles offer, as `models.list` answers the window. |
 | `GET /api/v1/chats` | | Each chat with its pair and status, newest activity first. |
 | `GET /api/v1/chats/<project>` | | The chat as `chat.open` answers it. Its changes then reach `/events`. |
-| `GET /api/v1/events` | | `text/event-stream`. Each `data:` line is one `chat` event, as the window gets it. Open it before you read a chat. |
+| `GET /api/v1/events` | | `text/event-stream`. Each `data:` line is one event, as the window gets it: `chat` for a chat's changes, and `project` with the whole project when its roles change on any device. Open it before you read a chat. Forget ends it. |
 | `PUT /api/v1/chats/<project>/draft` | `{ text, pictures: [{ name, data }] }` | `{ rev }`. `data` is base64. This device's draft for the chat. |
 | `POST /api/v1/chats/<project>/send` | `{ rev }` | `{ project }`. Sending the same `rev` again sends nothing more. |
-| `PUT /api/v1/chats/<project>/roles` | `{ lead?, helper? }` | `{ lead, helper }`. `helper: null` lets the lead work alone. |
+| `PUT /api/v1/chats/<project>/roles` | `{ lead?, helper? }` | `{ lead, helper }`. `helper: null` lets the lead work alone. A refused role saves neither. |
 | `GET /api/v1/chats/<project>/files` | | The chat's model files (`.stl`, `.3mf`, `.glb`): `[{ rel, size, modifiedMs }]`, newest first. |
 | `GET /api/v1/chats/<project>/files/<rel>` | | The file's bytes, with its model content type. |
 
@@ -51,8 +51,8 @@ The phone calls the service from Rust, not from its web view, so the service sen
 
 ### What the phone cannot do
 
-- Read or change a sign-in, a key, the settings, setup, or the printer. No route names them, and the event stream carries `chat` events only, since sign-in events hold sign-in links and codes.
-- Name a file on the computer. A phone draft takes uploaded pictures only, never a path. A file read stays inside the project folder, takes model files only, and skips the app's own records.
+- Read or change a sign-in, a key, the settings, setup, or the printer. No route names them, and the event stream carries `chat` and `project` events only, since sign-in events hold sign-in links and codes.
+- Name a file on the computer. A phone draft takes uploaded pictures only, never a path. A file read stays inside the project folder, takes model files only, skips the app's own records, and follows no link.
 - Overwrite the computer's unsent message. Each device keeps its own draft for a chat, apart from the desktop's.
 
 ## Consequences

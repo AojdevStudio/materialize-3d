@@ -2,20 +2,20 @@
  * The phone service: a small HTTP API on loopback that a paired phone or tablet reaches through the person's own
  * Tailscale Serve. `docs/adr/0001-mobile-service-over-tailscale-serve.md` is its contract. It does only what the route
  * table in `Mobile` lists, each route through the same store and chat code the window's methods use, and it sends a
- * phone only `chat` events.
+ * phone only `chat` and `project` events.
  */
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
-import { existsSync, readdirSync, statSync } from 'node:fs'
+import { existsSync, readdirSync, realpathSync, statSync } from 'node:fs'
 import { hostname } from 'node:os'
 import { extname, join } from 'node:path'
 import type { Models } from '@earendil-works/pi-ai'
-import { arr, compile, int, map, nullable, obj, opt, str, type Validator } from '@earendil-works/pi-schema'
+import { arr, bool, compile, int, map, nullable, obj, opt, str, type Validator } from '@earendil-works/pi-schema'
 import type { Server } from 'bun'
 import { renderSVG } from 'uqr'
 import { type Chats, inside } from './chat'
 import { skipped } from './folder'
 import type { Logins } from './inference'
-import { model, offeredModels, refuseUnrunnable } from './methods'
+import { model, offeredModels, saveRoles } from './methods'
 import { savePicture } from './pictures'
 import type { Computer, MobileChat, MobilePairing, ModelFile, PairedDevice, SidecarEvent } from './protocol'
 import { deviceDraft, type Store } from './store'
@@ -34,7 +34,13 @@ const BAD_CODE = 'This code is wrong, expired, or used. Show a new code on the c
 
 /** What `tailscale serve status --json` says, as far as this app reads it: each served address and where `/` goes. */
 const serveStatus = compile(
-  obj({ Web: opt(map(obj({ Handlers: opt(map(obj({ Proxy: opt(str()) }, { open: true }))) }, { open: true }))) }, { open: true }),
+  obj(
+    {
+      TCP: opt(map(obj({ HTTPS: opt(bool()) }, { open: true }))),
+      Web: opt(map(obj({ Handlers: opt(map(obj({ Proxy: opt(str()) }, { open: true }))) }, { open: true }))),
+    },
+    { open: true },
+  ),
 )
 
 const sha256 = (text: string) => createHash('sha256').update(text).digest()
@@ -74,32 +80,51 @@ class Pairing {
   }
 }
 
-/** The open event streams. The sidecar's `emit` hands each event here too, and only `chat` events go on. */
+/** An open event stream: the device it was opened for, and how to write to it and end it. */
+type Stream = { device: string; write(line: string): void; end(): void }
+
+/**
+ * The open event streams, each for the paired device that opened it. The sidecar's `emit` hands each event here too,
+ * and only `chat` and `project` events go on. Forgetting a device ends its streams.
+ */
 export class PhoneEvents {
-  readonly #open = new Set<(line: string) => void>()
+  readonly #open = new Set<Stream>()
   readonly #encoder = new TextEncoder()
 
   send(event: SidecarEvent): void {
-    if (event.type !== 'chat') return
-    for (const write of this.#open) write(`data: ${JSON.stringify(event)}\n\n`)
+    if (event.type !== 'chat' && event.type !== 'project') return
+    for (const stream of this.#open) stream.write(`data: ${JSON.stringify(event)}\n\n`)
   }
 
-  open(): Response {
-    let write: (line: string) => void
+  /** Ends every stream `device` opened. */
+  close(device: string): void {
+    for (const stream of this.#open) if (stream.device === device) stream.end()
+  }
+
+  open(device: string): Response {
+    let open: Stream
     let keepalive: ReturnType<typeof setInterval>
-    const stream = new ReadableStream<Uint8Array>({
+    const body = new ReadableStream<Uint8Array>({
       start: (controller) => {
-        write = (line) => controller.enqueue(this.#encoder.encode(line))
-        this.#open.add(write)
-        keepalive = setInterval(() => write(': keepalive\n\n'), KEEPALIVE_MS)
-        write(': open\n\n')
+        open = {
+          device,
+          write: (line) => controller.enqueue(this.#encoder.encode(line)),
+          end: () => {
+            this.#open.delete(open)
+            clearInterval(keepalive)
+            controller.close()
+          },
+        }
+        this.#open.add(open)
+        keepalive = setInterval(() => open.write(': keepalive\n\n'), KEEPALIVE_MS)
+        open.write(': open\n\n')
       },
       cancel: () => {
-        this.#open.delete(write)
+        this.#open.delete(open)
         clearInterval(keepalive)
       },
     })
-    return new Response(stream, { headers: { 'content-type': 'text/event-stream', 'cache-control': 'no-store' } })
+    return new Response(body, { headers: { 'content-type': 'text/event-stream', 'cache-control': 'no-store' } })
   }
 }
 
@@ -112,17 +137,18 @@ export interface MobileOptions {
   /** The folder a phone draft's pictures are kept in, as the window's pasted pictures are. */
   pictures: string
   events: PhoneEvents
+  /** Tells the window and every paired device's open stream. */
+  emit(event: SidecarEvent): void
   port: number
   pairingTtlMs: number
 }
 
 type Params = Record<string, string>
-/** A route: an open one takes no token, and every other one runs for the paired device whose token the request carries. */
-type Route = { method: 'GET' | 'POST' | 'PUT'; path: string } & (
-  | { open: true; run(request: Request): Promise<Response> }
-  | { open?: false; run(request: Request, params: Params, device: PairedDevice): Promise<Response> }
-)
+/** A route a paired device can call. It runs for the device whose token the request carries. */
+type Route = { method: 'GET' | 'POST' | 'PUT'; path: string; run(request: Request, params: Params, device: PairedDevice): Promise<Response> }
 
+/** The one route that takes no token: a device redeems the code on the computer's screen here. */
+const PAIR = '/api/v1/pair'
 const EVENTS = '/api/v1/events'
 
 /** Matches a path to a route's pattern: `:name` takes one part, and `*name` takes the rest, at least one part. */
@@ -207,11 +233,12 @@ export class Mobile {
         fetch: async (request, server) => {
           const path = new URL(request.url).pathname
           try {
+            if (request.method === 'POST' && path === PAIR) return await this.#pair(request)
+            // Every other request, to a route or not, shows a paired device's token first, so a stranger learns nothing.
+            const device = await this.#device(request)
             for (const route of routes) {
               const params = route.method === request.method ? match(route.path, path) : undefined
               if (params === undefined) continue
-              if (route.open) return await route.run(request)
-              const device = await this.#device(request)
               // An event stream stays open with nothing to send for as long as no chat changes.
               if (route.path === EVENTS) server.timeout(request, 0)
               return await route.run(request, params, device)
@@ -231,16 +258,15 @@ export class Mobile {
     }
   }
 
-  /** The full surface a paired device can reach. Every route but `pair` needs the device's token. */
+  /** The full surface a paired device can reach, beside `PAIR`. Each route needs the device's token. */
   #routes(): Route[] {
-    const { store, chats, models, logins, pictures } = this.#o
+    const { store, chats, logins, pictures } = this.#o
     const project = async ({ project: id }: Params) => {
       const found = (await store.projects()).find((p) => p.id === id)
       if (found === undefined) throw new Refused(404, `no project ${id}`)
       return found
     }
     return [
-      { method: 'POST', path: '/api/v1/pair', open: true, run: (request) => this.#pair(request) },
       { method: 'GET', path: '/api/v1/computer', run: async (_, __, device) => json({ ...(await this.#computer()), device }) },
       { method: 'GET', path: '/api/v1/models', run: async () => json(await offeredModels(store, logins)) },
       {
@@ -257,7 +283,7 @@ export class Mobile {
         },
       },
       { method: 'GET', path: '/api/v1/chats/:project', run: async (_, params) => json(await chats.open((await project(params)).id)) },
-      { method: 'GET', path: EVENTS, run: async () => this.#o.events.open() },
+      { method: 'GET', path: EVENTS, run: async (_, __, device) => this.#o.events.open(device.id) },
       {
         method: 'PUT',
         path: '/api/v1/chats/:project/draft',
@@ -282,12 +308,8 @@ export class Mobile {
         path: '/api/v1/chats/:project/roles',
         run: async (request, params) => {
           const { id } = await project(params)
-          const { lead, helper } = await body(request, roles)
-          if (lead !== undefined) refuseUnrunnable(models, lead)
-          if (helper !== undefined && helper !== null) refuseUnrunnable(models, helper)
-          if (lead !== undefined) await store.setLead(id, lead)
-          if (helper !== undefined) await store.setHelper(id, helper)
-          return json(await store.pairFor(id))
+          const { model: lead, helper } = await saveRoles(this.#o, id, await body(request, roles))
+          return json({ lead, helper })
         },
       },
       { method: 'GET', path: '/api/v1/chats/:project/files', run: async (_, params) => json(modelFiles(join(store.projectsDir, (await project(params)).id))) },
@@ -306,6 +328,8 @@ export class Mobile {
           } catch {
             throw missing
           }
+          // The list leaves links out, so a read takes only the file the name spells, with no link on its way.
+          if (realpathSync.native(path) !== join(realpathSync.native(folder), rel)) throw missing
           return new Response(Bun.file(path), { headers: { 'content-type': type } })
         },
       },
@@ -348,11 +372,20 @@ export class Mobile {
     const status: unknown = out.trim() === '' ? {} : JSON.parse(out)
     if (!serveStatus.check(status)) throw new Error(`tailscale serve status --json printed what this app cannot read: ${out.slice(0, 200)}`)
     const forwards = [`http://127.0.0.1:${port}`, `http://localhost:${port}`]
-    const served = Object.entries(status.Web ?? {}).find(([, web]) => forwards.includes(web.Handlers?.['/']?.Proxy ?? ''))?.[0]
+    // Only an HTTPS listener gives the phone the address the QR names. A plain HTTP one is passed over.
+    const https = (served: string) => status.TCP?.[served.slice(served.lastIndexOf(':') + 1)]?.HTTPS === true
+    const served = Object.entries(status.Web ?? {}).find(([at, web]) => https(at) && forwards.includes(web.Handlers?.['/']?.Proxy ?? ''))?.[0]
     if (served === undefined) return { kind: 'setup', command: `tailscale serve --bg --https=${port} http://127.0.0.1:${port}` }
     const { code, expiresMs } = this.#pairing.issue()
     const url = `https://${served.replace(/:443$/, '')}/pair?code=${code}`
     return { kind: 'ready', url, svg: renderSVG(url), expiresMs }
+  }
+
+  /** Forgets a paired device: its token stops working, and the event streams it holds open end now. */
+  async forget(device: string): Promise<PairedDevice[]> {
+    const left = await this.#o.store.forgetDevice(device)
+    this.#o.events.close(device)
+    return left
   }
 
   stop(): void {

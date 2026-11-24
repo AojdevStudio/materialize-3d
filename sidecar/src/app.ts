@@ -127,8 +127,8 @@ export async function runSidecar({ argv, addProviders, catalog, mobilePort = MOB
   }
   // The pipe opens before the pass is asked for and before the reconcile, which asks Rust's Keychain whether a
   // waited-on login is there now.
-  const mobile = new Mobile({ store, chats, models, logins, version, pictures, events: phones, port: mobilePort, pairingTtlMs })
-  const serving = host.serve(handlers({ host, store, models, logins, chats, version, legacy, pictures, mobile }), process.stdin)
+  const mobile = new Mobile({ store, chats, models, logins, version, pictures, events: phones, emit, port: mobilePort, pairingTtlMs })
+  const serving = host.serve(handlers({ host, store, models, logins, chats, version, legacy, pictures, mobile, emit }), process.stdin)
   // Work a crash cut off resumes only with the pass. Without it an update is installing, and the work resumes after
   // the restart.
   const resumable = await busy.watch(store.harness)

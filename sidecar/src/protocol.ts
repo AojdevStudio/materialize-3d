@@ -355,6 +355,8 @@ export type SidecarEvent =
   | { type: 'ready'; version: string }
   | LoginEvent
   | ({ type: 'chat' } & ChatView)
+  /** A project whose roles changed, from the window or a paired device, as it is now. */
+  | { type: 'project'; project: Project }
   | { type: 'engine'; state: (typeof ENGINE_STATES)[number]; detail: string }
 
 export const ENGINE_STATES = ['restarting', 'stopped'] as const

@@ -72,8 +72,8 @@ export async function copyAttachments(folder: string, rev: number, sources: stri
       if (statSync(source, { throwIfNoEntry: false })?.isFile() !== true) {
         throw new Error(`A file in this message can't be read: ${basename(source)}. Take it out and send again.`)
       }
-      const part = join(dir, `.${name}.part`)
-      rmSync(part, { force: true })
+      // Each copy has a part file of its own, so two sends of one revision at once, as a phone's retry, never share one.
+      const part = join(dir, `.${name}.${crypto.randomUUID()}.part`)
       await copyFile(source, part, constants.COPYFILE_EXCL)
       await rename(part, target)
     }
