@@ -233,4 +233,24 @@ describe('MobileApp', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))
     expect(await screen.findByRole('button', { name: 'Phone stand' })).toBeTruthy()
   })
+
+  it('keeps the refreshed list when an earlier, slower read answers last', async () => {
+    answer({ paired_computer: computer })
+    let first: (response: Response) => void = () => {}
+    let reads = 0
+    vi.stubGlobal('fetch', (url: string) => {
+      if (!url.endsWith('/api/v1/chats')) return Promise.resolve(new Response('Not found', { status: 404 }))
+      reads += 1
+      if (reads === 1) return new Promise<Response>((resolve) => (first = resolve))
+      return Promise.resolve(Response.json([{ id: 'hook', title: 'Wall hook' }]))
+    })
+    render(<MobileApp />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Refresh' }))
+    expect(await screen.findByRole('button', { name: 'Wall hook' })).toBeTruthy()
+
+    first(Response.json([{ id: 'desk-clip', title: 'Desk cable clip' }]))
+    await new Promise((settle) => setTimeout(settle, 50))
+    expect(screen.getByRole('button', { name: 'Wall hook' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Desk cable clip' })).toBeNull()
+  })
 })

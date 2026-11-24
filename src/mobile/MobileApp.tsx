@@ -162,8 +162,16 @@ function Paired({ computer, onForget }: { computer: Computer; onForget: () => vo
   // meanwhile appears.
   useEffect(() => {
     if (open !== null) return
+    // A newer read replaces this one, so a slow earlier answer cannot put an older list back.
+    let current = true
     setError(null)
-    remoteJson<MobileChat[]>(api('/chats')).then(setChats, (err) => setError(errorText(err)))
+    remoteJson<MobileChat[]>(api('/chats')).then(
+      (listed) => current && setChats(listed),
+      (err) => current && setError(errorText(err)),
+    )
+    return () => {
+      current = false
+    }
   }, [computer.origin, loads, open])
 
   if (open !== null) return <Chat chat={open} onBack={() => setOpen(null)} />
