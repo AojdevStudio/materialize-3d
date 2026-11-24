@@ -44,8 +44,8 @@ export default function StudioApp() {
   const [settings, setSettings] = useState<Section | null>(null)
 
   const items = useMemo(
-    () => buildChat(view?.entries ?? [], view?.running ?? true, { handoffs: view?.handoffs ?? [], helper: view?.turn?.helper ?? null }),
-    [view?.entries, view?.running, view?.handoffs, view?.turn?.helper],
+    () => buildChat(view?.entries ?? [], view?.running ?? true, view?.handoffs ?? []),
+    [view?.entries, view?.running, view?.handoffs],
   )
   const running = view?.running ?? false
 
@@ -163,7 +163,8 @@ export default function StudioApp() {
         // window may not know yet, as before the model list arrives.
         else
           void drafts.send(startHelper?.pick).then((project) => {
-            if (project !== undefined) setStartHelper(null)
+            // A pick made while the send was out is the next chat's, so only the pick that went resets.
+            if (project !== undefined) setStartHelper((now) => (now === startHelper ? null : now))
           })
       }}
       onError={setError}

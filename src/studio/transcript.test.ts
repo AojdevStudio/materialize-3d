@@ -193,12 +193,13 @@ describe('buildChat', () => {
       expect(failed[3]).toMatchObject({ ...head, state: 'failed', result: 'Helper GPT 6 Astra failed.' })
     })
 
-    it('while it runs takes its helper and progress from the live handoff, or the turn before the call published one, and is stopped once the turn is', () => {
+    it('while it runs takes its helper and progress from its live handoff, and is a plain step until it publishes one', () => {
       const last = { name: 'run', args: { args: ['run', 'python', 'fit.py'] } }
-      const live = { handoffs: [{ callId: 'h1', handoff, steps: 3, last }], helper: opus }
+      const live = [{ callId: 'h1', handoff, steps: 3, last }]
       expect(buildChat(asked, true, live)[3]).toEqual({ ...head, state: 'running', startedMs: 1_000, progress: { steps: 3, doing: 'Running uv run python fit.py' } })
-      expect(buildChat(asked, true, { handoffs: [], helper: astra })[3]).toEqual({ ...head, state: 'running' })
-      expect(buildChat(asked, false, { handoffs: [], helper: astra })[3]).toEqual({ ...head, state: 'stopped', result: STOPPED })
+      // A call refused before it ran, as one with an empty task, never published a handoff, so it never shows as one.
+      expect(buildChat(asked, true, []).some((item) => item.kind === 'handoff')).toBe(false)
+      expect(buildChat(asked, false, [])[2]).toMatchObject({ kind: 'trace', lines: [{ id: 'c1' }, { id: 'h1', state: 'stopped', result: STOPPED }] })
     })
 
     it("keeps each turn's helper when a provider gives a later turn's call the same id", () => {
@@ -226,9 +227,9 @@ describe('buildChat', () => {
         { id: 'c1' },
         { id: 'h1', label: 'Asked the helper', state: 'done' },
       ])
-      // An earlier turn's call with no result cannot take the open turn's helper.
+      // An earlier turn's call with no result cannot take a running call's handoff with its id.
       const earlier = [...asked, { id: 5, kind: 'user' as const, text: 'Thinner', images: [], files: [] }]
-      expect(buildChat(earlier, true, { handoffs: [], helper: astra }).some((item) => item.kind === 'handoff')).toBe(false)
+      expect(buildChat(earlier, true, [{ callId: 'h1', handoff, steps: 0, last: null }]).some((item) => item.kind === 'handoff')).toBe(false)
     })
   })
 })

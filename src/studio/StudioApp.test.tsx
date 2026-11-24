@@ -1019,6 +1019,28 @@ describe('StudioApp', () => {
     expect(sends()).toEqual([{ key: 'new', rev: draftRevs }])
   })
 
+  it('keeps a start helper picked while the first send was out for the next chat', async () => {
+    let answerSend: () => void = () => {}
+    mockSidecar({
+      'state.get': (_, real) => real().then((state) => ({ ...(state as AppState), settings: { ...(state as AppState).settings, astra: true } })),
+      'models.list': () => Promise.resolve([...models, { provider: 'openai-codex', modelId: 'gpt-6-astra', name: 'Astra' }]),
+      'chat.send': (_, real) => new Promise((resolve) => (answerSend = () => resolve(real()))),
+    })
+    render(<StudioApp />)
+    const helper = () => screen.getByTestId('helper-picker')
+    await waitFor(() => expect(helper().textContent).toBe('Astra'))
+    type('A clip')
+    await waitFor(() => expect((screen.getByTestId('send') as HTMLButtonElement).disabled).toBe(false))
+    fireEvent.click(screen.getByTestId('send'))
+    await waitFor(() => expect(sends()).toHaveLength(1))
+    fireEvent.click(helper())
+    fireEvent.click(within(screen.getByRole('menu', { name: 'Helper models' })).getByText('No helper'))
+    await act(async () => answerSend())
+    await waitFor(() => expect(openTitle()).toBe('A clip'))
+    fireEvent.click(screen.getByTestId('new-project'))
+    expect(helper().textContent).toBe('None')
+  })
+
   it('never brings back a sent start picture from a saved state that was read before the send', async () => {
     let reads = 0
     let answerLate: () => void = () => {}

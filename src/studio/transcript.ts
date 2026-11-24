@@ -113,11 +113,6 @@ const OLD_STEPS: Record<string, { action: Action; label: string }> = {
   Task: { action: 'helper', label: 'Helper' },
 }
 
-/** What a chat's live state says of its helper calls: those that still run, and the helper the open turn froze. */
-export type LiveHelpers = { handoffs: HandoffProgress[]; helper: ModelChoice | null }
-
-const NO_HELPERS: LiveHelpers = { handoffs: [], helper: null }
-
 /**
  * Committed chat entries as chat items. A turn's reply opens with a byline that names the model it ran on. A reply
  * from before the store has none. A turn's tool steps gather in one trace, with each result attached and what the
@@ -125,12 +120,12 @@ const NO_HELPERS: LiveHelpers = { handoffs: [], helper: null }
  * without steps ends it. A step left without a result, as a stop or a crash leaves it, shows as stopped once a later
  * message starts a new turn, or once its own turn no longer `running`.
  *
- * A `helper` call is a handoff entry of its own, which ends the trace it was in. Its helper is the one its result
- * recorded, or while it runs, the one `live` names: its handoff, or before the call published one, the open turn's
- * helper. A call that cannot name its helper so, as a result that recorded none, and every `astra` call from before
- * pairs, stays a trace step.
+ * A `helper` call is a handoff entry of its own, which ends the trace it was in. The call's own handoff names its
+ * helper: the one its result recorded, or while it runs, the one in `handoffs`, the open turn's running helper calls.
+ * A call without a handoff stays a trace step: one that has not started its helper yet, one refused before it ran, a
+ * result that recorded none, and every `astra` call from before pairs.
  */
-export function buildChat(entries: ChatEntry[], running = true, live: LiveHelpers = NO_HELPERS): ChatItem[] {
+export function buildChat(entries: ChatEntry[], running = true, handoffs: HandoffProgress[] = []): ChatItem[] {
   const items: ChatItem[] = []
   const tools = new Map<string, ToolItem | HandoffItem>()
   // Each call's result, by the assistant entry that made the call and the call's id. A provider can give calls in
@@ -143,7 +138,7 @@ export function buildChat(entries: ChatEntry[], running = true, live: LiveHelper
     const owner = madeBy.get(entry.callId)
     if (owner !== undefined) results.set(`${owner}:${entry.callId}`, entry)
   }
-  // The open turn is the one after the newest message, so only its calls may take the turn's helper.
+  // The open turn is the one after the newest message, so only its calls can still run.
   const openTurn = entries.map((entry) => entry.kind).lastIndexOf('user')
   /** The trace the next step joins. A message or an answer without steps closes it. */
   let trace: TraceItem | undefined
@@ -164,7 +159,7 @@ export function buildChat(entries: ChatEntry[], running = true, live: LiveHelper
       item.result = STOPPED
     }
   }
-  /** A `helper` call as its handoff entry, or undefined when nothing names its helper. */
+  /** A `helper` call as its handoff entry, or undefined when it has no handoff. */
   const handoffItem = (call: { id: string; args: unknown }, made: { id: number; model: ModelChoice }, inOpenTurn: boolean): HandoffItem | undefined => {
     const task = describe(HELPER, call.args).detail
     const lead = made.model
@@ -174,15 +169,12 @@ export function buildChat(entries: ChatEntry[], running = true, live: LiveHelper
       const { helper, startedMs } = recorded.handoff
       return { kind: 'handoff', id: call.id, lead, helper, task, state: 'running', startedMs }
     }
-    const progress = inOpenTurn ? live.handoffs.find((handoff) => handoff.callId === call.id) : undefined
-    if (progress !== undefined) {
-      const { handoff, steps, last } = progress
-      const newest = last === null ? undefined : describe(last.name, last.args)
-      const doing = newest === undefined ? '' : [newest.doing, newest.summary].filter((part) => part !== '').join(' ')
-      return { kind: 'handoff', id: call.id, lead, helper: handoff.helper, task, state: 'running', startedMs: handoff.startedMs, progress: { steps, doing } }
-    }
-    if (!inOpenTurn || live.helper === null) return undefined
-    return { kind: 'handoff', id: call.id, lead, helper: live.helper, task, state: 'running' }
+    const progress = inOpenTurn ? handoffs.find((live) => live.callId === call.id) : undefined
+    if (progress === undefined) return undefined
+    const { handoff, steps, last } = progress
+    const newest = last === null ? undefined : describe(last.name, last.args)
+    const doing = newest === undefined ? '' : [newest.doing, newest.summary].filter((part) => part !== '').join(' ')
+    return { kind: 'handoff', id: call.id, lead, helper: handoff.helper, task, state: 'running', startedMs: handoff.startedMs, progress: { steps, doing } }
   }
   const endTurn = () => {
     trace = undefined
