@@ -327,6 +327,15 @@ describe('the catalog', () => {
     await app.quit()
   }, 60_000)
 
+  test('names the way out of a retired role whose family has no version left to replace it', async () => {
+    const store = await openStore(scratch())
+    expect(store.retiredFix({ role: 'helper', model: SOL_6_1, replacement: null })).toBe(
+      'GPT 6.1 Sol, the helper model, was retired. Choose another helper model or turn the helper off.',
+    )
+    expect(store.retiredFix({ role: 'lead', model: SOL_6_1, replacement: null })).toBe('GPT 6.1 Sol, the lead model, was retired. Choose another lead model.')
+    await store.close()
+  })
+
   test('a missing sign-in and a provider that is busy for a moment are not a retirement', async () => {
     const where = scratch()
     const app = await start(where, 'models', { M3D_FLAKY: '1' })

@@ -365,11 +365,14 @@ export class Store {
     )
   }
 
-  /** What the person does about a retired role: choose the newest version of its family, or another. */
+  /**
+   * What the person does about a retired role: choose the newest version of its family, or another model when the
+   * family has none left. A helper can also be turned off.
+   */
   retiredFix({ role, model, replacement }: Retired): string {
-    const choose = replacement === null ? 'Choose' : `Choose ${modelName(replacement, this.catalog)} or`
-    const other = role === 'lead' ? 'another lead model' : 'turn the helper off'
-    return `${modelName(model, this.catalog)}, the ${role} model, was retired. ${choose} ${other}.`
+    const choose = replacement === null ? `Choose another ${role} model` : `Choose ${modelName(replacement, this.catalog)}`
+    const other = role === 'lead' ? (replacement === null ? '' : ' or another lead model') : ' or turn the helper off'
+    return `${modelName(model, this.catalog)}, the ${role} model, was retired. ${choose}${other}.`
   }
 
   async #projectIn(tx: Tx, id: string): Promise<Project> {
