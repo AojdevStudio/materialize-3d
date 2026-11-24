@@ -9,7 +9,10 @@
 # `test` erases the simulator's Keychain, so it runs only on a simulator made for the proof, named m3d-proof-*:
 #   xcrun simctl create m3d-proof-iphone "iPhone 18 Pro"
 # Erase it before each run, so the pairing picture is the newest in Photos. `test` needs M3D_COMPUTER, M3D_CHAT, M3D_LINE,
-# and M3D_MODELS: the computer's name, a chat, a line of that chat, and its model files separated by `;`.
+# and M3D_MODELS: the computer's name, a chat, a line of that chat, and its model files separated by `;`. With
+# M3D_DRAFT_PHOTO set to a picture, `test` also runs the draft and reconnect proof after pairing, against the link proxy
+# of scripts/mobile/link-lever.ts, whose control port M3D_LINK_CONTROL names (scripts/mobile/reconnect-proof.sh sets both
+# up).
 set -euo pipefail
 mode=$1 device=$2
 repo=${0:A:h:h:h}
@@ -51,9 +54,9 @@ test)
     rm -rf $out/$1.xcresult $out/attachments/$1
     local result=0
     TEST_RUNNER_M3D_COMPUTER=$M3D_COMPUTER TEST_RUNNER_M3D_CHAT=$M3D_CHAT TEST_RUNNER_M3D_LINE=$M3D_LINE TEST_RUNNER_M3D_MODELS=$M3D_MODELS \
-      xcodebuild -project $project \
+      TEST_RUNNER_M3D_LINK_CONTROL=${M3D_LINK_CONTROL:-} xcodebuild -project $project \
       -scheme materialize-3d-mobile_iOS -derivedDataPath $out/derived -destination "id=$device" $sign \
-      -only-testing:materialize-3d-mobile_UITests/PairAndViewUITests/$2 -resultBundlePath $out/$1.xcresult \
+      -only-testing:materialize-3d-mobile_UITests/$2 -resultBundlePath $out/$1.xcresult \
       test-without-building > $out/$1.log || result=$?
     # The attachments are the proof, so a passing test whose screenshots and recording did not export fails too.
     local exported=0
@@ -66,14 +69,21 @@ test)
       grep -qF "\"$shot " $out/attachments/$1/manifest.json || { echo "sim-proof: $1 has no screenshot $shot" >&2; exit 1; }
     done
   }
-  run pair testPairFromAPictureOpenTheModelsAndRelaunch 01 02 03 05 06
+  run pair PairAndViewUITests/testPairFromAPictureOpenTheModelsAndRelaunch 01 02 03 05 06
   # One 04 screenshot per model. Xcode rewrites their names (it drops a folder's slash), so they are counted, not matched.
   models=(${(s:;:)M3D_MODELS})
   (( $(grep -oF '"04 model ' $out/attachments/pair/manifest.json | wc -l) == ${#models} )) \
     || { echo "sim-proof: pair lacks a screenshot for one of its ${#models} models" >&2; exit 1; }
+  if [[ -n ${M3D_DRAFT_PHOTO:-} ]]; then
+    # The newest picture in Photos is the one the draft takes.
+    xcrun simctl addmedia $device ${M3D_DRAFT_PHOTO:A}
+    run draft-away DraftAndReconnectUITests/test1ADraftWrittenWhileAwaySurvivesARelaunch 10 11
+    run draft-reconnect DraftAndReconnectUITests/test2ReconnectingTurnsSendOnAndNothingSendsBeforeTheTap 20 21
+    run draft-lost-answer DraftAndReconnectUITests/test3ASendWhoseAnswerIsLostMakesOneJob 30 31
+  fi
   # Only after a pass: the reset shows the pairing lived in the Keychain.
   xcrun simctl keychain $device reset
-  run keychain testAKeychainResetForgetsThePairing 07
+  run keychain PairAndViewUITests/testAKeychainResetForgetsThePairing 07
   ;;
 *)
   echo "usage: sim-proof.sh build <udid> <out> | test <udid> <pairing-qr.png> <out>" >&2
