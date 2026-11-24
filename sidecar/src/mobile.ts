@@ -355,17 +355,20 @@ export class Mobile {
         method: 'POST',
         path: '/api/v1/chats/:project/send',
         run: async (request, params, device) => {
-          const { id } = await project(params)
+          const found = await project(params)
+          const key = deviceDraft(device.id, found.id)
           const { rev } = await body(request, sent)
           try {
-            return json({ project: await chats.send(deviceDraft(device.id, id), rev, id) })
+            return json({ project: await chats.send(key, rev, found.id) })
           } catch (error) {
             // Refused before it committed, so the device knows this revision never goes out. Any other failure answers
             // 500, and the device settles the send.
             if (error instanceof DraftChanged) throw new Refused(409, error.message)
-            if (error instanceof RoleRetired) throw new Refused(422, error.message)
-            if (error instanceof AgentWorking) throw new Refused(423, error.message)
-            throw error
+            if (!(error instanceof RoleRetired || error instanceof AgentWorking)) throw error
+            // These leave the draft in place, so a replay could send it once the agent is idle or the role changes. Settle
+            // it first: a replay that already went out is the answer, and otherwise the revision is retired.
+            if (await chats.settle(found.id, key, rev)) return json({ project: found })
+            throw new Refused(error instanceof RoleRetired ? 422 : 423, error.message)
           }
         },
       },
