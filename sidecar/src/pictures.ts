@@ -82,3 +82,10 @@ export async function copyAttachments(folder: string, rev: number, sources: stri
   }
   return copied
 }
+
+/** Removes the copies `copyAttachments` made for `rev`, a revision that never goes out. A folder that leads outside the project is left alone. */
+export function removeAttachments(folder: string, rev: number): void {
+  const dir = join(folder, 'refs', sendName(rev))
+  if (!existsSync(dir) || leaves(relative(realpathSync.native(folder), realpathSync.native(dir)))) return
+  rmSync(dir, { recursive: true, force: true })
+}

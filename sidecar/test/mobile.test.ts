@@ -362,7 +362,8 @@ describe('a paired device', () => {
     const call = as(base, token)
     return {
       call,
-      draft: async (text: string) => ((await (await call(`/chats/${project}/draft`, { method: 'PUT', body: { text, pictures: [] } })).json()) as { rev: number }).rev,
+      draft: async (text: string, pictures: { name: string; data: string }[] = []) =>
+        ((await (await call(`/chats/${project}/draft`, { method: 'PUT', body: { text, pictures } })).json()) as { rev: number }).rev,
       send: (rev: number) => call(`/chats/${project}/send`, { method: 'POST', body: { rev } }),
       settle: async (rev: number) => (await (await call(`/chats/${project}/sends/${rev}/settle`, { method: 'POST' })).json()) as { accepted: boolean },
       asked: async () => ((await (await call(`/chats/${project}`)).json()) as ChatView).entries.flatMap((e) => (e.kind === 'user' ? [e.text] : [])),
@@ -406,14 +407,15 @@ describe('a paired device', () => {
     await app.quit()
   }, 60_000)
 
-  test('settles a stalled send as refused, so only the message sent after it starts a job', async () => {
+  test('settles a stalled send as refused, so only the message sent after it starts a job and keeps its picture', async () => {
     const { stall, hold, stalled } = stalling()
-    const { app, base } = await start(forwarding, {}, { hold })
+    const { app, base, projects } = await start(forwarding, {}, { hold })
     const project = await chat(app)
     const { token } = await pair(app, base)
     const device = phone(base, token, project)
+    const picture = [{ name: 'clip.png', data: PNG }]
 
-    const first = await device.draft('Make it 2 mm thicker')
+    const first = await device.draft('Make it 2 mm thicker', picture)
     stall.held = true
     const sending = device.send(first)
     const release = await stalled()
@@ -421,21 +423,24 @@ describe('a paired device', () => {
     release()
     expect((await sending).status).toBe(409)
 
-    const second = await device.draft('Make it 2 mm thicker')
+    const second = await device.draft('Make it 2 mm thicker', picture)
     expect((await device.send(second)).status).toBe(200)
     await settled(app, project, 'answered by faux-a')
     expect(await device.asked()).toEqual(['make the project', 'Make it 2 mm thicker'])
+    const refs = join(projects, project, 'refs')
+    expect(existsSync(join(refs, `draft-${first}`))).toBe(false)
+    expect(existsSync(join(refs, `draft-${second}`, 'clip.png'))).toBe(true)
     await app.quit()
   }, 60_000)
 
-  test('refuses a send that stalled past an edit, so only the edited message starts a job', async () => {
+  test('refuses a send that stalled past an edit, so only the edited message starts a job, and keeps no copy of its picture', async () => {
     const { stall, hold, stalled } = stalling()
-    const { app, base } = await start(forwarding, {}, { hold })
+    const { app, base, projects } = await start(forwarding, {}, { hold })
     const project = await chat(app)
     const { token } = await pair(app, base)
     const device = phone(base, token, project)
 
-    const first = await device.draft('Make it 2 mm thicker')
+    const first = await device.draft('Make it 2 mm thicker', [{ name: 'clip.png', data: PNG }])
     stall.held = true
     const sending = device.send(first)
     const release = await stalled()
@@ -447,6 +452,7 @@ describe('a paired device', () => {
     expect((await device.send(edited)).status).toBe(200)
     await settled(app, project, 'answered by faux-a')
     expect(await device.asked()).toEqual(['make the project', 'Make it 3 mm thicker'])
+    expect(existsSync(join(projects, project, 'refs', `draft-${first}`))).toBe(false)
     await app.quit()
   }, 60_000)
 

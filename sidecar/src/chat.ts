@@ -28,7 +28,7 @@ import { leaves, WORKFLOW, WORKFLOW_VERSION } from './agent'
 import type { Busy } from './busy'
 import { type SentMessage, UserMessage } from './entries'
 import { folderSummary } from './folder'
-import { copyAttachments } from './pictures'
+import { copyAttachments, removeAttachments } from './pictures'
 import { modelName, newest } from './offered'
 import {
   ASTRA,
@@ -46,7 +46,7 @@ import {
   type Waiting,
 } from './protocol'
 import { isLoginFailure, isRetired } from './inference'
-import { RoleRetired, sendName, type Store } from './store'
+import { DraftChanged, RoleRetired, sendName, type Store } from './store'
 import { chatEntry } from './transcript'
 
 const context: Context = BACKGROUND_CONTEXT
@@ -315,16 +315,19 @@ export class Chats {
   /**
    * The final word on a device's send of revision `rev` to `project`, after its answer was lost: true when the chat
    * holds its message. Otherwise the revision is retired in the same commit, so a send of it still on its way is
-   * refused and the answer stays false.
+   * refused and the answer stays false, and the copies of its files leave the project. A send whose copy finishes after
+   * this removes its own when it is refused.
    */
   async settle(project: string, key: string, rev: number): Promise<boolean> {
     const { store } = this.#o
     const conversation = await this.#conversation(project)
-    return store.harness.commit(async (tx) => {
+    const accepted = await store.harness.commit(async (tx) => {
       if ((await tx.submissionByRequest(conversation.id, sendName(rev))) !== undefined) return true
       await store.retireDraft(tx, key, rev)
       return false
     }, context)
+    if (!accepted) removeAttachments(join(store.projectsDir, project), rev)
+    return accepted
   }
 
   /**
@@ -378,6 +381,8 @@ export class Chats {
       }, context))
     } catch (error) {
       if (error instanceof ConversationBusy) throw new AgentWorking('The agent is still working on the last message.')
+      // This revision never goes out, so the files copied for it leave the project.
+      if (error instanceof DraftChanged) removeAttachments(folder, rev)
       throw error
     }
     await this.#watch(project.id, conversation)
