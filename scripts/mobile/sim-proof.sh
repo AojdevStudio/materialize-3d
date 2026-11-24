@@ -6,9 +6,8 @@
 #   scripts/mobile/sim-proof.sh test <simulator-udid> <pairing-qr.png> <out>
 #
 # A pairing code lasts 5 minutes, less than a first build, so build first, then show a new code and test with it. Use a
-# fresh simulator, so the pairing picture is the newest in Photos. M3D_COMPUTER, M3D_CHAT, and M3D_LINE name the
-# computer, a chat with model files, and a line of that chat that the test expects (defaults in
-# src-mobile/gen/apple/UITests/PairAndViewUITests.swift).
+# fresh simulator, so the pairing picture is the newest in Photos. `test` needs M3D_COMPUTER, M3D_CHAT, and M3D_LINE:
+# the computer's name, a chat with model files, and a line of that chat.
 set -euo pipefail
 mode=$1 device=$2
 repo=${0:A:h:h:h}
@@ -40,11 +39,12 @@ build)
   ;;
 test)
   pairing_qr=${3:A} out=${4:A}
+  : ${M3D_COMPUTER:?} ${M3D_CHAT:?} ${M3D_LINE:?}
   xcrun simctl boot $device 2>/dev/null || true
   xcrun simctl addmedia $device $pairing_qr
   run() {
     rm -rf $out/$1.xcresult $out/attachments/$1
-    TEST_RUNNER_M3D_COMPUTER=${M3D_COMPUTER:-} TEST_RUNNER_M3D_CHAT=${M3D_CHAT:-} TEST_RUNNER_M3D_LINE=${M3D_LINE:-} \
+    TEST_RUNNER_M3D_COMPUTER=$M3D_COMPUTER TEST_RUNNER_M3D_CHAT=$M3D_CHAT TEST_RUNNER_M3D_LINE=$M3D_LINE \
       xcodebuild -project $project \
       -scheme materialize-3d-mobile_iOS -derivedDataPath $out/derived -destination "id=$device" $sign \
       -only-testing:materialize-3d-mobile_UITests/PairAndViewUITests/$2 -resultBundlePath $out/$1.xcresult \

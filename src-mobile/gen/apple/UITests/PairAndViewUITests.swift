@@ -52,9 +52,10 @@ final class PairAndViewUITests: XCTestCase {
     }
 
     func testPairFromAPictureOpenTheModelsAndRelaunch() throws {
-        let computer = setting("M3D_COMPUTER") ?? "aojdevmac-m5 stand-in"
-        let chat = setting("M3D_CHAT") ?? "Desk cable clip"
-        let line = setting("M3D_LINE") ?? "Make a clip that holds a cable on the edge of my desk."
+        // The computer, one of its chats with model files, and a line of that chat, as the proof script passes them.
+        let computer = try XCTUnwrap(setting("M3D_COMPUTER"), "set M3D_COMPUTER")
+        let chat = try XCTUnwrap(setting("M3D_CHAT"), "set M3D_CHAT")
+        let line = try XCTUnwrap(setting("M3D_LINE"), "set M3D_LINE")
 
         app.launch()
         XCTAssertTrue(text("Pair with your computer").waitForExistence(timeout: 60))
