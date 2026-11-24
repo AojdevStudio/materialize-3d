@@ -487,9 +487,11 @@ describe('a paired device', () => {
 
     expect((await device.send(await device.draft('please wait'))).status).toBe(200)
     while (!existsSync(join(projects, project, 'started'))) await Bun.sleep(20)
-    const refused = await device.draft('make it red')
+    const refused = await device.draft('make it red', [{ name: 'red.png', data: PNG }])
     const busy = await device.send(refused)
     expect([busy.status, await busy.json()]).toEqual([423, { error: 'The agent is still working on the last message.' }])
+    // The refusal retired its revision, so the picture copied for it leaves the project.
+    expect(existsSync(join(projects, project, 'refs', `draft-${refused}`))).toBe(false)
     writeFileSync(join(projects, project, 'go'), '')
     await settled(app, project, 'answered by faux-a')
     // The refusal retired its revision, so a replay that arrives once the agent is idle sends nothing.

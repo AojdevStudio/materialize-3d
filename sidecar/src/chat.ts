@@ -315,19 +315,17 @@ export class Chats {
   /**
    * The final word on a device's send of revision `rev` to `project`, after its answer was lost: true when the chat
    * holds its message. Otherwise the revision is retired in the same commit, so a send of it still on its way is
-   * refused and the answer stays false, and the copies of its files leave the project. A send whose copy finishes after
-   * this removes its own when it is refused.
+   * refused and the answer stays false. Settling deletes no files: it cannot tell a copy that is its own from one a send
+   * is still making. A send of the retired revision removes the copy it made when it is refused.
    */
   async settle(project: string, key: string, rev: number): Promise<boolean> {
     const { store } = this.#o
     const conversation = await this.#conversation(project)
-    const accepted = await store.harness.commit(async (tx) => {
+    return store.harness.commit(async (tx) => {
       if ((await tx.submissionByRequest(conversation.id, sendName(rev))) !== undefined) return true
       await store.retireDraft(tx, key, rev)
       return false
     }, context)
-    if (!accepted) removeAttachments(join(store.projectsDir, project), rev)
-    return accepted
   }
 
   /**
