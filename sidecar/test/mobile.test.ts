@@ -296,12 +296,16 @@ describe('a paired device', () => {
     const call = as(base, token)
     const { rev: desk } = (await app.call('drafts.set', { key: project, text: 'Typed on the computer', attachments: [] })) as { rev: number }
 
-    const { rev } = (await (await call(`/chats/${project}/draft`, { method: 'PUT', body: { text: 'From the phone', pictures: [] } })).json()) as { rev: number }
+    // A picture whose name is as long as a file name may be still goes out.
+    const long = `${'p'.repeat(220)}.png`
+    const { rev } = (await (await call(`/chats/${project}/draft`, { method: 'PUT', body: { text: 'From the phone', pictures: [{ name: long, data: PNG }] } })).json()) as { rev: number }
     const shown = async () => ((await app.call('state.get')) as StoredState).drafts
     expect(await shown()).toEqual({ [project]: { text: 'Typed on the computer', attachments: [], rev: desk } })
     expect((await call(`/chats/${project}/send`, { method: 'POST', body: { rev } })).status).toBe(200)
     await settled(app, project, 'answered by faux-a')
     expect(await shown()).toEqual({ [project]: { text: 'Typed on the computer', attachments: [], rev: desk } })
+    const sent = ((await (await call(`/chats/${project}`)).json()) as ChatView).entries.flatMap((e) => (e.kind === 'user' ? e.images : []))
+    expect(sent).toEqual([`refs/draft-${rev}/${long}`])
     await app.quit()
   }, 60_000)
 
