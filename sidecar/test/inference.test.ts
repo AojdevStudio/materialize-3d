@@ -106,6 +106,7 @@ describe('a refused request', () => {
     // A request the model refuses, such as a parameter it dropped, is not one either.
     expect(isRetired('400 invalid_request_error: temperature is no longer supported for this model')).toBe(false)
     expect(isRetired('400 invalid_request_error: the model claude-opus-5-5 no longer supports the temperature parameter')).toBe(false)
+    expect(isRetired('400 invalid_request_error: Model gpt-6.1-sol: temperature is no longer supported')).toBe(false)
   })
 })
 
