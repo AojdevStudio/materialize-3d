@@ -309,6 +309,12 @@ export class Chats {
     }, context)
   }
 
+  /** Whether the chat holds the message `send` commits for revision `rev`. It reads only, so a device can ask after a lost answer. */
+  async accepted(project: string, rev: number): Promise<boolean> {
+    const conversation = await this.#conversation(project)
+    return (await this.#o.store.harness.commit((tx) => tx.submissionByRequest(conversation.id, sendName(rev)), context)) !== undefined
+  }
+
   /**
    * Sends the draft saved as revision `rev` under `key`, a project id, `START`, or a paired device's key for `project`,
    * and answers the project it went to.

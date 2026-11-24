@@ -44,7 +44,8 @@ Every route takes and answers JSON, except where noted. Every request but `pair`
 | `GET /api/v1/chats/<project>` | | The chat as `chat.open` answers it. Its changes then reach `/events`. |
 | `GET /api/v1/events` | | `text/event-stream`. Each `data:` line is one event, as the window gets it: `chat` for a chat's changes, and `project` with the whole project when its roles change on any device. Open it before you read a chat. Forget ends it. |
 | `PUT /api/v1/chats/<project>/draft` | `{ text, pictures: [{ name, data }] }` | `{ rev }`. `data` is base64. This device's draft for the chat. |
-| `POST /api/v1/chats/<project>/send` | `{ rev }` | `{ project }`. Sending the same `rev` again sends nothing more. |
+| `POST /api/v1/chats/<project>/send` | `{ rev }` | `{ project }`. Sending the same `rev` again sends nothing more. `409` when the device saved its draft again after `rev`, so `rev` never goes out. |
+| `GET /api/v1/chats/<project>/sends/<rev>` | | `{ accepted }`: whether the chat holds the message sent as `rev`. It changes nothing, so a device whose send answer was lost asks here before it offers a retry. |
 | `PUT /api/v1/chats/<project>/roles` | `{ lead?, helper? }` | `{ lead, helper }`. `helper: null` lets the lead work alone. A refused role saves neither. |
 | `GET /api/v1/chats/<project>/files` | | The chat's model files (`.stl`, `.3mf`, `.glb`): `[{ rel, size, modifiedMs }]`, newest first. |
 | `GET /api/v1/chats/<project>/files/<rel>` | | The file's bytes, with its model content type. |

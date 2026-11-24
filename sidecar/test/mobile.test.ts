@@ -29,7 +29,7 @@ async function freePort(): Promise<number> {
  * A sidecar whose phone service listens on a free port, and a `tailscale` on its PATH that prints `serve` as its
  * Serve config, which `setServe` changes.
  */
-async function start(serve: (port: number) => object, env: Record<string, string> = {}) {
+async function start(serve: (port: number) => object, env: Record<string, string> = {}, rust: Pick<NonNullable<Parameters<typeof spawnSidecar>[3]>, 'hold'> = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'm3d-mobile-'))
   const bin = join(dir, 'bin')
   mkdirSync(bin)
@@ -45,6 +45,7 @@ async function start(serve: (port: number) => object, env: Record<string, string
   const app = spawnSidecar(join(dir, 'state'), projects, new Map(), {
     script: 'models',
     env: { PATH: `${bin}:${process.env.PATH}`, M3D_MOBILE_PORT: String(port), ...env },
+    ...rust,
   })
   await app.next()
   await app.call('settings.set', { model: { provider: 'faux', modelId: 'faux-a' } })
@@ -339,6 +340,64 @@ describe('a paired device', () => {
     expect(await shown()).toEqual({ [project]: { text: 'Typed on the computer', attachments: [], rev: desk } })
     const sent = ((await (await call(`/chats/${project}`)).json()) as ChatView).entries.flatMap((e) => (e.kind === 'user' ? e.images : []))
     expect(sent).toEqual([`refs/draft-${rev}/${long}`])
+    await app.quit()
+  }, 60_000)
+
+  test('says whether a send was accepted, so a send whose answer was lost is retried as one job', async () => {
+    const { app, base } = await start(forwarding)
+    const project = await chat(app)
+    const { token } = await pair(app, base)
+    const call = as(base, token)
+    const accepted = async (rev: number) => (await (await call(`/chats/${project}/sends/${rev}`)).json()) as { accepted: boolean }
+
+    const { rev } = (await (await call(`/chats/${project}/draft`, { method: 'PUT', body: { text: 'From the phone', pictures: [] } })).json()) as { rev: number }
+    expect(await accepted(rev)).toEqual({ accepted: false })
+    // Asking twice changes nothing.
+    expect(await accepted(rev)).toEqual({ accepted: false })
+
+    // The answer is dropped before the device reads it, as when the link goes down mid-send.
+    const lost = new AbortController()
+    await fetch(`${base}/chats/${project}/send`, { method: 'POST', headers: { authorization: `Bearer ${token}` }, body: JSON.stringify({ rev }), signal: lost.signal })
+    lost.abort()
+    expect(await accepted(rev)).toEqual({ accepted: true })
+    expect((await call(`/chats/${project}/send`, { method: 'POST', body: { rev } })).status).toBe(200)
+    await settled(app, project, 'answered by faux-a')
+
+    const entries = ((await (await call(`/chats/${project}`)).json()) as ChatView).entries
+    expect(entries.filter((e) => e.kind === 'user' && e.text === 'From the phone')).toHaveLength(1)
+    expect(entries.filter((e) => e.kind === 'assistant' && e.text === 'answered by faux-a')).toHaveLength(1)
+    expect((await call(`/chats/${project}/sends/one`)).status).toBe(400)
+    await app.quit()
+  }, 60_000)
+
+  test('refuses a send that stalled past an edit, so only the edited message starts a job', async () => {
+    // The update gate's answer is held once, so the send of the first revision waits after it read its draft.
+    let stall: { held: boolean; release?: () => void } = { held: false }
+    const { app, base } = await start(forwarding, {}, {
+      hold: (request, answer) => {
+        if (request.method !== 'busy' || !stall.held || stall.release !== undefined) return answer()
+        stall.release = answer
+      },
+    })
+    const project = await chat(app)
+    const { token } = await pair(app, base)
+    const call = as(base, token)
+    const draft = async (text: string) => ((await (await call(`/chats/${project}/draft`, { method: 'PUT', body: { text, pictures: [] } })).json()) as { rev: number }).rev
+
+    const first = await draft('Make it 2 mm thicker')
+    stall = { held: true }
+    const stalled = call(`/chats/${project}/send`, { method: 'POST', body: { rev: first } })
+    while (stall.release === undefined) await Bun.sleep(10)
+    const edited = await draft('Make it 3 mm thicker')
+    stall.release()
+
+    const refused = await stalled
+    expect([refused.status, await refused.json()]).toEqual([409, { error: 'The draft changed before it went out. Send it again.' }])
+    expect(await (await call(`/chats/${project}/sends/${first}`)).json()).toEqual({ accepted: false })
+    expect((await call(`/chats/${project}/send`, { method: 'POST', body: { rev: edited } })).status).toBe(200)
+    await settled(app, project, 'answered by faux-a')
+    const asked = ((await (await call(`/chats/${project}`)).json()) as ChatView).entries.flatMap((e) => (e.kind === 'user' ? [e.text] : []))
+    expect(asked).toEqual(['make the project', 'Make it 3 mm thicker'])
     await app.quit()
   }, 60_000)
 

@@ -130,8 +130,12 @@ const carried = (settings: Settings, model: ModelChoice | undefined) => ({
 /** A plain copy of a model, since the documents a commit hands out are only valid inside it. */
 const copy = ({ provider, modelId }: ModelChoice): ModelChoice => ({ provider, modelId })
 
-/** Why a send names a draft revision the store no longer holds: the person changed the draft since that save. */
-const DRAFT_CHANGED = 'The draft changed before it went out. Send it again.'
+/** A send names a draft revision the store no longer holds: the person changed the draft since that save. Nothing is sent. */
+export class DraftChanged extends Error {
+  constructor() {
+    super('The draft changed before it went out. Send it again.')
+  }
+}
 
 /** Whether `draft` is still the save `rev`. A draft saved after it is the next message, even one that reads the same. */
 const holds = (draft: SavedDraft | undefined, rev: number): draft is SavedDraft => draft?.rev === rev
@@ -335,7 +339,7 @@ export class Store {
       if (before !== undefined && made !== undefined) return JSON.parse(JSON.stringify({ project: made, draft: before.draft }))
       const { drafts } = await tx.doc(DraftsDoc, this.root.id)
       const draft = drafts[START]
-      if (!holds(draft, rev)) throw new Error(DRAFT_CHANGED)
+      if (!holds(draft, rev)) throw new DraftChanged()
       const title = (draft.text.split('\n')[0] ?? '').trim().slice(0, 80) || 'New part'
       const base = `${today}-${slug(title)}`
       const taken = new Set(index.projects.map((p) => p.id))
@@ -360,7 +364,7 @@ export class Store {
   /** The draft saved as `rev` under `key`, a project id or `START`, while no newer save took its place. */
   async draft(key: string, rev: number): Promise<SavedDraft> {
     const draft = (await this.harness.snapshot(DraftsDoc, this.root.id, context))?.drafts[key]
-    if (!holds(draft, rev)) throw new Error(DRAFT_CHANGED)
+    if (!holds(draft, rev)) throw new DraftChanged()
     return draft
   }
 
@@ -368,7 +372,8 @@ export class Store {
    * The store's part of a send's commit, for the draft saved as `rev` under `key`, the project's id or a device's key
    * for it: the pair the turn runs with, and that draft taken away. A newer save stays, and so does every other key's.
    * `saves` counts the saves of the login of the lead's provider. A role the chat found retired is refused, with the
-   * fix, and nothing changes.
+   * fix, and nothing changes. So is a device's send whose draft was saved again since it was read, so a send that
+   * stalled past an edit starts no job beside the edited message's.
    */
   async send(tx: Tx, project: string, key: string, rev: number): Promise<{ lead: ModelChoice; helper: ModelChoice | null; thinking: Thinking; saves: number }> {
     const { thinking, astra } = await tx.doc(SettingsDoc, this.root.id)
@@ -378,6 +383,7 @@ export class Store {
     if (gone !== undefined) throw new Error(this.retiredFix(gone))
     const { drafts } = await tx.doc(DraftsDoc, this.root.id)
     if (holds(drafts[key], rev)) delete drafts[key]
+    else if (isDeviceDraft(key)) throw new DraftChanged()
     return { lead: copy(model), helper: helper === null ? null : copy(helper), thinking, saves: await this.loginSavesIn(tx, model.provider) }
   }
 
