@@ -137,21 +137,15 @@ describe('a pair', () => {
     await app.quit()
   })
 
-  test("runs lead-alone while the Settings Astra switch is off, and keeps the chat's helper for when it is on again", async () => {
+  test("runs the chat's own helper whatever the Settings Astra switch says, which picks only a new chat's default", async () => {
     const where = scratch()
     const app = await start(where, 'models')
     const id = await project(app, FAUX_A, FAUX_B)
     await app.call('settings.set', { astra: false })
     await app.sendDraft(id, 'which model?')
     await answered(app, id, 'answered by faux-a')
-    expect((await view(app, id)).turn).toMatchObject({ model: FAUX_A, helper: null })
-    expect(await app.call('agent.tools', { project: id })).not.toContain('helper')
-    expect(await projectIn(app, id)).toMatchObject({ helper: FAUX_B })
-
-    await app.call('settings.set', { astra: true })
-    await app.sendDraft(id, 'and now?')
-    await app.until((event) => event.type === 'chat' && event.project === id && (event.turn as { helper?: unknown } | null)?.helper !== null)
     expect((await view(app, id)).turn).toMatchObject({ model: FAUX_A, helper: FAUX_B })
+    expect(await app.call('agent.tools', { project: id })).toContain('helper')
     await app.quit()
   })
 

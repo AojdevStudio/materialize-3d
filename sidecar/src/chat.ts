@@ -572,7 +572,6 @@ export class Chats {
    */
   async #newHelper(): Promise<ModelChoice | null> {
     const { models, store } = this.#o
-    if (!(await store.state()).settings.astra) return null
     const family = store.catalog.families[store.catalog.helper]
     if (family === undefined || !(await store.astra())) return null
     const astra = newest(family)

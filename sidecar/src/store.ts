@@ -384,10 +384,10 @@ export class Store {
    * stalled past an edit starts no job beside the edited message's.
    */
   async send(tx: Tx, project: string, key: string, rev: number): Promise<{ lead: ModelChoice; helper: ModelChoice | null; thinking: Thinking; saves: number }> {
-    const { thinking, astra } = await tx.doc(SettingsDoc, this.root.id)
+    const { thinking } = await tx.doc(SettingsDoc, this.root.id)
     const saved = await this.#projectIn(tx, project)
-    const { model, helper } = this.#gated(saved, astra)
-    const [gone] = this.#retiredRoles(saved, astra)
+    const { model, helper } = saved
+    const [gone] = this.#retiredRoles(saved)
     if (gone !== undefined) throw new RoleRetired(this.retiredFix(gone))
     const { drafts } = await tx.doc(DraftsDoc, this.root.id)
     if (holds(drafts[key], rev)) delete drafts[key]
@@ -396,12 +396,11 @@ export class Store {
   }
 
   /**
-   * The roles of `project` its provider reported removed, lead first, while the person has not chosen again. A helper
-   * the Astra switch keeps off is not one, since the next turn does not run it.
+   * The roles of `project` its provider reported removed, lead first, while the person has not chosen again.
    */
-  #retiredRoles(project: Project, astra: boolean): Retired[] {
+  #retiredRoles(project: Project): Retired[] {
     const retired = project.retired ?? []
-    return [...retired.filter((r) => r.role === 'lead'), ...(astra ? retired.filter((r) => r.role === 'helper') : [])].map(({ role, model }) => ({
+    return [...retired.filter((r) => r.role === 'lead'), ...retired.filter((r) => r.role === 'helper')].map(({ role, model }) => ({
       role,
       model: copy(model),
       replacement: replacementFor(this.catalog, model),
@@ -418,14 +417,6 @@ export class Store {
     return `${modelName(model, this.catalog)}, the ${role} model, was retired. ${choose}${other}.`
   }
 
-  /**
-   * A project's pair as its next turn runs it: lead-alone while the Settings Astra switch is off. Until each chat gets
-   * its own helper control (#350), that switch is the window's only way to stop handoffs.
-   */
-  #gated(project: Project, astra: boolean): Pick<Project, 'model' | 'helper'> {
-    return { model: project.model, helper: astra ? project.helper : null }
-  }
-
   async #projectIn(tx: Tx, id: string): Promise<Project> {
     const project = (await tx.doc(ProjectsDoc, this.root.id)).projects.find((p) => p.id === id)
     if (project === undefined) throw new Error(`no project ${id}`)
@@ -439,7 +430,7 @@ export class Store {
   async pairFor(project?: string): Promise<{ lead: ModelChoice; helper: ModelChoice | null }> {
     return this.harness.commit(async (tx) => {
       if (project === undefined) return { lead: copy((await tx.doc(SettingsDoc, this.root.id)).model), helper: null }
-      const { model, helper } = this.#gated(await this.#projectIn(tx, project), (await tx.doc(SettingsDoc, this.root.id)).astra)
+      const { model, helper } = await this.#projectIn(tx, project)
       return { lead: copy(model), helper: helper === null ? null : copy(helper) }
     }, context)
   }
@@ -451,12 +442,12 @@ export class Store {
 
   /** The roles of `project` its provider reported removed and the person has not chosen again, lead first. */
   async retiredFor(project: string): Promise<Retired[]> {
-    return this.harness.commit(async (tx) => this.#retiredRoles(await this.#projectIn(tx, project), (await tx.doc(SettingsDoc, this.root.id)).astra), context)
+    return this.harness.commit(async (tx) => this.#retiredRoles(await this.#projectIn(tx, project)), context)
   }
 
   /** `retiredFor`, read in the commit `tx`. */
   async retiredIn(tx: Tx, project: string): Promise<Retired[]> {
-    return this.#retiredRoles(await this.#projectIn(tx, project), (await tx.doc(SettingsDoc, this.root.id)).astra)
+    return this.#retiredRoles(await this.#projectIn(tx, project))
   }
 
   /**
