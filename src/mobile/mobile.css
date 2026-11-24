@@ -190,3 +190,75 @@ html:has(.mobile-scanning) #root,
   text-align: center;
   text-shadow: 0 1px 3px rgb(0 0 0 / 60%);
 }
+
+.mobile-linkline {
+  margin: 0 0 8px;
+  font-size: 14px;
+}
+
+.mobile-linkline-ok {
+  color: var(--s-ready);
+}
+
+.mobile-linkline-off {
+  color: var(--s-error);
+}
+
+.mobile-linkline-wait {
+  color: var(--s-muted);
+}
+
+.mobile-composer {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 0 12px;
+  border-top: 1px solid var(--s-line);
+}
+
+.mobile-composer textarea {
+  font: inherit;
+  padding: 8px;
+  border: 1px solid var(--s-line);
+  border-radius: 8px;
+  background: var(--s-bg);
+  color: inherit;
+  resize: none;
+}
+
+.mobile-send {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.mobile-send .mobile-primary {
+  margin-left: auto;
+  padding: 10px 20px;
+}
+
+.mobile-send .mobile-primary:disabled {
+  opacity: 0.4;
+}
+
+.mobile-pictures {
+  display: flex;
+  gap: 8px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-x: auto;
+}
+
+.mobile-pictures li {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.mobile-pictures img {
+  width: 64px;
+  height: 64px;
+  object-fit: cover;
+  border-radius: 8px;
+}

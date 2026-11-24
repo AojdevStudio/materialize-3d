@@ -1,13 +1,23 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import type { DeviceDraft, LinkMessage } from './remote'
 
-const { invoke, qrText, scanner } = vi.hoisted(() => ({
+const { invoke, qrText, scanner, stream } = vi.hoisted(() => ({
   invoke: vi.fn(),
   qrText: { value: null as string | Error | null },
   scanner: { checkPermissions: vi.fn(), requestPermissions: vi.fn(), scan: vi.fn(), cancel: vi.fn() },
+  stream: { heard: null as ((message: LinkMessage) => void) | null },
 }))
-vi.mock('@tauri-apps/api/core', () => ({ invoke }))
+// Rust's link watcher hands the window a channel's messages. Each test says what the link does.
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke,
+  Channel: class {
+    constructor(heard: (message: LinkMessage) => void) {
+      stream.heard = heard
+    }
+  },
+}))
 vi.mock('@tauri-apps/plugin-barcode-scanner', () => ({ Format: { QRCode: 'QR_CODE' }, ...scanner }))
 // jsdom draws no pictures, so the picture's QR text is set by each test.
 vi.mock('./qr', () => ({
@@ -46,10 +56,12 @@ const computerAnswers = (answer: () => Response, routes: Record<string, () => Re
   })
 computerAnswers(chats)
 
-afterEach(() => {
+afterEach(async () => {
   computerAnswers(chats)
   Object.values(scanner).forEach((mock) => mock.mockReset())
   cleanup()
+  // A chat screen writes its draft as it closes, a tick later, so that write lands before the next test.
+  await new Promise((resolve) => setTimeout(resolve, 0))
   invoke.mockReset()
   qrText.value = null
 })
@@ -146,13 +158,16 @@ describe('MobileApp', () => {
   })
 
   it('shows the transcript when the model files fail to load', async () => {
-    answer({ paired_computer: computer })
+    answerWithDrafts({ paired_computer: computer })
     computerAnswers(chats, {
       '/api/v1/chats/desk-clip': () => Response.json(deskClip),
       '/api/v1/chats/desk-clip/files': () => new Response('A folder could not be read.', { status: 500 }),
     })
     render(<MobileApp />)
-    fireEvent.click(await screen.findByRole('button', { name: 'Desk cable clip' }))
+    const opens = await screen.findByRole('button', { name: 'Desk cable clip' })
+    // The chat reads the computer once the link is up.
+    await linkIs({ kind: 'connected' })
+    fireEvent.click(opens)
 
     expect(await screen.findByText('Make a clip that holds a cable on the edge of my desk.')).toBeTruthy()
     expect(await screen.findByText('The model files did not load. A folder could not be read.')).toBeTruthy()
@@ -271,5 +286,362 @@ describe('MobileApp', () => {
     choosePicture()
     await screen.findByText('Pairing')
     expect((screen.getByRole('button', { name: 'Choose a picture of the code' }) as HTMLButtonElement).disabled).toBe(true)
+  })
+})
+
+/** The drafts this device keeps, by chat, as Rust's draft files hold them across launches. */
+const kept = new Map<string, DeviceDraft>()
+/** Rust's answer to a draft load, when it cannot read the file. */
+const device = { loadFails: null as string | null }
+
+function answerWithDrafts(commands: Record<string, unknown>) {
+  invoke.mockImplementation(async (command: string, args: { project: string; draft: DeviceDraft }) => {
+    if (command === 'draft_load') {
+      if (device.loadFails !== null) throw device.loadFails
+      return kept.get(args.project) ?? null
+    }
+    if (command === 'draft_save') {
+      const empty = args.draft.text === '' && args.draft.pictures.length === 0 && args.draft.sent === null
+      if (empty) kept.delete(args.project)
+      else kept.set(args.project, args.draft)
+      return
+    }
+    // Rust removes every draft when the device forgets its computer.
+    if (command === 'forget') return kept.clear()
+    return commands[command]
+  })
+}
+
+/** The computer as the window reaches it through `m3dremote://`. `reach` false answers 502, as Rust does when it cannot reach the computer. */
+const computerSide = {
+  reach: true,
+  requests: [] as string[],
+  /** The revision the computer's last draft save got. Each save gets the next one. */
+  rev: 40,
+  /** The revision of each send that reached the computer, in order. */
+  sent: [] as number[],
+  /** How the computer meets the next send: whether it commits it, and what the device hears back. */
+  nextSend: null as { commits: boolean; answer: () => Response } | null,
+  /** What the device hears when it asks about a send, in place of the computer's answer. */
+  acceptedAnswer: null as (() => Response) | null,
+  accepted: new Set<number>(),
+  chat: { project: 'desk-clip', entries: [] as unknown[], running: false, waiting: null, turn: null as unknown, seq: 1 },
+  /** Requests, as `METHOD /path`, the computer answers only once the test lets them go. */
+  waits: new Map<string, Promise<void>>(),
+}
+const CHAT = 'm3dremote://localhost/api/v1/chats/desk-clip'
+const view = { project: 'desk-clip', entries: [], running: false, waiting: null, turn: null, seq: 1 }
+
+/** Holds the next `request` until the returned function lets it go. */
+function hold(request: string): () => void {
+  let release = () => {}
+  computerSide.waits.set(request, new Promise<void>((resolve) => (release = resolve)))
+  return () => release()
+}
+
+/** The answer the device gets when the link drops mid-request. */
+const lost = () => {
+  computerSide.reach = false
+  return new Response('The computer did not answer. connection closed', { status: 502 })
+}
+
+const routeComputer = async (url: string, init?: { method?: string; body?: string }) => {
+  const method = init?.method ?? 'GET'
+  const request = `${method} ${url.replace('m3dremote://localhost/api/v1', '')}`
+  computerSide.requests.push(request)
+  const waiting = computerSide.waits.get(request)
+  computerSide.waits.delete(request)
+  await waiting
+  if (!computerSide.reach) return new Response('The computer did not answer.', { status: 502 })
+  if (url === 'm3dremote://localhost/api/v1/chats') return Response.json([{ id: 'desk-clip', title: 'Desk cable clip' }])
+  if (url === CHAT) return Response.json(computerSide.chat)
+  if (url === `${CHAT}/files`) return Response.json([])
+  if (url === `${CHAT}/draft` && method === 'PUT') return Response.json({ rev: ++computerSide.rev })
+  if (url === `${CHAT}/send` && method === 'POST') {
+    const { rev } = JSON.parse(init?.body ?? '{}') as { rev: number }
+    computerSide.sent.push(rev)
+    const meet = computerSide.nextSend
+    computerSide.nextSend = null
+    if (meet?.commits !== false) computerSide.accepted.add(rev)
+    return meet === null ? Response.json({ project: { id: 'desk-clip' } }) : meet.answer()
+  }
+  const asked = /\/sends\/(\d+)$/.exec(url)
+  if (asked) return computerSide.acceptedAnswer?.() ?? Response.json({ accepted: computerSide.accepted.has(Number(asked[1])) })
+  return new Response('Not found', { status: 404 })
+}
+
+const linkIs = (message: LinkMessage) => act(() => stream.heard?.(message))
+const sendButton = () => screen.getByRole<HTMLButtonElement>('button', { name: 'Send' })
+const messageBox = () => screen.getByLabelText<HTMLTextAreaElement>('Message')
+const writes = () => computerSide.requests.filter((r) => r.startsWith('PUT') || r.startsWith('POST'))
+const puts = () => writes().filter((r) => r.startsWith('PUT'))
+const backToChats = () => fireEvent.click(screen.getByRole('button', { name: 'Chats' }))
+const reopen = async () => {
+  fireEvent.click(await screen.findByText('Desk cable clip'))
+  return screen.findByLabelText<HTMLTextAreaElement>('Message')
+}
+
+/** Opens the chat on a paired device. The chat list from an earlier launch lets it open while the computer is away. */
+async function openChat() {
+  answerWithDrafts({ paired_computer: computer })
+  localStorage.setItem('m3d.chats', JSON.stringify([{ id: 'desk-clip', title: 'Desk cable clip' }]))
+  render(<MobileApp />)
+  fireEvent.click(await screen.findByText('Desk cable clip'))
+  return screen.findByLabelText<HTMLTextAreaElement>('Message')
+}
+
+/** Opens the chat with this draft kept on the device and the link up, ready to send. */
+async function readyToSend(text = 'Make the clip 2 mm thicker') {
+  kept.set('desk-clip', { text, pictures: [], sent: null })
+  await openChat()
+  await linkIs({ kind: 'connected' })
+  await waitFor(() => expect(sendButton().disabled).toBe(false))
+}
+
+describe('a draft and the link to the computer', () => {
+  beforeEach(() => {
+    vi.stubGlobal('fetch', routeComputer)
+  })
+
+  afterEach(() => {
+    kept.clear()
+    localStorage.clear()
+    device.loadFails = null
+    Object.assign(computerSide, {
+      reach: true,
+      requests: [],
+      rev: 40,
+      sent: [],
+      nextSend: null,
+      acceptedAnswer: null,
+      accepted: new Set(),
+      chat: view,
+      waits: new Map(),
+    })
+  })
+
+  it('keeps a photo and message written while the computer is away across a relaunch, with Send off', async () => {
+    computerSide.reach = false
+    const message = await openChat()
+    await linkIs({ kind: 'offline', detail: 'The computer did not answer.' })
+    fireEvent.change(message, { target: { value: 'Make the clip 2 mm thicker' } })
+    fireEvent.change(screen.getByLabelText('Add a photo'), { target: { files: [new File(['jpg'], 'clip.jpg', { type: 'image/jpeg' })] } })
+    await screen.findByAltText('clip.jpg')
+    expect(screen.getByText('Computer not reachable. Draft saved on this iPhone')).toBeTruthy()
+    expect(sendButton().disabled).toBe(true)
+
+    // The app is closed and opened again, still away from the computer.
+    cleanup()
+    const restored = await openChat()
+    await linkIs({ kind: 'offline', detail: 'The computer did not answer.' })
+    await waitFor(() => expect(restored.value).toBe('Make the clip 2 mm thicker'))
+    expect(screen.getByAltText('clip.jpg')).toBeTruthy()
+    expect(sendButton().disabled).toBe(true)
+    expect(writes()).toEqual([])
+  })
+
+  it('turns Send on when the computer is back, and sends nothing until the person taps it', async () => {
+    kept.set('desk-clip', { text: 'Make the clip 2 mm thicker', pictures: [{ name: 'clip.jpg', data: 'anBn' }], sent: null })
+    await openChat()
+    await linkIs({ kind: 'offline', detail: 'The computer did not answer.' })
+    expect(sendButton().disabled).toBe(true)
+
+    await linkIs({ kind: 'connected' })
+    expect(await screen.findByText('Connected')).toBeTruthy()
+    await waitFor(() => expect(sendButton().disabled).toBe(false))
+    expect(writes()).toEqual([])
+
+    fireEvent.click(sendButton())
+    await waitFor(() => expect(writes()).toEqual(['PUT /chats/desk-clip/draft', 'POST /chats/desk-clip/send']))
+    await waitFor(() => expect(kept.has('desk-clip')).toBe(false))
+  })
+
+  it('asks the computer about a send whose answer was lost before it offers a retry, and starts no second job', async () => {
+    await readyToSend()
+    computerSide.nextSend = { commits: true, answer: lost }
+    fireEvent.click(sendButton())
+    await screen.findByText('Sent, not confirmed yet. The app asks the computer when it is back.')
+    expect(kept.get('desk-clip')?.sent).toEqual({ rev: 41 })
+    await linkIs({ kind: 'offline', detail: 'The link dropped.' })
+    expect(sendButton().disabled).toBe(true)
+
+    computerSide.reach = true
+    await linkIs({ kind: 'connected' })
+    await waitFor(() => expect(kept.has('desk-clip')).toBe(false))
+    expect(computerSide.requests).toContain('GET /chats/desk-clip/sends/41')
+    expect(computerSide.sent).toEqual([41])
+    expect(messageBox().value).toBe('')
+  })
+
+  it('asks about a send the computer answered with an error, since it may have started it, and starts no second job', async () => {
+    await readyToSend()
+    computerSide.nextSend = { commits: true, answer: () => Response.json({ error: 'The chat could not be read after the send.' }, { status: 500 }) }
+    fireEvent.click(sendButton())
+    await waitFor(() => expect(kept.has('desk-clip')).toBe(false))
+    expect(computerSide.requests).toContain('GET /chats/desk-clip/sends/41')
+    expect(computerSide.sent).toEqual([41])
+  })
+
+  it('keeps the computer’s words when it does not hold a send, retries the same revision with no new save, and saves an edit as a new one', async () => {
+    await readyToSend()
+    const busy = () => Response.json({ error: 'The agent is still working on the last message.' }, { status: 500 })
+    computerSide.nextSend = { commits: false, answer: busy }
+    fireEvent.click(sendButton())
+    expect(await screen.findByText('The agent is still working on the last message.')).toBeTruthy()
+    await waitFor(() => expect(sendButton().disabled).toBe(false))
+    expect(kept.get('desk-clip')?.sent).toEqual({ rev: 41 })
+
+    // A retry of the unchanged draft goes out as the revision it already has.
+    computerSide.nextSend = { commits: false, answer: busy }
+    fireEvent.click(sendButton())
+    await waitFor(() => expect(computerSide.sent).toEqual([41, 41]))
+    await waitFor(() => expect(sendButton().disabled).toBe(false))
+    expect(puts()).toHaveLength(1)
+
+    // An edited draft is a new message, saved as a new revision.
+    fireEvent.change(messageBox(), { target: { value: 'Make the clip 3 mm thicker' } })
+    fireEvent.click(sendButton())
+    await waitFor(() => expect(kept.has('desk-clip')).toBe(false))
+    expect(computerSide.sent).toEqual([41, 41, 42])
+    expect(puts()).toHaveLength(2)
+  })
+
+  it('shows a refusal and sends the draft as a new revision next time', async () => {
+    await readyToSend()
+    computerSide.nextSend = { commits: false, answer: () => Response.json({ error: 'The draft changed before it went out. Send it again.' }, { status: 409 }) }
+    fireEvent.click(sendButton())
+    expect(await screen.findByText('The draft changed before it went out. Send it again.')).toBeTruthy()
+    await waitFor(() => expect(kept.get('desk-clip')?.sent).toBeNull())
+    expect(computerSide.requests.filter((r) => r.includes('/sends/'))).toEqual([])
+
+    fireEvent.click(sendButton())
+    await waitFor(() => expect(kept.has('desk-clip')).toBe(false))
+    expect(computerSide.sent).toEqual([41, 42])
+  })
+
+  it('asks about a send whose answer it cannot read', async () => {
+    await readyToSend()
+    computerSide.nextSend = { commits: true, answer: () => new Response('<html>Sign in</html>', { status: 200 }) }
+    fireEvent.click(sendButton())
+    await waitFor(() => expect(kept.has('desk-clip')).toBe(false))
+    expect(computerSide.requests).toContain('GET /chats/desk-clip/sends/41')
+    expect(computerSide.sent).toEqual([41])
+  })
+
+  it('never takes an answer about a send it cannot read as accepted', async () => {
+    await readyToSend()
+    computerSide.nextSend = { commits: false, answer: lost }
+    computerSide.acceptedAnswer = () => Response.json({ accepted: 'yes' })
+    fireEvent.click(sendButton())
+    await screen.findByText('Sent, not confirmed yet. The app asks the computer when it is back.')
+    await linkIs({ kind: 'offline', detail: 'The link dropped.' })
+    computerSide.reach = true
+    await linkIs({ kind: 'connected' })
+    await waitFor(() => expect(computerSide.requests).toContain('GET /chats/desk-clip/sends/41'))
+    expect(await screen.findByText(/cannot read/)).toBeTruthy()
+    expect(kept.get('desk-clip')).toEqual({ text: 'Make the clip 2 mm thicker', pictures: [], sent: { rev: 41 } })
+    expect(messageBox().value).toBe('Make the clip 2 mm thicker')
+  })
+
+  it('writes the latest words to this device before the computer gets them', async () => {
+    await readyToSend()
+    const release = hold('PUT /chats/desk-clip/draft')
+    fireEvent.change(messageBox(), { target: { value: 'Make the clip 3 mm thicker' } })
+    fireEvent.click(sendButton())
+    await waitFor(() => expect(kept.get('desk-clip')?.text).toBe('Make the clip 3 mm thicker'))
+    expect(computerSide.sent).toEqual([])
+    release()
+    await waitFor(() => expect(kept.has('desk-clip')).toBe(false))
+  })
+
+  it('keeps one send for a chat opened again while it goes out', async () => {
+    await readyToSend()
+    const release = hold('PUT /chats/desk-clip/draft')
+    fireEvent.click(sendButton())
+    await screen.findByText('Sending')
+    backToChats()
+    await reopen()
+    expect(screen.getByText('Sending')).toBeTruthy()
+    expect(sendButton().disabled).toBe(true)
+    release()
+    await waitFor(() => expect(kept.has('desk-clip')).toBe(false))
+    expect(writes()).toEqual(['PUT /chats/desk-clip/draft', 'POST /chats/desk-clip/send'])
+    expect(messageBox().value).toBe('')
+  })
+
+  it('keeps a half-typed message after the person leaves the chat and opens it again, and locks it while a send goes out', async () => {
+    const message = await openChat()
+    await linkIs({ kind: 'connected' })
+    fireEvent.change(message, { target: { value: 'Make the clip' } })
+    backToChats()
+    expect((await reopen()).value).toBe('Make the clip')
+    expect(kept.get('desk-clip')?.text).toBe('Make the clip')
+
+    // Only a draft takes edits, so nothing typed during a send can be lost under it.
+    const release = hold('PUT /chats/desk-clip/draft')
+    fireEvent.click(sendButton())
+    await screen.findByText('Sending')
+    expect(messageBox().disabled).toBe(true)
+    release()
+    await waitFor(() => expect(messageBox().disabled).toBe(false))
+    await waitFor(() => expect(kept.has('desk-clip')).toBe(false))
+  })
+
+  it('shows a draft this device could not read, never writes over it, and reads it again on Try again', async () => {
+    kept.set('desk-clip', { text: 'Make the clip 2 mm thicker', pictures: [], sent: null })
+    device.loadFails = 'The saved draft is damaged. expected value at line 1 column 1'
+    await openChat().catch(() => null)
+    expect(await screen.findByText(/The saved draft is damaged/)).toBeTruthy()
+    expect(screen.queryByLabelText('Message')).toBeNull()
+    backToChats()
+    fireEvent.click(await screen.findByText('Desk cable clip'))
+    expect(await screen.findByText(/The saved draft is damaged/)).toBeTruthy()
+    expect(invoke.mock.calls.filter(([command]) => command === 'draft_save')).toEqual([])
+
+    device.loadFails = null
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
+    await waitFor(() => expect(messageBox().value).toBe('Make the clip 2 mm thicker'))
+  })
+
+  it('forgets the computer while a send goes out, and keeps no draft from it', async () => {
+    await readyToSend()
+    const release = hold('PUT /chats/desk-clip/draft')
+    fireEvent.click(sendButton())
+    await screen.findByText('Sending')
+    backToChats()
+    fireEvent.click(await screen.findByRole('button', { name: 'Forget' }))
+    await screen.findByText('Pair with your computer')
+    release()
+    await waitFor(() => expect(computerSide.requests).toContain('PUT /chats/desk-clip/draft'))
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(kept.has('desk-clip')).toBe(false)
+    expect(computerSide.sent).toEqual([])
+  })
+
+  it('keeps no chat list that a read finishing after Forget would save', async () => {
+    answerWithDrafts({ paired_computer: computer })
+    const release = hold('GET /chats')
+    render(<MobileApp />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Forget' }))
+    await screen.findByText('Pair with your computer')
+    release()
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(localStorage.getItem('m3d.chats')).toBeNull()
+  })
+
+  it('shows a turn that ends after the chat was read, from the event stream alone, with Send still on', async () => {
+    const asked = { id: 1, kind: 'user', text: 'Draw it' }
+    computerSide.chat = { ...view, entries: [asked], running: true, seq: 4 }
+    const message = await openChat()
+    await linkIs({ kind: 'connected' })
+    expect(await screen.findByText('Draw it')).toBeTruthy()
+    const reads = computerSide.requests.filter((r) => r === 'GET /chats/desk-clip').length
+    fireEvent.change(message, { target: { value: 'Now make it blue' } })
+
+    const answer = { id: 2, kind: 'assistant', text: 'Here is the page.', calls: [], model: { provider: 'faux', modelId: 'faux-a' } }
+    await linkIs({ kind: 'event', event: { type: 'chat', ...view, entries: [answer], running: false, seq: 6 } })
+    expect(await screen.findByText('Here is the page.')).toBeTruthy()
+    expect(computerSide.requests.filter((r) => r === 'GET /chats/desk-clip')).toHaveLength(reads)
+    await waitFor(() => expect(sendButton().disabled).toBe(false))
   })
 })
