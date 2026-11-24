@@ -406,6 +406,7 @@ test("the readout follows the scroll: parts lifted, then Z height, then the rewi
 });
 
 test("the 3D view survives a reduced-motion change while the page is open", async ({ page }) => {
+  test.slow(); // each motion change replaces the canvas, so the 3D view loads and draws three times, maybe in software
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await open(page);
