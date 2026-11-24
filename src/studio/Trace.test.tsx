@@ -156,4 +156,14 @@ describe('a handoff in the chat', () => {
     expect(entry().getAttribute('data-state')).toBe('failed')
     expect(text(entry().querySelector('.handoff-result'))).toBe('failedHelper Astra failed.')
   })
+
+  it('shows each of two turns\' handoffs when a provider gave both calls the same id', () => {
+    Element.prototype.scrollIntoView = vi.fn()
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const done = (helper: typeof opus, result: string): HandoffItem => ({ ...running, helper, state: 'done', result, progress: undefined })
+    render(<ChatView project="p" items={[done(astra, 'Fits.'), done(opus, 'Fits too.')]} running={false} startedMs={undefined} onError={() => {}} />)
+    expect(screen.getAllByTestId('handoff').map((e) => text(e.querySelector('.handoff-result')))).toEqual(['ResultFits.', 'ResultFits too.'])
+    expect(errors.mock.calls.filter(([message]) => String(message).includes('same key'))).toEqual([])
+    errors.mockRestore()
+  })
 })

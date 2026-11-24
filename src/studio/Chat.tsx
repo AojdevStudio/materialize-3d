@@ -60,7 +60,8 @@ export function ChatView({ project, items, running, startedMs, onError }: ChatVi
           case 'trace':
             return <Trace key={item.id} trace={item} startedMs={startedMs} onError={onError} />
           case 'handoff':
-            return <Handoff key={item.id} handoff={item} />
+            // A provider can reuse a call id in a later turn, so the place in the chat keeps two such entries apart.
+            return <Handoff key={`${i}:${item.id}`} handoff={item} />
         }
       })}
       {running && !shownWorking && <Working startedMs={startedMs} />}
