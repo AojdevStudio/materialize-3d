@@ -13,13 +13,13 @@ import type { Models } from '@earendil-works/pi-ai'
 import { arr, bool, compile, int, map, nullable, obj, opt, str, type Validator } from '@earendil-works/pi-schema'
 import type { Server } from 'bun'
 import { renderSVG } from 'uqr'
-import { type Chats, inside } from './chat'
+import { AgentWorking, type Chats, inside } from './chat'
 import { skipped } from './folder'
 import type { Logins } from './inference'
 import { model, offeredModels, saveRoles } from './methods'
 import { savePicture } from './pictures'
 import type { Computer, MobileChat, MobilePairing, ModelFile, PairedDevice, SidecarEvent } from './protocol'
-import { deviceDraft, DraftChanged, type Store } from './store'
+import { deviceDraft, DraftChanged, RoleRetired, type Store } from './store'
 
 /** Where Tailscale's command line lives in the Mac app, for a Mac that has no `tailscale` on its PATH. */
 const MAC_TAILSCALE = '/Applications/Tailscale.app/Contents/MacOS/Tailscale'
@@ -58,7 +58,7 @@ const sha256 = (text: string) => createHash('sha256').update(text).digest()
 /** A refusal with its HTTP status. Every other error answers 500. */
 class Refused extends Error {
   constructor(
-    readonly status: 400 | 401 | 403 | 404 | 409 | 413,
+    readonly status: 400 | 401 | 403 | 404 | 409 | 413 | 422 | 423,
     message: string,
   ) {
     super(message)
@@ -361,20 +361,22 @@ export class Mobile {
             return json({ project: await chats.send(deviceDraft(device.id, id), rev, id) })
           } catch (error) {
             // Refused before it committed, so the device knows this revision never goes out. Any other failure answers
-            // 500, and the device asks whether the send went out.
+            // 500, and the device settles the send.
             if (error instanceof DraftChanged) throw new Refused(409, error.message)
+            if (error instanceof RoleRetired) throw new Refused(422, error.message)
+            if (error instanceof AgentWorking) throw new Refused(423, error.message)
             throw error
           }
         },
       },
       {
-        method: 'GET',
-        path: '/api/v1/chats/:project/sends/:rev',
-        run: async (_, params) => {
+        method: 'POST',
+        path: '/api/v1/chats/:project/sends/:rev/settle',
+        run: async (_, params, device) => {
           const { id } = await project(params)
           const rev = params.rev ?? ''
           if (!/^\d{1,15}$/.test(rev)) throw new Refused(400, `${rev} is not a revision`)
-          return json({ accepted: await chats.accepted(id, Number(rev)) })
+          return json({ accepted: await chats.settle(id, deviceDraft(device.id, id), Number(rev)) })
         },
       },
       {

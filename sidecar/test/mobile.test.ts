@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { chmodSync, mkdirSync, mkdtempSync, renameSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, renameSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { handlers, type Services } from '../src/methods'
@@ -343,61 +343,156 @@ describe('a paired device', () => {
     await app.quit()
   }, 60_000)
 
-  test('says whether a send was accepted, so a send whose answer was lost is retried as one job', async () => {
+  /** Holds the update gate's answer once `stall.held` is set, so a send waits after it read its draft. */
+  const stalling = () => {
+    const stall: { held: boolean; release?: () => void } = { held: false }
+    const hold: NonNullable<NonNullable<Parameters<typeof spawnSidecar>[3]>['hold']> = (request, answer) => {
+      if (request.method !== 'busy' || !stall.held || stall.release !== undefined) return answer()
+      stall.release = answer
+    }
+    const stalled = async () => {
+      while (stall.release === undefined) await Bun.sleep(10)
+      return stall.release
+    }
+    return { stall, hold, stalled }
+  }
+
+  /** The phone's calls for one chat, as a paired device. */
+  const phone = (base: string, token: string, project: string) => {
+    const call = as(base, token)
+    return {
+      call,
+      draft: async (text: string) => ((await (await call(`/chats/${project}/draft`, { method: 'PUT', body: { text, pictures: [] } })).json()) as { rev: number }).rev,
+      send: (rev: number) => call(`/chats/${project}/send`, { method: 'POST', body: { rev } }),
+      settle: async (rev: number) => (await (await call(`/chats/${project}/sends/${rev}/settle`, { method: 'POST' })).json()) as { accepted: boolean },
+      asked: async () => ((await (await call(`/chats/${project}`)).json()) as ChatView).entries.flatMap((e) => (e.kind === 'user' ? [e.text] : [])),
+    }
+  }
+
+  test('settles a send whose answer was lost as accepted once the chat holds it, and a replay starts no second job', async () => {
     const { app, base } = await start(forwarding)
     const project = await chat(app)
     const { token } = await pair(app, base)
-    const call = as(base, token)
-    const accepted = async (rev: number) => (await (await call(`/chats/${project}/sends/${rev}`)).json()) as { accepted: boolean }
+    const device = phone(base, token, project)
 
-    const { rev } = (await (await call(`/chats/${project}/draft`, { method: 'PUT', body: { text: 'From the phone', pictures: [] } })).json()) as { rev: number }
-    expect(await accepted(rev)).toEqual({ accepted: false })
-    // Asking twice changes nothing.
-    expect(await accepted(rev)).toEqual({ accepted: false })
-
+    const rev = await device.draft('From the phone')
     // The answer is dropped before the device reads it, as when the link goes down mid-send.
     const lost = new AbortController()
     await fetch(`${base}/chats/${project}/send`, { method: 'POST', headers: { authorization: `Bearer ${token}` }, body: JSON.stringify({ rev }), signal: lost.signal })
     lost.abort()
-    expect(await accepted(rev)).toEqual({ accepted: true })
-    expect((await call(`/chats/${project}/send`, { method: 'POST', body: { rev } })).status).toBe(200)
+    expect(await device.settle(rev)).toEqual({ accepted: true })
+    expect(await device.settle(rev)).toEqual({ accepted: true })
+    expect((await device.send(rev)).status).toBe(200)
     await settled(app, project, 'answered by faux-a')
 
-    const entries = ((await (await call(`/chats/${project}`)).json()) as ChatView).entries
-    expect(entries.filter((e) => e.kind === 'user' && e.text === 'From the phone')).toHaveLength(1)
-    expect(entries.filter((e) => e.kind === 'assistant' && e.text === 'answered by faux-a')).toHaveLength(1)
-    expect((await call(`/chats/${project}/sends/one`)).status).toBe(400)
+    expect(await device.asked()).toEqual(['make the project', 'From the phone'])
+    expect((await device.call(`/chats/${project}/sends/one/settle`, { method: 'POST' })).status).toBe(400)
+    await app.quit()
+  }, 60_000)
+
+  test('settles a send the chat does not hold as refused for good, so a late post of it starts no job', async () => {
+    const { app, base } = await start(forwarding)
+    const project = await chat(app)
+    const { token } = await pair(app, base)
+    const device = phone(base, token, project)
+
+    const rev = await device.draft('From the phone')
+    expect(await device.settle(rev)).toEqual({ accepted: false })
+    const late = await device.send(rev)
+    expect([late.status, await late.json()]).toEqual([409, { error: 'The draft changed before it went out. Send it again.' }])
+    expect(await device.settle(rev)).toEqual({ accepted: false })
+    expect(await device.asked()).toEqual(['make the project'])
+    expect(((await app.call('chat.open', { project })) as ChatView).running).toBe(false)
+    await app.quit()
+  }, 60_000)
+
+  test('settles a stalled send as refused, so only the message sent after it starts a job', async () => {
+    const { stall, hold, stalled } = stalling()
+    const { app, base } = await start(forwarding, {}, { hold })
+    const project = await chat(app)
+    const { token } = await pair(app, base)
+    const device = phone(base, token, project)
+
+    const first = await device.draft('Make it 2 mm thicker')
+    stall.held = true
+    const sending = device.send(first)
+    const release = await stalled()
+    expect(await device.settle(first)).toEqual({ accepted: false })
+    release()
+    expect((await sending).status).toBe(409)
+
+    const second = await device.draft('Make it 2 mm thicker')
+    expect((await device.send(second)).status).toBe(200)
+    await settled(app, project, 'answered by faux-a')
+    expect(await device.asked()).toEqual(['make the project', 'Make it 2 mm thicker'])
     await app.quit()
   }, 60_000)
 
   test('refuses a send that stalled past an edit, so only the edited message starts a job', async () => {
-    // The update gate's answer is held once, so the send of the first revision waits after it read its draft.
-    let stall: { held: boolean; release?: () => void } = { held: false }
-    const { app, base } = await start(forwarding, {}, {
-      hold: (request, answer) => {
-        if (request.method !== 'busy' || !stall.held || stall.release !== undefined) return answer()
-        stall.release = answer
-      },
-    })
+    const { stall, hold, stalled } = stalling()
+    const { app, base } = await start(forwarding, {}, { hold })
     const project = await chat(app)
     const { token } = await pair(app, base)
-    const call = as(base, token)
-    const draft = async (text: string) => ((await (await call(`/chats/${project}/draft`, { method: 'PUT', body: { text, pictures: [] } })).json()) as { rev: number }).rev
+    const device = phone(base, token, project)
 
-    const first = await draft('Make it 2 mm thicker')
-    stall = { held: true }
-    const stalled = call(`/chats/${project}/send`, { method: 'POST', body: { rev: first } })
-    while (stall.release === undefined) await Bun.sleep(10)
-    const edited = await draft('Make it 3 mm thicker')
-    stall.release()
+    const first = await device.draft('Make it 2 mm thicker')
+    stall.held = true
+    const sending = device.send(first)
+    const release = await stalled()
+    const edited = await device.draft('Make it 3 mm thicker')
+    release()
 
-    const refused = await stalled
+    const refused = await sending
     expect([refused.status, await refused.json()]).toEqual([409, { error: 'The draft changed before it went out. Send it again.' }])
-    expect(await (await call(`/chats/${project}/sends/${first}`)).json()).toEqual({ accepted: false })
-    expect((await call(`/chats/${project}/send`, { method: 'POST', body: { rev: edited } })).status).toBe(200)
+    expect((await device.send(edited)).status).toBe(200)
     await settled(app, project, 'answered by faux-a')
-    const asked = ((await (await call(`/chats/${project}`)).json()) as ChatView).entries.flatMap((e) => (e.kind === 'user' ? [e.text] : []))
-    expect(asked).toEqual(['make the project', 'Make it 3 mm thicker'])
+    expect(await device.asked()).toEqual(['make the project', 'Make it 3 mm thicker'])
+    await app.quit()
+  }, 60_000)
+
+  test('answers a replay that overlaps the first send with the chat, and starts one job', async () => {
+    const { stall, hold, stalled } = stalling()
+    const { app, base } = await start(forwarding, {}, { hold })
+    const project = await chat(app)
+    const { token } = await pair(app, base)
+    const device = phone(base, token, project)
+
+    const rev = await device.draft('From the phone')
+    stall.held = true
+    const sending = device.send(rev)
+    const release = await stalled()
+    // The replay reads the draft before the first send commits, then waits behind it for the update gate.
+    const replaying = device.send(rev)
+    await Bun.sleep(100)
+    release()
+    const [first, replay] = await Promise.all([sending, replaying])
+    expect([first.status, replay.status]).toEqual([200, 200])
+    expect(await first.json()).toMatchObject({ project: { id: project } })
+    await settled(app, project, 'answered by faux-a')
+    expect(await device.asked()).toEqual(['make the project', 'From the phone'])
+    await app.quit()
+  }, 60_000)
+
+  test('refuses a send while the agent works, and a send to a retired lead, with the words the device shows', async () => {
+    const { app, base, projects } = await start(forwarding, { M3D_RETIRED: 'faux-b' })
+    const project = await chat(app)
+    const { token } = await pair(app, base)
+    const device = phone(base, token, project)
+
+    expect((await device.send(await device.draft('please wait'))).status).toBe(200)
+    while (!existsSync(join(projects, project, 'started'))) await Bun.sleep(20)
+    const busy = await device.send(await device.draft('make it red'))
+    expect([busy.status, await busy.json()]).toEqual([423, { error: 'The agent is still working on the last message.' }])
+    writeFileSync(join(projects, project, 'go'), '')
+    await settled(app, project, 'answered by faux-a')
+
+    await app.call('projects.setLead', { project, model: { provider: 'faux', modelId: 'faux-b' } })
+    expect((await device.send(await device.draft('and now?'))).status).toBe(200)
+    await app.until((event) => event.type === 'chat' && event.project === project && (event.waiting as { retired?: unknown } | null)?.retired !== undefined, 30_000)
+    const retired = await device.send(await device.draft('once more'))
+    expect(retired.status).toBe(422)
+    expect(((await retired.json()) as { error: string }).error).toContain('was retired')
+    expect(await device.asked()).toEqual(['make the project', 'please wait', 'and now?'])
     await app.quit()
   }, 60_000)
 

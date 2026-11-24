@@ -46,7 +46,7 @@ import {
   type Waiting,
 } from './protocol'
 import { isLoginFailure, isRetired } from './inference'
-import { sendName, type Store } from './store'
+import { RoleRetired, sendName, type Store } from './store'
 import { chatEntry } from './transcript'
 
 const context: Context = BACKGROUND_CONTEXT
@@ -171,6 +171,9 @@ type State = { running: boolean; waiting: Waiting | null; turn: Turn | null; fai
 
 /** What the window sees of a chat. Every view and `chat` event is made here. */
 const view = (project: string, entries: ChatEntry[], { running, waiting, turn, seq }: State): ChatView => ({ project, entries, running, waiting, turn, seq })
+
+/** A send while the agent still works on the last message. Nothing is sent. */
+export class AgentWorking extends Error {}
 
 export class Chats {
   readonly #o: ChatsOptions
@@ -309,10 +312,19 @@ export class Chats {
     }, context)
   }
 
-  /** Whether the chat holds the message `send` commits for revision `rev`. It reads only, so a device can ask after a lost answer. */
-  async accepted(project: string, rev: number): Promise<boolean> {
+  /**
+   * The final word on a device's send of revision `rev` to `project`, after its answer was lost: true when the chat
+   * holds its message. Otherwise the revision is retired in the same commit, so a send of it still on its way is
+   * refused and the answer stays false.
+   */
+  async settle(project: string, key: string, rev: number): Promise<boolean> {
+    const { store } = this.#o
     const conversation = await this.#conversation(project)
-    return (await this.#o.store.harness.commit((tx) => tx.submissionByRequest(conversation.id, sendName(rev)), context)) !== undefined
+    return store.harness.commit(async (tx) => {
+      if ((await tx.submissionByRequest(conversation.id, sendName(rev))) !== undefined) return true
+      await store.retireDraft(tx, key, rev)
+      return false
+    }, context)
   }
 
   /**
@@ -332,12 +344,12 @@ export class Chats {
     const saved = started === undefined ? key : project.id
     const conversation = await this.#conversation(project.id)
     const requestId = sendName(rev)
-    const sent = async () => (await store.harness.commit((tx) => tx.submissionByRequest(conversation.id, requestId), context)) !== undefined
-    // An overlapping send of this revision, as a phone's retry, can commit and take the draft between the two reads, so
-    // a draft that is gone is checked against the sends again.
-    const draft = (await sent()) ? undefined : (started?.draft ?? (await store.draft(saved, rev).catch(async (error: unknown) => {
-      if (!(await sent())) throw error
-    })))
+    // The message and the draft are read together, so an overlapping send of this revision, as a phone's replay, finds
+    // the message its twin committed or the draft its twin has yet to take.
+    const draft = await store.harness.commit(async (tx) => {
+      if ((await tx.submissionByRequest(conversation.id, requestId)) !== undefined) return undefined
+      return started?.draft ?? store.draftIn(tx, saved, rev)
+    }, context)
     if (draft === undefined) {
       await this.#watch(project.id, conversation)
       return project
@@ -365,7 +377,7 @@ export class Chats {
         await wait(tx, conversation.id, null, { saves })
       }, context))
     } catch (error) {
-      if (error instanceof ConversationBusy) throw new Error('The agent is still working on the last message.')
+      if (error instanceof ConversationBusy) throw new AgentWorking('The agent is still working on the last message.')
       throw error
     }
     await this.#watch(project.id, conversation)
@@ -401,7 +413,7 @@ export class Chats {
         // A lead this chat found retired goes on with the lead the person chose since, and waits until they choose one.
         if (turn !== null && waiting.waiting?.kind === 'error' && waiting.waiting.retired?.role === 'lead') {
           const gone = (await store.retiredIn(tx, project)).find((r) => r.role === 'lead')
-          if (gone !== undefined) throw new Error(store.retiredFix(gone))
+          if (gone !== undefined) throw new RoleRetired(store.retiredFix(gone))
           const lead = await store.leadIn(tx, project)
           await configure(tx, conversation.id, { model: lead })
           turn.model = lead

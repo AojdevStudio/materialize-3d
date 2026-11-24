@@ -137,6 +137,9 @@ export class DraftChanged extends Error {
   }
 }
 
+/** A send to a role its provider retired from this chat. `message` is the fix. Nothing is sent. */
+export class RoleRetired extends Error {}
+
 /** Whether `draft` is still the save `rev`. A draft saved after it is the next message, even one that reads the same. */
 const holds = (draft: SavedDraft | undefined, rev: number): draft is SavedDraft => draft?.rev === rev
 
@@ -361,11 +364,17 @@ export class Store {
     }, context)
   }
 
-  /** The draft saved as `rev` under `key`, a project id or `START`, while no newer save took its place. */
-  async draft(key: string, rev: number): Promise<SavedDraft> {
-    const draft = (await this.harness.snapshot(DraftsDoc, this.root.id, context))?.drafts[key]
+  /** A copy of the draft saved as `rev` under `key`, a project id or a device's key, while no newer save took its place. */
+  async draftIn(tx: Tx, key: string, rev: number): Promise<SavedDraft> {
+    const draft = (await tx.doc(DraftsDoc, this.root.id)).drafts[key]
     if (!holds(draft, rev)) throw new DraftChanged()
-    return draft
+    return JSON.parse(JSON.stringify(draft))
+  }
+
+  /** Takes away the draft saved as `rev` under `key`, so no send of that revision can go out. A newer save stays. */
+  async retireDraft(tx: Tx, key: string, rev: number): Promise<void> {
+    const { drafts } = await tx.doc(DraftsDoc, this.root.id)
+    if (holds(drafts[key], rev)) delete drafts[key]
   }
 
   /**
@@ -380,7 +389,7 @@ export class Store {
     const saved = await this.#projectIn(tx, project)
     const { model, helper } = this.#gated(saved, astra)
     const [gone] = this.#retiredRoles(saved, astra)
-    if (gone !== undefined) throw new Error(this.retiredFix(gone))
+    if (gone !== undefined) throw new RoleRetired(this.retiredFix(gone))
     const { drafts } = await tx.doc(DraftsDoc, this.root.id)
     if (holds(drafts[key], rev)) delete drafts[key]
     else if (isDeviceDraft(key)) throw new DraftChanged()
