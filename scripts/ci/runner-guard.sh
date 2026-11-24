@@ -2,6 +2,7 @@
 # Keeps this host's self-hosted runner for AojdevStudio/materialize-3d off while fork pull requests could reach it:
 #   scripts/ci/runner-guard.sh linux <systemd unit of the runner>
 #   scripts/ci/runner-guard.sh macos <launchd plist of the runner>
+#   scripts/ci/runner-guard.sh macos-daemon <launchd plist of a system LaunchDaemon runner>
 #
 # Reads the repository's fork approval policy with this host's own gh login for the repository owner. A policy
 # other than all_external_contributors stops the runner service at once. A read that fails (gh exits non-zero, or
@@ -10,15 +11,16 @@
 # so the timer that runs it records a failure, or 3 when it cannot confirm the runner stopped. It never starts a runner: after it trips, a person reads the policy
 # and restarts the service (docs/ci-runners.md). A CI job cannot do this check itself: GITHUB_TOKEN cannot read the
 # policy, and the owner's credential must never sit in a job, least of all on the day the policy has changed.
-# Runs every 5 minutes: a systemd timer on dev-substrate, a LaunchAgent on the Mac mini.
+# Runs every 5 minutes: a systemd timer on dev-substrate, a LaunchAgent on the Mac mini (macos-daemon once the
+# mini's runner runs as a system LaunchDaemon under a CI user, homelab#1910).
 set -uo pipefail
 repo=AojdevStudio/materialize-3d
 want=all_external_contributors
 kind="${1:-}" target="${2:-}"
 log() { printf '%s runner-guard: %s\n' "$(date -u +%FT%TZ)" "$*"; }
 case "$kind" in
-  linux | macos) [[ -n "$target" ]] || { echo "usage: $0 linux <unit> | macos <plist>" >&2; exit 2; } ;;
-  *) echo "usage: $0 linux <unit> | macos <plist>" >&2; exit 2 ;;
+  linux | macos | macos-daemon) [[ -n "$target" ]] || { echo "usage: $0 linux <unit> | macos <plist> | macos-daemon <plist>" >&2; exit 2; } ;;
+  *) echo "usage: $0 linux <unit> | macos <plist> | macos-daemon <plist>" >&2; exit 2 ;;
 esac
 
 # One read of the policy into $policy. Returns 0 when gh answered with one of the values GitHub documents for
@@ -101,6 +103,32 @@ case "$kind" in
         fi
         sleep 1
       done
+    fi
+    ;;
+  macos-daemon)
+    # A system LaunchDaemon (runner as a dedicated CI user): bootout needs root, so it takes passwordless sudo.
+    # Only launchctl's "Could not find service" (exit 113) counts as gone. A failed sudo or any other error
+    # proves nothing, so it never reads as a stopped runner.
+    if ! label="$(plutil -extract Label raw "$target" 2>&1)" || [[ -z "$label" ]]; then
+      log "cannot read the Label from $target: ${label:0:200}"
+    else
+      sudo -n launchctl print "system/$label" >/dev/null 2>&1
+      rc=$?
+      if (( rc == 0 )); then
+        if ! out="$(sudo -n launchctl bootout "system/$label" 2>&1)"; then
+          log "sudo launchctl bootout system/$label failed: ${out:0:200}"
+        fi
+      fi
+      for _ in $(seq 1 30); do
+        sudo -n launchctl print "system/$label" >/dev/null 2>&1
+        rc=$?
+        if (( rc == 113 )); then
+          stopped=1
+          break
+        fi
+        sleep 1
+      done
+      (( stopped )) || log "sudo launchctl print system/$label last exited $rc, not 113 (service gone)"
     fi
     ;;
 esac
