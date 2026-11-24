@@ -166,6 +166,14 @@ describe('pairing', () => {
     // Setting `/` again on that port cannot help, so the command names a port of the app's own, which nothing serves.
     const shared = await pairing(app)
     expect(shared).toEqual({ kind: 'setup', reason: expect.stringContaining('other services'), command: `tailscale serve --bg --https=${port + 1} http://127.0.0.1:${port}` })
+    // A port a terminal's own `tailscale serve` holds is taken too.
+    const sharedWeb = { ...served.Web, [key]: { Handlers: { '/': { Proxy: `http://127.0.0.1:${port}` }, '/api/': { Proxy: 'http://127.0.0.1:9' } } } }
+    setServe({ ...served, Web: sharedWeb, Foreground: { session: { TCP: { [port + 1]: { HTTPS: true } } } } })
+    expect(await pairing(app)).toMatchObject({ kind: 'setup', command: `tailscale serve --bg --https=${port + 2} http://127.0.0.1:${port}` })
+    // With no port free near it, Settings says so rather than naming one.
+    const every = Object.fromEntries(Array.from({ length: 100 }, (_, n) => [port + n, { HTTPS: true }]))
+    setServe({ ...served, TCP: { ...served.TCP, ...every }, Web: sharedWeb })
+    expect(await pairing(app)).toMatchObject({ kind: 'off', detail: expect.stringContaining('is taken') })
     // Funnel makes the address public, so no code is shown for it.
     setServe({ ...served, AllowFunnel: { [key]: true } })
     const funnel = await pairing(app)

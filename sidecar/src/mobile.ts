@@ -46,6 +46,8 @@ const serveStatus = compile(
       TCP: opt(map(obj({ HTTPS: opt(bool()) }, { open: true }))),
       Web: opt(map(obj({ Handlers: opt(map(obj({ Proxy: opt(str()) }, { open: true }))) }, { open: true }))),
       AllowFunnel: opt(map(bool())),
+      /** What each `tailscale serve` still running in a terminal serves, by its session. */
+      Foreground: opt(map(obj({ TCP: opt(map(obj({}, { open: true }))) }, { open: true }))),
     },
     { open: true },
   ),
@@ -466,8 +468,12 @@ export class Mobile {
     // mount it is given. The phone service gets an HTTPS port of its own instead.
     const [shared] = https
     if (served === undefined && shared !== undefined) {
-      const taken = new Set(Object.keys(status.TCP ?? {}))
+      // A port a terminal's `tailscale serve` holds is taken too, though only the session lists it.
+      const taken = new Set([...Object.keys(status.TCP ?? {}), ...Object.values(status.Foreground ?? {}).flatMap((session) => Object.keys(session.TCP ?? {}))])
       const free = Array.from({ length: 100 }, (_, n) => port + n).find((candidate) => !taken.has(String(candidate)))
+      if (free === undefined) {
+        return { kind: 'off', detail: `Serve on ${shared[0]} also sends other paths to other services, and every port from ${port} to ${port + 99} is taken. Free an HTTPS port in Tailscale, then check again.` }
+      }
       return {
         kind: 'setup',
         reason: `Serve on ${shared[0]} also sends other paths to other services, so a phone could reach the wrong one. Give this app an HTTPS port of its own.`,
