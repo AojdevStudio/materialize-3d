@@ -1,6 +1,6 @@
 [package]
 name = "materialize-3d"
-version = "0.3.2"
+version = "0.3.3"
 license = "MIT"
 description = "Materialize 3D desktop app"
 authors = ["AOJ Dev Studio"]
