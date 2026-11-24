@@ -205,8 +205,11 @@ export class SendRefused extends Error {
 export class Chats {
   readonly #o: ChatsOptions
   readonly #watches = new Map<string, WatchHandle<ConversationView>>()
-  /** The watches on helper conversations whose call still runs, by that conversation's id, with the chat they show in. */
-  readonly #helperWatches = new Map<number, { project: string; watch: WatchHandle<ConversationView> }>()
+  /**
+   * The watches on helper conversations whose call still runs, by that conversation's id, with the chat they show in.
+   * Each is kept while it starts, so two reads at once start one watch.
+   */
+  readonly #helperWatches = new Map<number, { project: string; watch: Promise<WatchHandle<ConversationView> | undefined> }>()
   /** The newest entry each watched chat has sent the window. */
   readonly #sent = new Map<string, number>()
   #seq = 0
@@ -276,18 +279,25 @@ export class Chats {
     for (const [id, followed] of this.#helperWatches) {
       if (followed.project !== project || live.has(id)) continue
       this.#helperWatches.delete(id)
-      await followed.watch.stop()
+      await (await followed.watch)?.stop()
     }
     for (const id of live) {
       if (this.#helperWatches.has(id)) continue
-      const child = await this.#o.store.harness.conversation(id as ConversationId, context)
-      if (child === undefined) continue
-      const watch = await child.watch(context)
+      const watch = this.#followHelper(id, () => this.#changed(project, lead))
       this.#helperWatches.set(id, { project, watch })
-      watch.start(async (call) => {
-        if (call.kind === 'value') await this.#changed(project, lead)
-      })
+      await watch
     }
+  }
+
+  /** Starts a watch on helper conversation `id` that calls `changed` on each of its commits. */
+  async #followHelper(id: number, changed: () => Promise<void>): Promise<WatchHandle<ConversationView> | undefined> {
+    const child = await this.#o.store.harness.conversation(id as ConversationId, context)
+    if (child === undefined) return undefined
+    const watch = await child.watch(context)
+    watch.start(async (call) => {
+      if (call.kind === 'value') await changed()
+    })
+    return watch
   }
 
   /** The whole chat, and from now on its changes as `chat` events. */
@@ -705,6 +715,7 @@ export class Chats {
   }
 
   async close(): Promise<void> {
-    await Promise.all([...this.#watches.values(), ...[...this.#helperWatches.values()].map(({ watch }) => watch)].map((watch) => watch.stop()))
+    const helpers = await Promise.all([...this.#helperWatches.values()].map(({ watch }) => watch))
+    await Promise.all([...this.#watches.values(), ...helpers.flatMap((watch) => watch ?? [])].map((watch) => watch.stop()))
   }
 }
