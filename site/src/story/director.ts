@@ -122,6 +122,8 @@ export function startStory(root: HTMLElement, motion: Motion, onStatus: (status:
   let traceCrowd = false;
   let P = 0;
   let target = 0;
+  /** The scroll offset `target` was read at. */
+  let targetScroll = 0;
   let raf = 0;
   let stopped = false;
 
@@ -315,13 +317,18 @@ export function startStory(root: HTMLElement, motion: Motion, onStatus: (status:
     P = motion === "still" || Math.abs(gap) < 0.02 ? target : P + gap * 0.16;
     frame();
     if (P !== target) raf = requestAnimationFrame(tick);
+    // The canvas says which scroll offset its last settled frame shows. A software renderer can take seconds
+    // per frame, so this is the one signal that the view and its text have caught up with the scroll.
+    else if (scene) canvas.dataset.drawn = String(targetScroll);
   }
 
   function invalidate() {
+    delete canvas.dataset.drawn;
     if (!raf && !stopped) raf = requestAnimationFrame(tick);
   }
 
   function onScroll() {
+    targetScroll = window.scrollY;
     target = positionAt(scrollVh(), motion);
     invalidate();
   }
@@ -364,8 +371,8 @@ export function startStory(root: HTMLElement, motion: Motion, onStatus: (status:
   });
 
   measure(true);
-  target = P = positionAt(scrollVh(), motion);
-  invalidate();
+  onScroll();
+  P = target;
 
   loadModels()
     .then((models) => {
