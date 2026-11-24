@@ -54,6 +54,8 @@ export class Sender {
   #written: Message | null = null
   /** Set once the device forgets its computer. No write, save, or send goes out after it. */
   #closed = false
+  /** Set when the link comes up again while a settle is under way. */
+  #relinked = false
   readonly #heard = new Set<() => void>()
   readonly #chat: string
   /** Called when the computer holds a message this device sent. */
@@ -153,7 +155,10 @@ export class Sender {
 
   link(link: Link) {
     this.#link = link
-    if (link === 'connected') void this.settle()
+    if (link !== 'connected') return
+    // A settle already under way may have gone out on the link that just dropped, so it asks again if it fails.
+    if (this.#outbox.kind === 'checking') this.#relinked = true
+    else void this.settle()
   }
 
   #edit(message: Message) {
@@ -229,16 +234,18 @@ export class Sender {
    * Asks the computer for its final word on the unconfirmed send, while the link is up. A settle that gets no answer
    * leaves the send unconfirmed until the link comes up again or the person checks again.
    */
-  settle = async () => {
+  settle = async (): Promise<void> => {
     const outbox = this.#outbox
     if (this.#closed || outbox.kind !== 'unconfirmed' || this.#link !== 'connected') return
     const { message, rev, refused } = outbox
+    this.#relinked = false
     this.#set({ kind: 'checking', message, rev, refused })
     let accepted: boolean
     try {
       accepted = await settleSend(this.#chat, rev)
     } catch (err) {
       this.#set({ kind: 'unconfirmed', message, rev, refused: errorText(err) })
+      if (this.#relinked) return this.settle()
       return
     }
     if (accepted) return this.#done()
