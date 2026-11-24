@@ -191,6 +191,10 @@ describe('buildChat', () => {
 
       const failed = buildChat([...asked, { id: 5, kind: 'tool', callId: 'h1', name: 'helper', text: 'Helper GPT 6 Astra failed.', failed: true, handoff }], false)
       expect(failed[3]).toMatchObject({ ...head, state: 'failed', result: 'Helper GPT 6 Astra failed.' })
+
+      const raw = '<harness> [error] Tool helper was aborted </harness>'
+      const stopped = buildChat([...asked, { id: 5, kind: 'tool', callId: 'h1', name: 'helper', text: raw, failed: true, handoff, stopped: true }], false)
+      expect(stopped[3]).toMatchObject({ ...head, state: 'stopped', result: STOPPED })
     })
 
     it('while it runs takes its helper and progress from its live handoff, and is a plain step until it publishes one', () => {

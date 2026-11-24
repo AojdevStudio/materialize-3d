@@ -228,8 +228,9 @@ export function buildChat(entries: ChatEntry[], running = true, handoffs: Handof
         const item = tools.get(entry.callId)
         if (item === undefined) break
         item.durationMs = entry.durationMs
-        item.state = entry.failed ? 'failed' : 'done'
-        item.result = entry.text
+        // A helper call the person stopped did not fail, and its raw error text is Pi's, not the helper's.
+        item.state = entry.stopped ? 'stopped' : entry.failed ? 'failed' : 'done'
+        item.result = entry.stopped ? STOPPED : entry.text
         break
       }
       case 'imported':

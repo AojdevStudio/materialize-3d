@@ -137,13 +137,14 @@ export type HandoffProgress = { callId: string; handoff: Handoff; steps: number;
 /**
  * One committed line of a chat. Tool calls fold under their assistant line; each result is its own line. A person's
  * message holds the paths of its pictures, which went to the model as pictures, and of its other files, which the
- * message named. An assistant line holds the model its turn ran on. A `helper` call's result holds its handoff.
+ * message named. An assistant line holds the model its turn ran on. A `helper` call's result holds its handoff, and
+ * `stopped` when the person stopped it while it ran.
  */
 export type ChatEntry =
   | ({ id: number; kind: 'imported' } & ImportedEntry)
   | { id: number; kind: 'user'; text: string; images: string[]; files: string[] }
   | { id: number; kind: 'assistant'; text: string; calls: { id: string; name: string; args: unknown }[]; model: ModelChoice }
-  | { id: number; kind: 'tool'; callId: string; name: string; text: string; failed: boolean; durationMs?: number; handoff?: Handoff }
+  | { id: number; kind: 'tool'; callId: string; name: string; text: string; failed: boolean; durationMs?: number; handoff?: Handoff; stopped?: true }
 
 /**
  * Why a turn stopped before its answer, and the one thing that lets it go on. `retired` marks a lead its provider

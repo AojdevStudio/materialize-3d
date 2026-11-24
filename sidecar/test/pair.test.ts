@@ -272,6 +272,18 @@ describe('a helper call that runs', () => {
     expect(owned.items.map((conversation) => conversation.id)).toEqual([first.handoff.conversation as ConversationId])
     await store.close()
   }, 60_000)
+  test('stopped by the person ends as stopped, with its handoff, not as a failure', async () => {
+    const where = scratch()
+    const app = await start(where, 'helper')
+    const id = await project(app, FAUX_A, FAUX_B)
+    await app.sendDraft(id, `ask: ${STEPS}`)
+    await app.until((e) => e.type === 'chat' && e.project === id && (e.handoffs as HandoffProgress[])[0]?.steps === 1, 30_000)
+    await app.call('chat.stop', { project: id })
+    const isResult = (entry: ChatEntry) => entry.kind === 'tool' && entry.name === 'helper'
+    if (!(await view(app, id)).entries.some(isResult)) await app.until((e) => e.type === 'chat' && e.project === id && (e.entries as ChatEntry[]).some(isResult), 30_000)
+    expect((await view(app, id)).entries.find(isResult)).toMatchObject({ failed: true, stopped: true, handoff: { helper: FAUX_B } })
+    await app.quit()
+  }, 60_000)
 })
 
 describe('chats from before pairs', () => {

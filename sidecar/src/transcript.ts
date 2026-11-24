@@ -2,7 +2,7 @@
  * The chat the window shows, read from committed entries only. A partial answer or running output is never shown, so
  * nothing on screen can vanish after a crash.
  */
-import type { EntryRecord } from '@earendil-works/pi-durable'
+import { type EntryRecord, ToolResultEntry } from '@earendil-works/pi-durable'
 import { Imported, UserMessage } from './entries'
 import { type ChatEntry, type Handoff, HELPER } from './protocol'
 
@@ -38,6 +38,8 @@ export function chatEntry(entry: EntryRecord): ChatEntry | undefined {
       const { durationMs } = message
       // A helper call keeps its handoff in its details from before it runs, so a result that failed holds it too.
       const handoff = message.toolName === HELPER ? (message.details as { handoff?: Handoff } | undefined)?.handoff : undefined
+      // The person's Stop settles a running helper call as an error with an `aborted` diagnostic. Its helper did not fail.
+      const stopped = handoff !== undefined && message.isError && ToolResultEntry.is(entry) && entry.data.diagnostics.some((d) => d.code === 'aborted')
       return {
         id: entry.id,
         kind: 'tool',
@@ -47,6 +49,7 @@ export function chatEntry(entry: EntryRecord): ChatEntry | undefined {
         failed: message.isError,
         ...(durationMs === undefined ? {} : { durationMs }),
         ...(handoff === undefined ? {} : { handoff }),
+        ...(stopped ? { stopped: true as const } : {}),
       }
     }
     default:
