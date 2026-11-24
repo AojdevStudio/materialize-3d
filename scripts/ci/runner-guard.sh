@@ -11,8 +11,8 @@
 # so the timer that runs it records a failure, or 3 when it cannot confirm the runner stopped. It never starts a runner: after it trips, a person reads the policy
 # and restarts the service (docs/ci-runners.md). A CI job cannot do this check itself: GITHUB_TOKEN cannot read the
 # policy, and the owner's credential must never sit in a job, least of all on the day the policy has changed.
-# Runs every 5 minutes: a systemd timer on dev-substrate, a LaunchAgent on the Mac mini (macos-daemon once the
-# mini's runner runs as a system LaunchDaemon under a CI user, homelab#1910).
+# Runs every 5 minutes: a systemd timer on dev-substrate, a system LaunchDaemon on the Mac mini (macos-daemon,
+# since the mini's runner runs as a system LaunchDaemon under a CI user, homelab#1910).
 set -uo pipefail
 repo=AojdevStudio/materialize-3d
 want=all_external_contributors
@@ -112,9 +112,10 @@ case "$kind" in
     if ! label="$(plutil -extract Label raw "$target" 2>&1)" || [[ -z "$label" ]]; then
       log "cannot read the Label from $target: ${label:0:200}"
     else
+      # Boot out unless launchctl already says the service is gone: a failed first check proves nothing.
       sudo -n launchctl print "system/$label" >/dev/null 2>&1
       rc=$?
-      if (( rc == 0 )); then
+      if (( rc != 113 )); then
         if ! out="$(sudo -n launchctl bootout "system/$label" 2>&1)"; then
           log "sudo launchctl bootout system/$label failed: ${out:0:200}"
         fi
