@@ -61,11 +61,6 @@ targets:
         CFBundleVersion: "0.3.2"
     entitlements:
       path: materialize-3d-mobile_iOS/materialize-3d-mobile_iOS.entitlements
-    scheme:
-      testTargets: [materialize-3d-mobile_UITests]
-      environmentVariables:
-        RUST_BACKTRACE: full
-        RUST_LOG: info
     settings:
       base:
         ENABLE_BITCODE: false
@@ -108,3 +103,22 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.aojdevstudio.materialize3d.mobile.uitests
         GENERATE_INFOPLIST_FILE: YES
         TEST_TARGET_NAME: materialize-3d-mobile_iOS
+schemes:
+  # A scheme of its own, not the target's, so the UI tests keep their screen recording when they pass: it is the flow
+  # proof a PR shows.
+  materialize-3d-mobile_iOS:
+    build:
+      targets:
+        materialize-3d-mobile_iOS: all
+        materialize-3d-mobile_UITests: [test]
+    run:
+      config: debug
+      environmentVariables:
+        RUST_BACKTRACE: full
+        RUST_LOG: info
+    test:
+      config: debug
+      targets: [materialize-3d-mobile_UITests]
+      deleteScreenshotsWhenEachTestSucceeds: false
+    archive:
+      config: release
