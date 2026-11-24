@@ -42,7 +42,7 @@ export default function ModelPicker(props: Props) {
       {open && (
         <div className="model-menu" role="menu" aria-label={`${role} models`}>
           {helper && (
-            <button type="button" role="menuitemradio" aria-checked={chosen === null} onClick={() => pick(null)}>
+            <button type="button" className="menu-none" role="menuitemradio" aria-checked={chosen === null} onClick={() => pick(null)}>
               <span className="model-mark" aria-hidden="true" />
               <span className="model-name">No helper</span>
               {chosen === null && <Check />}

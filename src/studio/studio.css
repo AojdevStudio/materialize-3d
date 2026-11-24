@@ -907,6 +907,13 @@ pre {
   font-size: 12px;
 }
 
+/* "No helper" sits apart from the models under it. */
+.model-menu .menu-none {
+  border-bottom: 1px solid var(--s-line);
+  border-radius: 6px 6px 0 0;
+  margin-bottom: 2px;
+}
+
 /* The helper's menu opens from the bar's right end, under its own picker. */
 .helper-picker .model-menu {
   left: auto;
