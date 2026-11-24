@@ -98,6 +98,20 @@ describe('a new chat', () => {
     await app.quit()
   })
 
+  test('sent again after its message went out, as after a lost answer, leaves a helper picked in the project since', async () => {
+    const where = scratch()
+    const app = await start(where, 'models')
+    await app.call('settings.set', { model: FAUX_A })
+    const { rev } = (await app.call('drafts.set', { key: 'new', text: 'a clip', attachments: [] })) as { rev: number }
+    const { project } = (await app.call('chat.send', { key: 'new', rev, helper: FAUX_B })) as { project: Project }
+    await answered(app, project.id, 'answered by faux-a')
+    await app.call('projects.setHelper', { project: project.id, model: null })
+    const replay = (await app.call('chat.send', { key: 'new', rev, helper: FAUX_B })) as { project: Project }
+    expect(replay.project).toMatchObject({ id: project.id, helper: null })
+    expect(await projectIn(app, project.id)).toMatchObject({ helper: null })
+    await app.quit()
+  })
+
   test('sent again after its first try failed, takes the helper picked on the start screen since', async () => {
     const where = scratch()
     const app = await start(where, 'helper')
@@ -108,6 +122,7 @@ describe('a new chat', () => {
     await expect(app.call('chat.send', { key: 'new', rev, helper: FAUX_B })).rejects.toThrow('An update is installing.')
     app.gate.installing = false
     const { project } = (await app.call('chat.send', { key: 'new', rev, helper: null })) as { project: Project }
+    expect(project).toMatchObject({ helper: null })
     expect(await projectIn(app, project.id)).toMatchObject({ helper: null })
     expect((await view(app, project.id)).turn).toMatchObject({ model: FAUX_A, helper: null })
     await app.quit()

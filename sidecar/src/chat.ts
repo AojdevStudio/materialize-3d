@@ -281,12 +281,17 @@ export class Chats {
       this.#helperWatches.delete(id)
       await (await followed.watch)?.stop()
     }
+    let attached = false
     for (const id of live) {
       if (this.#helperWatches.has(id)) continue
       const watch = this.#followHelper(id, () => this.#changed(project, lead))
       this.#helperWatches.set(id, { project, watch })
       await watch
+      attached = true
     }
+    // A step the helper committed after its progress was read but before its watch started wakes no one, so read the
+    // chat once more. That read finds every watch in place, so it starts none and reads no further.
+    if (attached) await this.#changed(project, lead)
   }
 
   /** Starts a watch on helper conversation `id` that calls `changed` on each of its commits. */
@@ -434,7 +439,7 @@ export class Chats {
     }, context)
     if (draft === undefined) {
       await this.#watch(project.id, conversation)
-      return project
+      return store.project(project.id)
     }
     const folder = store.projectFolder(project.id)
     const attachments = await copyAttachments(folder, rev, draft.attachments)
@@ -444,8 +449,11 @@ export class Chats {
       await busy.during(() => store.harness.commit(async (tx) => {
         if ((await tx.submissionByRequest(conversation.id, requestId)) !== undefined) return
         // Both roles freeze here: the lead in the conversation's model, and the helper in the turn the helper call reads.
-        const { lead, helper, thinking, saves } = await store.send(tx, project.id, saved, rev)
-        const offered = helper === null ? tools.filter((tool) => tool.name !== HELPER) : tools
+        // A retry of a start screen send finds the project its first try made, and takes the helper picked since then,
+        // here, after the check above, so a replay of a send that went out never undoes a later pick in the project.
+        const pick = started === undefined ? undefined : helper
+        const { lead, helper: frozen, thinking, saves } = await store.send(tx, project.id, saved, rev, pick)
+        const offered = frozen === null ? tools.filter((tool) => tool.name !== HELPER) : tools
         await conversation.submit(tx, {
           type: 'input',
           content,
@@ -454,7 +462,7 @@ export class Chats {
           entry: { kind: UserMessage.kind, data: { text: draft.text, images: shown, files: named } satisfies SentMessage },
         })
         await configure(tx, conversation.id, { model: lead, thinkingLevel: thinking, extensions: [extension], tools: offered, instructions: WORKFLOW, cwd: folder })
-        const turn: Turn = { requestId, model: lead, helper, thinking, tools: offered.map((t) => t.name), instructions: WORKFLOW_VERSION, app: version, startedMs: Date.now() }
+        const turn: Turn = { requestId, model: lead, helper: frozen, thinking, tools: offered.map((t) => t.name), instructions: WORKFLOW_VERSION, app: version, startedMs: Date.now() }
         ;(await tx.doc(TurnDoc, conversation.id)).turn = turn
         await wait(tx, conversation.id, null, { saves })
       }, context))
@@ -464,7 +472,7 @@ export class Chats {
       throw error
     }
     await this.#watch(project.id, conversation)
-    return project
+    return store.project(project.id)
   }
 
   /**

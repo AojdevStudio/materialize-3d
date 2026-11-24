@@ -381,11 +381,13 @@ export class Store {
    * for it: the pair the turn runs with, and that draft taken away. A newer save stays, and so does every other key's.
    * `saves` counts the saves of the login of the lead's provider. A role the chat found retired is refused, with the
    * fix, and nothing changes. So is a device's send whose draft was saved again since it was read, so a send that
-   * stalled past an edit starts no job beside the edited message's.
+   * stalled past an edit starts no job beside the edited message's. `pick`, when given, is a helper the person picked on
+   * the start screen since this project was made, which the project takes first.
    */
-  async send(tx: Tx, project: string, key: string, rev: number): Promise<{ lead: ModelChoice; helper: ModelChoice | null; thinking: Thinking; saves: number }> {
+  async send(tx: Tx, project: string, key: string, rev: number, pick?: ModelChoice | null): Promise<{ lead: ModelChoice; helper: ModelChoice | null; thinking: Thinking; saves: number }> {
     const { thinking } = await tx.doc(SettingsDoc, this.root.id)
     const saved = await this.#projectIn(tx, project)
+    if (pick !== undefined) saved.helper = pick === null ? null : copy(pick)
     const { model, helper } = saved
     const [gone] = this.#retiredRoles(saved)
     if (gone !== undefined) throw new RoleRetired(this.retiredFix(gone))
