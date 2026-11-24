@@ -5,9 +5,10 @@
  * phone only `chat` and `project` events.
  */
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
-import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs'
+import { closeSync, constants, createReadStream, existsSync, fstatSync, lstatSync, openSync, readdirSync, realpathSync, statSync } from 'node:fs'
 import { hostname } from 'node:os'
 import { extname, join } from 'node:path'
+import { Readable } from 'node:stream'
 import type { Models } from '@earendil-works/pi-ai'
 import { arr, bool, compile, int, map, nullable, obj, opt, str, type Validator } from '@earendil-works/pi-schema'
 import type { Server } from 'bun'
@@ -376,16 +377,19 @@ export class Mobile {
           } catch {
             throw missing
           }
-          // The bytes come from the file opened here, checked to be the one named, so a swap after the check serves nothing.
+          // The bytes stream from the file opened here, checked to be the one named, so a swap after the check serves
+          // nothing, and a large model is never held in memory whole. The stream closes the file when it ends.
           const fd = openSync(named, constants.O_RDONLY | constants.O_NOFOLLOW)
           try {
             const opened = fstatSync(fd)
             const there = lstatSync(named)
             if (!opened.isFile() || opened.ino !== there.ino || opened.dev !== there.dev || realpathSync.native(named) !== named) throw missing
-            return new Response(readFileSync(fd), { headers: { 'content-type': type } })
-          } finally {
+          } catch (error) {
             closeSync(fd)
+            throw error
           }
+          const bytes = Readable.toWeb(createReadStream(named, { fd })) as ReadableStream<Uint8Array>
+          return new Response(bytes, { headers: { 'content-type': type } })
         },
       },
     ]
@@ -435,14 +439,17 @@ export class Mobile {
     const portOf = (served: string) => served.slice(served.lastIndexOf(':') + 1)
     // An address the QR can name takes HTTPS, and sends every path to this service, so no other mount Tailscale prefers
     // takes the pairing code or a device's token. A plain HTTP listener, or one shared with other paths, is passed over.
-    const served = Object.entries(status.Web ?? {}).find(([at, web]) => {
+    const ours = Object.entries(status.Web ?? {}).flatMap(([at, web]) => {
       const handlers = Object.entries(web.Handlers ?? {})
-      return status.TCP?.[portOf(at)]?.HTTPS === true && handlers.length === 1 && handlers[0]?.[0] === '/' && forwards.includes(handlers[0][1].Proxy ?? '')
-    })?.[0]
-    if (served === undefined) return { kind: 'setup', command: `${tailscale} serve --bg --https=${port} http://127.0.0.1:${port}` }
-    if (status.AllowFunnel?.[served] === true) {
-      return { kind: 'off', detail: `Tailscale Funnel makes ${served} public on the internet. Turn Funnel off for it with ${tailscale} funnel --https=${portOf(served)} off, then check again.` }
+      return status.TCP?.[portOf(at)]?.HTTPS === true && handlers.length === 1 && handlers[0]?.[0] === '/' && forwards.includes(handlers[0][1].Proxy ?? '') ? [at] : []
+    })
+    // A private address wins over a public one, in whatever order Serve lists them.
+    const served = ours.find((at) => status.AllowFunnel?.[at] !== true)
+    const [open] = ours
+    if (served === undefined && open !== undefined) {
+      return { kind: 'off', detail: `Tailscale Funnel makes ${open} public on the internet. Turn Funnel off for it with ${tailscale} funnel --https=${portOf(open)} off, then check again.` }
     }
+    if (served === undefined) return { kind: 'setup', command: `${tailscale} serve --bg --https=${port} http://127.0.0.1:${port}` }
     const { code, expiresMs } = this.#pairing.issue()
     const url = `https://${served.replace(/:443$/, '')}/pair?code=${code}`
     return { kind: 'ready', url, svg: renderSVG(url), expiresMs }

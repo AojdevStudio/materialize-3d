@@ -168,6 +168,12 @@ describe('pairing', () => {
     setServe({ ...served, AllowFunnel: { [key]: true } })
     const funnel = await pairing(app)
     expect([funnel.kind, funnel.kind === 'off' && funnel.detail.includes('Funnel')]).toEqual(['off', true])
+    // A private address wins over a public one listed before it.
+    const open = `${HOST}:443`
+    const root = { Handlers: { '/': { Proxy: `http://127.0.0.1:${port}` } } }
+    setServe({ TCP: { 443: { HTTPS: true }, [port]: { HTTPS: true } }, AllowFunnel: { [open]: true }, Web: { [open]: root, [key]: root } })
+    const both = await pairing(app)
+    expect(both.kind === 'ready' && both.url.startsWith(`https://${key}/pair?code=`)).toBe(true)
 
     setServe(forwarding(port))
     const ready = await pairing(app)

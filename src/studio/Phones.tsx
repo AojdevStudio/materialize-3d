@@ -46,7 +46,9 @@ export default function Phones({ onError }: { onError: (message: string) => void
     <>
       <section className="setup-group" aria-label="Pair a device">
         <h2>Pair a device</h2>
-        {paired !== null && <p className="setup-detail">{paired.name} is paired. Show a new code to pair another device.</p>}
+        {paired !== null && devices?.some((device) => device.id === paired.id) === true && (
+          <p className="setup-detail">{paired.name} is paired. Show a new code to pair another device.</p>
+        )}
         {paired === null && pairing === null && <p className="setup-detail">Checking…</p>}
         {paired === null && pairing?.kind === 'ready' && (
           <div className="settings-pair">

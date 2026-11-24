@@ -369,6 +369,10 @@ describe('settings', () => {
     expect(await phone.findByText('Test iPhone is paired. Show a new code to pair another device.')).toBeTruthy()
     expect(phone.queryByRole('img', { name: 'Pairing code' })).toBeNull()
     expect(screen.getAllByTestId('settings-device').map((row) => within(row).getByText(/Test/).textContent)).toEqual(['Test iPad', 'Test iPhone'])
+
+    // Forgetting that device takes the message away too.
+    fireEvent.click(within(screen.getAllByTestId('settings-device')[1] as HTMLElement).getByRole('button', { name: 'Forget' }))
+    await waitFor(() => expect(phone.queryByText('Test iPhone is paired. Show a new code to pair another device.')).toBeNull())
   })
 
   it('Close returns to the project it was opened from', async () => {
