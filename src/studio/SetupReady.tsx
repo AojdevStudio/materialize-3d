@@ -12,7 +12,7 @@ const CHECKING = 'Checking…'
 function agentLine({ model, astra }: Settings): string {
   const agent = AGENTS.find((entry) => entry.provider === model.provider)
   const runs = agent === undefined ? `${modelName(model)}.` : `${agent.name}, ${modelName(model)}.`
-  return astra ? `${runs} Astra helps with drawings.` : runs
+  return astra ? `${runs} New chats start with Astra as the helper.` : runs
 }
 
 function printerLine({ printer }: Settings): string {
