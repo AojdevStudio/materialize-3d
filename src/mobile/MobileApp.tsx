@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { cancel, checkPermissions, Format, requestPermissions, scan } from '@tauri-apps/plugin-barcode-scanner'
 import ModelView from '../studio/ModelView'
 import { useWindowTheme } from '../studio/theme'
-import { pairing, remoteJson, remoteUrl, type Computer } from './remote'
+import { pairing, PREVIEW_LIMIT, remoteJson, remoteUrl, type Computer } from './remote'
 import { readQrPicture } from './qr'
 import type { ChatEntry, ChatView, MobileChat, ModelFile } from '../../sidecar/src/protocol'
 import '../studio/studio.css'
@@ -139,6 +139,7 @@ function Pair({ step, onScan, onPicture }: { step: PairStep; onScan: () => void;
 
 const api = (path: string) => `/api/v1${path}`
 const chatPath = (project: string) => api(`/chats/${encodeURIComponent(project)}`)
+const fits = (file: ModelFile) => file.size <= PREVIEW_LIMIT
 const extOf = (rel: string) => rel.slice(rel.lastIndexOf('.') + 1).toLowerCase()
 
 function Paired({ computer, onForget }: { computer: Computer; onForget: () => void }) {
@@ -203,7 +204,8 @@ function Chat({ chat, onBack }: { chat: MobileChat; onBack: () => void }) {
     remoteJson<ModelFile[]>(`${chatPath(chat.id)}/files`).then(
       (models) => {
         setFiles(models)
-        setModel(models[0] ?? null)
+        // The newest file this device can show, so opening a chat never downloads a model it must refuse.
+        setModel(models.find(fits) ?? models[0] ?? null)
       },
       (err) => setFilesError(`The model files did not load. ${errorText(err)}`),
     )
@@ -219,7 +221,12 @@ function Chat({ chat, onBack }: { chat: MobileChat; onBack: () => void }) {
       </header>
       {error && <p className="mobile-error">{error}</p>}
       {filesError && <p className="mobile-error">{filesError}</p>}
-      {model && (
+      {model && !fits(model) && (
+        <p className="mobile-error">
+          {model.rel} is too large to show on this device (over {PREVIEW_LIMIT / (1024 * 1024)} MB).
+        </p>
+      )}
+      {model && fits(model) && (
         <div className="mobile-model">
           <ModelView url={remoteUrl(`${chatPath(chat.id)}/files/${model.rel.split('/').map(encodeURIComponent).join('/')}`)} ext={extOf(model.rel)} />
         </div>

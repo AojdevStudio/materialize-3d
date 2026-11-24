@@ -16,6 +16,12 @@ export const pairing = {
  * The paired computer's service, through Rust's `m3dremote://` protocol (`src-mobile/src/remote.rs`). Rust adds the
  * device token. iOS serves a custom scheme on `localhost`.
  */
+/**
+ * The largest answer Rust's `m3dremote://` protocol holds, `ANSWER_LIMIT` in `src-mobile/src/remote.rs`. A model file the
+ * list says is larger is not fetched at all. A test holds the two equal.
+ */
+export const PREVIEW_LIMIT = 64 * 1024 * 1024
+
 export const remoteUrl = (path: string) => `m3dremote://localhost${path}`
 
 export async function remoteJson<T>(path: string): Promise<T> {

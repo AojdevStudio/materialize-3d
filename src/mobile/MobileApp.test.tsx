@@ -18,6 +18,8 @@ vi.mock('./qr', () => ({
 }))
 
 import MobileApp from './MobileApp'
+import { PREVIEW_LIMIT } from './remote'
+import remoteRs from '../../src-mobile/src/remote.rs?raw'
 
 const computer = { name: 'Studio Mac', origin: 'https://studio.tail1234.ts.net:47380/' }
 const link = 'https://studio.tail1234.ts.net:47380/pair?code=K7Q2'
@@ -154,5 +156,35 @@ describe('MobileApp', () => {
 
     expect(await screen.findByText('Make a clip that holds a cable on the edge of my desk.')).toBeTruthy()
     expect(await screen.findByText('The model files did not load. A folder could not be read.')).toBeTruthy()
+  })
+
+  it('never fetches a model the list says is too large, and opens the newest one that fits', async () => {
+    answer({ paired_computer: computer })
+    const fetched: string[] = []
+    const files = [
+      { rel: 'huge.stl', size: PREVIEW_LIMIT + 1, modifiedMs: 2 },
+      { rel: 'clip.stl', size: 1000, modifiedMs: 1 },
+    ]
+    computerAnswers(chats, {
+      '/api/v1/chats/desk-clip': () => Response.json(deskClip),
+      '/api/v1/chats/desk-clip/files': () => Response.json(files),
+    })
+    const listed = globalThis.fetch
+    vi.stubGlobal('fetch', async (url: string) => {
+      fetched.push(url)
+      return listed(url)
+    })
+    render(<MobileApp />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Desk cable clip' }))
+
+    expect(await screen.findByRole('button', { name: 'clip.stl', pressed: true })).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'huge.stl' }))
+
+    expect(await screen.findByText('huge.stl is too large to show on this device (over 64 MB).')).toBeTruthy()
+    expect(fetched.filter((url) => url.endsWith('/files/huge.stl'))).toEqual([])
+  })
+
+  it('refuses the same answer size in Rust as the window does', () => {
+    expect(remoteRs).toContain(`const ANSWER_LIMIT: usize = ${PREVIEW_LIMIT / (1024 * 1024)} * 1024 * 1024;`)
   })
 })

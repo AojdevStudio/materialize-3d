@@ -54,8 +54,11 @@ test)
       -scheme materialize-3d-mobile_iOS -derivedDataPath $out/derived -destination "id=$device" $sign \
       -only-testing:materialize-3d-mobile_UITests/PairAndViewUITests/$2 -resultBundlePath $out/$1.xcresult \
       test-without-building > $out/$1.log || result=$?
-    xcrun xcresulttool export attachments --path $out/$1.xcresult --output-path $out/attachments/$1 > /dev/null || echo "sim-proof: no attachments exported for $1" >&2
+    # The attachments are the proof, so a passing test whose screenshots and recording did not export fails too.
+    local exported=0
+    xcrun xcresulttool export attachments --path $out/$1.xcresult --output-path $out/attachments/$1 > /dev/null || exported=$?
     (( result == 0 )) || { grep -E "error:|Test Case" $out/$1.log || tail -20 $out/$1.log; exit $result; }
+    (( exported == 0 )) || { echo "sim-proof: the attachments of $1 did not export" >&2; exit $exported; }
   }
   run pair testPairFromAPictureOpenTheModelsAndRelaunch
   # Only after a pass: the reset shows the pairing lived in the Keychain.
