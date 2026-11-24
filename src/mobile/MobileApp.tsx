@@ -477,15 +477,10 @@ function Chat({ chat, onBack }: { chat: MobileChat; onBack: () => void }) {
                 accept="image/*"
                 hidden
                 disabled={!editable}
-                onChange={async (event) => {
+                onChange={(event) => {
                   const picked = event.target.files?.[0]
                   event.target.value = ''
-                  if (picked === undefined) return
-                  try {
-                    sender.addPicture(await readPicture(picked, message.pictures))
-                  } catch (err) {
-                    setError(errorText(err))
-                  }
+                  if (picked !== undefined) void sender.addPicture(readPicture(picked, message.pictures))
                 }}
               />
             </label>

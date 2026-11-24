@@ -822,6 +822,22 @@ describe('a draft and the link to the computer', () => {
     expect(screen.queryByText('Desk cable clip')).toBeNull()
   })
 
+  it('keeps Send off while a picked photo is read, then sends the words and the photo together', async () => {
+    await readyToSend()
+    fireEvent.change(screen.getByLabelText('Add a photo'), { target: { files: [new File(['jpg'], 'clip.jpg', { type: 'image/jpeg' })] } })
+    expect(sendButton().disabled).toBe(true)
+    fireEvent.click(sendButton())
+    expect(writes()).toEqual([])
+
+    await screen.findByAltText('clip.jpg')
+    await waitFor(() => expect(sendButton().disabled).toBe(false))
+    fireEvent.click(sendButton())
+    await waitFor(() => expect(kept.has('desk-clip')).toBe(false))
+    const sentAs = invoke.mock.calls.find(([command, args]) => command === 'draft_save' && args.draft.sent?.rev === 41)?.[1]
+    expect(sentAs?.draft).toEqual({ text: 'Make the clip 2 mm thicker', pictures: [{ name: 'clip.jpg', data: btoa('jpg') }], sent: { rev: 41 } })
+    expect(computerSide.sent).toEqual([41])
+  })
+
   it('shows a turn that ends after the chat was read, from the event stream alone, with Send still on', async () => {
     const asked = { id: 1, kind: 'user', text: 'Draw it' }
     computerSide.chat = { ...view, entries: [asked], running: true, seq: 4 }

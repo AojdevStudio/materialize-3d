@@ -12,6 +12,7 @@ export interface Message {
 /**
  * The message of one chat on its way to the computer. Only `draft` takes edits.
  * - `draft`: on this device, and no send of it is open. The next send saves it on the computer as a new revision.
+ *   `reading` counts the pictures picked for it that are still being read, and it sends only once none is.
  * - `sending`: the saves and the send are in flight.
  * - `unconfirmed`: the send went out as `rev`, and no answer said whether the computer took it: none came, the computer
  *   failed after it may have taken it, or the answer could not be read. It is settled when the link comes up, or when
@@ -23,12 +24,14 @@ export interface Message {
 export type Outbox =
   | { kind: 'loading' }
   | { kind: 'broken'; detail: string }
-  | { kind: 'draft'; message: Message; refused: string | null }
+  | { kind: 'draft'; message: Message; refused: string | null; reading: number }
   | { kind: 'sending'; message: Message }
   | { kind: 'unconfirmed'; message: Message; rev: number; refused: string | null }
   | { kind: 'checking'; message: Message; rev: number; refused: string | null }
 
 const EMPTY: Message = { text: '', pictures: [] }
+
+const draft = (message: Message, refused: string | null = null): Outbox => ({ kind: 'draft', message, refused, reading: 0 })
 
 /** Text saves wait this long after the last key, so typing writes the file once. */
 const SAVE_AFTER_MS = 400
@@ -36,7 +39,10 @@ const SAVE_AFTER_MS = 400
 const FORGOT = 'This device forgot the computer, so the draft was not kept.'
 
 export const canSend = (link: Link, outbox: Outbox) =>
-  link === 'connected' && outbox.kind === 'draft' && (outbox.message.text.trim() !== '' || outbox.message.pictures.length > 0)
+  link === 'connected' &&
+  outbox.kind === 'draft' &&
+  outbox.reading === 0 &&
+  (outbox.message.text.trim() !== '' || outbox.message.pictures.length > 0)
 
 const errorText = (err: unknown) => (err instanceof Error ? err.message : String(err))
 
@@ -77,7 +83,7 @@ export class Sender {
       (saved) => {
         const message = saved === null ? EMPTY : { text: saved.text, pictures: saved.pictures }
         this.#written = message
-        this.#set(saved?.sent ? { kind: 'unconfirmed', message, rev: saved.sent.rev, refused: null } : { kind: 'draft', message, refused: null })
+        this.#set(saved?.sent ? { kind: 'unconfirmed', message, rev: saved.sent.rev, refused: null } : draft(message))
         void this.settle()
       },
       (err) => this.#set({ kind: 'broken', detail: errorText(err) }),
@@ -163,7 +169,7 @@ export class Sender {
 
   #edit(message: Message) {
     if (this.#outbox.kind !== 'draft') return
-    this.#set({ kind: 'draft', message, refused: null })
+    this.#set({ ...this.#outbox, message, refused: null })
   }
 
   write(text: string) {
@@ -173,9 +179,20 @@ export class Sender {
     this.#saving = setTimeout(this.flush, SAVE_AFTER_MS)
   }
 
-  addPicture(picture: Picture) {
+  /** Adds the picture `read` gives once it is read, and keeps the draft from going out until then. */
+  async addPicture(read: Promise<Picture>) {
     if (this.#outbox.kind !== 'draft') return
-    this.#edit({ ...this.#outbox.message, pictures: [...this.#outbox.message.pictures, picture] })
+    this.#set({ ...this.#outbox, reading: this.#outbox.reading + 1 })
+    const picked = await read.then(
+      (picture) => ({ picture }),
+      (err: unknown) => ({ refused: errorText(err) }),
+    )
+    // A draft with a picture still reading cannot send, so it is still a draft.
+    const outbox = this.#outbox
+    if (outbox.kind !== 'draft') return
+    const reading = outbox.reading - 1
+    if ('refused' in picked) return this.#set({ ...outbox, refused: picked.refused, reading })
+    this.#set({ kind: 'draft', message: { ...outbox.message, pictures: [...outbox.message.pictures, picked.picture] }, refused: null, reading })
     this.flush()
   }
 
@@ -204,7 +221,7 @@ export class Sender {
       await this.#save(message, rev)
     } catch (err) {
       // No send went out, so the draft stays as it was.
-      this.#set({ kind: 'draft', message, refused: errorText(err) })
+      this.#set(draft(message, errorText(err)))
       this.flush()
       return
     }
@@ -214,7 +231,7 @@ export class Sender {
     } catch (err) {
       if (err instanceof Refused) {
         // Refused before it committed, so this revision never goes out, and the next send saves the draft again.
-        this.#set({ kind: 'draft', message, refused: errorText(err) })
+        this.#set(draft(message, errorText(err)))
         this.flush()
         return
       }
@@ -225,7 +242,7 @@ export class Sender {
   }
 
   #done() {
-    this.#set({ kind: 'draft', message: EMPTY, refused: null })
+    this.#set(draft(EMPTY))
     this.flush()
     this.#sent()
   }
@@ -250,7 +267,7 @@ export class Sender {
     }
     if (accepted) return this.#done()
     // The computer retired the revision, so the draft comes back, and the next send saves it as a new one.
-    this.#set({ kind: 'draft', message, refused })
+    this.#set(draft(message, refused))
     this.flush()
   }
 }
