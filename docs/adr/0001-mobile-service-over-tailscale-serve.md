@@ -14,7 +14,7 @@ The Bun sidecar runs a small HTTP service on `127.0.0.1:47380`. It listens on lo
 tailscale serve --bg --https=47380 http://127.0.0.1:47380
 ```
 
-Two ports are in play. The loopback port, `47380`, is fixed. The Serve HTTPS port is the one in that command, usually also `47380`. When Serve already shares an address with other services, Settings suggests another free HTTPS port that forwards to the same loopback port.
+Two ports are in play. The loopback port, `47380` in `http://127.0.0.1:47380`, is fixed. The Serve HTTPS port is the `--https` value, usually also `47380`. One case gets a different one. Serve sends `/` of an address to the service and other paths of it to other services, and no address serves the service alone. Then Settings suggests the first HTTPS port from `47380` to `47479` that Serve does not use, forwarding to the same loopback port. When all of those are in use, Settings says so and suggests none.
 
 Who owns what:
 
@@ -63,7 +63,7 @@ The phone is not trusted. It names a chat and a path inside it, and nothing else
 
 ## Consequences
 
-- A person sets up Tailscale Serve once with the command above. Settings shows that command until Serve forwards to the service.
+- A person sets up Tailscale Serve once, with the command Settings shows: the one above, or the one with another HTTPS port. Settings shows it until Serve forwards to the service.
 - Two apps on one computer cannot both serve phones, since the port is fixed. The second app runs without the service and says why in Settings.
 - Any process on the computer can reach the loopback port, but it still needs a token or the code on screen.
 - The physical check, an iPhone on cellular with Wi-Fi off, is the owner's. It is not automated here.
