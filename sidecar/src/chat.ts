@@ -113,10 +113,10 @@ export interface ChatsOptions {
 }
 
 /**
- * A path the window named for an attachment: a regular file inside the project folder where it really leads, links
- * followed. Anything else, such as a pipe that would hold every read, is refused.
+ * A path the window or a phone named in a project: a regular file inside the project folder where it really leads,
+ * links followed. Anything else, such as a pipe that would hold every read, is refused.
  */
-function inside(folder: string, rel: string): string {
+export function inside(folder: string, rel: string): string {
   const path = join(folder, rel)
   const back = relative(realpathSync.native(folder), realpathSync.native(path))
   if (back === '' || leaves(back) || !statSync(path).isFile()) throw new Error(`${rel} is not a file in the project folder`)
@@ -308,25 +308,27 @@ export class Chats {
   }
 
   /**
-   * Sends the draft saved as revision `rev` under `key`, a project id or `START`, and answers the project it went to.
+   * Sends the draft saved as revision `rev` under `key`, a project id, `START`, or a paired device's key for `project`,
+   * and answers the project it went to.
    * Each step is safe to run again after a crash or a lost answer: the project a start screen revision made is found,
    * not made again, a message already committed as `draft-<rev>` is not sent again, and the files are copied once.
    * The message, the settings its turn runs with, and the removal of the draft commit together. Only that revision's
    * content goes out. A draft saved after it is the next message and stays, even one that reads the same.
    */
-  async send(key: string, rev: number): Promise<Project> {
+  async send(key: string, rev: number, to = key): Promise<Project> {
     const { store, extension, tools, version, busy } = this.#o
     // A start screen send goes out as the draft its project took, even if the project's draft changed since, as after a
-    // crash before the message. A project's own send goes out as its draft, only while that is still this revision.
+    // crash before the message. Any other send goes out as its draft, only while that is still this revision.
     const started = key === START ? await store.startProject(rev, await this.#newHelper()) : undefined
-    const project = started?.project ?? (await store.project(key))
+    const project = started?.project ?? (await store.project(to))
+    const saved = started === undefined ? key : project.id
     const conversation = await this.#conversation(project.id)
     const requestId = sendName(rev)
     if ((await store.harness.commit((tx) => tx.submissionByRequest(conversation.id, requestId), context)) !== undefined) {
       await this.#watch(project.id, conversation)
       return project
     }
-    const draft = started?.draft ?? (await store.draft(project.id, rev))
+    const draft = started?.draft ?? (await store.draft(saved, rev))
     const folder = store.projectFolder(project.id)
     const attachments = await copyAttachments(folder, rev, draft.attachments)
     // The chat entry keeps the split the model got: a picture it could not read is shown as a file, by its path.
@@ -335,7 +337,7 @@ export class Chats {
       await busy.during(() => store.harness.commit(async (tx) => {
         if ((await tx.submissionByRequest(conversation.id, requestId)) !== undefined) return
         // Both roles freeze here: the lead in the conversation's model, and the helper in the turn the helper call reads.
-        const { lead, helper, thinking, saves } = await store.send(tx, project.id, rev)
+        const { lead, helper, thinking, saves } = await store.send(tx, project.id, saved, rev)
         const offered = helper === null ? tools.filter((tool) => tool.name !== HELPER) : tools
         await conversation.submit(tx, {
           type: 'input',

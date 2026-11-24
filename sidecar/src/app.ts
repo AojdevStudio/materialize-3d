@@ -9,9 +9,10 @@ import { Host } from './host'
 import { inferenceModels, KeychainCredentials, Logins } from './inference'
 import { legacyProjects } from './legacy'
 import { handlers } from './methods'
+import { Mobile, PhoneEvents } from './mobile'
 import type { Catalog } from './offered'
 import { sweepPictures } from './pictures'
-import { EXIT, FLAGS, PICTURES_FOLDER } from './protocol'
+import { EXIT, FLAGS, MOBILE_PORT, PICTURES_FOLDER, type SidecarEvent } from './protocol'
 import { Store, StoreInUse } from './store'
 
 export interface SidecarOptions {
@@ -20,10 +21,14 @@ export interface SidecarOptions {
   addProviders?(models: MutableModels): void
   /** Tests only: a model catalog in place of the app's, such as one with a newer version. */
   catalog?: Catalog
+  /** Tests only: the port the phone service listens on, in place of `MOBILE_PORT`. */
+  mobilePort?: number
+  /** Tests only: how long a pairing code works, in place of five minutes. */
+  pairingTtlMs?: number
 }
 
 /** The sidecar from start to quit: open the store, serve the pipe until stdin closes, then close the store. */
-export async function runSidecar({ argv, addProviders, catalog }: SidecarOptions): Promise<never> {
+export async function runSidecar({ argv, addProviders, catalog, mobilePort = MOBILE_PORT, pairingTtlMs = 5 * 60_000 }: SidecarOptions): Promise<never> {
   // Stdout carries protocol lines only, so a library that logs cannot corrupt the pipe.
   console.log = console.error
   console.info = console.error
@@ -84,7 +89,12 @@ export async function runSidecar({ argv, addProviders, catalog }: SidecarOptions
     process.exit(1)
   })
 
-  const emit = host.emit.bind(host)
+  // Every event reaches the window, and a chat's changes also reach each paired device's open stream.
+  const phones = new PhoneEvents()
+  const emit = (event: SidecarEvent) => {
+    host.emit(event)
+    phones.send(event)
+  }
   const busy = new Busy(host)
   const chats = new Chats({ store, models, extension, tools, version, busy, emit })
   opened.resolve({ store, chats })
@@ -107,7 +117,7 @@ export async function runSidecar({ argv, addProviders, catalog }: SidecarOptions
   const pictures = join(dirname(data), PICTURES_FOLDER)
   // A start screen send cut off after its project was made still sends the draft it moved, so that draft's pictures
   // stay too.
-  sweepPictures(pictures, [...Object.values((await store.state()).drafts), ...(await store.startedDrafts())])
+  sweepPictures(pictures, await store.keptDrafts())
   const legacy = {
     blocked: () => oldChats.blocked,
     retry: async () => {
@@ -117,7 +127,8 @@ export async function runSidecar({ argv, addProviders, catalog }: SidecarOptions
   }
   // The pipe opens before the pass is asked for and before the reconcile, which asks Rust's Keychain whether a
   // waited-on login is there now.
-  const serving = host.serve(handlers({ host, store, models, logins, chats, version, legacy, pictures }), process.stdin)
+  const mobile = new Mobile({ store, chats, models, logins, version, pictures, events: phones, port: mobilePort, pairingTtlMs })
+  const serving = host.serve(handlers({ host, store, models, logins, chats, version, legacy, pictures, mobile }), process.stdin)
   // Work a crash cut off resumes only with the pass. Without it an update is installing, and the work resumes after
   // the restart.
   const resumable = await busy.watch(store.harness)
@@ -132,6 +143,7 @@ export async function runSidecar({ argv, addProviders, catalog }: SidecarOptions
       .catch((error: unknown) => console.error(`resuming the work a crash cut off failed: ${String(error)}`))
   }
   await serving
+  mobile.stop()
   busy.close()
   await chats.close()
   await store.close()

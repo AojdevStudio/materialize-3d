@@ -8,7 +8,8 @@
  * Per request, before any script: a model listed in `M3D_RETIRED` (a comma list) answers as a provider that removed
  * it, and with `M3D_FLAKY` set, each model's first request answers that the provider is overloaded.
  *
- * The app's catalog gains `gpt-6.3-sol`, a newer Sol version than the app ships.
+ * The app's catalog gains `gpt-6.3-sol`, a newer Sol version than the app ships. `M3D_MOBILE_PORT` and
+ * `M3D_PAIRING_TTL_MS` set the phone service's port and how long a pairing code works.
  */
 import { existsSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -179,9 +180,14 @@ const catalog: Catalog = {
   families: CATALOG.families.map((family) => (family.name === 'GPT Sol' ? { ...family, versions: [{ modelId: 'gpt-6.3-sol', name: 'GPT 6.3 Sol' }, ...family.versions] } : family)),
 }
 
+const mobilePort = process.env.M3D_MOBILE_PORT
+const pairingTtl = process.env.M3D_PAIRING_TTL_MS
+
 await runSidecar({
   argv: process.argv.slice(2),
   catalog,
+  ...(mobilePort === undefined ? {} : { mobilePort: Number(mobilePort) }),
+  ...(pairingTtl === undefined ? {} : { pairingTtlMs: Number(pairingTtl) }),
   addProviders: (models) => {
     const faux = fauxProvider({ provider: 'faux', models: [{ id: 'faux-a' }, { id: 'faux-b' }] })
     faux.setResponses(Array.from({ length: 200 }, () => (context, _options, _state, model) => answer(context, model)))

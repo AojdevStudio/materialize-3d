@@ -233,6 +233,27 @@ export const STEP_LINES = {
   astra: { label: 'Asked Astra (GPT)', doing: 'Asking Astra (GPT)' },
 } as const satisfies Record<ToolName, { label: string; doing: string }>
 
+/** The loopback port the phone service listens on, which the person's Tailscale Serve forwards to. */
+export const MOBILE_PORT = 47380
+
+/** A phone or tablet paired with this computer. */
+export type PairedDevice = { id: string; name: string; pairedMs: number }
+
+/** This computer as a paired device knows it. */
+export type Computer = { id: string; name: string; version: string }
+
+/**
+ * Where pairing a phone stands. `ready` shows a QR image of `url`, whose code works once until `expiresMs`. `setup`
+ * names the command that makes Tailscale Serve forward to the phone service. `off` says why no phone can reach it.
+ */
+export type MobilePairing = { kind: 'ready'; url: string; svg: string; expiresMs: number } | { kind: 'setup'; command: string } | { kind: 'off'; detail: string }
+
+/** A chat as the phone lists it: its pair and its status. */
+export type MobileChat = { id: string; title: string; createdMs: number; lead: ModelChoice; helper: ModelChoice | null; status: ProjectStatus }
+
+/** A model file in a chat's folder, by its path in that folder. */
+export type ModelFile = { rel: string; size: number; modifiedMs: number }
+
 /** What the window can ask the sidecar, by method name. */
 export interface Methods {
   'app.ping': { params: Record<string, never>; result: { version: string } }
@@ -285,6 +306,11 @@ export interface Methods {
   'projects.markPrinted': { params: { project: string }; result: null }
   /** The tools a project's agent is offered, as Pi resolves them. */
   'agent.tools': { params: { project: string }; result: string[] }
+  /** A new pairing code for a phone, which replaces the last one, or why there is none. */
+  'mobile.pair': { params: Record<string, never>; result: MobilePairing }
+  'mobile.devices': { params: Record<string, never>; result: PairedDevice[] }
+  /** Forgets a paired device, whose token stops working on its next request, and answers the devices left. */
+  'mobile.forget': { params: { device: string }; result: PairedDevice[] }
 }
 
 export type Method = keyof Methods
