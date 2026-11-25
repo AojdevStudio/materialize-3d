@@ -88,6 +88,15 @@ export default function StudioApp() {
       ...made.filter((p) => !state.projects.some((saved) => saved.id === p.id)),
       ...state.projects.map((saved) => take(made.find((p) => p.id === saved.id), saved)),
     ])
+  // An engine that started again may have saved roles whose events it never sent, so the window reads the chats again,
+  // and takes their roles by revision like any other.
+  useEffect(
+    () =>
+      onSidecarEvent((event) => {
+        if (event.type === 'ready') void sidecar('state.get', {}).then(takeProjects, (err: unknown) => setError(String(err)))
+      }).stop,
+    [],
+  )
 
   /**
    * The saves of the role picks, one after another in the order they were made, so two picks of one role land in that

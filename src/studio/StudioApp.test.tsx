@@ -1388,6 +1388,20 @@ describe('StudioApp', () => {
       await waitFor(() => expect(screen.getByTestId('helper-picker').textContent).toBe('Opus 5.5'))
     })
 
+    it('sends on a role saved just before the engine stopped, whose event never came, once the engine is back', async () => {
+      const store = mockSidecar({}, [projectA, projectB])
+      render(<StudioApp />)
+      await openA()
+      // A phone saved Sonnet, and the engine stopped before it said so.
+      store.projects = store.projects.map((p) => (p.id === projectA.id ? { ...p, helper: sonnet, roles: 1 } : p))
+      await emit({ type: 'engine', state: 'restarting' })
+      await emit({ type: 'ready', version: '1.2.3' })
+      await waitFor(() => expect(screen.getByTestId('helper-picker').textContent).toBe('Sonnet 5.5'))
+      await sendShown('A clip')
+      await waitFor(() => expect(sends()).toHaveLength(1))
+      expect(sends()[0]).toMatchObject({ key: projectA.id, pair: { lead: opus, helper: sonnet } })
+    })
+
     it('leaves a message already on its way alone when a role is picked after Send', async () => {
       mockSidecar({ 'chat.send': () => new Promise(() => {}) }, [projectA, projectB])
       render(<StudioApp />)
