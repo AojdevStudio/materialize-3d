@@ -1459,6 +1459,33 @@ describe('StudioApp', () => {
     await waitFor(() => expect(sidecarCalls('setup.check').length).toBeGreaterThan(checks))
   })
 
+  it('keeps the message unsent when a role pick it waited for fails, and sends it on the next Send', async () => {
+    let failPick: () => void = () => {}
+    let held = false
+    // The first helper save fails, as when the engine restarts before it commits. Later ones answer at once.
+    mockSidecar(
+      { 'projects.setHelper': (_, real) => (held ? real() : ((held = true), new Promise((_, reject) => (failPick = () => reject(new Error(LOST)))))) },
+      [projectA, projectB],
+    )
+    render(<StudioApp />)
+    fireEvent.click(await projectList().findByText('Project A'))
+    await waitFor(() => expect(openTitle()).toBe('Project A'))
+    fireEvent.click(screen.getByTestId('helper-picker'))
+    fireEvent.click(within(screen.getByRole('menu', { name: 'Helper models' })).getByText('Sonnet 5.5'))
+    await waitFor(() => expect(sidecarCalls('projects.setHelper')).toHaveLength(1))
+    type('A clip')
+    await waitFor(() => expect((screen.getByTestId('send') as HTMLButtonElement).disabled).toBe(false))
+    fireEvent.click(screen.getByTestId('send'))
+    await act(async () => failPick())
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain(LOST))
+    await waitFor(() => expect((screen.getByTestId('send') as HTMLButtonElement).disabled).toBe(false))
+    expect(sends()).toEqual([])
+    expect(prompt().value).toBe('A clip')
+    // The person sends again, and now it goes.
+    fireEvent.click(screen.getByTestId('send'))
+    await waitFor(() => expect(sends()).toHaveLength(1))
+  })
+
   it('sends with the helper picked just before Send, even while an earlier pick is still saving', async () => {
     let answerFirst: () => void = () => {}
     let held = false

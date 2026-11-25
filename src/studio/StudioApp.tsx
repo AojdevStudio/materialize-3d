@@ -118,13 +118,23 @@ export default function StudioApp() {
    * waits for everything clicked before it. A role save waits for everything clicked before it, sends included, so a
    * pick made before Send counts for that message and one made after counts only for later turns.
    */
-  const clicked = useRef<Promise<unknown>>(Promise.resolve())
+  // It settles true while every role save since the last send went through. A send that finds one failed keeps its
+  // draft, since it would go out on roles the person did not choose, and the next send starts clean.
+  const clicked = useRef<Promise<boolean>>(Promise.resolve(true))
   const afterClicked = (save: () => Promise<unknown>) => {
-    clicked.current = clicked.current.then(save).catch((err: unknown) => setError(String(err)))
+    clicked.current = clicked.current.then((ok) =>
+      save().then(
+        () => ok,
+        (err: unknown) => {
+          setError(String(err))
+          return false
+        },
+      ),
+    )
   }
   const send = (startHelper?: ModelChoice | null) => {
     const sent = drafts.send(startHelper, clicked.current)
-    clicked.current = Promise.all([clicked.current, sent])
+    clicked.current = sent.then(() => true)
     return sent
   }
 
