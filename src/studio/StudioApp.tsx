@@ -96,11 +96,20 @@ export default function StudioApp() {
       ...state.projects.map((saved) => take(made.find((p) => p.id === saved.id), saved)),
     ])
   // An engine that started again may have saved roles whose events it never sent, so the window reads the chats again,
-  // and takes their roles by revision like any other.
+  // and takes their roles by revision like any other. Send waits for that read, as it waits for the first one, and only
+  // the newest read lets it go.
+  const [rereading, setRereading] = useState(false)
+  const rereads = useRef(0)
   useEffect(
     () =>
       onSidecarEvent((event) => {
-        if (event.type === 'ready') void sidecar('state.get', {}).then(takeProjects, (err: unknown) => setError(String(err)))
+        if (event.type !== 'ready') return
+        rereads.current += 1
+        const read = rereads.current
+        setRereading(true)
+        void sidecar('state.get', {})
+          .then(takeProjects, (err: unknown) => setError(String(err)))
+          .finally(() => read === rereads.current && setRereading(false))
       }).stop,
     [],
   )
@@ -171,8 +180,9 @@ export default function StudioApp() {
   const blocker: Blocker | undefined = needs?.[0] ?? (nextWaitsForLogin ? turnLogin : undefined)
   const cause: SetupCause | undefined = blocker ?? turnLogin ?? (slicerFound === false && !wentOnInSetup ? { kind: 'slicer' } : undefined)
   // Send waits for the saved state, which says whether setup is done, and for the check. On the start screen it also
-  // waits for the model list, as the helper shown there comes from it, and a send carries the roles shown.
-  const notReady = setup?.done !== true || needs === null || blocker !== undefined || (!current && models.length === 0)
+  // waits for the model list, as the helper shown there comes from it, and a send carries the roles shown. After the
+  // engine started again, it waits for the chats to be read again.
+  const notReady = setup?.done !== true || needs === null || blocker !== undefined || (!current && models.length === 0) || rereading
 
   /**
    * Shows a pick at once and saves it in the background, after the saves of earlier picks. A send never waits for

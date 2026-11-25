@@ -1414,6 +1414,25 @@ describe('StudioApp', () => {
       expect(sidecarCalls('projects.status')).toHaveLength(before)
     })
 
+    it('keeps Send off after the engine is back until the chats are read again', async () => {
+      let reads = 0
+      let answerRead: () => void = () => {}
+      const store = mockSidecar({ 'state.get': (_, real) => (++reads === 2 ? new Promise((resolve) => (answerRead = () => resolve(real()))) : real()) }, [projectA, projectB])
+      render(<StudioApp />)
+      await openA()
+      store.projects = store.projects.map((p) => (p.id === projectA.id ? { ...p, helper: sonnet, roles: 1 } : p))
+      await emit({ type: 'engine', state: 'restarting' })
+      await emit({ type: 'ready', version: '1.2.3' })
+      await waitFor(() => expect(reads).toBe(2))
+      type('A clip')
+      await pause(50)
+      expect((screen.getByTestId('send') as HTMLButtonElement).disabled).toBe(true)
+      await act(async () => answerRead())
+      await sendShown('A clip')
+      await waitFor(() => expect(sends()).toHaveLength(1))
+      expect(sends()[0]).toMatchObject({ key: projectA.id, pair: { lead: opus, helper: sonnet } })
+    })
+
     it('leaves a message already on its way alone when a role is picked after Send', async () => {
       mockSidecar({ 'chat.send': () => new Promise(() => {}) }, [projectA, projectB])
       render(<StudioApp />)
