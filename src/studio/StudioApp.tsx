@@ -54,6 +54,11 @@ export default function StudioApp() {
   const running = view?.running ?? false
 
   useStudioEvents(projects)
+  /**
+   * The newest project event of each chat. The sidecar sends one for every role change, so its roles are the newest the
+   * window heard, newer than a saved state read before it.
+   */
+  const heard = useRef(new Map<string, Project>())
   // A paired phone can change a chat's roles too, so the window takes each project the sidecar says changed, and checks
   // again what the next send needs, as after a pick here. A project not listed yet, as one whose start reply is still
   // on its way, joins the list, so that reply finds it and keeps it.
@@ -61,6 +66,7 @@ export default function StudioApp() {
     () =>
       onSidecarEvent((event) => {
         if (event.type !== 'project') return
+        heard.current.set(event.project.id, event.project)
         setProjects((all) => (all.some((p) => p.id === event.project.id) ? all.map((p) => (p.id === event.project.id ? event.project : p)) : [event.project, ...all]))
         checkReady()
       }).stop,
@@ -72,9 +78,16 @@ export default function StudioApp() {
     void checkForUpdatesAtLaunch()
   }, [])
 
-  // A project made while this was on its way is newer than the saved list, so it stays.
+  // A project made while this was on its way is newer than the saved list, so it stays, and so do the roles a project
+  // event gave a chat.
   const takeProjects = (state: AppState) =>
-    setProjects((made) => [...made.filter((p) => !state.projects.some((saved) => saved.id === p.id)), ...state.projects])
+    setProjects((made) => [
+      ...made.filter((p) => !state.projects.some((saved) => saved.id === p.id)),
+      ...state.projects.map((saved) => {
+        const event = heard.current.get(saved.id)
+        return event === undefined ? saved : { ...saved, model: event.model, helper: event.helper }
+      }),
+    ])
 
   /**
    * The saves of the role picks, one after another in the order they were made, so two picks of one role land in that

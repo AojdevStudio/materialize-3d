@@ -1324,6 +1324,21 @@ describe('StudioApp', () => {
       expect(said('studio_flushed')).toBe(false)
     })
 
+    it('sends on a role a paired phone saved while the saved state read at launch was on its way', async () => {
+      let answerState: () => void = () => {}
+      let reads = 0
+      mockSidecar({ 'state.get': (_, real) => (++reads === 1 ? new Promise((resolve) => (answerState = () => resolve(real()))) : real()) }, [projectA, projectB])
+      render(<StudioApp />)
+      await waitFor(() => expect(reads).toBe(1))
+      await emit({ type: 'project', project: { ...projectA, helper: sonnet } })
+      await act(async () => answerState())
+      await openA()
+      expect(screen.getByTestId('helper-picker').textContent).toBe('Sonnet 5.5')
+      await sendShown('A clip')
+      await waitFor(() => expect(sends()).toHaveLength(1))
+      expect(sends()[0]).toMatchObject({ key: projectA.id, pair: { lead: opus, helper: sonnet } })
+    })
+
     it('leaves a message already on its way alone when a role is picked after Send', async () => {
       mockSidecar({ 'chat.send': () => new Promise(() => {}) }, [projectA, projectB])
       render(<StudioApp />)
