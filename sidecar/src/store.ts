@@ -399,10 +399,11 @@ export class Store {
    * screen send.
    */
   async send(tx: Tx, project: string, key: string, rev: number, pair: SentRoles | undefined, keep: boolean): Promise<{ lead: ModelChoice; helper: ModelChoice | null; thinking: Thinking; saves: number }> {
-    const { thinking } = await tx.doc(SettingsDoc, this.root.id)
+    const { thinking, model: defaultLead } = await tx.doc(SettingsDoc, this.root.id)
     const saved = await this.#projectIn(tx, project)
-    // Each role the send carries, a pick the window had not heard saved yet, and the saved one for each other role.
-    const model = pair?.lead ?? saved.model
+    // Each role the send carries, a pick the window had not heard saved yet, and the saved one for each other role: for a
+    // start screen send, the default lead as saved now, even when a first try that never went out made the project.
+    const model = pair?.lead ?? (keep ? defaultLead : saved.model)
     const helper = pair?.helper === undefined ? saved.helper : pair.helper
     // A start screen send, first or retried, is how its project's roles were chosen, so the project keeps them, and a
     // changed role lets go the retirement it held. A send in a chat leaves the saved roles to the pickers, so a pick

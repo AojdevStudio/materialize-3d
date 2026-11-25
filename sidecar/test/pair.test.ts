@@ -166,6 +166,24 @@ describe('a new chat', () => {
     await app.quit()
   })
 
+  test('sent again after its first try never went out, takes the defaults saved since for the roles it leaves out', async () => {
+    const where = scratch()
+    const app = await start(where, 'models')
+    await app.call('auth.setKey', { provider: 'openai-codex', key: 'codex-key' })
+    await app.call('settings.set', { model: OPUS })
+    const { rev } = (await app.call('drafts.set', { key: 'new', text: 'a clip', attachments: [] })) as { rev: number }
+    // The first try makes the project, then an installing update refuses its message.
+    app.gate.installing = true
+    await expect(app.call('chat.send', { key: 'new', rev, pair: {} })).rejects.toThrow('An update is installing.')
+    app.gate.installing = false
+    await app.call('settings.set', { model: FAUX_A, astra: false })
+    const { project } = (await app.call('chat.send', { key: 'new', rev, pair: {} })) as { project: Project }
+    expect(project).toMatchObject({ model: FAUX_A, helper: null })
+    await answered(app, project.id, 'answered by faux-a')
+    expect((await view(app, project.id)).turn).toMatchObject({ model: FAUX_A, helper: null })
+    await app.quit()
+  })
+
   test('counts each save of its roles, and the read, the event, and the reply that carry them carry the count', async () => {
     const where = scratch()
     const app = await start(where, 'models')
