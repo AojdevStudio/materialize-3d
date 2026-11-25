@@ -281,8 +281,11 @@ function Paired({ computer, onForget }: { computer: Computer; onForget: () => Pr
     remoteJson<MobileChat[]>(api('/chats')).then(
       (listed) => {
         if (request !== lists.current || !quiet || writes.current.started !== before || closing.current) return
-        setChats(listed)
-        hold(false)
+        // The pairs and the release of Send land in one render, so Send never lets go while the old pairs show.
+        flushSync(() => {
+          setChats(listed)
+          hold(false)
+        })
         if (listFailed.current) {
           listFailed.current = false
           setError(null)
@@ -392,7 +395,7 @@ function Paired({ computer, onForget }: { computer: Computer; onForget: () => Pr
         <ChatScreen
           chat={open}
           writing={writing > 0 || unsure}
-          confirmed={() => !required.current && writes.current.finished === writes.current.started}
+          confirmed={() => connected.current && !required.current && writes.current.finished === writes.current.started}
           onPick={(change) => pick(open.id, change)}
           onBack={() => setOpenId(null)}
         />

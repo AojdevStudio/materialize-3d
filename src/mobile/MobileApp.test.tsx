@@ -687,10 +687,32 @@ describe('MobileApp', () => {
       const send = () => screen.getByRole('button', { name: 'Send' }) as HTMLButtonElement
       await waitFor(() => expect(send().disabled).toBe(false))
 
+      const sent = () => log.filter((write) => write.startsWith('PUT /chats/bracket/draft') || write.startsWith('POST /chats/bracket/send'))
+
       // The link drops and comes back in one batch, outside act, as the native channel delivers it, and the tap lands
       // on the Send the screen still draws as on.
       stream.heard?.({ kind: 'offline', detail: 'The computer did not answer.' })
       stream.heard?.({ kind: 'connected' })
+      expect(send().disabled).toBe(false)
+      fireEvent.click(send())
+      await act(() => new Promise((resolve) => setTimeout(resolve, 50)))
+      expect(sent()).toEqual([])
+
+      // Once the reconnect's list read lands, a new tap sends.
+      await waitFor(() => expect(send().disabled).toBe(false))
+      fireEvent.click(send())
+      await waitFor(() => expect(sent()).toEqual(['PUT /chats/bracket/draft', 'POST /chats/bracket/send']))
+    })
+
+    it('sends nothing for a tap that lands after the link drops, before the screen redraws', async () => {
+      const { log } = computerWithRoles()
+      await openBracket()
+      fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'Make it thicker' } })
+      const send = () => screen.getByRole('button', { name: 'Send' }) as HTMLButtonElement
+      await waitFor(() => expect(send().disabled).toBe(false))
+
+      stream.heard?.({ kind: 'offline', detail: 'The computer did not answer.' })
+      expect(send().disabled).toBe(false)
       fireEvent.click(send())
       await act(() => new Promise((resolve) => setTimeout(resolve, 50)))
       expect(log.filter((write) => write.startsWith('PUT /chats/bracket/draft') || write.startsWith('POST /chats/bracket/send'))).toEqual([])
