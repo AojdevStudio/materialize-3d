@@ -570,9 +570,17 @@ describe('a paired device', () => {
     // `folder.test.ts` holds the file rules. This checks how the route decodes a path and answers a refusal.
     expect(((await (await call(`/chats/${project}/files`)).json()) as ModelFile[]).map((f) => f.rel).sort()).toEqual(['my part.stl', 'part.stl'])
     expect(await (await call(`/chats/${project}/files/my%20part.stl`)).text()).toBe('solid spaced')
-    for (const rel of ['..%2Fescape.stl', '%2E%2E/escape.stl', 'records.stl', '.m3d%2Fhidden.stl']) {
+    // Each refusal names the decoded path, so a route that skipped decoding would answer with other words.
+    const refusals: [string, string][] = [
+      ['..%2Fescape.stl', '../escape.stl is not a model file in this chat'],
+      // The URL parser folds an encoded `..` away before the route sees it, so the path names no route.
+      ['%2E%2E/escape.stl', `no route GET /api/v1/chats/${project}/escape.stl`],
+      ['records.stl', 'records.stl is not a model file in this chat'],
+      ['.m3d%2Fhidden.stl', '.m3d/hidden.stl is not a model file in this chat'],
+    ]
+    for (const [rel, error] of refusals) {
       const answer = await call(`/chats/${project}/files/${rel}`)
-      expect([rel, answer.status]).toEqual([rel, 404])
+      expect([rel, answer.status, await answer.json()]).toEqual([rel, 404, { error }])
     }
     expect((await call(`/chats/${project}/files/part.stl`)).status).toBe(200)
 
