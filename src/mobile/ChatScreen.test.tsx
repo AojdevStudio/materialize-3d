@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import type { ChatEntry, ChatView, MobileChat, ModelChoice } from '../../sidecar/src/protocol'
 
 // The device keeps no draft for this chat yet, and takes each draft write.
@@ -73,22 +73,35 @@ describe('ChatScreen', () => {
     expect((screen.getByRole('button', { name: 'Send' }) as HTMLButtonElement).disabled).toBe(true)
   })
 
-  it('brings the newest line into view on the way back from the Model tab, where the chat could not keep it', async () => {
+  it('brings a reply that came on the Model tab into view on the way back, and keeps the place when nothing came', async () => {
     const scrolled: Element[] = []
     const spy = vi.spyOn(Element.prototype, 'scrollIntoView').mockImplementation(function (this: Element) {
       scrolled.push(this)
     })
+    const heard: ((change: ChatView) => void)[] = []
+    const sender = new Sender('bracket', 'connected', () => {})
+    const live: Session = { link: 'connected', sends: 0, listen: (hear) => (heard.push(hear), () => {}), sender: () => sender }
     render(
-      <SessionContext.Provider value={session()}>
+      <SessionContext.Provider value={live}>
         <ChatScreen chat={chat} writing={false} onPick={() => {}} onBack={() => {}} />
       </SessionContext.Provider>,
     )
     await screen.findAllByTestId('handoff')
+    const end = () => screen.getByTestId('messages').lastElementChild
+
+    // Nothing comes while the Model tab shows: the way back leaves the transcript where the reader left it.
     fireEvent.click(screen.getByRole('tab', { name: 'Model' }))
     scrolled.length = 0
     fireEvent.click(screen.getByRole('tab', { name: 'Chat' }))
-    const end = screen.getByTestId('messages').lastElementChild
-    expect(scrolled).toContain(end)
+    expect(scrolled).not.toContain(end())
+
+    // A reply comes while the Model tab shows: the way back brings it into view.
+    fireEvent.click(screen.getByRole('tab', { name: 'Model' }))
+    const reply = { id: 20, kind: 'assistant' as const, text: 'Here it is.', calls: [], model: SOL }
+    act(() => heard.forEach((hear) => hear({ ...saved, entries: [...saved.entries, reply], seq: 2 })))
+    scrolled.length = 0
+    fireEvent.click(screen.getByRole('tab', { name: 'Chat' }))
+    expect(scrolled).toContain(end())
     spy.mockRestore()
   })
 

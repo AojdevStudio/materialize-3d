@@ -91,9 +91,12 @@ export default function ChatScreen({
   const tablet = useSyncExternalStore(watchTablet, isTablet)
   const [modelOpened, setModelOpened] = useState(false)
   if (tablet && !modelOpened) setModelOpened(true)
-  // The chat keeps itself at its newest line, but cannot while the Model tab hides it, so a reply that came meanwhile
-  // is brought into view on the way back.
+  // The chat keeps itself at its newest line, but cannot while the Model tab hides it. So on the way back, the newest
+  // line comes into view only if the chat changed meanwhile, and a reader who changed nothing keeps their place.
   const chatPane = useRef<HTMLDivElement>(null)
+  const shownState = view === null ? '' : `${view.seq}:${view.entries.length}:${view.entries[view.entries.length - 1]?.id}:${view.running}`
+  const leftChatAt = useRef('')
+  const [catchUp, setCatchUp] = useState(false)
   // A role menu opens 4 px above the composer, which `studio.css` positions it from. The room it has there is measured,
   // as the composer grows with pictures and a phone on its side is short, and `mobile.css` caps the menu to it, so the
   // menu scrolls rather than leave the screen. A composer the Model tab hides has no box, and keeps the last room.
@@ -117,8 +120,10 @@ export default function ChatScreen({
     }
   }, [composerShown])
   useEffect(() => {
-    if (tab === 'chat') chatPane.current?.querySelector('[data-testid=messages]')?.lastElementChild?.scrollIntoView({ block: 'end' })
-  }, [tab])
+    if (tab !== 'chat' || !catchUp) return
+    chatPane.current?.querySelector('[data-testid=messages]')?.lastElementChild?.scrollIntoView({ block: 'end' })
+    setCatchUp(false)
+  }, [tab, catchUp])
   /** The model file the person chose. Until then, the newest this device can show, so a sliced file takes over from its draft part. */
   const [chosenFile, setChosenFile] = useState<string | null>(null)
   /** Bumped by Reset view, which turns the viewer back to its first angle without loading the model again. */
@@ -216,6 +221,8 @@ export default function ChatScreen({
               key={name}
               aria-selected={tab === name}
               onClick={() => {
+                if (name === 'model' && tab === 'chat') leftChatAt.current = shownState
+                if (name === 'chat' && tab === 'model') setCatchUp(leftChatAt.current !== shownState)
                 setTab(name)
                 if (name === 'model') setModelOpened(true)
               }}
