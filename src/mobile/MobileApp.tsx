@@ -319,7 +319,8 @@ function Paired({ computer, onForget }: { computer: Computer; onForget: () => Pr
   // Read at once and on each return to the list, not on opening a chat, whose extra read would drop a reconnect's.
   // Each time the link comes up, the reconnect reads the list itself, so a list that failed while the computer was
   // away comes back, with one read only.
-  const onList = openId === null
+  // The list shows whenever no chat does, including when a list read dropped the chat that was open.
+  const onList = chats?.some((chat) => chat.id === openId) !== true
   useEffect(() => {
     if (!onList) return
     setError(null)

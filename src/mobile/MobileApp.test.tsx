@@ -776,6 +776,28 @@ describe('MobileApp', () => {
       await waitFor(() => expect(send().disabled).toBe(false))
     })
 
+    it('reads the list on Refresh after a list read dropped the chat that was open', async () => {
+      computerWithRoles()
+      await openBracket()
+      const reads: string[] = []
+      const answer = globalThis.fetch
+      let gone = false
+      vi.stubGlobal('fetch', (url: string, init?: RequestInit) => {
+        if (url.endsWith('/api/v1/chats')) {
+          reads.push(url)
+          if (gone) return Promise.resolve(Response.json([]))
+        }
+        return answer(url, init)
+      })
+      // The computer no longer lists the open chat, so the next list read takes it away and the list shows.
+      gone = true
+      await linkIs({ kind: 'event', event: { type: 'project', project: { id: 'bracket' } } })
+      const refresh = await screen.findByRole('button', { name: 'Refresh' })
+      reads.length = 0
+      fireEvent.click(refresh)
+      await waitFor(() => expect(reads).toHaveLength(1))
+    })
+
     it('turns Send off within the event itself, so a tap queued right behind it sends nothing', async () => {
       computerWithRoles()
       await openBracket()
