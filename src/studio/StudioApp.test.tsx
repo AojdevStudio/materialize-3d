@@ -982,7 +982,7 @@ describe('StudioApp', () => {
     fireEvent.click(screen.getByTestId('send'))
     await waitFor(() => expect(sends()).toHaveLength(1))
     expect(last(saves())).toEqual({ key: 'new', text: 'A clip', attachments: ['/Users/me/a.jpg'] })
-    expect(sends()).toEqual([{ key: 'new', rev: draftRevs, pair: { helper: null } }])
+    expect(sends()).toEqual([{ key: 'new', rev: draftRevs, pair: {} }])
   })
 
   it("starts the start screen's helper at the newest Astra, sends its pick with the first message only, and saves a project's own pick", async () => {
@@ -1016,38 +1016,12 @@ describe('StudioApp', () => {
     expect(helper().textContent).toBe('Astra')
   })
 
-  it('keeps Send off on the start screen until the model list arrives, as the helper it shows comes from it', async () => {
-    let answerModels: () => void = () => {}
-    mockSidecar({ 'models.list': () => new Promise((resolve) => (answerModels = () => resolve(models))) })
-    render(<StudioApp />)
-    await screen.findByText('Engine 1.2.3')
-    type('A clip')
-    await pause(50)
-    expect((screen.getByTestId('send') as HTMLButtonElement).disabled).toBe(true)
-    await act(async () => answerModels())
-    await waitFor(() => expect((screen.getByTestId('send') as HTMLButtonElement).disabled).toBe(false))
-  })
-
-  it('reads the model list again after a pause when it failed, so Send on the start screen comes back', async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true })
-    let reads = 0
-    mockSidecar({ 'models.list': (_, real) => (++reads === 1 ? Promise.reject(new Error(LOST)) : real()) })
-    render(<StudioApp />)
-    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain(LOST))
-    type('A clip')
-    expect((screen.getByTestId('send') as HTMLButtonElement).disabled).toBe(true)
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(3000)
-    })
-    await waitFor(() => expect((screen.getByTestId('send') as HTMLButtonElement).disabled).toBe(false))
-  })
-
-  // A start screen send carries the helper it shows, picked or the default, so the sidecar picks none for it: a change
-  // of the Astra setting after Send cannot change the turn.
+  // A start screen send carries only a role picked there, and the sidecar takes each other role from what is saved when
+  // it accepts the turn: the default lead and the Astra default, whatever the window showed.
   it.each([
-    { shown: 'Astra', astra: true, helper: { provider: 'openai-codex', modelId: 'gpt-6-astra' } },
-    { shown: 'None', astra: false, helper: null },
-  ])('sends the default helper the start screen shows, and the chat keeps it: $shown', async ({ shown, astra, helper }) => {
+    { shown: 'Astra', astra: true },
+    { shown: 'None', astra: false },
+  ])('leaves the default helper the start screen shows to the saved setting: $shown', async ({ shown, astra }) => {
     mockSidecar({
       'state.get': (_, real) => real().then((state) => ({ ...(state as AppState), settings: { ...(state as AppState).settings, astra } })),
       'models.list': () => Promise.resolve([...models, { provider: 'openai-codex', modelId: 'gpt-6-astra', name: 'Astra' }]),
@@ -1058,10 +1032,7 @@ describe('StudioApp', () => {
     await waitFor(() => expect((screen.getByTestId('send') as HTMLButtonElement).disabled).toBe(false))
     fireEvent.click(screen.getByTestId('send'))
     await waitFor(() => expect(sends()).toHaveLength(1))
-    expect(sends()).toEqual([{ key: 'new', rev: draftRevs, pair: { helper } }])
-    // The chat the send made opens with that helper.
-    await waitFor(() => expect(openTitle()).toBe('A clip'))
-    expect(screen.getByTestId('helper-picker').textContent).toBe(shown)
+    expect(sends()).toEqual([{ key: 'new', rev: draftRevs, pair: {} }])
   })
 
   // The five ways a pick and a send raced before a send carried its own roles (#373). Each now holds by construction:
@@ -1471,7 +1442,7 @@ describe('StudioApp', () => {
       await sendShown('A clip')
       await waitFor(() => expect(sends()).toHaveLength(1))
       // The lead whose save lost its answer is not a pick the window still holds, so the sidecar's saved default leads.
-      expect(sends()[0]).toEqual(expect.objectContaining({ key: 'new', pair: { helper: null } }))
+      expect(sends()[0]).toEqual(expect.objectContaining({ key: 'new', pair: {} }))
     })
 
     it('shows and sends a saved pick when its save answers before its project event comes', async () => {
@@ -1875,7 +1846,7 @@ describe('StudioApp', () => {
     fireEvent.click(screen.getByTestId('send'))
     await waitFor(() => expect(sends()).toHaveLength(1))
     expect(last(saves())).toEqual({ key: 'new', text: 'Make this', attachments: files })
-    expect(sends()).toEqual([{ key: 'new', rev: draftRevs, pair: { helper: null } }])
+    expect(sends()).toEqual([{ key: 'new', rev: draftRevs, pair: {} }])
   })
 
   it("lists the signed-in providers' models with their marks, and keeps each project's pick", async () => {

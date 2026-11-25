@@ -177,9 +177,8 @@ export default function StudioApp() {
   const nextWaitsForLogin = turnLogin !== undefined && turnLogin.provider === chosenModel?.provider
   const blocker: Blocker | undefined = needs?.[0] ?? (nextWaitsForLogin ? turnLogin : undefined)
   const cause: SetupCause | undefined = blocker ?? turnLogin ?? (slicerFound === false && !wentOnInSetup ? { kind: 'slicer' } : undefined)
-  // Send waits for the saved state, which says whether setup is done, and for the check. On the start screen it also
-  // waits for the model list, as the helper shown there comes from it, and a start screen send carries that helper.
-  const notReady = setup?.done !== true || needs === null || blocker !== undefined || (!current && models.length === 0)
+  // Send waits for the saved state, which says whether setup is done, and for the check.
+  const notReady = setup?.done !== true || needs === null || blocker !== undefined
 
   /**
    * Shows a pick at once and saves it in the background, after the saves of earlier picks. A send never waits for
@@ -236,13 +235,14 @@ export default function StudioApp() {
       onRemove={(index) => drafts.remove(attachments[index], index)}
       onSend={() => {
         if (running || notReady || chosenModel === null) return
-        // A send carries only the picks whose save the window has not heard back from, and the sidecar runs each other
-        // role as it saved it when it takes the send, which the window may not have heard yet, as after a restart. A
-        // start screen send also carries the helper it shows, and a setting changed later leaves that helper.
-        const pending = { ...(picked?.lead === undefined ? {} : { lead: picked.lead.model }), ...(picked?.helper === undefined ? {} : { helper: picked.helper.model }) }
+        // A send carries only the roles picked here and not yet saved. The sidecar takes every other role from what is
+        // saved when it accepts the turn, which the window may not have heard yet, as after a restart. A helper picked
+        // on the start screen is saved only by the send, so it always goes with it.
+        const helper = current ? picked?.helper : startHelper === null ? undefined : { model: startHelper.pick }
+        const pending = { ...(picked?.lead === undefined ? {} : { lead: picked.lead.model }), ...(helper === undefined ? {} : { helper: helper.model }) }
         if (current) void drafts.send(pending)
         else
-          void drafts.send({ ...pending, helper: chosenHelper }).then((project) => {
+          void drafts.send(pending).then((project) => {
             // A helper picked while this send was on its way is the next chat's, so only the choice it carried resets.
             if (project !== undefined) setStartHelper((now) => (now === startHelper ? null : now))
           })

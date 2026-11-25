@@ -84,22 +84,27 @@ describe('a new chat', () => {
     await app.quit()
   })
 
-  test('takes the helper chosen on the start screen, none included, in place of the default, and refuses one the app cannot run', async () => {
+  test('takes the helper picked on the start screen, none included, and the saved default as it is at the send for no pick', async () => {
     const where = scratch()
     const app = await start(where, 'models')
     await app.call('auth.setKey', { provider: 'openai-codex', key: 'codex-key' })
-    const startWith = async (text: string, helper: ModelChoice | null) => {
+    const startWith = async (text: string, roles: { helper?: ModelChoice | null }) => {
       const { rev } = (await app.call('drafts.set', { key: 'new', text, attachments: [] })) as { rev: number }
-      return ((await app.call('chat.send', { key: 'new', rev, pair: { lead: OPUS, helper } })) as { project: Project }).project.id
+      return ((await app.call('chat.send', { key: 'new', rev, pair: roles })) as { project: Project }).project.id
     }
-    expect(await projectIn(app, await startWith('a clip', FAUX_B))).toMatchObject({ model: OPUS, helper: FAUX_B })
-    expect(await projectIn(app, await startWith('a knob', null))).toMatchObject({ model: OPUS, helper: null })
-    // The window shows Astra and sends it, then the Astra setting goes off before the send arrives: the turn keeps Astra.
+    expect(await projectIn(app, await startWith('a clip', { helper: FAUX_B }))).toMatchObject({ model: OPUS, helper: FAUX_B })
+    expect(await projectIn(app, await startWith('a knob', { helper: null }))).toMatchObject({ model: OPUS, helper: null })
+    expect(await projectIn(app, await startWith('a cap', {}))).toMatchObject({ model: OPUS, helper: ASTRA })
+    // The window showed Astra, then the Astra setting went off before the send arrived. With no pick, the saved setting
+    // decides, and the chat starts with no helper. Astra picked there still runs.
     await app.call('settings.set', { astra: false })
-    const lid = await startWith('a lid', ASTRA)
-    expect(await projectIn(app, lid)).toMatchObject({ model: OPUS, helper: ASTRA })
-    expect((await view(app, lid)).turn).toMatchObject({ model: OPUS, helper: ASTRA })
-    await expect(startWith('a hook', { provider: 'faux', modelId: 'faux-z' })).rejects.toThrow('faux has no model faux-z')
+    const lid = await startWith('a lid', {})
+    expect(await projectIn(app, lid)).toMatchObject({ model: OPUS, helper: null })
+    expect((await view(app, lid)).turn).toMatchObject({ model: OPUS, helper: null })
+    const box = await startWith('a box', { helper: ASTRA })
+    expect(await projectIn(app, box)).toMatchObject({ model: OPUS, helper: ASTRA })
+    expect((await view(app, box)).turn).toMatchObject({ model: OPUS, helper: ASTRA })
+    await expect(startWith('a hook', { helper: { provider: 'faux', modelId: 'faux-z' } })).rejects.toThrow('faux has no model faux-z')
     await app.quit()
   })
 
