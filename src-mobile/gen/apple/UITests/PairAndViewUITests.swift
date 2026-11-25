@@ -83,17 +83,21 @@ final class PairAndViewUITests: XCTestCase {
         shot("03 paired, the computer's chats")
 
         web.buttons[chat].tap()
+        XCTAssertTrue(text(line).waitForExistence(timeout: 30), "the chat shows its transcript")
+        // The iPhone shows the model on its Model tab. The iPad shows it beside the chat.
+        let modelTab = web.descendants(matching: .any).matching(NSPredicate(format: "label == 'Model' AND elementType IN %@", [
+            XCUIElement.ElementType.button.rawValue, XCUIElement.ElementType.tab.rawValue,
+        ])).firstMatch
+        if modelTab.waitForExistence(timeout: 10) { modelTab.tap() }
         // The file buttons carry aria-pressed, so the web view shows them as switches.
         XCTAssertTrue(web.switches.firstMatch.waitForExistence(timeout: 30), "the chat lists its model files")
-        // The transcript loads apart from the model files.
-        XCTAssertTrue(text(line).waitForExistence(timeout: 30), "the chat shows its transcript")
         for name in expected {
             let model = web.switches[name]
             XCTAssertTrue(model.exists, "the chat lists \(name)")
             model.tap()
             // ModelView names itself after the file, without its folder, once that file is drawn.
             let file = name.split(separator: "/").last.map(String.init) ?? name
-            XCTAssertTrue(web.otherElements["3D model \(file)"].waitForExistence(timeout: 90), "\(name) draws: \(lastLine())")
+            XCTAssertTrue(web.images["3D model \(file)"].waitForExistence(timeout: 90), "\(name) draws: \(lastLine())")
             shot("04 model \(name)")
         }
         let view = web.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3))

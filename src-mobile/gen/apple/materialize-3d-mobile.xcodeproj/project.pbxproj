@@ -17,6 +17,7 @@
 		DB994F697AD89C73B32F2880 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B242456B8E1AA4864805F3F0 /* Assets.xcassets */; };
 		E3CC93364B51DC2D7328E0F7 /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 55909093CC6C9D82F27BB8FF /* LaunchScreen.storyboard */; };
 		EDFE677237F1F37673B6EA4F /* PairAndViewUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 01E87958EE407D2F779B6B19 /* PairAndViewUITests.swift */; };
+		F278DF4BFD3BAEB73629AA56 /* LayoutsAndRolesUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 493D4AAD38637FDD54DF05C7 /* LayoutsAndRolesUITests.swift */; };
 		F337EDC415EE0AB994AFB4E8 /* Security.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = C1C5EA306BCD8F23BB7964D3 /* Security.framework */; };
 		F3AE3717C1BCAE398A258507 /* WebKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = DC89DEE372E2C369A0105CDB /* WebKit.framework */; };
 		F9FD0766419BC4F8600840E5 /* UIKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B77DA21D63B7BD2F600B31C9 /* UIKit.framework */; };
@@ -40,6 +41,7 @@
 		195DBEA1E1E06F9613DCB0D9 /* MetalKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = MetalKit.framework; path = System/Library/Frameworks/MetalKit.framework; sourceTree = SDKROOT; };
 		1D612E2DC66E0E93133C871F /* materialize-3d-mobile_iOS.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = "materialize-3d-mobile_iOS.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		23C05D2B65B16F8931E39012 /* assets */ = {isa = PBXFileReference; lastKnownFileType = folder; path = assets; sourceTree = SOURCE_ROOT; };
+		493D4AAD38637FDD54DF05C7 /* LayoutsAndRolesUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LayoutsAndRolesUITests.swift; sourceTree = "<group>"; };
 		55909093CC6C9D82F27BB8FF /* LaunchScreen.storyboard */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; path = LaunchScreen.storyboard; sourceTree = "<group>"; };
 		7FE61AC9884AB9C748BF703B /* CoreGraphics.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreGraphics.framework; path = System/Library/Frameworks/CoreGraphics.framework; sourceTree = SDKROOT; };
 		92FC95BF63F06FD948A37006 /* main.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = main.mm; sourceTree = "<group>"; };
@@ -110,6 +112,7 @@
 		3D2774FEED813AAA1E60E4D9 /* UITests */ = {
 			isa = PBXGroup;
 			children = (
+				493D4AAD38637FDD54DF05C7 /* LayoutsAndRolesUITests.swift */,
 				01E87958EE407D2F779B6B19 /* PairAndViewUITests.swift */,
 			);
 			path = UITests;
@@ -314,6 +317,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				F278DF4BFD3BAEB73629AA56 /* LayoutsAndRolesUITests.swift in Sources */,
 				EDFE677237F1F37673B6EA4F /* PairAndViewUITests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
