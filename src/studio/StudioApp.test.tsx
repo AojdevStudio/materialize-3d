@@ -1459,6 +1459,27 @@ describe('StudioApp', () => {
     await waitFor(() => expect(sidecarCalls('setup.check').length).toBeGreaterThan(checks))
   })
 
+  it('sends the chat where Send was clicked, even while a role save is still on its way', async () => {
+    let answerPick: () => void = () => {}
+    mockSidecar({ 'projects.setHelper': (_, real) => new Promise((resolve) => (answerPick = () => resolve(real()))) }, [projectA, projectB], {
+      [projectB.id]: { text: 'B draft' },
+    })
+    render(<StudioApp />)
+    fireEvent.click(await projectList().findByText('Project A'))
+    await waitFor(() => expect(openTitle()).toBe('Project A'))
+    fireEvent.click(screen.getByTestId('helper-picker'))
+    fireEvent.click(within(screen.getByRole('menu', { name: 'Helper models' })).getByText('Sonnet 5.5'))
+    await waitFor(() => expect(sidecarCalls('projects.setHelper')).toHaveLength(1))
+    type('A draft')
+    await waitFor(() => expect((screen.getByTestId('send') as HTMLButtonElement).disabled).toBe(false))
+    fireEvent.click(screen.getByTestId('send'))
+    fireEvent.click(projectList().getByText('Project B'))
+    await waitFor(() => expect(openTitle()).toBe('Project B'))
+    await act(async () => answerPick())
+    await waitFor(() => expect(sends()).toHaveLength(1))
+    expect(sends()[0]).toMatchObject({ key: projectA.id })
+  })
+
   it('applies a helper picked after Send to later turns only, not to the message already on its way', async () => {
     let answerSave: () => void = () => {}
     let held = false
