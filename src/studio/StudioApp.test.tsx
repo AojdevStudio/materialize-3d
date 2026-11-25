@@ -1517,6 +1517,28 @@ describe('StudioApp', () => {
       expect(turns).toEqual([null, sonnet])
     })
 
+    it('lets a chat clear a retired helper with No helper when the model list is not there', async () => {
+      const astra = { provider: 'openai-codex', modelId: 'gpt-6-astra' }
+      const retired = { kind: 'model', fix: 'Astra was retired. Pick another helper, or none.', retired: { role: 'helper', model: astra, replacement: null } }
+      let fixed = false
+      mockSidecar(
+        {
+          'models.list': () => Promise.reject(new Error(LOST)),
+          'setup.check': () => Promise.resolve(fixed ? [] : [retired]),
+          'projects.setHelper': (params, real) => ((fixed = params.model === null), real()),
+        },
+        [{ ...projectA, helper: astra }, projectB],
+      )
+      render(<StudioApp />)
+      await openA()
+      const helper = await screen.findByTestId('helper-picker')
+      fireEvent.click(helper)
+      fireEvent.click(within(screen.getByRole('menu', { name: 'Helper models' })).getByText('No helper'))
+      await waitFor(() => expect(sidecarCalls('projects.setHelper')).toEqual([{ project: projectA.id, model: null }]))
+      type('A clip')
+      await waitFor(() => expect((screen.getByTestId('send') as HTMLButtonElement).disabled).toBe(false))
+    })
+
     it('leaves a message already on its way alone when a role is picked after Send', async () => {
       mockSidecar({ 'chat.send': () => new Promise(() => {}) }, [projectA, projectB])
       render(<StudioApp />)

@@ -242,12 +242,11 @@ export default function StudioApp() {
       running={running}
       locked={blocker === undefined ? undefined : lockedText(blocker)}
       picker={
-        blocker !== undefined && models.length === 0 ? null : (
-          <span className="model-roles">
-            <ModelPicker role="Lead" models={models} chosen={chosenModel} onPick={pickModel} />
-            <ModelPicker role="Helper" models={models} chosen={chosenHelper} onPick={pickHelper} />
-          </span>
-        )
+        // A blocked chat with no model list has no lead to offer, but No helper needs no list, and clears a retired helper.
+        <span className="model-roles">
+          {(blocker === undefined || models.length > 0) && <ModelPicker role="Lead" models={models} chosen={chosenModel} onPick={pickModel} />}
+          <ModelPicker role="Helper" models={models} chosen={chosenHelper} onPick={pickHelper} />
+        </span>
       }
     />
   )
