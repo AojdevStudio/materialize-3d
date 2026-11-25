@@ -138,7 +138,7 @@ describe('a new chat', () => {
     await store.close()
   })
 
-  test('sent again after its first try failed, takes the helper picked on the start screen since', async () => {
+  test('sent again after its first try failed, takes the helper picked on the start screen since, and says so to paired devices', async () => {
     const where = scratch()
     const app = await start(where, 'helper')
     await app.call('settings.set', { model: FAUX_A })
@@ -149,6 +149,8 @@ describe('a new chat', () => {
     app.gate.installing = false
     const { project } = (await app.call('chat.send', { key: 'new', rev, pair: { lead: FAUX_A, helper: null } })) as { project: Project }
     expect(project).toMatchObject({ helper: null })
+    // A phone with the project open updates its pickers only from project events.
+    await app.until((event) => event.type === 'project' && (event.project as Project).id === project.id && (event.project as Project).helper === null)
     expect(await projectIn(app, project.id)).toMatchObject({ helper: null })
     expect((await view(app, project.id)).turn).toMatchObject({ model: FAUX_A, helper: null })
     await app.quit()

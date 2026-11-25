@@ -471,7 +471,10 @@ export class Chats {
       throw error
     }
     await this.#watch(project.id, conversation)
-    return store.project(project.id)
+    const made = await store.project(project.id)
+    // A start screen send keeps its pair as the project's roles, so a paired device that has the project open hears them.
+    if (started !== undefined) this.#o.emit({ type: 'project', project: made })
+    return made
   }
 
   /**
