@@ -1036,6 +1036,38 @@ describe('a draft and the link to the computer', () => {
     await waitFor(() => expect(sendButton().disabled).toBe(false))
   })
 
+  it('turns Send on for a chat opened again after its turn ended while the chat list showed', async () => {
+    kept.set('desk-clip', { text: 'Now make it blue', pictures: [], sent: null })
+    const asked = { id: 1, kind: 'user', text: 'Draw it' }
+    computerSide.chat = { ...view, entries: [asked], running: true, seq: 4 }
+    await openChat()
+    await linkIs({ kind: 'connected' })
+    expect(await screen.findByText('Draw it')).toBeTruthy()
+    backToChats()
+    // The turn ends while the chat list shows.
+    await linkIs({ kind: 'event', event: { type: 'chat', ...view, entries: [asked], running: false, seq: 6 } })
+
+    hold('GET /chats/desk-clip')
+    expect((await reopen()).value).toBe('Now make it blue')
+    await waitFor(() => expect(sendButton().disabled).toBe(false))
+  })
+
+  it('keeps Send off for a chat opened again after its turn started while the chat list showed', async () => {
+    kept.set('desk-clip', { text: 'Now make it blue', pictures: [], sent: null })
+    const asked = { id: 1, kind: 'user', text: 'Draw it' }
+    await openChat()
+    await linkIs({ kind: 'connected' })
+    await waitFor(() => expect(sendButton().disabled).toBe(false))
+    backToChats()
+    // A turn starts while the chat list shows, from the computer or another device.
+    await linkIs({ kind: 'event', event: { type: 'chat', ...view, entries: [asked], running: true, seq: 6 } })
+
+    hold('GET /chats/desk-clip')
+    expect((await reopen()).value).toBe('Now make it blue')
+    await act(() => new Promise((resolve) => setTimeout(resolve, 0)))
+    expect(sendButton().disabled).toBe(true)
+  })
+
   it('reads the model files again when the turn ends before the chat was first read, and not for a repeated end', async () => {
     computerSide.chat = { ...view, entries: [{ id: 1, kind: 'user', text: 'Draw it' }], running: true, seq: 4 }
     const release = hold('GET /chats/desk-clip')

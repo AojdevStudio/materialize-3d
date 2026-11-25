@@ -73,6 +73,8 @@ export class Sender {
    * screen, so a chat opened again keeps Send off until a newer view says the turn ended.
    */
   #running = false
+  /** The `seq` of the view `#running` came from. */
+  #runningSeq = -1
   /** Set when the link comes up again while a settle is under way. */
   #relinked = false
   readonly #heard = new Set<() => void>()
@@ -198,7 +200,10 @@ export class Sender {
 
   running = () => this.#running
 
-  setRunning(running: boolean) {
+  /** Takes whether the turn runs from a chat view or event, unless a newer one (by `seq`) already said. */
+  setRunning(running: boolean, seq: number) {
+    if (seq < this.#runningSeq) return
+    this.#runningSeq = seq
     this.#running = running
   }
 

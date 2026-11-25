@@ -208,7 +208,10 @@ function Paired({ computer, onForget }: { computer: Computer; onForget: () => Pr
       if (message.kind === 'offline') return setLink('offline')
       if (closing.current) return
       const change = chatEvent(message.event)
-      if (change !== null) for (const heard of listeners.current) heard(change)
+      if (change === null) return
+      // A chat that is not open still learns whether its turn runs, so it shows the right Send when it opens again.
+      senders.current.get(change.project)?.setRunning(change.running, change.seq)
+      for (const heard of listeners.current) heard(change)
     }).catch((err) => setError(errorText(err)))
   }, [computer.id])
 
@@ -380,7 +383,7 @@ function Chat({ chat, onBack }: { chat: MobileChat; onBack: () => void }) {
   // Only a view the computer sent says whether the turn runs. Until one comes, the chat shows what it last showed.
   const running = view === null ? sender.running() : view.running
   useEffect(() => {
-    if (view !== null) sender.setRunning(view.running)
+    if (view !== null) sender.setRunning(view.running, view.seq)
   }, [sender, view])
   // A turn that ends may have made a model, so the files are read again for each idle view whose last entry is new.
   // That holds however the end arrives, and the first idle view after opening reads them once more.
