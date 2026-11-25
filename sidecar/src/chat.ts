@@ -326,7 +326,7 @@ export class Chats {
    * The final word on a device's send of revision `rev` to `project`, after its answer was lost: true when the chat
    * holds its message. Otherwise the revision is retired in the same commit, so a send of it still on its way is
    * refused and the answer stays false. Nothing deletes the pictures a refused send copied into the project: no request
-   * can tell for sure that a copy is not someone's file. The sweep at start (#366) takes them.
+   * can tell for sure that a copy is not someone's file. A sweep at start that takes them is planned (#366).
    */
   async settle(project: string, key: string, rev: number): Promise<boolean> {
     const { store } = this.#o
