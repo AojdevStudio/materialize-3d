@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import type { ModelChoice } from '../../sidecar/src/protocol'
 import type { DeviceDraft, LinkMessage } from './remote'
 
 const { invoke, qrText, scanner, stream, viewer } = vi.hoisted(() => ({
@@ -38,6 +39,7 @@ vi.mock('./qr', () => ({
     return qrText.value
   },
 }))
+Element.prototype.scrollIntoView = () => {}
 
 import MobileApp from './MobileApp'
 import { PREVIEW_LIMIT } from './remote'
@@ -50,13 +52,25 @@ function answer(commands: Record<string, unknown>) {
   invoke.mockImplementation(async (command: string) => commands[command])
 }
 
-const chats = () => Response.json([{ id: 'desk-clip', title: 'Desk cable clip' }])
+/** One chat, in the shape the phone service lists it. */
+const chats = () =>
+  Response.json([
+    {
+      id: 'desk-clip',
+      title: 'Desk cable clip',
+      createdMs: 0,
+      lead: { provider: 'anthropic', modelId: 'claude-opus-5-5' },
+      helper: null,
+      status: { running: false, printed: false, printFiles: 0, lastMs: 0 },
+    },
+  ])
 const deskClip = {
   project: 'desk-clip',
   entries: [{ id: 1, kind: 'user', text: 'Make a clip that holds a cable on the edge of my desk.', images: [], files: [] }],
   running: false,
   waiting: null,
   turn: null,
+  handoffs: [],
   seq: 1,
 }
 /** The computer's answers by path. A path it does not list answers 404. */
@@ -68,8 +82,24 @@ const computerAnswers = (answer: () => Response, routes: Record<string, () => Re
   })
 computerAnswers(chats)
 
+/** jsdom has no media queries. A screen is a tablet, which shows the model beside the chat, unless a test says phone. */
+const screenSize = {
+  tablet: true,
+  heard: new Set<() => void>(),
+  resize(tablet: boolean) {
+    this.tablet = tablet
+    for (const changed of this.heard) changed()
+  },
+}
+vi.stubGlobal('matchMedia', () => ({
+  matches: screenSize.tablet,
+  addEventListener: (_: string, changed: () => void) => screenSize.heard.add(changed),
+  removeEventListener: (_: string, changed: () => void) => screenSize.heard.delete(changed),
+}))
+
 afterEach(async () => {
   computerAnswers(chats)
+  screenSize.tablet = true
   Object.values(scanner).forEach((mock) => mock.mockReset())
   cleanup()
   // A chat screen writes its draft as it closes, a tick later, so that write lands before the next test.
@@ -171,11 +201,13 @@ describe('MobileApp', () => {
     expect(screen.queryByRole('alert')).toBeNull()
   })
 
-  it('shows the transcript when the model files fail to load', async () => {
+  it('shows the transcript when the model files fail to load, and reads them again from Try again beside the error', async () => {
     answerWithDrafts({ paired_computer: computer })
+    let broken = true
     computerAnswers(chats, {
       '/api/v1/chats/desk-clip': () => Response.json(deskClip),
-      '/api/v1/chats/desk-clip/files': () => new Response('A folder could not be read.', { status: 500 }),
+      '/api/v1/chats/desk-clip/files': () =>
+        broken ? new Response('A folder could not be read.', { status: 500 }) : Response.json([{ rel: 'clip.stl', size: 1000, modifiedMs: 1 }]),
     })
     render(<MobileApp />)
     const opens = await screen.findByRole('button', { name: 'Desk cable clip' })
@@ -184,7 +216,70 @@ describe('MobileApp', () => {
     fireEvent.click(opens)
 
     expect(await screen.findByText('Make a clip that holds a cable on the edge of my desk.')).toBeTruthy()
-    expect(await screen.findByText('The model files did not load. A folder could not be read.')).toBeTruthy()
+    const note = await screen.findByText(/^The model files did not load\. A folder could not be read\./)
+
+    broken = false
+    fireEvent.click(within(note).getByRole('button', { name: 'Try again' }))
+    expect(await screen.findByRole('button', { name: 'clip.stl' })).toBeTruthy()
+  })
+
+  it('downloads no model on a phone until the Model tab opens, and keeps the viewer after a switch back to Chat', async () => {
+    screenSize.tablet = false
+    answerWithDrafts({ paired_computer: computer })
+    computerAnswers(chats, {
+      '/api/v1/chats/desk-clip': () => Response.json(deskClip),
+      '/api/v1/chats/desk-clip/files': () => Response.json([{ rel: 'clip.stl', size: 1000, modifiedMs: 1 }]),
+    })
+    render(<MobileApp />)
+    const opens = await screen.findByRole('button', { name: 'Desk cable clip' })
+    await linkIs({ kind: 'connected' })
+    fireEvent.click(opens)
+    expect(await screen.findByText('Make a clip that holds a cable on the edge of my desk.')).toBeTruthy()
+    await screen.findByRole('button', { name: 'clip.stl' })
+    expect(screen.queryByTestId('model-view')).toBeNull()
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Model' }))
+    expect(await screen.findByTestId('model-view')).toBeTruthy()
+    fireEvent.click(screen.getByRole('tab', { name: 'Chat' }))
+    expect(screen.getByTestId('model-view')).toBeTruthy()
+  })
+
+  it('keeps the viewer a tablet showed when the screen shrinks to a phone’s, before Model was ever tapped', async () => {
+    answerWithDrafts({ paired_computer: computer })
+    computerAnswers(chats, {
+      '/api/v1/chats/desk-clip': () => Response.json(deskClip),
+      '/api/v1/chats/desk-clip/files': () => Response.json([{ rel: 'clip.stl', size: 1000, modifiedMs: 1 }]),
+    })
+    render(<MobileApp />)
+    const opens = await screen.findByRole('button', { name: 'Desk cable clip' })
+    await linkIs({ kind: 'connected' })
+    fireEvent.click(opens)
+    expect(await screen.findByTestId('model-view')).toBeTruthy()
+
+    act(() => screenSize.resize(false))
+    expect(screen.getByTestId('model-view')).toBeTruthy()
+  })
+
+  it('keeps the model on screen when a reread of the files fails, with the error above it', async () => {
+    answerWithDrafts({ paired_computer: computer })
+    let broken = false
+    computerAnswers(chats, {
+      '/api/v1/chats/desk-clip': () => Response.json(deskClip),
+      '/api/v1/chats/desk-clip/files': () =>
+        broken ? new Response('A folder could not be read.', { status: 500 }) : Response.json([{ rel: 'clip.stl', size: 1000, modifiedMs: 1 }]),
+    })
+    render(<MobileApp />)
+    const opens = await screen.findByRole('button', { name: 'Desk cable clip' })
+    await linkIs({ kind: 'connected' })
+    fireEvent.click(opens)
+    expect(await screen.findByTestId('model-view')).toBeTruthy()
+
+    // The link drops and comes back, which reads the files again, and that read fails.
+    broken = true
+    await linkIs({ kind: 'offline', detail: 'The computer did not answer.' })
+    await linkIs({ kind: 'connected' })
+    expect(await screen.findByText(/^The model files did not load\. A folder could not be read\./)).toBeTruthy()
+    expect(screen.getByTestId('model-view')).toBeTruthy()
   })
 
   it('never fetches a model the list says is too large, and opens the newest one that fits', async () => {
@@ -302,10 +397,31 @@ describe('MobileApp', () => {
     expect(stops()).toBe(2)
   })
 
+  it('keeps the model download going when the person switches to another file the viewer can show', async () => {
+    answerWithDrafts({ paired_computer: computer })
+    const files = [
+      { rel: 'clip.stl', size: 1000, modifiedMs: 2 },
+      { rel: 'clip-v2.stl', size: 1000, modifiedMs: 1 },
+    ]
+    computerAnswers(chats, {
+      '/api/v1/chats/desk-clip': () => Response.json(deskClip),
+      '/api/v1/chats/desk-clip/files': () => Response.json(files),
+    })
+    render(<MobileApp />)
+    const opens = await screen.findByRole('button', { name: 'Desk cable clip' })
+    await linkIs({ kind: 'connected' })
+    fireEvent.click(opens)
+    expect(await screen.findByTestId('model-view')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: 'clip-v2.stl' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'clip-v2.stl' }).getAttribute('aria-pressed')).toBe('true'))
+    expect(invoke.mock.calls.filter(([command]) => command === 'stop_model_reads')).toEqual([])
+  })
+
   it('shows a chat made on the computer meanwhile, after a chat and after Refresh', async () => {
     answerWithDrafts({ paired_computer: computer })
     let listed = [{ id: 'desk-clip', title: 'Desk cable clip' }]
-    computerAnswers(() => Response.json(listed), { '/api/v1/chats/desk-clip': () => Response.json(deskClip) })
+    computerAnswers(() => Response.json(listed.map(asListed)), { '/api/v1/chats/desk-clip': () => Response.json(deskClip) })
     render(<MobileApp />)
     const opens = await screen.findByRole('button', { name: 'Desk cable clip' })
     // The chat reads the computer once the link is up.
@@ -359,6 +475,240 @@ describe('MobileApp', () => {
     choosePicture()
     await screen.findByText('Pairing')
     expect((screen.getByRole('button', { name: 'Choose a picture of the code' }) as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  describe('role picks', () => {
+    const ASTRA = { provider: 'openai-codex', modelId: 'gpt-6-astra' }
+    const SOL = { provider: 'openai-codex', modelId: 'gpt-6.1-sol' }
+    const status = { running: false, printed: false, printFiles: 0, lastMs: 0 }
+
+    /**
+     * A computer with one chat whose pair a PUT changes. Each request on a path in `hold` waits until the test lets the
+     * oldest held one answer. A role save that `refuse` names is refused, and the pair stays. `log` lists every write as
+     * it reaches the computer, and `saves` the role saves it took.
+     */
+    function computerWithRoles(hold: string[] = [], refuse: (change: object) => boolean = () => false, failLists = { next: 0 }) {
+      const roles = { lead: SOL as ModelChoice, helper: ASTRA as ModelChoice | null }
+      const saves: unknown[] = []
+      const log: string[] = []
+      const waiting: (() => void)[] = []
+      vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => {
+        const path = url.replace('m3dremote://localhost/api/v1', '')
+        if (init?.method !== undefined) log.push(`${init.method} ${path}`)
+        if (hold.includes(path)) await new Promise<void>((resolve) => waiting.push(resolve))
+        if (init?.method === 'PUT' && path === '/chats/bracket/roles') {
+          const change = JSON.parse(String(init.body)) as Partial<typeof roles>
+          if (refuse(change)) return Response.json({ error: 'GPT 6 Astra was retired by its provider.' }, { status: 400 })
+          saves.push(change)
+          Object.assign(roles, change)
+          return Response.json(roles)
+        }
+        if (init?.method === 'PUT' && path === '/chats/bracket/draft') return Response.json({ rev: 1 })
+        if (init?.method === 'POST' && path === '/chats/bracket/send') return Response.json({ project: { id: 'bracket' } })
+        if (path === '/chats' && failLists.next > 0) {
+          failLists.next -= 1
+          return new Response('The chat list could not be read.', { status: 500 })
+        }
+        if (path === '/chats') return Response.json([{ id: 'bracket', title: 'Shelf bracket', createdMs: 0, ...roles, status }])
+        if (path === '/chats/bracket') return Response.json({ project: 'bracket', entries: [], running: false, waiting: null, turn: null, handoffs: [], seq: 1 })
+        if (path === '/chats/bracket/files') return Response.json([])
+        if (path === '/models') return Response.json([{ ...ASTRA, name: 'GPT 6 Astra', description: '' }, { ...SOL, name: 'GPT 6.1 Sol', description: '' }])
+        return new Response('Not found', { status: 404 })
+      })
+      /** A pair the desktop saved on the computer. */
+      const desktopSets = (change: Partial<typeof roles>) => Object.assign(roles, change)
+      return { saves, log, answerNext: () => waiting.shift()?.(), desktopSets }
+    }
+
+    /** Opens the chat with the link to the computer up, once the pickers have the models. */
+    async function openBracket(commands: Record<string, unknown> = {}) {
+      answerWithDrafts({ paired_computer: computer, ...commands })
+      render(<MobileApp />)
+      await linkIs({ kind: 'connected' })
+      fireEvent.click(await screen.findByRole('button', { name: 'Shelf bracket' }))
+      await waitFor(() => expect(screen.getByTestId('model-picker').hasAttribute('disabled')).toBe(false))
+      expect(screen.getByTestId('model-picker').textContent).toBe('GPT 6.1 Sol')
+    }
+
+    const pickLead = (name: string) => {
+      fireEvent.click(screen.getByTestId('model-picker'))
+      fireEvent.click(within(screen.getByRole('menu', { name: 'Lead models' })).getByRole('menuitemradio', { name }))
+    }
+
+    it('saves a picked lead through the computer, and a chat opened again shows it', async () => {
+      const { saves } = computerWithRoles()
+      await openBracket({ forget: null })
+
+      pickLead('GPT 6 Astra')
+      await waitFor(() => expect(screen.getByTestId('model-picker').textContent).toBe('Astra'))
+      fireEvent.click(screen.getByRole('button', { name: 'Chats' }))
+      fireEvent.click(await screen.findByRole('button', { name: 'Shelf bracket' }))
+
+      expect(screen.getByTestId('model-picker').textContent).toBe('Astra')
+      expect(saves).toEqual([{ lead: ASTRA }])
+    })
+
+    it('sends a pick already going out when Forget is tapped, and none still waiting', async () => {
+      const { log, answerNext } = computerWithRoles(['/chats/bracket/roles'])
+      await openBracket({ forget: null })
+
+      pickLead('GPT 6 Astra')
+      await waitFor(() => expect(log).toEqual(['PUT /chats/bracket/roles']))
+      fireEvent.click(screen.getByTestId('helper-picker'))
+      fireEvent.click(within(screen.getByRole('menu', { name: 'Helper models' })).getByRole('menuitemradio', { name: 'No helper' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Chats' }))
+      fireEvent.click(await screen.findByRole('button', { name: 'Forget' }))
+      answerNext()
+
+      await screen.findByText('Pair with your computer')
+      // Gives the queue its turn: the helper pick would go out now if Forget had not stopped it.
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      expect(log).toEqual(['PUT /chats/bracket/roles'])
+      expect(invoke).toHaveBeenCalledWith('forget')
+    })
+
+    it('shows a pair the desktop changed, from the computer’s stream, in the open chat', async () => {
+      const { desktopSets } = computerWithRoles()
+      await openBracket()
+
+      desktopSets({ lead: ASTRA, helper: null })
+      const desktop = { id: 'bracket', title: 'Shelf bracket', conversation: 1, createdMs: 0, model: ASTRA, helper: null }
+      await linkIs({ kind: 'event', event: { type: 'project', project: desktop } })
+
+      await waitFor(() => expect(screen.getByTestId('model-picker').textContent).toBe('Astra'))
+      expect(screen.getByTestId('helper-picker').textContent).toBe('None')
+    })
+
+    it('sends no pick still waiting when Forget is tapped, even when that Forget fails', async () => {
+      const { log, answerNext } = computerWithRoles(['/chats/bracket/roles'])
+      await openBracket()
+      const answers = invoke.getMockImplementation()
+      invoke.mockImplementation(async (command: string, args: never) => {
+        if (command === 'forget') throw new Error('The Keychain refused to forget the pairing.')
+        return answers?.(command, args)
+      })
+
+      pickLead('GPT 6 Astra')
+      await waitFor(() => expect(log).toEqual(['PUT /chats/bracket/roles']))
+      fireEvent.click(screen.getByTestId('helper-picker'))
+      fireEvent.click(within(screen.getByRole('menu', { name: 'Helper models' })).getByRole('menuitemradio', { name: 'No helper' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Chats' }))
+      fireEvent.click(await screen.findByRole('button', { name: 'Forget' }))
+      expect(await screen.findByText('The Keychain refused to forget the pairing.')).toBeTruthy()
+      answerNext()
+
+      // Gives the queue its turn: the helper pick would go out now if the Forget had not dropped it.
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      expect(log).toEqual(['PUT /chats/bracket/roles'])
+    })
+
+    it('holds Send after a pick that the computer took until a list read shows the pair, as when the desktop changed it meanwhile', async () => {
+      const failLists = { next: 0 }
+      const { answerNext, desktopSets } = computerWithRoles(['/chats/bracket/roles'], () => false, failLists)
+      await openBracket()
+      fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'Make it thicker' } })
+      const send = () => screen.getByRole('button', { name: 'Send' }) as HTMLButtonElement
+      await waitFor(() => expect(send().disabled).toBe(false))
+
+      pickLead('GPT 6 Astra')
+      // The desktop clears the helper while the pick is out, so this device does not apply its event.
+      desktopSets({ helper: null })
+      const desktop = { id: 'bracket', title: 'Shelf bracket', conversation: 1, createdMs: 0, model: SOL, helper: null }
+      await linkIs({ kind: 'event', event: { type: 'project', project: desktop } })
+      failLists.next = 1
+      answerNext()
+
+      expect(await screen.findByText('The chat list could not be read.')).toBeTruthy()
+      expect(send().disabled).toBe(true)
+      fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
+      await waitFor(() => expect(screen.getByTestId('helper-picker').textContent).toBe('None'))
+      expect(send().disabled).toBe(false)
+    })
+
+    it('keeps a confirmed pair and holds Send when a late event from an older save arrives and the reread fails', async () => {
+      const failLists = { next: 0 }
+      computerWithRoles([], () => false, failLists)
+      await openBracket()
+      fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'Make it thicker' } })
+      const send = () => screen.getByRole('button', { name: 'Send' }) as HTMLButtonElement
+
+      // The phone saves Astra, and the list read after it confirms Astra.
+      pickLead('GPT 6 Astra')
+      await waitFor(() => expect(send().disabled).toBe(false))
+      expect(screen.getByTestId('model-picker').textContent).toBe('Astra')
+
+      // Then the stream delivers an event from before that save, naming the old lead, and the reread fails.
+      failLists.next = 1
+      const older = { id: 'bracket', title: 'Shelf bracket', conversation: 1, createdMs: 0, model: SOL, helper: ASTRA }
+      await linkIs({ kind: 'event', event: { type: 'project', project: older } })
+      expect(await screen.findByText('The chat list could not be read.')).toBeTruthy()
+      expect(screen.getByTestId('model-picker').textContent).toBe('Astra')
+      expect(send().disabled).toBe(true)
+
+      // The next event's reread works: it shows the pair the computer holds, lets Send go, and takes the error away.
+      await linkIs({ kind: 'event', event: { type: 'project', project: older } })
+      await waitFor(() => expect(send().disabled).toBe(false))
+      expect(screen.getByTestId('model-picker').textContent).toBe('Astra')
+      expect(screen.queryByText('The chat list could not be read.')).toBeNull()
+    })
+
+    it('turns Send off within the event itself, so a tap queued right behind it sends nothing', async () => {
+      computerWithRoles()
+      await openBracket()
+      fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'Make it thicker' } })
+      const send = () => screen.getByRole('button', { name: 'Send' }) as HTMLButtonElement
+      await waitFor(() => expect(send().disabled).toBe(false))
+
+      // Delivered outside act, as the native channel does, with nothing rendered in between.
+      const desktop = { id: 'bracket', title: 'Shelf bracket', conversation: 1, createdMs: 0, model: ASTRA, helper: null }
+      stream.heard?.({ kind: 'event', event: { type: 'project', project: desktop } })
+      expect(send().disabled).toBe(true)
+      await waitFor(() => expect(send().disabled).toBe(false))
+    })
+
+    it('shows the pair the computer kept once a refused pick and the picks after it are done', async () => {
+      const { saves } = computerWithRoles([], (change) => 'lead' in change)
+      await openBracket({ forget: null })
+
+      pickLead('GPT 6 Astra')
+      fireEvent.click(screen.getByTestId('helper-picker'))
+      fireEvent.click(within(screen.getByRole('menu', { name: 'Helper models' })).getByRole('menuitemradio', { name: 'No helper' }))
+
+      expect(await screen.findByRole('alert')).toBeTruthy()
+      await waitFor(() => expect(screen.getByTestId('model-picker').textContent).toBe('GPT 6.1 Sol'))
+      expect(screen.getByTestId('helper-picker').textContent).toBe('None')
+      expect(saves).toEqual([{ helper: null }])
+    })
+
+    it('checks the saved pair again from the chat when the first check fails, and keeps the reply', async () => {
+      const failLists = { next: 0 }
+      computerWithRoles([], (change) => 'lead' in change, failLists)
+      await openBracket()
+      fireEvent.change(screen.getByRole('textbox', { name: 'Message' }), { target: { value: 'Make it thicker' } })
+
+      failLists.next = 1
+      pickLead('GPT 6 Astra')
+      expect((await screen.findByRole('alert')).textContent).toContain('The chat list could not be read.')
+      expect(screen.getByRole('button', { name: 'Send' }).hasAttribute('disabled')).toBe(true)
+
+      fireEvent.click(within(screen.getByRole('alert')).getByRole('button', { name: 'Try again' }))
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Send' }).hasAttribute('disabled')).toBe(false))
+      expect(screen.getByTestId('model-picker').textContent).toBe('GPT 6.1 Sol')
+      expect((screen.getByRole('textbox', { name: 'Message' }) as HTMLTextAreaElement).value).toBe('Make it thicker')
+    })
+
+    it('sends a pick made after Send with the next message, not the one already sent', async () => {
+      const { log, answerNext } = computerWithRoles(['/chats/bracket/draft'])
+      await openBracket({ forget: null })
+
+      fireEvent.change(screen.getByRole('textbox', { name: 'Message' }), { target: { value: 'Make it thicker' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+      await waitFor(() => expect(log).toEqual(['PUT /chats/bracket/draft']))
+      pickLead('GPT 6 Astra')
+      answerNext()
+
+      await waitFor(() => expect(log).toEqual(['PUT /chats/bracket/draft', 'POST /chats/bracket/send', 'PUT /chats/bracket/roles']))
+    })
   })
 })
 
@@ -450,6 +800,15 @@ const lost = () => {
   return new Response('The computer did not answer. connection closed', { status: 502 })
 }
 
+/** A chat as the phone service lists it, with the pair its next message runs with. */
+const asListed = (chat: { id: string; title: string }) => ({
+  createdMs: 0,
+  lead: { provider: 'anthropic', modelId: 'claude-opus-5-5' },
+  helper: null,
+  status: { running: false, printed: false, printFiles: 0, lastMs: 0 },
+  ...chat,
+})
+
 const routeComputer = async (url: string, init?: { method?: string; body?: string }) => {
   const method = init?.method ?? 'GET'
   const request = `${method} ${url.replace('m3dremote://localhost/api/v1', '')}`
@@ -458,7 +817,8 @@ const routeComputer = async (url: string, init?: { method?: string; body?: strin
   computerSide.waits.delete(request)
   await waiting
   if (!computerSide.reach) return new Response('The computer did not answer.', { status: 502 })
-  if (url === 'm3dremote://localhost/api/v1/chats') return Response.json(computerSide.list)
+  if (url === 'm3dremote://localhost/api/v1/chats') return Response.json(computerSide.list.map(asListed))
+  if (url === 'm3dremote://localhost/api/v1/models') return Response.json([])
   if (url === CHAT) return Response.json(computerSide.chat)
   if (url === `${CHAT}/files`) return Response.json(computerSide.files)
   if (url === `${CHAT}/draft` && method === 'PUT') return Response.json({ rev: ++computerSide.rev })
@@ -505,7 +865,7 @@ const reopen = async () => {
 /** Opens the chat on a paired device. The chat list from an earlier launch lets it open while the computer is away. */
 async function openChat() {
   answerWithDrafts({ paired_computer: computer })
-  localStorage.setItem('m3d.chats', JSON.stringify({ pairing: computer.id, chats: computerSide.list }))
+  localStorage.setItem('m3d.chats', JSON.stringify({ pairing: computer.id, chats: computerSide.list.map(asListed) }))
   render(<MobileApp />)
   fireEvent.click(await screen.findByText('Desk cable clip'))
   return screen.findByLabelText<HTMLTextAreaElement>('Message')
@@ -921,8 +1281,9 @@ describe('a draft and the link to the computer', () => {
     await linkIs({ kind: 'connected' })
     release()
 
+    // The list also reads again each time it shows, so the new chat can appear before or after the failure.
+    expect((await screen.findByRole('alert')).textContent).toContain('The Keychain refused the pairing')
     expect(await screen.findByText('Desk drawer')).toBeTruthy()
-    expect(screen.getByRole('alert').textContent).toContain('The Keychain refused the pairing')
   })
 
   it('keeps the link current while Forget waits, so a Forget that fails leaves Send on', async () => {
@@ -982,7 +1343,7 @@ describe('a draft and the link to the computer', () => {
   })
 
   it('keeps Send off while the turn runs, and shows a turn that ends after the chat was read from the event stream alone', async () => {
-    const asked = { id: 1, kind: 'user', text: 'Draw it' }
+    const asked = { id: 1, kind: 'user', text: 'Draw it', images: [], files: [] }
     computerSide.chat = { ...view, entries: [asked], running: true, seq: 4 }
     const message = await openChat()
     await linkIs({ kind: 'connected' })
@@ -1002,7 +1363,7 @@ describe('a draft and the link to the computer', () => {
   })
 
   it('reads the model files again once a running turn ends, and only then', async () => {
-    computerSide.chat = { ...view, entries: [{ id: 1, kind: 'user', text: 'Draw it' }], running: true, seq: 4 }
+    computerSide.chat = { ...view, entries: [{ id: 1, kind: 'user', text: 'Draw it', images: [], files: [] }], running: true, seq: 4 }
     await openChat()
     await linkIs({ kind: 'connected' })
     expect(await screen.findByText('Draw it')).toBeTruthy()
@@ -1019,7 +1380,7 @@ describe('a draft and the link to the computer', () => {
 
   it('keeps Send off on a chat opened again while its turn is known to run, until a view says it ended', async () => {
     kept.set('desk-clip', { text: 'Now make it blue', pictures: [], sent: null })
-    const asked = { id: 1, kind: 'user', text: 'Draw it' }
+    const asked = { id: 1, kind: 'user', text: 'Draw it', images: [], files: [] }
     computerSide.chat = { ...view, entries: [asked], running: true, seq: 4 }
     await openChat()
     await linkIs({ kind: 'connected' })
@@ -1038,7 +1399,7 @@ describe('a draft and the link to the computer', () => {
 
   it('turns Send on for a chat opened again after its turn ended while the chat list showed', async () => {
     kept.set('desk-clip', { text: 'Now make it blue', pictures: [], sent: null })
-    const asked = { id: 1, kind: 'user', text: 'Draw it' }
+    const asked = { id: 1, kind: 'user', text: 'Draw it', images: [], files: [] }
     computerSide.chat = { ...view, entries: [asked], running: true, seq: 4 }
     await openChat()
     await linkIs({ kind: 'connected' })
@@ -1054,7 +1415,7 @@ describe('a draft and the link to the computer', () => {
 
   it('keeps Send off for a chat opened again after its turn started while the chat list showed', async () => {
     kept.set('desk-clip', { text: 'Now make it blue', pictures: [], sent: null })
-    const asked = { id: 1, kind: 'user', text: 'Draw it' }
+    const asked = { id: 1, kind: 'user', text: 'Draw it', images: [], files: [] }
     await openChat()
     await linkIs({ kind: 'connected' })
     await waitFor(() => expect(sendButton().disabled).toBe(false))
@@ -1070,7 +1431,7 @@ describe('a draft and the link to the computer', () => {
 
   it('turns Send on from a newer whole read of the chat, and the tap sends, so Send and the send agree', async () => {
     kept.set('desk-clip', { text: 'Now make it blue', pictures: [], sent: null })
-    const asked = { id: 1, kind: 'user', text: 'Draw it' }
+    const asked = { id: 1, kind: 'user', text: 'Draw it', images: [], files: [] }
     await openChat()
     await linkIs({ kind: 'connected' })
     await waitFor(() => expect(sendButton().disabled).toBe(false))
@@ -1086,7 +1447,7 @@ describe('a draft and the link to the computer', () => {
 
   it('keeps Send on when a whole read that started before a newer idle event lands after it', async () => {
     kept.set('desk-clip', { text: 'Now make it blue', pictures: [], sent: null })
-    const asked = { id: 1, kind: 'user', text: 'Draw it' }
+    const asked = { id: 1, kind: 'user', text: 'Draw it', images: [], files: [] }
     computerSide.chat = { ...view, entries: [asked], running: true, seq: 10 }
     const release = hold('GET /chats/desk-clip')
     await openChat()
@@ -1102,7 +1463,7 @@ describe('a draft and the link to the computer', () => {
   })
 
   it('reads the model files again when the turn ends before the chat was first read, and not for a repeated end', async () => {
-    computerSide.chat = { ...view, entries: [{ id: 1, kind: 'user', text: 'Draw it' }], running: true, seq: 4 }
+    computerSide.chat = { ...view, entries: [{ id: 1, kind: 'user', text: 'Draw it', images: [], files: [] }], running: true, seq: 4 }
     const release = hold('GET /chats/desk-clip')
     await openChat()
     await linkIs({ kind: 'connected' })
@@ -1123,7 +1484,7 @@ describe('a draft and the link to the computer', () => {
 
   it('loads the shown model again when a turn rebuilt it in place, and not when it is unchanged', async () => {
     viewer.loads = []
-    computerSide.chat = { ...view, entries: [{ id: 1, kind: 'user', text: 'Draw it' }], running: true, seq: 4 }
+    computerSide.chat = { ...view, entries: [{ id: 1, kind: 'user', text: 'Draw it', images: [], files: [] }], running: true, seq: 4 }
     computerSide.files = [
       { rel: 'clip.stl', size: 1000, modifiedMs: 1 },
       { rel: 'base.stl', size: 1000, modifiedMs: 1 },
@@ -1136,7 +1497,7 @@ describe('a draft and the link to the computer', () => {
     const fileReads = () => computerSide.requests.filter((r) => r === 'GET /chats/desk-clip/files').length
     const ended = async (id: number, seq: number) => {
       const reads = fileReads()
-      await linkIs({ kind: 'event', event: { type: 'chat', ...view, entries: [{ id, kind: 'assistant', text: `Answer ${id}` }], running: false, seq } })
+      await linkIs({ kind: 'event', event: { type: 'chat', ...view, entries: [{ id, kind: 'assistant', text: `Answer ${id}`, calls: [], model: { provider: 'anthropic', modelId: 'claude-opus-5-5' } }], running: false, seq } })
       await waitFor(() => expect(fileReads()).toBe(reads + 1))
       await act(() => new Promise((resolve) => setTimeout(resolve, 0)))
     }

@@ -1,4 +1,4 @@
-/* The thin iPhone and iPad shell. Phase 3 picks the phone and tablet layouts. */
+/* The iPhone and iPad window. A chat follows the Phase 3 pick: tabs on iPhone, the model beside the chat on iPad. */
 html,
 body,
 #root {
@@ -92,8 +92,7 @@ body,
   overflow-y: auto;
 }
 
-.mobile-chats ul,
-.mobile-transcript {
+.mobile-chats ul {
   list-style: none;
   margin: 0;
   padding: 0;
@@ -110,62 +109,206 @@ body,
   font: inherit;
 }
 
+/*
+ * A chat. On iPhone, one pane at a time under the title, picked by the tabs. On iPad (both sides at least 600 px),
+ * both panes and no tabs: the model takes the top 40% in portrait, and the chat a 440 px column on the left in landscape.
+ */
+.mobile:has(.mobile-chat) {
+  padding-left: 0;
+  padding-right: 0;
+}
+
 .mobile-chat {
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
   flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template: 'bar' auto 'pane' minmax(0, 1fr) / minmax(0, 1fr);
 }
 
-.mobile-model {
+.mobile-chat-bar {
+  grid-area: bar;
   display: flex;
-  height: 45vh;
-  border: 1px solid var(--s-line);
-  border-radius: 10px;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 12px 4px 4px;
+  border-bottom: 1px solid var(--s-line);
+}
+
+.mobile-chat-title {
+  flex: 1;
+  min-width: 0;
+}
+
+.mobile .mobile-chat-bar h1 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
   overflow: hidden;
-}
-
-.mobile-files {
-  display: flex;
-  gap: 8px;
-  overflow-x: auto;
-  padding: 8px 0;
-}
-
-.mobile-files button {
+  text-overflow: ellipsis;
   white-space: nowrap;
-  border: 1px solid var(--s-line);
-  border-radius: 8px;
+}
+
+.mobile-back {
+  display: grid;
+  padding: 8px;
+  border: 0;
   background: none;
   color: inherit;
-  padding: 6px 10px;
+}
+
+.mobile-tabs {
+  display: flex;
+  gap: 2px;
+}
+
+.mobile-tabs button {
+  padding: 4px 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: none;
+  color: var(--s-text);
   font: inherit;
   font-size: 14px;
 }
 
-.mobile-files button[aria-pressed='true'] {
-  border-color: var(--s-text);
+.mobile-tabs button[aria-selected='true'] {
+  border-color: var(--s-line);
+  background: var(--s-raised);
 }
 
-.mobile-transcript {
-  flex: 1;
-  overflow-y: auto;
+.mobile-model-pane,
+.mobile-chat-pane {
+  grid-area: pane;
+  min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding-bottom: 16px;
 }
 
-.mobile-transcript li {
-  white-space: pre-wrap;
+.mobile-chat[data-tab='chat'] .mobile-model-pane,
+.mobile-chat[data-tab='model'] .mobile-chat-pane {
+  display: none;
 }
 
-.mobile-user {
-  align-self: flex-end;
-  background: var(--s-user);
-  border-radius: 10px;
+.mobile-viewer {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  position: relative;
+}
+
+/* The chat's model files, one row over the viewer that scrolls sideways when they do not fit. */
+.mobile-file {
+  position: absolute;
+  top: 8px;
+  left: 10px;
+  right: 10px;
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+  color: var(--s-muted);
+  font-size: 12px;
+}
+
+.mobile-file button {
+  flex: none;
+  max-width: 70%;
+  padding: 2px 8px;
+  border: 1px solid var(--s-line);
+  border-radius: 6px;
+  background: var(--s-raised);
+  color: var(--s-muted);
+  font: inherit;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mobile-file button[aria-pressed='true'] {
+  border-color: var(--s-text);
+  color: var(--s-text);
+}
+
+/* A file too large to fetch is named in the viewer's place, below the file buttons. */
+.mobile-too-large {
+  margin: 48px 16px 0;
+}
+
+.mobile-reset {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  padding: 4px 8px;
+  border: 1px solid var(--s-line);
+  border-radius: 6px;
+  background: var(--s-raised);
+  color: var(--s-text);
+  font: inherit;
+  font-size: 12px;
+}
+
+/* On the Model tab, the newest handoff's own line stays in view under the part. */
+.mobile-newest {
   padding: 8px 12px;
-  max-width: 85%;
+  border-top: 1px solid var(--s-line);
+}
+
+.mobile-newest .handoff-body {
+  display: none;
+}
+
+.mobile-chat .messages {
+  padding: 12px;
+}
+
+.mobile-chat .handoff-who {
+  flex-wrap: wrap;
+}
+
+.mobile-chat .composer {
+  margin: 0 10px 10px;
+  font-size: 14px;
+}
+
+/* Safari zooms the page into a text box whose type is smaller than 16 px. */
+.mobile-chat .composer textarea {
+  font-size: 16px;
+}
+
+@media (min-width: 600px) and (min-height: 600px) {
+  .mobile-tabs,
+  .mobile-newest {
+    display: none;
+  }
+
+  .mobile-chat[data-tab] .mobile-model-pane {
+    grid-area: model;
+    display: flex;
+  }
+
+  .mobile-chat[data-tab] .mobile-chat-pane {
+    grid-area: chat;
+    display: flex;
+  }
+}
+
+@media (min-width: 600px) and (min-height: 600px) and (orientation: portrait) {
+  .mobile-chat {
+    grid-template: 'bar' auto 'model' 40% 'chat' minmax(0, 1fr) / minmax(0, 1fr);
+  }
+
+  .mobile-model-pane {
+    border-bottom: 1px solid var(--s-line);
+  }
+}
+
+@media (min-width: 600px) and (min-height: 600px) and (orientation: landscape) {
+  .mobile-chat {
+    grid-template: 'bar bar' auto 'chat model' minmax(0, 1fr) / 440px minmax(0, 1fr);
+  }
+
+  .mobile-chat-pane {
+    border-right: 1px solid var(--s-line);
+  }
 }
 
 .mobile-error {
@@ -191,9 +334,10 @@ html:has(.mobile-scanning) #root,
   text-shadow: 0 1px 3px rgb(0 0 0 / 60%);
 }
 
+/* Under the chat title: whether the computer can be reached, and what that means for the draft. */
 .mobile-linkline {
-  margin: 0 0 8px;
-  font-size: 14px;
+  margin: 0;
+  font-size: 12px;
 }
 
 .mobile-linkline-ok {
@@ -208,41 +352,21 @@ html:has(.mobile-scanning) #root,
   color: var(--s-muted);
 }
 
-.mobile-composer {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 8px 0 12px;
-  border-top: 1px solid var(--s-line);
-}
-
-.mobile-composer textarea {
-  font: inherit;
-  padding: 8px;
-  border: 1px solid var(--s-line);
-  border-radius: 8px;
-  background: var(--s-bg);
-  color: inherit;
-  resize: none;
-}
-
-.mobile-send {
+.mobile-outbox {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
+  margin: 6px 0 0;
+  font-size: 13px;
 }
 
-.mobile-send .mobile-primary {
-  margin-left: auto;
-  padding: 10px 20px;
-}
-
-.mobile-send .mobile-primary:disabled {
-  opacity: 0.4;
+.mobile-outbox .preview-note {
+  padding: 0;
 }
 
 .mobile-pictures {
   display: flex;
+  margin-bottom: 6px;
   gap: 8px;
   list-style: none;
   margin: 0;

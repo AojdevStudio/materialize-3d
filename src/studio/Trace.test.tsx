@@ -135,7 +135,7 @@ describe('a handoff in the chat', () => {
     progress: { steps: 3, doing: 'Running uv run python fit.py' },
   }
   const chat = (handoff: HandoffItem) => (
-    <ChatView project="p" items={[trace([write('grid', { state: 'done', result: 'ok' })], false), handoff]} running startedMs={NOW - 60_000} onError={() => {}} />
+    <ChatView items={[trace([write('grid', { state: 'done', result: 'ok' })], false), handoff]} running startedMs={NOW - 60_000} onError={() => {}} />
   )
   const entry = () => screen.getByTestId('handoff')
 
@@ -161,7 +161,7 @@ describe('a handoff in the chat', () => {
     Element.prototype.scrollIntoView = vi.fn()
     const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
     const done = (helper: typeof opus, result: string): HandoffItem => ({ ...running, helper, state: 'done', result, progress: undefined })
-    render(<ChatView project="p" items={[done(astra, 'Fits.'), done(opus, 'Fits too.')]} running={false} startedMs={undefined} onError={() => {}} />)
+    render(<ChatView items={[done(astra, 'Fits.'), done(opus, 'Fits too.')]} running={false} startedMs={undefined} onError={() => {}} />)
     expect(screen.getAllByTestId('handoff').map((e) => text(e.querySelector('.handoff-result')))).toEqual(['ResultFits.', 'ResultFits too.'])
     expect(errors.mock.calls.filter(([message]) => String(message).includes('same key'))).toEqual([])
     errors.mockRestore()

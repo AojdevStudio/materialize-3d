@@ -10,7 +10,7 @@ const scroll = vi.fn()
 Element.prototype.scrollIntoView = scroll
 
 const chat = (items: ChatItem[], running = false) => (
-  <ChatView project="p" items={items} running={running} startedMs={undefined} onError={() => {}} />
+  <ChatView items={items} running={running} startedMs={undefined} onError={() => {}} />
 )
 
 beforeAll(() => {
@@ -36,5 +36,14 @@ describe('ChatView', () => {
     scroll.mockClear()
     rerender(chat([ask, ask]))
     expect(scroll).toHaveBeenCalledWith({ block: 'end' })
+  })
+
+  it('shows a message’s picture where it loads from, and by its name where none is given, as on a phone', () => {
+    const photo: ChatItem = { ...ask, images: ['refs/shelf.jpg'] }
+    const { rerender } = render(<ChatView pictureUrl={(rel) => `m3dfile://p/${rel}`} items={[photo]} running={false} startedMs={undefined} onError={() => {}} />)
+    expect(screen.getByRole('img', { name: 'refs/shelf.jpg' }).getAttribute('src')).toBe('m3dfile://p/refs/shelf.jpg')
+    rerender(chat([photo]))
+    expect(screen.queryByRole('img')).toBeNull()
+    expect(screen.getByText('shelf.jpg')).toBeTruthy()
   })
 })

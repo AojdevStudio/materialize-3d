@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { CATALOG } from '../../sidecar/src/offered'
 import { type AppState, type ModelChoice, type Project, type Setup, START } from '../../sidecar/src/protocol'
-import { onSidecarEvent, sidecar } from './api'
+import { fileUrl, onSidecarEvent, sidecar } from './api'
 import { ChatView } from './Chat'
 import { Composer } from './Composer'
 import { useDrafts } from './drafts'
@@ -327,7 +327,7 @@ export default function StudioApp() {
           <>
             {waiting?.kind === 'error' && <WaitingBanner project={current.id} waiting={waiting} onError={setError} />}
             <ChatView
-              project={current.id}
+              pictureUrl={(rel) => fileUrl(current.id, rel)}
               items={items}
               running={running}
               startedMs={view?.turn?.startedMs}

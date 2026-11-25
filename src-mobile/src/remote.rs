@@ -123,9 +123,10 @@ fn carries_token(method: &Method, path: &str) -> bool {
     }
     let segments: Vec<&str> = path.split('/').skip(1).collect();
     match (method.as_str(), segments.as_slice()) {
-        ("GET", ["api", "v1", "chats"]) => true,
+        ("GET", ["api", "v1", "chats"] | ["api", "v1", "models"]) => true,
         ("GET", ["api", "v1", "chats", project] | ["api", "v1", "chats", project, "files"])
         | ("PUT", ["api", "v1", "chats", project, "draft"])
+        | ("PUT", ["api", "v1", "chats", project, "roles"])
         | ("POST", ["api", "v1", "chats", project, "send"]) => !project.is_empty(),
         ("POST", ["api", "v1", "chats", project, "sends", rev, "settle"]) => !project.is_empty() && !rev.is_empty() && rev.bytes().all(|b| b.is_ascii_digit()),
         ("GET", ["api", "v1", "chats", project, "files", rel @ ..]) => !project.is_empty() && !rel.is_empty() && rel.iter().all(|part| !part.is_empty()),
@@ -183,7 +184,7 @@ mod tests {
     }
 
     #[test]
-    fn the_token_goes_only_with_chat_reads_and_this_device_s_sends() {
+    fn the_token_goes_only_with_chat_reads_role_picks_and_this_device_s_sends() {
         let origin = url::Url::parse("https://studio.tail1234.ts.net:47380/").expect("an origin");
         let sent = |method: Method, path: &str| carries_token(&method, url(&origin, path, None).path());
         for path in ["/api/v1/chats", "/api/v1/chats/2026-11-08-cube", "/api/v1/chats/2026-11-08-cube/files", "/api/v1/chats/2026-11-08-cube/files/print/cube.3mf"] {
@@ -192,6 +193,9 @@ mod tests {
         assert!(sent(Method::PUT, "/api/v1/chats/2026-11-08-cube/draft"));
         assert!(sent(Method::POST, "/api/v1/chats/2026-11-08-cube/send"));
         assert!(sent(Method::POST, "/api/v1/chats/2026-11-08-cube/sends/41/settle"));
+        // The Lead and Helper pickers list the models both roles offer and save a chat's pair.
+        assert!(sent(Method::GET, "/api/v1/models"));
+        assert!(sent(Method::PUT, "/api/v1/chats/2026-11-08-cube/roles"));
         for path in [
             "/",
             "/other/service",
@@ -209,6 +213,13 @@ mod tests {
             assert!(!sent(Method::GET, path), "{path}");
         }
         for (method, path) in [
+            (Method::PUT, "/api/v1/models"),
+            (Method::GET, "/api/v1/models/x"),
+            (Method::GET, "/api/v1/chats/2026-11-08-cube/roles"),
+            (Method::POST, "/api/v1/chats/2026-11-08-cube/roles"),
+            (Method::PUT, "/api/v1/chats//roles"),
+            (Method::PUT, "/api/v1/chats/2026-11-08-cube/roles/x"),
+            (Method::PUT, "/api/v1/chats/2026-11-08-cube%2Fother/roles"),
             (Method::GET, "/api/v1/chats/2026-11-08-cube/draft"),
             (Method::POST, "/api/v1/chats/2026-11-08-cube/draft"),
             (Method::PUT, "/api/v1/chats//draft"),
