@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useSyncExternalStore } from 'react'
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import type { ChatView as SavedChat, MobileChat, ModelChoice, ModelFile, ModelOption } from '../../sidecar/src/protocol'
 import { ChatView } from '../studio/Chat'
 import ModelPicker from '../studio/ModelPicker'
@@ -91,6 +91,12 @@ export default function ChatScreen({
   const tablet = useSyncExternalStore(watchTablet, isTablet)
   const [modelOpened, setModelOpened] = useState(false)
   if (tablet && !modelOpened) setModelOpened(true)
+  // The chat keeps itself at its newest line, but cannot while the Model tab hides it, so a reply that came meanwhile
+  // is brought into view on the way back.
+  const chatPane = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (tab === 'chat') chatPane.current?.querySelector('[data-testid=messages]')?.lastElementChild?.scrollIntoView({ block: 'end' })
+  }, [tab])
   /** The model file the person chose. Until then, the newest this device can show, so a sliced file takes over from its draft part. */
   const [chosenFile, setChosenFile] = useState<string | null>(null)
   /** Bumped by Reset view, which turns the viewer back to its first angle without loading the model again. */
@@ -238,7 +244,7 @@ export default function ChatScreen({
           </div>
         )}
       </div>
-      <div className="mobile-chat-pane">
+      <div className="mobile-chat-pane" ref={chatPane}>
         {error && <p className="mobile-error">{error}</p>}
         {modelsError && <p className="mobile-error">{modelsError}</p>}
         {(error || modelsError) && (

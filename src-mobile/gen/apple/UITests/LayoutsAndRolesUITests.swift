@@ -181,6 +181,21 @@ final class LayoutsAndRolesUITests: XCTestCase {
         sleep(2)
         shot("08 helper changed")
 
+        if !iPad {
+            // A phone on its side leaves the role menu little room above the composer. Its first choice must still be
+            // on screen, with the rest a scroll away.
+            XCUIDevice.shared.orientation = .landscapeLeft
+            sleep(3)
+            tap("Helper: Astra")
+            let first = control("No helper")
+            XCTAssertTrue(first.waitForExistence(timeout: 10), "the helper menu opens on a phone on its side")
+            XCTAssertTrue(first.isHittable, "the menu's first choice can be reached on a phone on its side")
+            shot("08b phone on its side, helper menu")
+            tap("Helper: Astra")
+            XCUIDevice.shared.orientation = .portrait
+            sleep(3)
+        }
+
         let message = web.textViews.firstMatch
         message.tap()
         message.typeText("ask: Draw it as an HTML page.")

@@ -73,6 +73,25 @@ describe('ChatScreen', () => {
     expect((screen.getByRole('button', { name: 'Send' }) as HTMLButtonElement).disabled).toBe(true)
   })
 
+  it('brings the newest line into view on the way back from the Model tab, where the chat could not keep it', async () => {
+    const scrolled: Element[] = []
+    const spy = vi.spyOn(Element.prototype, 'scrollIntoView').mockImplementation(function (this: Element) {
+      scrolled.push(this)
+    })
+    render(
+      <SessionContext.Provider value={session()}>
+        <ChatScreen chat={chat} writing={false} onPick={() => {}} onBack={() => {}} />
+      </SessionContext.Provider>,
+    )
+    await screen.findAllByTestId('handoff')
+    fireEvent.click(screen.getByRole('tab', { name: 'Model' }))
+    scrolled.length = 0
+    fireEvent.click(screen.getByRole('tab', { name: 'Chat' }))
+    const end = screen.getByTestId('messages').lastElementChild
+    expect(scrolled).toContain(end)
+    spy.mockRestore()
+  })
+
   it('holds Send while a write to the computer is out, and lets it go after', async () => {
     const shared = session()
     const screenWith = (writing: boolean) => (

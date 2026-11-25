@@ -386,3 +386,9 @@ html:has(.mobile-scanning) #root,
   object-fit: cover;
   border-radius: 8px;
 }
+
+/* A short screen, as a phone on its side, leaves the role menu little room above the composer, so the menu scrolls. */
+.mobile .model-menu {
+  max-height: max(120px, calc(100dvh - 200px));
+  overflow-y: auto;
+}
