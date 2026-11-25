@@ -46,6 +46,7 @@ test)
   [[ ${line#"${line%%[![:space:]]*}"} == m3d-proof-* ]] || { echo "sim-proof: $device is not an m3d-proof-* simulator" >&2; exit 2; }
   xcrun simctl boot $device 2>/dev/null || true
   xcrun simctl addmedia $device $pairing_qr
+  # run <result name> <test> <the numbers of the screenshots it must attach>
   run() {
     rm -rf $out/$1.xcresult $out/attachments/$1
     local result=0
@@ -59,11 +60,16 @@ test)
     xcrun xcresulttool export attachments --path $out/$1.xcresult --output-path $out/attachments/$1 > /dev/null || exported=$?
     (( result == 0 )) || { grep -E "error:|Test Case" $out/$1.log || tail -20 $out/$1.log; exit $result; }
     (( exported == 0 )) || { echo "sim-proof: the attachments of $1 did not export" >&2; exit $exported; }
+    # An export can succeed with screenshots missing, so each one the test takes must be in its manifest.
+    local shot
+    for shot in ${@:3}; do
+      grep -qF "\"$shot " $out/attachments/$1/manifest.json || { echo "sim-proof: $1 has no screenshot $shot" >&2; exit 1; }
+    done
   }
-  run pair testPairFromAPictureOpenTheModelsAndRelaunch
+  run pair testPairFromAPictureOpenTheModelsAndRelaunch 01 02 03 04 05 06
   # Only after a pass: the reset shows the pairing lived in the Keychain.
   xcrun simctl keychain $device reset
-  run keychain testAKeychainResetForgetsThePairing
+  run keychain testAKeychainResetForgetsThePairing 07
   ;;
 *)
   echo "usage: sim-proof.sh build <udid> <out> | test <udid> <pairing-qr.png> <out>" >&2
