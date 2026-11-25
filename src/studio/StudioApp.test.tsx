@@ -1459,6 +1459,36 @@ describe('StudioApp', () => {
     await waitFor(() => expect(sidecarCalls('setup.check').length).toBeGreaterThan(checks))
   })
 
+  it('sends with the helper picked just before Send, even while an earlier pick is still saving', async () => {
+    let answerFirst: () => void = () => {}
+    let held = false
+    // Only the first helper save waits. The ones after it answer at once.
+    mockSidecar({ 'projects.setHelper': (_, real) => (held ? real() : ((held = true), new Promise((resolve) => (answerFirst = () => resolve(real()))))) }, [projectA, projectB])
+    render(<StudioApp />)
+    fireEvent.click(await projectList().findByText('Project A'))
+    await waitFor(() => expect(openTitle()).toBe('Project A'))
+    const pick = (name: string) => {
+      fireEvent.click(screen.getByTestId('helper-picker'))
+      fireEvent.click(within(screen.getByRole('menu', { name: 'Helper models' })).getByText(name))
+    }
+    pick('Sonnet 5.5')
+    await waitFor(() => expect(sidecarCalls('projects.setHelper')).toHaveLength(1))
+    pick('No helper')
+    type('A clip')
+    await waitFor(() => expect((screen.getByTestId('send') as HTMLButtonElement).disabled).toBe(false))
+    fireEvent.click(screen.getByTestId('send'))
+    await act(async () => answerFirst())
+    await waitFor(() => expect(sends()).toHaveLength(1))
+    const order = invokeMock.mock.calls.flatMap(([command, args]) =>
+      command === 'sidecar' && ['chat.send', 'projects.setHelper'].includes(args.method) ? [`${args.method} ${JSON.stringify(args.params.model ?? '')}`] : [],
+    )
+    expect(order).toEqual([
+      `projects.setHelper ${JSON.stringify({ provider: 'anthropic', modelId: 'claude-sonnet-5-5' })}`,
+      'projects.setHelper ""',
+      'chat.send ""',
+    ])
+  })
+
   it('sends the chat where Send was clicked, even while a role save is still on its way', async () => {
     let answerPick: () => void = () => {}
     mockSidecar({ 'projects.setHelper': (_, real) => new Promise((resolve) => (answerPick = () => resolve(real()))) }, [projectA, projectB], {

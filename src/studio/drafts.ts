@@ -163,10 +163,10 @@ export function createDrafts(clock: Clock, onSent: (project: Project) => void) {
   /**
    * Sends the open screen's draft by its revision: saved first if it changed, and a save that fails ends the send. The
    * sidecar makes the project for a first message, copies the pictures, and removes the draft it sent. From the start
-   * screen, a `startHelper` given is the helper that project gets. Answers the project the message went to, or
-   * undefined when it did not go.
+   * screen, a `startHelper` given is the helper that project gets. `after` is what the person clicked before Send, as
+   * a role save, which the message waits for. Answers the project the message went to, or undefined when it did not go.
    */
-  const send = async (startHelper?: ModelChoice | null): Promise<Project | undefined> => {
+  const send = async (startHelper?: ModelChoice | null, after: Promise<unknown> = Promise.resolve()): Promise<Project | undefined> => {
     const key = openKey()
     const screen = screens[key]
     if (screen === undefined || (screen.draft.text.trim() === '' && screen.draft.attachments.length === 0) || state.getState().sending) return undefined
@@ -179,6 +179,8 @@ export function createDrafts(clock: Clock, onSent: (project: Project) => void) {
       const sent = await flush(key, screen.draft)
       if (sent === undefined) return undefined
       const helper = key === START && startHelper !== undefined ? { helper: startHelper } : {}
+      // The chat and draft were read at the click. The message goes out only after what was clicked before it.
+      await after
       const { project } = await sidecar('chat.send', { key, rev: sent.rev, ...helper })
       state.setState(({ sendErrors: { [project.id]: _, ...rest } }) => ({ sendErrors: rest }))
       onSent(project)

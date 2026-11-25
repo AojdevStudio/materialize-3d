@@ -114,27 +114,29 @@ export default function StudioApp() {
    * again then, as the new model's provider may differ.
    */
   /**
-   * The sends on their way. A send starts at once, with the chat open when Send was clicked. A role save waits for every
-   * send before it, so a pick made after Send applies only to later turns. Saves keep the order they were tapped in.
+   * What the person clicked, in click order: role saves and sends. A send reads its chat and draft at the click, then
+   * waits for everything clicked before it. A role save waits for everything clicked before it, sends included, so a
+   * pick made before Send counts for that message and one made after counts only for later turns.
    */
-  const sends = useRef<Promise<unknown>>(Promise.resolve())
-  const afterSends = (save: () => Promise<unknown>) => {
-    sends.current = sends.current.then(save).catch((err: unknown) => setError(String(err)))
+  const clicked = useRef<Promise<unknown>>(Promise.resolve())
+  const afterClicked = (save: () => Promise<unknown>) => {
+    clicked.current = clicked.current.then(save).catch((err: unknown) => setError(String(err)))
   }
-  const sendNow = <T,>(send: Promise<T>) => {
-    sends.current = Promise.all([sends.current, send])
-    return send
+  const send = (startHelper?: ModelChoice | null) => {
+    const sent = drafts.send(startHelper, clicked.current)
+    clicked.current = Promise.all([clicked.current, sent])
+    return sent
   }
 
   const pickModel = (model: ModelChoice) => {
     const project = current?.id
     if (project === undefined) {
-      afterSends(() => saveSettings({ model }).then(() => checkReady()))
+      afterClicked(() => saveSettings({ model }).then(() => checkReady()))
       return
     }
     // The saved project comes back as a `project` event, which updates the picker. The reply carries no roles, so a
     // reply that arrives after a newer save, as from a paired phone, cannot bring an older pick back.
-    afterSends(() => sidecar('projects.setLead', { project, model }))
+    afterClicked(() => sidecar('projects.setLead', { project, model }))
   }
 
   /**
@@ -148,7 +150,7 @@ export default function StudioApp() {
       return
     }
     // As for the lead: the `project` event, not this reply, updates the picker.
-    afterSends(() => sidecar('projects.setHelper', { project, model }))
+    afterClicked(() => sidecar('projects.setHelper', { project, model }))
   }
 
   const composer = (
@@ -162,11 +164,11 @@ export default function StudioApp() {
       onRemove={(index) => drafts.remove(attachments[index], index)}
       onSend={() => {
         if (running || notReady) return
-        if (current) void sendNow(drafts.send())
+        if (current) void send()
         // Only a helper the person picked goes with the send. Without a pick the sidecar gives the default, which the
         // window may not know yet, as before the model list arrives.
         else
-          void sendNow(drafts.send(startHelper?.pick)).then((project) => {
+          void send(startHelper?.pick).then((project) => {
             // A pick made while the send was out is the next chat's, so only the pick that went resets.
             if (project !== undefined) setStartHelper((now) => (now === startHelper ? null : now))
           })
