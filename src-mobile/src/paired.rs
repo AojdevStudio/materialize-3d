@@ -1,10 +1,15 @@
 //! The one computer this device is paired with. The Keychain holds it, so a relaunch needs no new pairing.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::RwLock;
 
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use url::Url;
+
+use crate::drafts::Drafts;
+use crate::events::Watcher;
 
 /// Not the bundle id. Renaming either loses the pairing.
 const SERVICE: &str = "com.materialize3d.mobile";
@@ -18,16 +23,39 @@ pub struct Pairing {
     pub token: String,
 }
 
+impl Pairing {
+    pub fn id(&self) -> PairingId {
+        PairingId::of(&self.token)
+    }
+}
+
+/// Names one pairing: the first 16 characters of the lowercase hex SHA-256 of its token. Each pairing gets a new token,
+/// so a new pairing, even with the same computer, gets a new id, and the token cannot be read back from it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub struct PairingId(String);
+
+impl PairingId {
+    pub fn of(token: &str) -> Self {
+        PairingId(Sha256::digest(token.as_bytes()).iter().take(8).map(|byte| format!("{byte:02x}")).collect())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 /// What the window may know of the paired computer.
 #[derive(Serialize)]
 pub struct Computer {
+    id: PairingId,
     name: String,
     origin: String,
 }
 
 impl From<&Pairing> for Computer {
     fn from(pairing: &Pairing) -> Self {
-        Computer { name: pairing.name.clone(), origin: pairing.origin.to_string() }
+        Computer { id: pairing.id(), name: pairing.name.clone(), origin: pairing.origin.to_string() }
     }
 }
 
@@ -45,6 +73,8 @@ pub enum Error {
     Keychain(#[from] keyring::Error),
     #[error("The saved pairing is damaged. Pair again. {0}")]
     Damaged(#[from] serde_json::Error),
+    #[error("A newer pairing or a Forget took this pairing's place, so it changed nothing.")]
+    Superseded,
 }
 
 impl Serialize for Error {
@@ -53,13 +83,43 @@ impl Serialize for Error {
     }
 }
 
-/// The pairing in memory. `paired_computer`, which the window calls first, reads it from the Keychain.
+/// The pairing in memory, and its generation: how many pairings landed and Forgets succeeded. `paired_computer`, which
+/// the window calls first, reads the pairing from the Keychain.
 #[derive(Default)]
-pub struct Paired(RwLock<Option<Pairing>>);
+pub struct Paired(RwLock<Option<Pairing>>, AtomicU64);
 
 impl Paired {
     pub fn current(&self) -> Option<Pairing> {
         self.0.read().expect("pairing lock").clone()
+    }
+
+    /// The generation a pairing attempt starts from.
+    fn generation(&self) -> u64 {
+        self.1.load(Ordering::SeqCst)
+    }
+
+    /// Lands a pairing that started at `generation`. Under the pairing lock, `save` keeps it, and it becomes the current
+    /// pairing. A pairing that landed, or a Forget that succeeded, since the attempt started supersedes it, and then
+    /// nothing changes, so a pairing that finishes late never sweeps away the drafts of the one that took its place. An
+    /// attempt that was refused supersedes nothing, so a second scan of a spent code leaves the first to land.
+    fn land(&self, generation: u64, pairing: Pairing, save: impl FnOnce(&Pairing) -> Result<(), Error>) -> Result<(), Error> {
+        let mut current = self.0.write().expect("pairing lock");
+        if self.generation() != generation {
+            return Err(Error::Superseded);
+        }
+        save(&pairing)?;
+        self.1.fetch_add(1, Ordering::SeqCst);
+        *current = Some(pairing);
+        Ok(())
+    }
+
+    /// Forgets the pairing once `delete` takes it out of the Keychain, and answers it. A `delete` that fails changes
+    /// nothing. One that succeeds supersedes every pairing still on its way.
+    fn forget(&self, delete: impl FnOnce() -> Result<(), Error>) -> Result<Option<Pairing>, Error> {
+        let mut current = self.0.write().expect("pairing lock");
+        delete()?;
+        self.1.fetch_add(1, Ordering::SeqCst);
+        Ok(current.take())
     }
 }
 
@@ -101,22 +161,26 @@ fn parse_link(link: &str) -> Result<(Url, String), Error> {
     Ok((origin, code))
 }
 
-/// Reads the saved pairing. A Keychain that refuses, or a damaged item, reaches the window, which offers to pair again.
+/// Reads the saved pairing, and sweeps away the drafts of every other. A Keychain that refuses, or a damaged item,
+/// reaches the window, which offers to pair again.
 #[tauri::command]
-pub fn paired_computer(paired: tauri::State<'_, Paired>) -> Result<Option<Computer>, Error> {
+pub fn paired_computer(paired: tauri::State<'_, Paired>, drafts: tauri::State<'_, Drafts>) -> Result<Option<Computer>, Error> {
     let saved: Option<Pairing> = match entry()?.get_password() {
         Ok(json) => Some(serde_json::from_str(&json)?),
         Err(keyring::Error::NoEntry) => None,
         Err(err) => return Err(err.into()),
     };
     let computer = saved.as_ref().map(Computer::from);
+    drafts.sweep(saved.as_ref().map(Pairing::id).as_ref());
     *paired.0.write().expect("pairing lock") = saved;
     Ok(computer)
 }
 
-/// Redeems the code in a scanned link with the computer it names, then saves the grant.
+/// Redeems the code in a scanned link with the computer it names, saves the grant, and sweeps away the drafts of every
+/// other pairing.
 #[tauri::command]
-pub async fn pair(link: String, device: String, paired: tauri::State<'_, Paired>) -> Result<Computer, Error> {
+pub async fn pair(link: String, device: String, paired: tauri::State<'_, Paired>, drafts: tauri::State<'_, Drafts>) -> Result<Computer, Error> {
+    let generation = paired.generation();
     let (origin, code) = parse_link(&link)?;
     let reply = crate::remote::client()
         .post(crate::remote::url(&origin, "/api/v1/pair", None))
@@ -131,25 +195,98 @@ pub async fn pair(link: String, device: String, paired: tauri::State<'_, Paired>
     let pairing = Pairing { origin, name: grant.computer.name, token: grant.token };
     let computer = Computer::from(&pairing);
     // The Keychain and memory change together, so two scans that finish out of order leave one pairing in both.
-    let mut current = paired.0.write().expect("pairing lock");
-    entry()?.set_password(&serde_json::to_string(&pairing)?)?;
-    *current = Some(pairing);
+    paired.land(generation, pairing, |pairing| {
+        entry()?.set_password(&serde_json::to_string(pairing)?)?;
+        drafts.sweep(Some(&pairing.id()));
+        Ok(())
+    })?;
     Ok(computer)
 }
 
+/// Forgets the computer: its credential, its link, and every draft written for its chats.
 #[tauri::command]
-pub fn forget(paired: tauri::State<'_, Paired>) -> Result<(), Error> {
-    match entry()?.delete_credential() {
-        Ok(()) | Err(keyring::Error::NoEntry) => {}
-        Err(err) => return Err(err.into()),
+pub fn forget(paired: tauri::State<'_, Paired>, drafts: tauri::State<'_, Drafts>, watcher: tauri::State<'_, Watcher>) -> Result<(), Error> {
+    // The credential goes first, so an error leaves the pairing and its drafts as they were, and the window goes on with them.
+    let forgotten = paired.forget(|| match entry()?.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(err) => Err(err.into()),
+    })?;
+    watcher.stop();
+    if let Some(forgotten) = forgotten {
+        drafts.remove(&forgotten.id());
     }
-    *paired.0.write().expect("pairing lock") = None;
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn pairing(token: &str) -> Pairing {
+        Pairing { origin: Url::parse("https://studio.tail1234.ts.net:47380/").expect("an origin"), name: "Studio Mac".into(), token: token.into() }
+    }
+
+    fn token(paired: &Paired) -> Option<String> {
+        paired.current().map(|pairing| pairing.token)
+    }
+
+    #[test]
+    fn a_pairing_that_finishes_after_a_newer_one_landed_changes_nothing() {
+        let paired = Paired::default();
+        let first = paired.generation();
+        let second = paired.generation();
+        paired.land(second, pairing("token-b"), |_| Ok(())).expect("the newer pairing lands");
+        let mut saved = false;
+        let late = paired.land(first, pairing("token-a"), |_| {
+            saved = true;
+            Ok(())
+        });
+        assert!(matches!(late, Err(Error::Superseded)));
+        assert!(!saved, "the late pairing reached the Keychain and the drafts");
+        assert_eq!(token(&paired), Some("token-b".into()));
+    }
+
+    #[test]
+    fn a_refused_second_scan_leaves_the_first_pairing_to_land() {
+        let paired = Paired::default();
+        let first = paired.generation();
+        // A second scan of the same code starts, and the computer refuses it, so it never lands.
+        let _second = paired.generation();
+        paired.land(first, pairing("token-a"), |_| Ok(())).expect("the first pairing lands");
+        assert_eq!(token(&paired), Some("token-a".into()));
+    }
+
+    #[test]
+    fn a_pairing_on_its_way_when_forget_succeeds_changes_nothing() {
+        let paired = Paired::default();
+        paired.land(paired.generation(), pairing("token-a"), |_| Ok(())).expect("a pairing");
+        let on_its_way = paired.generation();
+        let forgotten = paired.forget(|| Ok(())).expect("a forget");
+        assert_eq!(forgotten.map(|pairing| pairing.token), Some("token-a".into()));
+        assert!(matches!(paired.land(on_its_way, pairing("token-b"), |_| Ok(())), Err(Error::Superseded)));
+        assert_eq!(token(&paired), None);
+    }
+
+    #[test]
+    fn a_forget_whose_keychain_delete_fails_changes_nothing() {
+        let paired = Paired::default();
+        paired.land(paired.generation(), pairing("token-a"), |_| Ok(())).expect("a pairing");
+        let on_its_way = paired.generation();
+        assert!(paired.forget(|| Err(Error::Superseded)).is_err());
+        assert_eq!(token(&paired), Some("token-a".into()));
+        // Nothing was forgotten, so a pairing on its way still lands.
+        paired.land(on_its_way, pairing("token-b"), |_| Ok(())).expect("the pairing lands");
+    }
+
+    #[test]
+    fn the_window_gets_the_pairing_id_and_never_the_token() {
+        let pairing = Pairing { origin: Url::parse("https://studio.tail1234.ts.net:47380/").expect("an origin"), name: "Studio Mac".into(), token: "token-a".into() };
+        let shown = serde_json::to_value(Computer::from(&pairing)).expect("a computer");
+        // The first 16 hex characters of the SHA-256 of "token-a".
+        assert_eq!(shown, serde_json::json!({ "id": "a70bf50e531ce1a8", "name": "Studio Mac", "origin": "https://studio.tail1234.ts.net:47380/" }));
+        assert_eq!(pairing.id(), Pairing { token: "token-a".into(), ..pairing.clone() }.id());
+        assert_ne!(pairing.id(), Pairing { token: "token-b".into(), ..pairing }.id());
+    }
 
     #[test]
     fn a_pairing_link_gives_the_origin_with_its_port_and_the_code() {

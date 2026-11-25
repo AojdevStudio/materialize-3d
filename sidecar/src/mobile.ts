@@ -13,13 +13,13 @@ import type { Models } from '@earendil-works/pi-ai'
 import { arr, bool, compile, int, map, nullable, obj, opt, str, type Validator } from '@earendil-works/pi-schema'
 import type { Server } from 'bun'
 import { renderSVG } from 'uqr'
-import { type Chats, inside } from './chat'
+import { type Chats, inside, SendRefused } from './chat'
 import { skipped } from './folder'
 import type { Logins } from './inference'
 import { model, offeredModels, saveRoles } from './methods'
 import { savePicture } from './pictures'
 import type { Computer, MobileChat, MobilePairing, ModelFile, PairedDevice, SidecarEvent } from './protocol'
-import { deviceDraft, type Store } from './store'
+import { deviceDraft, DraftChanged, type Store } from './store'
 
 /** Where Tailscale's command line lives in the Mac app, for a Mac that has no `tailscale` on its PATH. */
 const MAC_TAILSCALE = '/Applications/Tailscale.app/Contents/MacOS/Tailscale'
@@ -58,7 +58,7 @@ const sha256 = (text: string) => createHash('sha256').update(text).digest()
 /** A refusal with its HTTP status. Every other error answers 500. */
 class Refused extends Error {
   constructor(
-    readonly status: 400 | 401 | 403 | 404 | 413,
+    readonly status: 400 | 401 | 403 | 404 | 409 | 413 | 422 | 423,
     message: string,
   ) {
     super(message)
@@ -355,9 +355,31 @@ export class Mobile {
         method: 'POST',
         path: '/api/v1/chats/:project/send',
         run: async (request, params, device) => {
-          const { id } = await project(params)
+          const found = await project(params)
+          const key = deviceDraft(device.id, found.id)
           const { rev } = await body(request, sent)
-          return json({ project: await chats.send(deviceDraft(device.id, id), rev, id) })
+          try {
+            return json({ project: await chats.send(key, rev, found.id) })
+          } catch (error) {
+            // Refused before it committed, so the device knows this revision never goes out. Any other failure answers
+            // 500, and the device settles the send.
+            if (error instanceof DraftChanged) throw new Refused(409, error.message)
+            if (!(error instanceof SendRefused)) throw error
+            // These leave the draft in place, so a replay could send it once the agent is idle or the role changes. Settle
+            // it first: a replay that already went out is the answer, and otherwise the revision is retired.
+            if (await chats.settle(found.id, key, rev)) return json({ project: found })
+            throw new Refused(error.reason === 'retired' ? 422 : 423, error.message)
+          }
+        },
+      },
+      {
+        method: 'POST',
+        path: '/api/v1/chats/:project/sends/:rev/settle',
+        run: async (_, params, device) => {
+          const { id } = await project(params)
+          const rev = params.rev ?? ''
+          if (!/^\d{1,15}$/.test(rev)) throw new Refused(400, `${rev} is not a revision`)
+          return json({ accepted: await chats.settle(id, deviceDraft(device.id, id), Number(rev)) })
         },
       },
       {

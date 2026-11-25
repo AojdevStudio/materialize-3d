@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { chmodSync, mkdirSync, mkdtempSync, renameSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { handlers, type Services } from '../src/methods'
@@ -29,7 +29,7 @@ async function freePort(): Promise<number> {
  * A sidecar whose phone service listens on a free port, and a `tailscale` on its PATH that prints `serve` as its
  * Serve config, which `setServe` changes.
  */
-async function start(serve: (port: number) => object, env: Record<string, string> = {}) {
+async function start(serve: (port: number) => object, env: Record<string, string> = {}, rust: Pick<NonNullable<Parameters<typeof spawnSidecar>[3]>, 'hold'> = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'm3d-mobile-'))
   const bin = join(dir, 'bin')
   mkdirSync(bin)
@@ -45,6 +45,7 @@ async function start(serve: (port: number) => object, env: Record<string, string
   const app = spawnSidecar(join(dir, 'state'), projects, new Map(), {
     script: 'models',
     env: { PATH: `${bin}:${process.env.PATH}`, M3D_MOBILE_PORT: String(port), ...env },
+    ...rust,
   })
   await app.next()
   await app.call('settings.set', { model: { provider: 'faux', modelId: 'faux-a' } })
@@ -316,6 +317,8 @@ describe('a paired device', () => {
     expect([read.status, read.headers.get('content-type'), await read.text()]).toEqual([200, 'model/3mf', 'PK3mf'])
     expect(read.headers.get('access-control-allow-origin')).toBeNull()
     expect((await call(`/chats/${project}/files/part.STL`)).headers.get('content-type')).toBe('model/stl')
+    // The phone names a file's version in the query, which the read leaves out of the file's name.
+    expect(await (await call(`/chats/${project}/files/part.STL?v=1000000`)).text()).toBe('solid part')
     expect((await call('/chats/no-such-project')).status).toBe(404)
     expect((await call(`/chats/${project}/send`, { method: 'POST', body: { rev: 'one' } })).status).toBe(400)
     void stream.close()
@@ -339,6 +342,216 @@ describe('a paired device', () => {
     expect(await shown()).toEqual({ [project]: { text: 'Typed on the computer', attachments: [], rev: desk } })
     const sent = ((await (await call(`/chats/${project}`)).json()) as ChatView).entries.flatMap((e) => (e.kind === 'user' ? e.images : []))
     expect(sent).toEqual([`refs/draft-${rev}/${long}`])
+    await app.quit()
+  }, 60_000)
+
+  /** Holds the update gate's answer once `stall.held` is set, so a send waits after it read its draft. */
+  const stalling = () => {
+    const stall: { held: boolean; release?: () => void } = { held: false }
+    const hold: NonNullable<NonNullable<Parameters<typeof spawnSidecar>[3]>['hold']> = (request, answer) => {
+      if (request.method !== 'busy' || !stall.held || stall.release !== undefined) return answer()
+      stall.release = answer
+    }
+    const stalled = async () => {
+      while (stall.release === undefined) await Bun.sleep(10)
+      return stall.release
+    }
+    return { stall, hold, stalled }
+  }
+
+  /** The phone's calls for one chat, as a paired device. */
+  const phone = (base: string, token: string, project: string) => {
+    const call = as(base, token)
+    return {
+      call,
+      draft: async (text: string, pictures: { name: string; data: string }[] = []) =>
+        ((await (await call(`/chats/${project}/draft`, { method: 'PUT', body: { text, pictures } })).json()) as { rev: number }).rev,
+      send: (rev: number) => call(`/chats/${project}/send`, { method: 'POST', body: { rev } }),
+      settle: async (rev: number) => (await (await call(`/chats/${project}/sends/${rev}/settle`, { method: 'POST' })).json()) as { accepted: boolean },
+      asked: async () => ((await (await call(`/chats/${project}`)).json()) as ChatView).entries.flatMap((e) => (e.kind === 'user' ? [e.text] : [])),
+    }
+  }
+
+  test('settles a send whose answer was lost as accepted once the chat holds it, and a replay starts no second job', async () => {
+    const { app, base } = await start(forwarding)
+    const project = await chat(app)
+    const { token } = await pair(app, base)
+    const device = phone(base, token, project)
+
+    const rev = await device.draft('From the phone')
+    // The answer is dropped before the device reads it, as when the link goes down mid-send.
+    const lost = new AbortController()
+    await fetch(`${base}/chats/${project}/send`, { method: 'POST', headers: { authorization: `Bearer ${token}` }, body: JSON.stringify({ rev }), signal: lost.signal })
+    lost.abort()
+    expect(await device.settle(rev)).toEqual({ accepted: true })
+    expect(await device.settle(rev)).toEqual({ accepted: true })
+    expect((await device.send(rev)).status).toBe(200)
+    await settled(app, project, 'answered by faux-a')
+
+    expect(await device.asked()).toEqual(['make the project', 'From the phone'])
+    expect((await device.call(`/chats/${project}/sends/one/settle`, { method: 'POST' })).status).toBe(400)
+    await app.quit()
+  }, 60_000)
+
+  test('settles a send the chat does not hold as refused for good, so a late post of it starts no job', async () => {
+    const { app, base } = await start(forwarding)
+    const project = await chat(app)
+    const { token } = await pair(app, base)
+    const device = phone(base, token, project)
+
+    const rev = await device.draft('From the phone')
+    expect(await device.settle(rev)).toEqual({ accepted: false })
+    const late = await device.send(rev)
+    expect([late.status, await late.json()]).toEqual([409, { error: 'The draft changed before it went out. Send it again.' }])
+    expect(await device.settle(rev)).toEqual({ accepted: false })
+    expect(await device.asked()).toEqual(['make the project'])
+    expect(((await app.call('chat.open', { project })) as ChatView).running).toBe(false)
+    await app.quit()
+  }, 60_000)
+
+  test('settles a stalled send as refused, so only the message sent after it starts a job and keeps its picture', async () => {
+    const { stall, hold, stalled } = stalling()
+    const { app, base, projects } = await start(forwarding, {}, { hold })
+    const project = await chat(app)
+    const { token } = await pair(app, base)
+    const device = phone(base, token, project)
+    const picture = [{ name: 'clip.png', data: PNG }]
+
+    const first = await device.draft('Make it 2 mm thicker', picture)
+    stall.held = true
+    const sending = device.send(first)
+    const release = await stalled()
+    expect(await device.settle(first)).toEqual({ accepted: false })
+    release()
+    expect((await sending).status).toBe(409)
+
+    const second = await device.draft('Make it 2 mm thicker', picture)
+    expect((await device.send(second)).status).toBe(200)
+    await settled(app, project, 'answered by faux-a')
+    expect(await device.asked()).toEqual(['make the project', 'Make it 2 mm thicker'])
+    expect(existsSync(join(projects, project, 'refs', `draft-${second}`, 'clip.png'))).toBe(true)
+    await app.quit()
+  }, 60_000)
+
+  test('keeps a file put in place of a copied picture while the send waited, when that send is refused', async () => {
+    const { stall, hold, stalled } = stalling()
+    const { app, base, projects } = await start(forwarding, {}, { hold })
+    const project = await chat(app)
+    const { token } = await pair(app, base)
+    const device = phone(base, token, project)
+
+    const rev = await device.draft('Make it 2 mm thicker', [{ name: 'clip.png', data: PNG }])
+    stall.held = true
+    const sending = device.send(rev)
+    const release = await stalled()
+    // Someone puts their own file where the send copied its picture, while the send waits for its pass.
+    const copy = join(projects, project, 'refs', `draft-${rev}`, 'clip.png')
+    rmSync(copy)
+    writeFileSync(copy, 'theirs')
+    expect(await device.settle(rev)).toEqual({ accepted: false })
+    release()
+
+    expect((await sending).status).toBe(409)
+    expect(readFileSync(copy, 'utf8')).toBe('theirs')
+    await app.quit()
+  }, 60_000)
+
+  test('refuses a send that stalled past an edit, so only the edited message starts a job', async () => {
+    const { stall, hold, stalled } = stalling()
+    const { app, base, projects } = await start(forwarding, {}, { hold })
+    const project = await chat(app)
+    const { token } = await pair(app, base)
+    const device = phone(base, token, project)
+
+    const first = await device.draft('Make it 2 mm thicker', [{ name: 'clip.png', data: PNG }])
+    stall.held = true
+    const sending = device.send(first)
+    const release = await stalled()
+    const edited = await device.draft('Make it 3 mm thicker')
+    release()
+
+    const refused = await sending
+    expect([refused.status, await refused.json()]).toEqual([409, { error: 'The draft changed before it went out. Send it again.' }])
+    expect((await device.send(edited)).status).toBe(200)
+    await settled(app, project, 'answered by faux-a')
+    expect(await device.asked()).toEqual(['make the project', 'Make it 3 mm thicker'])
+    await app.quit()
+  }, 60_000)
+
+  test('answers a replay that overlaps the first send with the chat, and starts one job', async () => {
+    const { stall, hold, stalled } = stalling()
+    const { app, base } = await start(forwarding, {}, { hold })
+    const project = await chat(app)
+    const { token } = await pair(app, base)
+    const device = phone(base, token, project)
+
+    const rev = await device.draft('From the phone')
+    stall.held = true
+    const sending = device.send(rev)
+    const release = await stalled()
+    // The replay reads the draft before the first send commits, then waits behind it for the update gate.
+    const replaying = device.send(rev)
+    await Bun.sleep(100)
+    release()
+    const [first, replay] = await Promise.all([sending, replaying])
+    expect([first.status, replay.status]).toEqual([200, 200])
+    expect(await first.json()).toMatchObject({ project: { id: project } })
+    await settled(app, project, 'answered by faux-a')
+    expect(await device.asked()).toEqual(['make the project', 'From the phone'])
+    await app.quit()
+  }, 60_000)
+
+  test('refuses a send while the agent works, and a send to a retired lead, with the words the device shows', async () => {
+    const { app, base, projects } = await start(forwarding, { M3D_RETIRED: 'faux-b' })
+    const project = await chat(app)
+    const { token } = await pair(app, base)
+    const device = phone(base, token, project)
+
+    expect((await device.send(await device.draft('please wait'))).status).toBe(200)
+    while (!existsSync(join(projects, project, 'started'))) await Bun.sleep(20)
+    const refused = await device.draft('make it red', [{ name: 'red.png', data: PNG }])
+    const busy = await device.send(refused)
+    expect([busy.status, await busy.json()]).toEqual([423, { error: 'The agent is still working on the last message.' }])
+    writeFileSync(join(projects, project, 'go'), '')
+    await settled(app, project, 'answered by faux-a')
+    // The refusal retired its revision, so a replay that arrives once the agent is idle sends nothing.
+    expect((await device.send(refused)).status).toBe(409)
+
+    await app.call('projects.setLead', { project, model: { provider: 'faux', modelId: 'faux-b' } })
+    expect((await device.send(await device.draft('and now?'))).status).toBe(200)
+    await app.until((event) => event.type === 'chat' && event.project === project && (event.waiting as { retired?: unknown } | null)?.retired !== undefined, 30_000)
+    const retired = await device.send(await device.draft('once more'))
+    expect(retired.status).toBe(422)
+    expect(((await retired.json()) as { error: string }).error).toContain('was retired')
+    expect(await device.asked()).toEqual(['make the project', 'please wait', 'and now?'])
+    await app.quit()
+  }, 60_000)
+
+  test('a refused send deletes no file it found in the project', async () => {
+    const { app, base, projects } = await start(forwarding)
+    const project = await chat(app)
+    const { token } = await pair(app, base)
+    const device = phone(base, token, project)
+    expect((await device.send(await device.draft('please wait'))).status).toBe(200)
+    while (!existsSync(join(projects, project, 'started'))) await Bun.sleep(20)
+    const refs = join(projects, project, 'refs')
+    const found = (rev: number, name: string) => {
+      mkdirSync(join(refs, `draft-${rev}`), { recursive: true })
+      writeFileSync(join(refs, `draft-${rev}`, name), 'made by the person')
+    }
+
+    const text = await device.draft('make it red')
+    found(text, 'keep.txt')
+    expect((await device.send(text)).status).toBe(423)
+    expect(existsSync(join(refs, `draft-${text}`, 'keep.txt'))).toBe(true)
+
+    const photo = await device.draft('make it blue', [{ name: 'blue.png', data: PNG }])
+    found(photo, 'beside.txt')
+    expect((await device.send(photo)).status).toBe(423)
+    expect(existsSync(join(refs, `draft-${photo}`, 'beside.txt'))).toBe(true)
+
+    writeFileSync(join(projects, project, 'go'), '')
+    await settled(app, project, 'answered by faux-a')
     await app.quit()
   }, 60_000)
 

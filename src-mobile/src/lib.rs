@@ -2,19 +2,35 @@
 //! forwards the window's reads and sends to the computer's service with the device token, so the token never reaches the
 //! window.
 
+mod drafts;
+mod events;
 mod paired;
 mod remote;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    use tauri::Manager;
     let builder = tauri::Builder::default();
     #[cfg(mobile)]
     let builder = builder.plugin(tauri_plugin_barcode_scanner::init());
     builder
         .manage(paired::Paired::default())
         .manage(remote::ModelReads::default())
+        .manage(events::Watcher::default())
+        .setup(|app| {
+            app.manage(drafts::Drafts::new(app.path().app_data_dir()?.join("drafts")));
+            Ok(())
+        })
         .register_asynchronous_uri_scheme_protocol(remote::SCHEME, remote::serve)
-        .invoke_handler(tauri::generate_handler![paired::paired_computer, paired::pair, paired::forget, remote::stop_model_reads])
+        .invoke_handler(tauri::generate_handler![
+            paired::paired_computer,
+            paired::pair,
+            paired::forget,
+            remote::stop_model_reads,
+            drafts::draft_load,
+            drafts::draft_save,
+            events::link_watch
+        ])
         .run(tauri::generate_context!())
         .expect("error while running Materialize 3D");
 }
