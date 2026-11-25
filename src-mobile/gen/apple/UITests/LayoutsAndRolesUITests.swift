@@ -67,7 +67,12 @@ final class LayoutsAndRolesUITests: XCTestCase {
 
     private func pickNewestPicture() {
         // Unit 5 makes this a button over a hidden file input. Its label finds it whatever role the web view gives it.
-        web.buttons["Choose a picture of the code"].tap()
+        pickNewestPicture(from: web.buttons["Choose a picture of the code"])
+    }
+
+    /// Opens the photo picker from `opener` and picks the newest picture.
+    private func pickNewestPicture(from opener: XCUIElement) {
+        opener.tap()
         app.buttons["Photo Library"].tap()
         let photos = app.images.matching(identifier: "PXGGridLayout-Info")
         XCTAssertTrue(photos.firstMatch.waitForExistence(timeout: 20), "the photo picker shows the pictures")
@@ -182,18 +187,23 @@ final class LayoutsAndRolesUITests: XCTestCase {
         shot("08 helper changed")
 
         if !iPad {
-            // A phone on its side leaves the role menu little room above the composer. Its first choice must still be
-            // on screen, with the rest a scroll away.
+            // A phone on its side leaves the role menu little room above the composer, and a draft picture makes the
+            // composer taller still. The menu's first choice must stay on screen, with the rest a scroll away.
+            pickNewestPicture(from: web.descendants(matching: .any)["Add a photo"].firstMatch)
+            let removePicture = web.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Remove ")).firstMatch
+            XCTAssertTrue(removePicture.waitForExistence(timeout: 20), "the draft holds the picture")
             XCUIDevice.shared.orientation = .landscapeLeft
             sleep(3)
             tap("Helper: Astra")
             let first = control("No helper")
             XCTAssertTrue(first.waitForExistence(timeout: 10), "the helper menu opens on a phone on its side")
             XCTAssertTrue(first.isHittable, "the menu's first choice can be reached on a phone on its side")
-            shot("08b phone on its side, helper menu")
+            shot("08b phone on its side with a draft picture, helper menu")
             tap("Helper: Astra")
             XCUIDevice.shared.orientation = .portrait
             sleep(3)
+            removePicture.tap()
+            XCTAssertTrue(removePicture.waitForNonExistence(timeout: 10), "the picture leaves the draft")
         }
 
         let message = web.textViews.firstMatch

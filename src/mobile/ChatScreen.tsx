@@ -94,18 +94,22 @@ export default function ChatScreen({
   // The chat keeps itself at its newest line, but cannot while the Model tab hides it, so a reply that came meanwhile
   // is brought into view on the way back.
   const chatPane = useRef<HTMLDivElement>(null)
-  // A role menu opens above its picker. The room it has there is measured, as the composer grows with pictures and a
-  // phone on its side is short, and `mobile.css` caps the menu to it, so the menu scrolls rather than leave the screen.
-  const roles = useRef<HTMLSpanElement>(null)
+  // A role menu opens 4 px above the composer, which `studio.css` positions it from. The room it has there is measured,
+  // as the composer grows with pictures and a phone on its side is short, and `mobile.css` caps the menu to it, so the
+  // menu scrolls rather than leave the screen. A composer the Model tab hides has no box, and keeps the last room.
+  const composer = useRef<HTMLFormElement>(null)
   const [menuRoom, setMenuRoom] = useState<number | null>(null)
   const composerShown = outbox.kind !== 'loading' && outbox.kind !== 'broken'
   useEffect(() => {
-    const picker = roles.current
-    if (picker === null) return
-    const measure = () => setMenuRoom(Math.max(0, Math.floor(picker.getBoundingClientRect().top) - 8))
+    const form = composer.current
+    if (form === null) return
+    const measure = () => {
+      const box = form.getBoundingClientRect()
+      if (box.height > 0) setMenuRoom(Math.max(0, Math.floor(box.top) - 4))
+    }
     measure()
     const watcher = new ResizeObserver(measure)
-    watcher.observe(picker.closest('form') ?? picker)
+    watcher.observe(form)
     window.addEventListener('resize', measure)
     return () => {
       watcher.disconnect()
@@ -282,6 +286,7 @@ export default function ChatScreen({
         )}
         {message && (
           <form
+            ref={composer}
             className="composer"
             onSubmit={(event) => {
               event.preventDefault()
@@ -319,7 +324,7 @@ export default function ChatScreen({
                 />
               </label>
               <span className="spacer" />
-              <span className="model-roles" ref={roles}>
+              <span className="model-roles">
                 <ModelPicker role="Lead" models={models} chosen={chat.lead} onPick={(lead) => onPick({ lead })} />
                 <ModelPicker role="Helper" models={models} chosen={chat.helper} onPick={(helper) => onPick({ helper })} />
               </span>

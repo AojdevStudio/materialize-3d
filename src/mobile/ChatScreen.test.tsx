@@ -92,9 +92,9 @@ describe('ChatScreen', () => {
     spy.mockRestore()
   })
 
-  it('gives the role menus the room measured above the pickers, so a short screen scrolls the menu instead of losing it', async () => {
+  it('gives the role menus the room measured above the composer, so a short screen scrolls the menu instead of losing it', async () => {
     const measured = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
-      return DOMRect.fromRect({ x: 0, y: this.classList.contains('model-roles') ? 150 : 0, width: 100, height: 30 })
+      return this.tagName === 'FORM' ? DOMRect.fromRect({ x: 0, y: 150, width: 300, height: 120 }) : DOMRect.fromRect()
     })
     const { container } = render(
       <SessionContext.Provider value={session()}>
@@ -103,7 +103,7 @@ describe('ChatScreen', () => {
     )
     await screen.findByTestId('helper-picker')
     const shown = container.querySelector<HTMLElement>('.mobile-chat')
-    await waitFor(() => expect(shown?.style.getPropertyValue('--menu-room')).toBe('142px'))
+    await waitFor(() => expect(shown?.style.getPropertyValue('--menu-room')).toBe('146px'))
     measured.mockRestore()
   })
 
