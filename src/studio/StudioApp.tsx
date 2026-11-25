@@ -37,9 +37,16 @@ import './studio.css'
 const take = (row: Project | undefined, incoming: Project): Project =>
   row !== undefined && row.roles >= incoming.roles ? { ...incoming, model: row.model, helper: row.helper, roles: row.roles } : incoming
 
-/** `projects` with `incoming` taken in, in place of its row, or first when the window does not list it yet. */
-const takeIn = (projects: Project[], incoming: Project): Project[] =>
-  projects.some((p) => p.id === incoming.id) ? projects.map((p) => (p.id === incoming.id ? take(p, incoming) : p)) : [incoming, ...projects]
+/**
+ * `projects` with `incoming` taken in, in place of its row, or first when the window does not list it yet. A row that
+ * comes back as it was leaves the list as it was, so nothing that follows the list reads again.
+ */
+const takeIn = (projects: Project[], incoming: Project): Project[] => {
+  const row = projects.find((p) => p.id === incoming.id)
+  if (row === undefined) return [incoming, ...projects]
+  const taken = take(row, incoming)
+  return JSON.stringify(taken) === JSON.stringify(row) ? projects : projects.map((p) => (p === row ? taken : p))
+}
 
 /** A role picked here, with its place in the order of picks, shown until its own save went through. */
 type ShownPick = { model: ModelChoice | null; seq: number }

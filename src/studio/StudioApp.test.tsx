@@ -1402,6 +1402,18 @@ describe('StudioApp', () => {
       expect(sends()[0]).toMatchObject({ key: projectA.id, pair: { lead: opus, helper: sonnet } })
     })
 
+    it("reads the projects' status no more when a send's reply brings the chat back unchanged", async () => {
+      mockSidecar({}, [projectA, projectB])
+      render(<StudioApp />)
+      await openA()
+      await pause(50)
+      const before = sidecarCalls('projects.status').length
+      await sendShown('A clip')
+      await waitFor(() => expect(sends()).toHaveLength(1))
+      await pause(50)
+      expect(sidecarCalls('projects.status')).toHaveLength(before)
+    })
+
     it('leaves a message already on its way alone when a role is picked after Send', async () => {
       mockSidecar({ 'chat.send': () => new Promise(() => {}) }, [projectA, projectB])
       render(<StudioApp />)
