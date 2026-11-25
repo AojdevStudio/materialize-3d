@@ -16,7 +16,6 @@ import {
   checkReady,
   importAgain,
   openFile,
-  readSavedAgain,
   saveSettings,
   setError,
   setPanelView,
@@ -96,21 +95,6 @@ export default function StudioApp() {
       ...made.filter((p) => !state.projects.some((saved) => saved.id === p.id)),
       ...state.projects.map((saved) => take(made.find((p) => p.id === saved.id), saved)),
     ])
-  // An engine that started again may have saved roles or settings whose events or answers it never sent, so the window
-  // reads its state again, in the line of settings saves, and shows the chats' roles by revision like any other. A send
-  // never waits for it, as the sidecar runs its saved roles. The first ready at launch reads nothing more: the window's
-  // first read covers it, and brings the drafts with the chats.
-  const restarted = useRef(false)
-  useEffect(
-    () =>
-      onSidecarEvent((event) => {
-        if (event.type === 'engine') restarted.current = true
-        if (event.type !== 'ready' || !restarted.current) return
-        restarted.current = false
-        void readSavedAgain().then(takeProjects, (err: unknown) => setError(String(err)))
-      }).stop,
-    [],
-  )
 
   /**
    * The saves of the role picks, one after another in the order they were made, so two picks of one role land in that

@@ -277,12 +277,6 @@ export const saveSettings = (change: Methods['settings.set']['params']) => saveS
 export const savePrinter = (choice: Methods['printer.set']['params']) => saveState(() => sidecar('printer.set', choice))
 
 /**
- * Reads the app's state again in the line of saves, after the one on its way, and takes its settings, as after the
- * engine started again: a save it committed whose answer was lost shows then, and a save made later lands after it.
- */
-export const readSavedAgain = () => saveState(() => sidecar('state.get', {}))
-
-/**
  * Saves setup's step, one save at a time: a save asked for while one runs does nothing. The next step's screen can save
  * as soon as it shows, so the save in flight ends before its answer moves setup on. An answer for a window that closed
  * meanwhile moves nothing.

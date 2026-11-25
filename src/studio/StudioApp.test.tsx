@@ -1370,7 +1370,7 @@ describe('StudioApp', () => {
       await waitFor(() => expect(screen.getByTestId('helper-picker').textContent).toBe('Opus 5.5'))
     })
 
-    it('sends on a role saved just before the engine stopped, whose event never came, once the engine is back', async () => {
+    it('leaves a role saved just before the engine stopped, whose event never came, to the sidecar', async () => {
       const store = mockSidecar({}, [projectA, projectB])
       render(<StudioApp />)
       await openA()
@@ -1378,10 +1378,9 @@ describe('StudioApp', () => {
       store.projects = store.projects.map((p) => (p.id === projectA.id ? { ...p, helper: sonnet, roles: 1 } : p))
       await emit({ type: 'engine', state: 'restarting' })
       await emit({ type: 'ready', version: '1.2.3' })
-      await waitFor(() => expect(screen.getByTestId('helper-picker').textContent).toBe('Sonnet 5.5'))
       await sendShown('A clip')
       await waitFor(() => expect(sends()).toHaveLength(1))
-      // The window shows the saved role, and leaves it to the sidecar, which runs its saved roles.
+      // The window carries no role it did not pick, so the sidecar runs the helper it saved.
       expect(sends()[0]).toEqual(expect.objectContaining({ key: projectA.id, pair: {} }))
     })
 
@@ -1429,7 +1428,7 @@ describe('StudioApp', () => {
       },
     )
 
-    it('starts a chat on the default lead saved just before the engine stopped, whose reply never came', async () => {
+    it('leaves a default lead saved just before the engine stopped, whose reply never came, to the sidecar', async () => {
       mockSidecar({ 'settings.set': (_, real) => real().then(() => Promise.reject(new Error(LOST))) })
       render(<StudioApp />)
       await waitFor(() => expect(screen.getByTestId('model-picker').textContent).toBe('Opus 5.5'))
@@ -1438,7 +1437,6 @@ describe('StudioApp', () => {
       await waitFor(() => expect(screen.getByRole('alert').textContent).toContain(LOST))
       await emit({ type: 'engine', state: 'restarting' })
       await emit({ type: 'ready', version: '1.2.3' })
-      await waitFor(() => expect(screen.getByTestId('model-picker').textContent).toBe('Sonnet 5.5'))
       await sendShown('A clip')
       await waitFor(() => expect(sends()).toHaveLength(1))
       // The lead whose save lost its answer is not a pick the window still holds, so the sidecar's saved default leads.
@@ -1465,20 +1463,6 @@ describe('StudioApp', () => {
       await sendShown('A clip')
       await waitFor(() => expect(sends()).toHaveLength(1))
       expect(sends()[0]?.pair).toEqual({})
-    })
-
-    it('reads the chats again only after the engine started again, not at the first ready', async () => {
-      mockSidecar({}, [projectA, projectB])
-      render(<StudioApp />)
-      await openA()
-      const reads = sidecarCalls('state.get').length
-      // The first ready at launch: the window's own first read covers it, and the drafts come with that read.
-      await emit({ type: 'ready', version: '1.2.3' })
-      await pause(50)
-      expect(sidecarCalls('state.get')).toHaveLength(reads)
-      await emit({ type: 'engine', state: 'restarting' })
-      await emit({ type: 'ready', version: '1.2.3' })
-      await waitFor(() => expect(sidecarCalls('state.get')).toHaveLength(reads + 1))
     })
 
     it('leaves a message already on its way alone when a role is picked after Send', async () => {
