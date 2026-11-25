@@ -1433,6 +1433,21 @@ describe('StudioApp', () => {
       expect(sends()[0]).toMatchObject({ key: projectA.id, pair: { lead: opus, helper: sonnet } })
     })
 
+    it('starts a chat on the default lead saved just before the engine stopped, whose reply never came', async () => {
+      mockSidecar({ 'settings.set': (_, real) => real().then(() => Promise.reject(new Error(LOST))) })
+      render(<StudioApp />)
+      await waitFor(() => expect(screen.getByTestId('model-picker').textContent).toBe('Opus 5.5'))
+      fireEvent.click(screen.getByTestId('model-picker'))
+      fireEvent.click(within(screen.getByRole('menu', { name: 'Lead models' })).getByText('Sonnet 5.5'))
+      await waitFor(() => expect(screen.getByRole('alert').textContent).toContain(LOST))
+      await emit({ type: 'engine', state: 'restarting' })
+      await emit({ type: 'ready', version: '1.2.3' })
+      await waitFor(() => expect(screen.getByTestId('model-picker').textContent).toBe('Sonnet 5.5'))
+      await sendShown('A clip')
+      await waitFor(() => expect(sends()).toHaveLength(1))
+      expect(sends()[0]).toMatchObject({ key: 'new', pair: { lead: sonnet } })
+    })
+
     it('leaves a message already on its way alone when a role is picked after Send', async () => {
       mockSidecar({ 'chat.send': () => new Promise(() => {}) }, [projectA, projectB])
       render(<StudioApp />)
