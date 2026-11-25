@@ -1085,6 +1085,23 @@ describe('a draft and the link to the computer', () => {
     await waitFor(() => expect(writes()).toContain('POST /chats/desk-clip/send'))
   })
 
+  it('keeps Send on when a whole read that started before a newer idle event lands after it', async () => {
+    kept.set('desk-clip', { text: 'Now make it blue', pictures: [], sent: null })
+    const asked = { id: 1, kind: 'user', text: 'Draw it' }
+    computerSide.chat = { ...view, entries: [asked], running: true, seq: 10 }
+    const release = hold('GET /chats/desk-clip')
+    await openChat()
+    await linkIs({ kind: 'connected' })
+    // The turn ends before the read that saw it running answers.
+    await linkIs({ kind: 'event', event: { type: 'chat', ...view, entries: [asked], running: false, seq: 11 } })
+    await waitFor(() => expect(sendButton().disabled).toBe(false))
+
+    release()
+    await waitFor(() => expect(computerSide.requests.filter((r) => r === 'GET /chats/desk-clip')).toHaveLength(1))
+    await act(() => new Promise((resolve) => setTimeout(resolve, 0)))
+    expect(sendButton().disabled).toBe(false)
+  })
+
   it('reads the model files again when the turn ends before the chat was first read, and not for a repeated end', async () => {
     computerSide.chat = { ...view, entries: [{ id: 1, kind: 'user', text: 'Draw it' }], running: true, seq: 4 }
     const release = hold('GET /chats/desk-clip')
