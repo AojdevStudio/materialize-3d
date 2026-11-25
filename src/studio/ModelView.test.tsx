@@ -50,9 +50,9 @@ describe('ModelView', () => {
     let arrive: (response: Response) => void = () => {}
     vi.stubGlobal('fetch', () => new Promise<Response>((resolve) => (arrive = resolve)))
     render(<ModelView url="m3dfile://2026-11-06-dock/parts.stl" ext="stl" />)
-    expect(screen.getByTestId('model-view').getAttribute('aria-label')).toBe('Loading the 3D model')
+    expect(screen.getByRole('group', { name: 'Loading the 3D model' })).toBe(screen.getByTestId('model-view'))
     arrive(new Response(triangle))
-    await waitFor(() => expect(screen.getByTestId('model-view').getAttribute('aria-label')).toBe('3D model parts.stl'))
+    await waitFor(() => expect(screen.getByRole('group', { name: '3D model parts.stl' })).toBe(screen.getByTestId('model-view')))
   })
 
   it('starts on true black in dark', () => {

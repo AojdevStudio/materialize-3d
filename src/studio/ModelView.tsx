@@ -157,7 +157,7 @@ export default function ModelView({ url, ext }: { url: string; ext: string }) {
   }, [url, ext])
 
   return (
-    <div className="model-view" ref={host} data-testid="model-view" aria-label={error ? undefined : loaded ? `3D model ${fileName(url)}` : 'Loading the 3D model'} aria-busy={!loaded && !error}>
+    <div className="model-view" ref={host} data-testid="model-view" role="group" aria-label={error ? undefined : loaded ? `3D model ${fileName(url)}` : 'Loading the 3D model'} aria-busy={!loaded && !error}>
       {error && <p className="preview-note">Could not show this model. {error}</p>}
     </div>
   )
