@@ -2,5 +2,5 @@
 55f78b0e85e0526ac1d5b14b9fe6ed0066592dbb77bb34bb35a22b2e237a56e8  src-tauri/src/updater.rs
 b153acda66a3e3732dabb90351785efdfcbfeeb9fa1f06685aa2f57c04c21e47  src-tauri/src/sidecar.rs
 8457fa660347432c3b20185682abc8e6a42f541e836714d0031d987174a6ebc1  sidecar/src/busy.ts
-00cbc20da72dfd27367c1a627567dc3a0fd4be3b9f24288c1a5875b94a559a41  sidecar/src/chat.ts
+0df59ae026f996c8c2c9bbe75f41a5f13675ee7981e518b5be9335f1a721db89  sidecar/src/chat.ts
 822aaa72c53cb640755fb2bfb02c74a545612abda428f3fcb138f47a6e7076a4  sidecar/src/app.ts
