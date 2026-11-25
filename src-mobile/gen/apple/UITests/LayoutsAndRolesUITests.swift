@@ -194,6 +194,11 @@ final class LayoutsAndRolesUITests: XCTestCase {
             XCTAssertTrue(removePicture.waitForExistence(timeout: 20), "the draft holds the picture")
             XCUIDevice.shared.orientation = .landscapeLeft
             sleep(3)
+            // On its left side the phone's camera cutout is on the left edge. The chat keeps clear of it.
+            let reply = web.staticTexts["made"]
+            XCTAssertTrue(reply.waitForExistence(timeout: 10), "the chat shows its first reply on a phone on its side")
+            XCTAssertGreaterThan(reply.frame.minX, 44, "the reply starts clear of the camera cutout")
+            XCTAssertGreaterThan(web.images.matching(NSPredicate(format: "label != %@", "3D model cube-p2s-petg.3mf")).firstMatch.frame.minX, 44, "the draft picture starts clear of the camera cutout")
             tap("Helper: Astra")
             let first = control("No helper")
             XCTAssertTrue(first.waitForExistence(timeout: 10), "the helper menu opens on a phone on its side")

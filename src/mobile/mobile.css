@@ -112,10 +112,11 @@ body,
 /*
  * A chat. On iPhone, one pane at a time under the title, picked by the tabs. On iPad (both sides at least 600 px),
  * both panes and no tabs: the model takes the top 40% in portrait, and the chat a 440 px column on the left in landscape.
+ * The chat runs to the screen's sides, except where a phone on its side has its camera cutout.
  */
 .mobile:has(.mobile-chat) {
-  padding-left: 0;
-  padding-right: 0;
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
 }
 
 .mobile-chat {
