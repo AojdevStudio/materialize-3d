@@ -73,6 +73,11 @@ export type Project = {
   printed?: boolean
   model: ModelChoice
   helper: ModelChoice | null
+  /**
+   * The revision of `model` and `helper`. It goes up by one with each save of them, in the same commit, so a window
+   * takes the roles with the highest revision it heard, from a read, an event, or a reply, in any order.
+   */
+  roles: number
   retired?: Omit<Retired, 'replacement'>[]
 }
 

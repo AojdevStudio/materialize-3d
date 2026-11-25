@@ -258,6 +258,8 @@ export class Store {
       const now = await tx.doc(SettingsDoc, id)
       for (const project of projects.projects) {
         if (project.helper === undefined) Object.assign(project, carried(now, project.model))
+        // Roles saved before they had revisions start at 0, so the next save of them is newer.
+        project.roles ??= 0
       }
     }, context)
   }
@@ -357,7 +359,7 @@ export class Store {
       const conversation = await tx.createConversation({ ownership: { kind: 'ownerless' } })
       // The project keeps the lead shown on the start screen at Send, or the saved default without one.
       const model = lead ?? (await tx.doc(SettingsDoc, this.root.id)).model
-      const created: Project = { id, conversation: conversation.id, title, createdMs: now.getTime(), model: copy(model), helper: helper === null ? null : copy(helper) }
+      const created: Project = { id, conversation: conversation.id, title, createdMs: now.getTime(), model: copy(model), helper: helper === null ? null : copy(helper), roles: 0 }
       index.projects.push(created)
       const moved: SavedDraft = { text: draft.text, attachments: [...draft.attachments], rev }
       index.madeFor[rev] = { project: id, draft: moved }
@@ -402,6 +404,7 @@ export class Store {
       if (saved.helper === null || helper === null || !sameVersion(saved.helper, helper)) saved.retired = (saved.retired ?? []).filter((r) => r.role !== 'helper')
       saved.model = copy(model)
       saved.helper = helper === null ? null : copy(helper)
+      saved.roles += 1
     }
     // A role the chat found retired holds the send only while the send would run that same version again.
     const [gone] = this.#retiredRoles(saved).filter((r) => (r.role === 'lead' ? sameVersion(r.model, model) : helper !== null && sameVersion(r.model, helper)))
@@ -528,7 +531,7 @@ export class Store {
         const conversation = await tx.createConversation({ ownership: { kind: 'ownerless' } })
         for (const data of old.entries) await tx.appendEntry(Imported, conversation.id, { data })
         const pair = carried(await tx.doc(SettingsDoc, this.root.id), undefined)
-        index.projects.push({ id: old.id, conversation: conversation.id, title: old.title, createdMs: old.createdMs, ...pair })
+        index.projects.push({ id: old.id, conversation: conversation.id, title: old.title, createdMs: old.createdMs, ...pair, roles: 0 })
         return true
       }, context)
       if (done) imported.push(old.id)
@@ -545,6 +548,7 @@ export class Store {
       const project = await this.#projectIn(tx, id)
       if (lead !== undefined) project.model = copy(lead)
       if (helper !== undefined) project.helper = helper === null ? null : copy(helper)
+      project.roles += 1
       project.retired = (project.retired ?? []).filter((r) => (r.role === 'lead' ? lead : helper) === undefined)
       // A plain copy, since the documents a commit hands out are only valid inside it.
       return JSON.parse(JSON.stringify(project))
@@ -645,6 +649,6 @@ type DraftsBefore = { drafts: Record<string, Draft & { rev?: number }>; seq?: nu
  * pairs, projects with no helper and maybe no lead.
  */
 type ProjectsBefore = {
-  projects: (Omit<Project, 'model' | 'helper'> & { model?: ModelChoice; helper?: ModelChoice | null })[]
+  projects: (Omit<Project, 'model' | 'helper' | 'roles'> & { model?: ModelChoice; helper?: ModelChoice | null; roles?: number })[]
   madeFor?: Record<string, { project: string; draft: SavedDraft }>
 }

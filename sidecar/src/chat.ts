@@ -250,12 +250,12 @@ export class Chats {
    */
   async #state(conversation: Conversation): Promise<State> {
     const { harness } = this.#o.store
+    const seq = this.#nextSeq()
     const [live, waiting, turn] = await Promise.all([
       harness.snapshot(LiveDoc, conversation.id, context),
       harness.snapshot(WaitingDoc, conversation.id, context),
       harness.snapshot(TurnDoc, conversation.id, context),
     ])
-    const seq = this.#nextSeq()
     // A helper call publishes its handoff in its details before the helper starts, so a call without one has not begun.
     const calls = (live?.tools ?? []).flatMap((slot) => {
       const handoff = slot.name === HELPER && slot.status !== 'done' ? (slot.details as { handoff?: Handoff } | undefined)?.handoff : undefined

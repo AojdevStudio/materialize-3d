@@ -160,6 +160,23 @@ describe('a new chat', () => {
     expect((await view(app, project.id)).turn).toMatchObject({ model: FAUX_A, helper: null })
     await app.quit()
   })
+
+  test('counts each save of its roles, and the read, the event, and the reply that carry them carry the count', async () => {
+    const where = scratch()
+    const app = await start(where, 'models')
+    const { rev } = (await app.call('drafts.set', { key: 'new', text: 'a clip', attachments: [] })) as { rev: number }
+    const { project } = (await app.call('chat.send', { key: 'new', rev, pair: { lead: FAUX_A, helper: null } })) as { project: Project }
+    expect(project.roles).toBe(1)
+    await app.call('projects.setHelper', { project: project.id, model: FAUX_B })
+    const heard = await app.until((event) => event.type === 'project' && (event.project as Project).roles === 2)
+    expect(heard.project).toMatchObject({ helper: FAUX_B, roles: 2 })
+    // A chat send runs its own pair and leaves the saved roles, and their count, alone.
+    const { rev: next } = (await app.call('drafts.set', { key: project.id, text: 'a knob', attachments: [] })) as { rev: number }
+    const sent = (await app.call('chat.send', { key: project.id, rev: next, pair: { lead: FAUX_A, helper: null } })) as { project: Project }
+    expect(sent.project).toMatchObject({ helper: FAUX_B, roles: 2 })
+    expect(await projectIn(app, project.id)).toMatchObject({ helper: FAUX_B, roles: 2 })
+    await app.quit()
+  })
 })
 
 describe('a pair', () => {
@@ -382,7 +399,7 @@ describe('chats from before pairs', () => {
   /** A store whose settings and one project are as an app before pairs left them. */
   async function before(where: Where, astra: boolean, model: ModelChoice | undefined) {
     const old = await openStore(where)
-    const ProjectsBeforePairs = defineDoc<{ projects: (Omit<Project, 'model' | 'helper'> & { model?: ModelChoice })[] }>({
+    const ProjectsBeforePairs = defineDoc<{ projects: (Omit<Project, 'model' | 'helper' | 'roles'> & { model?: ModelChoice })[] }>({
       kind: 'm3d.projects',
       version: 1,
       scope: 'conversation',
