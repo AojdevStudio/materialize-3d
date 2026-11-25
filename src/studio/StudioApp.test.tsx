@@ -113,8 +113,14 @@ function mockSidecar(overrides: Calls = {}, projects: Project[] = [projectB], dr
         store.model = params.model as typeof settings.model
         return defaults('state.get', {})
       case 'projects.setLead':
-        store.projects = store.projects.map((p) => (p.id === params.project ? { ...p, model: params.model as typeof settings.model } : p))
+      case 'projects.setHelper': {
+        // As the sidecar does: save the role, then tell every window the project changed.
+        const change = method === 'projects.setLead' ? { model: params.model as typeof settings.model } : { helper: params.model as typeof settings.model | null }
+        store.projects = store.projects.map((p) => (p.id === params.project ? { ...p, ...change } : p))
+        const saved = store.projects.find((p) => p.id === params.project)
+        listeners.sidecar.forEach((listener) => listener({ payload: { type: 'project', project: saved } }))
         return Promise.resolve(null)
+      }
       case 'chat.open':
         return Promise.resolve(view(String(params.project)))
       case 'setup.check':
@@ -133,6 +139,8 @@ function mockSidecar(overrides: Calls = {}, projects: Project[] = [projectB], dr
       case 'drafts.set':
         return Promise.resolve({ rev: ++draftRevs })
       case 'chat.send':
+        // A start screen send makes its project, which the store then holds, as the sidecar's does.
+        if (params.key === 'new' && !store.projects.some((p) => p.id === made.id)) store.projects = [made, ...store.projects]
         return Promise.resolve({ project: params.key === 'new' ? made : store.projects.find((p) => p.id === params.key) })
       default:
         return Promise.resolve(null)
@@ -1449,6 +1457,24 @@ describe('StudioApp', () => {
     await waitFor(() => expect(picked()).toBe('GPT 6.1 Sol'))
     // What the next send needs is checked again for the new lead, so Send does not wait on the old one's sign-in.
     await waitFor(() => expect(sidecarCalls('setup.check').length).toBeGreaterThan(checks))
+  })
+
+  it("keeps a helper a paired phone saved after a desktop pick, when the desktop pick's reply comes late", async () => {
+    let answerPick: () => void = () => {}
+    // The save lands at once, and its reply waits.
+    mockSidecar({ 'projects.setHelper': (_, real) => real().then((value) => new Promise((resolve) => (answerPick = () => resolve(value)))) }, [projectA, projectB])
+    render(<StudioApp />)
+    const helper = () => screen.getByTestId('helper-picker')
+    fireEvent.click(await projectList().findByText('Project A'))
+    await waitFor(() => expect(openTitle()).toBe('Project A'))
+    fireEvent.click(helper())
+    fireEvent.click(within(screen.getByRole('menu', { name: 'Helper models' })).getByText('Sonnet 5.5'))
+    await waitFor(() => expect(helper().textContent).toBe('Sonnet 5.5'))
+    // The phone clears the helper, and only then does the desktop hear the reply to its own pick.
+    emit({ type: 'project', project: { ...projectA, helper: null } })
+    expect(helper().textContent).toBe('None')
+    await act(async () => answerPick())
+    expect(helper().textContent).toBe('None')
   })
 
   it("shows the chosen model's short name and mark before any sign-in", async () => {

@@ -121,12 +121,9 @@ export default function StudioApp() {
         .catch((err: unknown) => setError(String(err)))
       return
     }
-    void sidecar('projects.setLead', { project, model })
-      .then(() => {
-        setProjects((all) => all.map((p) => (p.id === project ? { ...p, model } : p)))
-        checkReady()
-      })
-      .catch((err: unknown) => setError(String(err)))
+    // The saved project comes back as a `project` event, which updates the picker. The reply carries no roles, so a
+    // reply that arrives after a newer save, as from a paired phone, cannot bring an older pick back.
+    void sidecar('projects.setLead', { project, model }).catch((err: unknown) => setError(String(err)))
   }
 
   /**
@@ -139,12 +136,8 @@ export default function StudioApp() {
       setStartHelper({ pick: model })
       return
     }
-    void sidecar('projects.setHelper', { project, model })
-      .then(() => {
-        setProjects((all) => all.map((p) => (p.id === project ? { ...p, helper: model } : p)))
-        checkReady()
-      })
-      .catch((err: unknown) => setError(String(err)))
+    // As for the lead: the `project` event, not this reply, updates the picker.
+    void sidecar('projects.setHelper', { project, model }).catch((err: unknown) => setError(String(err)))
   }
 
   const composer = (
