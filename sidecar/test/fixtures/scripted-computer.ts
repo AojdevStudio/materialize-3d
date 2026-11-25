@@ -50,7 +50,7 @@ for (const [name, body] of Object.entries(tools)) {
 const projects = join(dir, 'projects')
 const app = spawnSidecar(join(dir, 'state'), projects, new Map(), {
   script: 'helper',
-  env: { PATH: `${bin}:${process.env.PATH}`, M3D_MOBILE_PORT: port, M3D_PAIRING_TTL_MS: String(30 * 60_000) },
+  env: { PATH: `${bin}:${process.env.PATH}`, M3D_MOBILE_PORT: port, M3D_PAIRING_TTL_MS: String(30 * 60_000), M3D_MORE_PROVIDERS: '1' },
 })
 await app.next()
 
@@ -65,8 +65,9 @@ async function answered(project: string, text: string) {
 }
 
 await app.call('setup.set', { step: 'ready', done: true })
-// The scripted OpenAI Codex answers once a key is saved, so both roles offer its GPT 6 Astra and GPT 6.3 Sol.
-await app.call('auth.setKey', { provider: 'openai-codex', key: 'scripted' })
+// The scripted providers answer once a key is saved, so both roles offer the whole catalog, GPT 6 Astra and GPT 6.3 Sol
+// among it. A role menu that long is what a short screen must still show.
+for (const provider of ['openai-codex', 'anthropic', 'opencode-go']) await app.call('auth.setKey', { provider, key: 'scripted' })
 await app.call('settings.set', { model: ASTRA })
 const { project } = await app.sendDraft('new', 'make the project')
 await answered(project, 'made')

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import type { ChatEntry, ChatView, MobileChat, ModelChoice } from '../../sidecar/src/protocol'
 
 // The device keeps no draft for this chat yet, and takes each draft write.
@@ -90,6 +90,21 @@ describe('ChatScreen', () => {
     const end = screen.getByTestId('messages').lastElementChild
     expect(scrolled).toContain(end)
     spy.mockRestore()
+  })
+
+  it('gives the role menus the room measured above the pickers, so a short screen scrolls the menu instead of losing it', async () => {
+    const measured = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      return DOMRect.fromRect({ x: 0, y: this.classList.contains('model-roles') ? 150 : 0, width: 100, height: 30 })
+    })
+    const { container } = render(
+      <SessionContext.Provider value={session()}>
+        <ChatScreen chat={chat} writing={false} onPick={() => {}} onBack={() => {}} />
+      </SessionContext.Provider>,
+    )
+    await screen.findByTestId('helper-picker')
+    const shown = container.querySelector<HTMLElement>('.mobile-chat')
+    await waitFor(() => expect(shown?.style.getPropertyValue('--menu-room')).toBe('142px'))
+    measured.mockRestore()
   })
 
   it('holds Send while a write to the computer is out, and lets it go after', async () => {

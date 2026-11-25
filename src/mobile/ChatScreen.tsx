@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { type CSSProperties, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import type { ChatView as SavedChat, MobileChat, ModelChoice, ModelFile, ModelOption } from '../../sidecar/src/protocol'
 import { ChatView } from '../studio/Chat'
 import ModelPicker from '../studio/ModelPicker'
@@ -94,6 +94,24 @@ export default function ChatScreen({
   // The chat keeps itself at its newest line, but cannot while the Model tab hides it, so a reply that came meanwhile
   // is brought into view on the way back.
   const chatPane = useRef<HTMLDivElement>(null)
+  // A role menu opens above its picker. The room it has there is measured, as the composer grows with pictures and a
+  // phone on its side is short, and `mobile.css` caps the menu to it, so the menu scrolls rather than leave the screen.
+  const roles = useRef<HTMLSpanElement>(null)
+  const [menuRoom, setMenuRoom] = useState<number | null>(null)
+  const composerShown = outbox.kind !== 'loading' && outbox.kind !== 'broken'
+  useEffect(() => {
+    const picker = roles.current
+    if (picker === null) return
+    const measure = () => setMenuRoom(Math.max(0, Math.floor(picker.getBoundingClientRect().top) - 8))
+    measure()
+    const watcher = new ResizeObserver(measure)
+    watcher.observe(picker.closest('form') ?? picker)
+    window.addEventListener('resize', measure)
+    return () => {
+      watcher.disconnect()
+      window.removeEventListener('resize', measure)
+    }
+  }, [composerShown])
   useEffect(() => {
     if (tab === 'chat') chatPane.current?.querySelector('[data-testid=messages]')?.lastElementChild?.scrollIntoView({ block: 'end' })
   }, [tab])
@@ -175,7 +193,7 @@ export default function ChatScreen({
   const shownLink = linkLine(link, kept)
 
   return (
-    <section className="mobile-chat" data-tab={tab}>
+    <section className="mobile-chat" data-tab={tab} style={menuRoom === null ? undefined : ({ '--menu-room': `${menuRoom}px` } as CSSProperties)}>
       <header className="mobile-chat-bar">
         <button type="button" className="mobile-back" aria-label="Chats" onClick={onBack}>
           <svg viewBox="0 0 16 16" width={18} height={18} aria-hidden="true">
@@ -301,7 +319,7 @@ export default function ChatScreen({
                 />
               </label>
               <span className="spacer" />
-              <span className="model-roles">
+              <span className="model-roles" ref={roles}>
                 <ModelPicker role="Lead" models={models} chosen={chat.lead} onPick={(lead) => onPick({ lead })} />
                 <ModelPicker role="Helper" models={models} chosen={chat.helper} onPick={(helper) => onPick({ helper })} />
               </span>

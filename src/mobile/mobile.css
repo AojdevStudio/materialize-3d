@@ -387,8 +387,8 @@ html:has(.mobile-scanning) #root,
   border-radius: 8px;
 }
 
-/* A short screen, as a phone on its side, leaves the role menu little room above the composer, so the menu scrolls. */
+/* A role menu takes at most the room measured above its picker, less the top safe area, and scrolls past that. */
 .mobile .model-menu {
-  max-height: max(120px, calc(100dvh - 200px));
+  max-height: calc(var(--menu-room, 50dvh) - env(safe-area-inset-top));
   overflow-y: auto;
 }
