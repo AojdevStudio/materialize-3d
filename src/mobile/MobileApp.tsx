@@ -416,7 +416,7 @@ function Chat({ chat, onBack }: { chat: MobileChat; onBack: () => void }) {
         setFiles(models)
         // The file shown before a reread, else the newest file this device can show, so opening a chat never downloads
         // a model it must refuse.
-        setModel((shown) => models.find((file) => file.rel === shown?.rel && fits(file)) ?? models.find(fits) ?? models[0] ?? null)
+        setModel((shown) => models.find((file) => file.rel === shown?.rel) ?? models.find(fits) ?? models[0] ?? null)
         setFilesError(null)
       },
       (err) => current && setFilesError(`The model files did not load. ${errorText(err)}`),

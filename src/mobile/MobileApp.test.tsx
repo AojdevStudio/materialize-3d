@@ -216,6 +216,14 @@ describe('MobileApp', () => {
     // jsdom has no WebGL, so a mounted viewer would never fetch: the viewer must not mount at all.
     expect(screen.queryByTestId('model-view')).toBeNull()
     expect(fetched.filter((url) => url.endsWith('/files/huge.stl'))).toEqual([])
+
+    // A turn that ends reads the files again, and the person's pick stays.
+    const filesReads = () => fetched.filter((url) => url.endsWith('/desk-clip/files')).length
+    const before = filesReads()
+    await linkIs({ kind: 'event', event: { type: 'chat', ...deskClip, entries: [...deskClip.entries, { id: 2, kind: 'assistant', text: 'Done.', calls: [], model: { provider: 'faux', modelId: 'faux-a' } }], seq: 9 } })
+    await waitFor(() => expect(filesReads()).toBe(before + 1))
+    expect(screen.getByText('huge.stl is too large to show on this device (over 64 MB).')).toBeTruthy()
+    expect(screen.queryByTestId('model-view')).toBeNull()
   })
 
   it('refuses the same answer size in Rust as the window does', () => {
