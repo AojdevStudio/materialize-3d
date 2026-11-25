@@ -28,7 +28,7 @@ import { leaves, WORKFLOW, WORKFLOW_VERSION } from './agent'
 import type { Busy } from './busy'
 import { type SentMessage, UserMessage } from './entries'
 import { folderSummary } from './folder'
-import { copyAttachments, type Made, removeAttachments } from './pictures'
+import { copyAttachments } from './pictures'
 import { modelName, newest } from './offered'
 import {
   ASTRA,
@@ -46,7 +46,7 @@ import {
   type Waiting,
 } from './protocol'
 import { isLoginFailure, isRetired } from './inference'
-import { DraftChanged, RoleRetired, sendName, type Store } from './store'
+import { RoleRetired, sendName, type Store } from './store'
 import { chatEntry } from './transcript'
 
 const context: Context = BACKGROUND_CONTEXT
@@ -174,14 +174,12 @@ const view = (project: string, entries: ChatEntry[], { running, waiting, turn, s
 
 /**
  * A send refused before it committed: the agent still works on the last message, or the role it would run with is
- * retired, as `message` says. Nothing is sent. `made` is what this send copied into the project, for the caller that
- * retires the revision to remove.
+ * retired, as `message` says. Nothing is sent.
  */
 export class SendRefused extends Error {
   constructor(
     message: string,
     readonly reason: 'working' | 'retired',
-    readonly made: Made,
   ) {
     super(message)
   }
@@ -327,8 +325,8 @@ export class Chats {
   /**
    * The final word on a device's send of revision `rev` to `project`, after its answer was lost: true when the chat
    * holds its message. Otherwise the revision is retired in the same commit, so a send of it still on its way is
-   * refused and the answer stays false. Settling deletes no files: it cannot tell a copy that is its own from one a send
-   * is still making. A send of the retired revision removes the copy it made when it is refused.
+   * refused and the answer stays false. Nothing deletes the pictures a refused send copied into the project: no request
+   * can tell for sure that a copy is not someone's file. The sweep at start (#366) takes them.
    */
   async settle(project: string, key: string, rev: number): Promise<boolean> {
     const { store } = this.#o
@@ -368,7 +366,7 @@ export class Chats {
       return project
     }
     const folder = store.projectFolder(project.id)
-    const { copied: attachments, made } = await copyAttachments(folder, rev, draft.attachments)
+    const attachments = await copyAttachments(folder, rev, draft.attachments)
     // The chat entry keeps the split the model got: a picture it could not read is shown as a file, by its path.
     const { content, shown, named } = userContent(folder, draft.text, attachments)
     try {
@@ -390,10 +388,8 @@ export class Chats {
         await wait(tx, conversation.id, null, { saves })
       }, context))
     } catch (error) {
-      if (error instanceof ConversationBusy) throw new SendRefused('The agent is still working on the last message.', 'working', made)
-      if (error instanceof RoleRetired) throw new SendRefused(error.message, 'retired', made)
-      // This revision never goes out, so the files this send copied for it leave the project.
-      if (error instanceof DraftChanged) removeAttachments(folder, made)
+      if (error instanceof ConversationBusy) throw new SendRefused('The agent is still working on the last message.', 'working')
+      if (error instanceof RoleRetired) throw new SendRefused(error.message, 'retired')
       throw error
     }
     await this.#watch(project.id, conversation)

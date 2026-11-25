@@ -429,9 +429,7 @@ describe('a paired device', () => {
     expect((await device.send(second)).status).toBe(200)
     await settled(app, project, 'answered by faux-a')
     expect(await device.asked()).toEqual(['make the project', 'Make it 2 mm thicker'])
-    const refs = join(projects, project, 'refs')
-    expect(existsSync(join(refs, `draft-${first}`))).toBe(false)
-    expect(existsSync(join(refs, `draft-${second}`, 'clip.png'))).toBe(true)
+    expect(existsSync(join(projects, project, 'refs', `draft-${second}`, 'clip.png'))).toBe(true)
     await app.quit()
   }, 60_000)
 
@@ -458,7 +456,7 @@ describe('a paired device', () => {
     await app.quit()
   }, 60_000)
 
-  test('refuses a send that stalled past an edit, so only the edited message starts a job, and keeps no copy of its picture', async () => {
+  test('refuses a send that stalled past an edit, so only the edited message starts a job', async () => {
     const { stall, hold, stalled } = stalling()
     const { app, base, projects } = await start(forwarding, {}, { hold })
     const project = await chat(app)
@@ -477,7 +475,6 @@ describe('a paired device', () => {
     expect((await device.send(edited)).status).toBe(200)
     await settled(app, project, 'answered by faux-a')
     expect(await device.asked()).toEqual(['make the project', 'Make it 3 mm thicker'])
-    expect(existsSync(join(projects, project, 'refs', `draft-${first}`))).toBe(false)
     await app.quit()
   }, 60_000)
 
@@ -515,8 +512,6 @@ describe('a paired device', () => {
     const refused = await device.draft('make it red', [{ name: 'red.png', data: PNG }])
     const busy = await device.send(refused)
     expect([busy.status, await busy.json()]).toEqual([423, { error: 'The agent is still working on the last message.' }])
-    // The refusal retired its revision, so the picture copied for it leaves the project.
-    expect(existsSync(join(projects, project, 'refs', `draft-${refused}`))).toBe(false)
     writeFileSync(join(projects, project, 'go'), '')
     await settled(app, project, 'answered by faux-a')
     // The refusal retired its revision, so a replay that arrives once the agent is idle sends nothing.
@@ -532,7 +527,7 @@ describe('a paired device', () => {
     await app.quit()
   }, 60_000)
 
-  test('a refused send removes only the copies it made, and leaves the files it found in the project', async () => {
+  test('a refused send deletes no file it found in the project', async () => {
     const { app, base, projects } = await start(forwarding)
     const project = await chat(app)
     const { token } = await pair(app, base)
@@ -545,7 +540,6 @@ describe('a paired device', () => {
       writeFileSync(join(refs, `draft-${rev}`, name), 'made by the person')
     }
 
-    // A text-only send copies nothing, so its refusal removes nothing.
     const text = await device.draft('make it red')
     found(text, 'keep.txt')
     expect((await device.send(text)).status).toBe(423)
@@ -554,7 +548,6 @@ describe('a paired device', () => {
     const photo = await device.draft('make it blue', [{ name: 'blue.png', data: PNG }])
     found(photo, 'beside.txt')
     expect((await device.send(photo)).status).toBe(423)
-    expect(existsSync(join(refs, `draft-${photo}`, 'blue.png'))).toBe(false)
     expect(existsSync(join(refs, `draft-${photo}`, 'beside.txt'))).toBe(true)
 
     writeFileSync(join(projects, project, 'go'), '')

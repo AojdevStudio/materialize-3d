@@ -17,7 +17,7 @@ import { type Chats, inside, SendRefused } from './chat'
 import { skipped } from './folder'
 import type { Logins } from './inference'
 import { model, offeredModels, saveRoles } from './methods'
-import { removeAttachments, savePicture } from './pictures'
+import { savePicture } from './pictures'
 import type { Computer, MobileChat, MobilePairing, ModelFile, PairedDevice, SidecarEvent } from './protocol'
 import { deviceDraft, DraftChanged, type Store } from './store'
 
@@ -368,8 +368,6 @@ export class Mobile {
             // These leave the draft in place, so a replay could send it once the agent is idle or the role changes. Settle
             // it first: a replay that already went out is the answer, and otherwise the revision is retired.
             if (await chats.settle(found.id, key, rev)) return json({ project: found })
-            // The revision is retired and no message holds it, so the files this send copied for it leave the project.
-            removeAttachments(join(store.projectsDir, found.id), error.made)
             throw new Refused(error.reason === 'retired' ? 422 : 423, error.message)
           }
         },
