@@ -258,8 +258,15 @@ export class Store {
       const now = await tx.doc(SettingsDoc, id)
       for (const project of projects.projects) {
         if (project.helper === undefined) Object.assign(project, carried(now, project.model))
+        if (project.roles !== undefined) continue
+        // Before each chat had its own helper control, the Astra switch decided whether any chat ran its helper (#350).
+        // A chat the switch kept from its helper goes on with none, as it ran, and a retired helper no longer holds it.
+        if (!now.astra) {
+          project.helper = null
+          project.retired = (project.retired ?? []).filter((r) => r.role !== 'helper')
+        }
         // Roles saved before they had revisions start at 0, so the next save of them is newer.
-        project.roles ??= 0
+        project.roles = 0
       }
     }, context)
   }

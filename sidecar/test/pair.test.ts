@@ -397,9 +397,9 @@ describe('a helper call that runs', () => {
 
 describe('chats from before pairs', () => {
   /** A store whose settings and one project are as an app before pairs left them. */
-  async function before(where: Where, astra: boolean, model: ModelChoice | undefined) {
+  async function before(where: Where, astra: boolean, model: ModelChoice | undefined, helper?: ModelChoice | null) {
     const old = await openStore(where)
-    const ProjectsBeforePairs = defineDoc<{ projects: (Omit<Project, 'model' | 'helper' | 'roles'> & { model?: ModelChoice })[] }>({
+    const ProjectsBeforePairs = defineDoc<{ projects: (Omit<Project, 'model' | 'helper' | 'roles'> & { model?: ModelChoice; helper?: ModelChoice | null })[] }>({
       kind: 'm3d.projects',
       version: 1,
       scope: 'conversation',
@@ -411,7 +411,7 @@ describe('chats from before pairs', () => {
     await old.setSettings({ astra, model: FAUX_A })
     await old.harness.commit(async (tx) => {
       const index = await tx.doc(ProjectsBeforePairs, old.root.id)
-      index.projects.push({ id: 'old', conversation: 1, title: 'Old', createdMs: 0, ...(model === undefined ? {} : { model }) })
+      index.projects.push({ id: 'old', conversation: 1, title: 'Old', createdMs: 0, ...(model === undefined ? {} : { model }), ...(helper === undefined ? {} : { helper }) })
     }, BACKGROUND_CONTEXT)
     await old.close()
   }
@@ -457,6 +457,20 @@ describe('chats from before pairs', () => {
     await second.quit()
   })
 
+  test('from before each chat had its own helper control, keep only the helper the Astra switch let them run', async () => {
+    for (const [astra, runs] of [
+      [true, ASTRA],
+      [false, null],
+    ] as const) {
+      const where = scratch()
+      await before(where, astra, FAUX_A, ASTRA)
+      const app = spawnSidecar(where.data, where.projects)
+      await app.next()
+      expect(await projectIn(app, 'old')).toMatchObject({ model: FAUX_A, helper: runs, roles: 0 })
+      await app.quit()
+    }
+  })
+
   test('carry on with the lead they ran on and the helper the Astra setting gave them', async () => {
     for (const [astra, model, carried] of [
       [true, undefined, { model: FAUX_A, helper: ASTRA }],
@@ -466,7 +480,10 @@ describe('chats from before pairs', () => {
       await before(where, astra, model)
       const app = spawnSidecar(where.data, where.projects)
       await app.next()
-      expect(await projectIn(app, 'old')).toMatchObject(carried)
+      // Roles saved before they had revisions start at 0, and the first save of them makes 1.
+      expect(await projectIn(app, 'old')).toMatchObject({ ...carried, roles: 0 })
+      await app.call('projects.setHelper', { project: 'old', model: null })
+      expect(await projectIn(app, 'old')).toMatchObject({ helper: null, roles: 1 })
       await app.quit()
     }
   })
