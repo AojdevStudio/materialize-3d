@@ -24,7 +24,7 @@ import {
   type Printer,
   type Project,
   type Retired,
-  type SentPair,
+  type SentRoles,
   type Role,
   type SavedDraft,
   type Settings,
@@ -394,15 +394,16 @@ export class Store {
    * for it: the pair the turn runs with, and that draft taken away. A newer save stays, and so does every other key's.
    * `saves` counts the saves of the login of the lead's provider. A role the chat found retired is refused, with the
    * fix, and nothing changes. So is a device's send whose draft was saved again since it was read, so a send that
-   * stalled past an edit starts no job beside the edited message's. `pair` is the roles the window showed at Send, which
-   * the turn runs with, and `keep` makes them the project's roles too, as for a start screen send.
+   * stalled past an edit starts no job beside the edited message's. The turn runs with the roles `pair` carries and the
+   * project's saved ones for the rest, as saved now, and `keep` makes them the project's roles too, as for a start
+   * screen send.
    */
-  async send(tx: Tx, project: string, key: string, rev: number, pair: SentPair | undefined, keep: boolean): Promise<{ lead: ModelChoice; helper: ModelChoice | null; thinking: Thinking; saves: number }> {
+  async send(tx: Tx, project: string, key: string, rev: number, pair: SentRoles | undefined, keep: boolean): Promise<{ lead: ModelChoice; helper: ModelChoice | null; thinking: Thinking; saves: number }> {
     const { thinking } = await tx.doc(SettingsDoc, this.root.id)
     const saved = await this.#projectIn(tx, project)
-    // The pair the window showed at Send, or the saved one for a send that names none, as a phone's.
+    // Each role the send carries, a pick the window had not heard saved yet, and the saved one for each other role.
     const model = pair?.lead ?? saved.model
-    const helper = pair === undefined ? saved.helper : pair.helper
+    const helper = pair?.helper === undefined ? saved.helper : pair.helper
     // A start screen send, first or retried, is how its project's roles were chosen, so the project keeps them, and a
     // changed role lets go the retirement it held. A send in a chat leaves the saved roles to the pickers, so a pick
     // saved while this send was on its way stays.

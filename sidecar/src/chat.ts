@@ -41,7 +41,7 @@ import {
   HELPER,
   type ModelChoice,
   type Project,
-  type SentPair,
+  type SentRoles,
   type ProjectStatus,
   type SidecarEvent,
   START,
@@ -431,13 +431,13 @@ export class Chats {
    * not made again, a message already committed as `draft-<rev>` is not sent again, and the files are copied once.
    * The message, the settings its turn runs with, and the removal of the draft commit together. Only that revision's
    * content goes out. A draft saved after it is the next message and stays, even one that reads the same. A project
-   * the start screen makes gets the pair the window showed at Send, or the defaults for a send that names none.
+   * the start screen makes gets the roles the send carries, and the default lead and helper for a role it leaves out.
    */
-  async send(key: string, rev: number, to = key, pair?: SentPair): Promise<Project> {
+  async send(key: string, rev: number, to = key, pair?: SentRoles): Promise<Project> {
     const { store, extension, tools, version, busy } = this.#o
     // A start screen send goes out as the draft its project took, even if the project's draft changed since, as after a
     // crash before the message. Any other send goes out as its draft, only while that is still this revision.
-    const started = key === START ? await store.startProject(rev, pair?.lead, pair === undefined ? await this.#newHelper() : pair.helper) : undefined
+    const started = key === START ? await store.startProject(rev, pair?.lead, pair?.helper === undefined ? await this.#newHelper() : pair.helper) : undefined
     const project = started?.project ?? (await store.project(to))
     const saved = started === undefined ? key : project.id
     const conversation = await this.#conversation(project.id)

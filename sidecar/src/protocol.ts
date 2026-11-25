@@ -13,10 +13,11 @@ export type ModelChoice = { provider: string; modelId: string }
 export type Role = 'lead' | 'helper'
 
 /**
- * The roles a send carries: the lead and helper the window showed when Send was pressed, which its turn freezes. A
- * window's send always carries both, so the sidecar picks no default for it.
+ * The roles a send carries, which its turn runs with: in a chat, only the roles picked in the window whose save it has
+ * not heard back from yet, and from the start screen, the helper it shows and a lead picked there. A role left out runs
+ * as the sidecar saved it when it takes the send, so a role saved where the window did not hear of it still counts.
  */
-export type SentPair = { lead: ModelChoice; helper: ModelChoice | null }
+export type SentRoles = { lead?: ModelChoice; helper?: ModelChoice | null }
 
 /**
  * A model version a provider reported removed while a chat ran it, the role it held there, and the newest version of its
@@ -317,9 +318,10 @@ export interface Methods {
   /**
    * Sends the draft saved as revision `rev` under `key`, and answers the project it went to. From the start screen it
    * makes that project first. Sent again with the same revision, as after a lost answer, it sends nothing more and
-   * answers the same project. `pair` is the roles the window showed when Send was pressed, which the turn runs with.
+   * answers the same project. `pair` is the roles the window carries, which the turn runs with, and the saved ones
+   * for the rest.
    */
-  'chat.send': { params: { key: string; rev: number; pair?: SentPair }; result: { project: Project } }
+  'chat.send': { params: { key: string; rev: number; pair?: SentRoles }; result: { project: Project } }
   'chat.stop': { params: { project: string }; result: null }
   'chat.retry': { params: { project: string }; result: null }
   /** The newest version of each model family, for the providers the person signed in to. Both roles offer this list. */

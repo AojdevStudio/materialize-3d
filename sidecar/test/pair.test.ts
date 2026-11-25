@@ -179,6 +179,32 @@ describe('a new chat', () => {
   })
 })
 
+// A send carries only the roles picked in the window whose save it had not heard back from, and runs every other role
+// as the sidecar saved it when it takes the send. Saved roles a phone changed, or that a lost event or answer kept from
+// the window, count even across a restart.
+describe('a chat send runs its pending picks and the saved roles', () => {
+  const rows = [false, true].flatMap((picked) =>
+    [false, true].flatMap((changed) => [false, true].map((restart) => ({ picked, changed, restart }))),
+  )
+  test.each(rows)('picked $picked, saved roles changed elsewhere $changed, restart between $restart', async ({ picked, changed, restart }) => {
+    const where = scratch()
+    let app = await start(where, 'models')
+    const id = await project(app, FAUX_A, FAUX_A)
+    await answered(app, id, 'made')
+    // A phone saves no helper, and the window never hears of it.
+    if (changed) await app.call('projects.setHelper', { project: id, model: null })
+    if (restart) {
+      await app.quit()
+      app = await start(where, 'models')
+    }
+    const { rev } = (await app.call('drafts.set', { key: id, text: 'which model?', attachments: [] })) as { rev: number }
+    await app.call('chat.send', { key: id, rev, pair: picked ? { helper: FAUX_B } : {} })
+    await answered(app, id, 'answered by faux-a')
+    expect((await view(app, id)).turn).toMatchObject({ model: FAUX_A, helper: picked ? FAUX_B : changed ? null : FAUX_A })
+    await app.quit()
+  }, 60_000)
+})
+
 describe('a pair', () => {
   test('with no helper, the lead works alone and is not offered the helper tool', async () => {
     const where = scratch()
