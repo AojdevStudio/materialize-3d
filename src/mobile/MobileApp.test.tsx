@@ -751,6 +751,31 @@ describe('MobileApp', () => {
       await waitFor(() => expect(reads).toHaveLength(1))
     })
 
+    it('keeps a reconnect read that worked when a later read from going back to the list fails', async () => {
+      const held: string[] = []
+      const failLists = { next: 0 }
+      const { answerNext } = computerWithRoles(held, () => false, failLists)
+      await openBracket()
+      fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'Make it thicker' } })
+      const send = () => screen.getByRole('button', { name: 'Send' }) as HTMLButtonElement
+      await waitFor(() => expect(send().disabled).toBe(false))
+
+      // The link drops and comes back with the chat open, and its list read waits. The person goes back to the list,
+      // which reads again. The reconnect's read answers, then the later one fails.
+      held.push('/chats')
+      await linkIs({ kind: 'offline', detail: 'The computer did not answer.' })
+      await linkIs({ kind: 'connected' })
+      fireEvent.click(screen.getByRole('button', { name: 'Chats' }))
+      await act(async () => answerNext())
+      held.length = 0
+      failLists.next = 1
+      await act(async () => answerNext())
+      await act(() => new Promise((resolve) => setTimeout(resolve, 50)))
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Shelf bracket' }))
+      await waitFor(() => expect(send().disabled).toBe(false))
+    })
+
     it('turns Send off within the event itself, so a tap queued right behind it sends nothing', async () => {
       computerWithRoles()
       await openBracket()

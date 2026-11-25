@@ -207,6 +207,8 @@ function Paired({ computer, onForget }: { computer: Computer; onForget: () => Pr
   const required = useRef(false)
   const hold = (held: boolean) => {
     required.current = held
+    // A read begun before a hold cannot know what made it, so only a read begun after it may let Send go.
+    if (held) heldAt.current = lists.current
     setUnsure(held)
   }
   /** Set the moment the person taps Forget. From then on the old pairing opens no chat, keeps no list, and hears no chat event. */
@@ -223,8 +225,12 @@ function Paired({ computer, onForget }: { computer: Computer; onForget: () => Pr
   const writes = useRef({ started: 0, finished: 0 })
   /** Counts Forget taps. A write waiting when one came never goes out, even if that Forget then fails. */
   const forgets = useRef(0)
-  /** The newest list read. An older one that answers late is dropped. */
+  /** Counts list reads. Each read takes the next number. */
   const lists = useRef(0)
+  /** The newest read whose answer was taken. An older one that answers later is dropped. */
+  const applied = useRef(0)
+  /** The number of the last read begun before the latest hold. Its answer and those before it are dropped. */
+  const heldAt = useRef(0)
   /** Whether the link is up, for the link handler and a list read's answer to see. */
   const connected = useRef(false)
 
@@ -284,7 +290,9 @@ function Paired({ computer, onForget }: { computer: Computer; onForget: () => Pr
     const quiet = writes.current.finished === before
     remoteJson<MobileChat[]>(api('/chats')).then(
       (listed) => {
-        if (request !== lists.current || !quiet || writes.current.started !== before || closing.current) return
+        // A newer read that failed does not drop this answer, but one that succeeded does, and so does a hold since.
+        if (request <= applied.current || request <= heldAt.current || !quiet || writes.current.started !== before || closing.current) return
+        applied.current = request
         // The pairs and the release of Send land in one render, so Send never lets go while the old pairs show.
         flushSync(() => {
           setChats(listed)
