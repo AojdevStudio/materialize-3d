@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, renameSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { handlers, type Services } from '../src/methods'
@@ -432,6 +432,29 @@ describe('a paired device', () => {
     const refs = join(projects, project, 'refs')
     expect(existsSync(join(refs, `draft-${first}`))).toBe(false)
     expect(existsSync(join(refs, `draft-${second}`, 'clip.png'))).toBe(true)
+    await app.quit()
+  }, 60_000)
+
+  test('keeps a file put in place of a copied picture while the send waited, when that send is refused', async () => {
+    const { stall, hold, stalled } = stalling()
+    const { app, base, projects } = await start(forwarding, {}, { hold })
+    const project = await chat(app)
+    const { token } = await pair(app, base)
+    const device = phone(base, token, project)
+
+    const rev = await device.draft('Make it 2 mm thicker', [{ name: 'clip.png', data: PNG }])
+    stall.held = true
+    const sending = device.send(rev)
+    const release = await stalled()
+    // Someone puts their own file where the send copied its picture, while the send waits for its pass.
+    const copy = join(projects, project, 'refs', `draft-${rev}`, 'clip.png')
+    rmSync(copy)
+    writeFileSync(copy, 'theirs')
+    expect(await device.settle(rev)).toEqual({ accepted: false })
+    release()
+
+    expect((await sending).status).toBe(409)
+    expect(readFileSync(copy, 'utf8')).toBe('theirs')
     await app.quit()
   }, 60_000)
 

@@ -4,7 +4,7 @@
  * at start removes it.
  */
 import { constants, existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, rmdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { copyFile, rename } from 'node:fs/promises'
+import { copyFile, link, rm } from 'node:fs/promises'
 import { basename, join, relative } from 'node:path'
 import { leaves } from './agent'
 import type { Draft } from './protocol'
@@ -38,16 +38,19 @@ export function sweepPictures(pictures: string, kept: readonly Draft[]): void {
   }
 }
 
-/** What one `copyAttachments` call made in `refs/draft-<rev>`: the files it wrote, by name, and whether it made the folder. */
-export type Made = { rev: number; names: string[]; folder: boolean }
+/**
+ * What one `copyAttachments` call made in `refs/draft-<rev>`: each file it wrote, by name with the inode it got, and
+ * whether it made the folder. The inode tells a file this call wrote from one put there in its place since.
+ */
+export type Made = { rev: number; files: { name: string; ino: bigint }[]; folder: boolean }
 
 /**
  * Copies a draft's files into the project, as `refs/draft-<rev>/<name>`, and answers those paths and what this call
- * made. Each copy is written beside its place and then renamed into it, so a send of the same revision again, as after
+ * made. Each copy is written beside its place and then linked into it, so a send of the same revision again, as after
  * a crash or a refused send, finds every finished copy and makes no second one.
  */
 export async function copyAttachments(folder: string, rev: number, sources: string[]): Promise<{ copied: string[]; made: Made }> {
-  const made: Made = { rev, names: [], folder: false }
+  const made: Made = { rev, files: [], folder: false }
   if (sources.length === 0) return { copied: [], made }
   const rel = join('refs', sendName(rev))
   const dir = join(folder, rel)
@@ -83,8 +86,16 @@ export async function copyAttachments(folder: string, rev: number, sources: stri
       // Its name holds no file name, which can already be as long as a name may be.
       const part = join(dir, `.${crypto.randomUUID()}.part`)
       await copyFile(source, part, constants.COPYFILE_EXCL)
-      await rename(part, target)
-      made.names.push(name)
+      // A link fails when the name is taken, so of two sends of one revision at once, only the first owns the copy.
+      const linked = await link(part, target).then(
+        () => true,
+        (error: unknown) => {
+          if (error instanceof Error && 'code' in error && error.code === 'EEXIST') return false
+          throw error
+        },
+      )
+      await rm(part, { force: true })
+      if (linked) made.files.push({ name, ino: lstatSync(target, { bigint: true }).ino })
     }
     copied.push(join(rel, name))
   }
@@ -92,12 +103,16 @@ export async function copyAttachments(folder: string, rev: number, sources: stri
 }
 
 /**
- * Removes what one `copyAttachments` call made for a revision that never goes out: its files, then its folder once
- * that is empty. A file it found there stays. A folder that leads outside the project is left alone.
+ * Removes what one `copyAttachments` call made for a revision that never goes out: each file it wrote that is still
+ * that file, then its folder once that is empty. A file it found there, or one put in its place since, stays. A folder
+ * that leads outside the project is left alone.
  */
-export function removeAttachments(folder: string, { rev, names, folder: madeFolder }: Made): void {
+export function removeAttachments(folder: string, { rev, files, folder: madeFolder }: Made): void {
   const dir = join(folder, 'refs', sendName(rev))
-  if (names.length === 0 || !existsSync(dir) || leaves(relative(realpathSync.native(folder), realpathSync.native(dir)))) return
-  for (const name of names) rmSync(join(dir, name), { force: true })
+  if (files.length === 0 || !existsSync(dir) || leaves(relative(realpathSync.native(folder), realpathSync.native(dir)))) return
+  for (const { name, ino } of files) {
+    const path = join(dir, name)
+    if (lstatSync(path, { bigint: true, throwIfNoEntry: false })?.ino === ino) rmSync(path, { force: true })
+  }
   if (madeFolder && readdirSync(dir).length === 0) rmdirSync(dir)
 }
