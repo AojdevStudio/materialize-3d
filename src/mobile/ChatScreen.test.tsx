@@ -14,7 +14,7 @@ import { Sender } from './outbox'
 /** The paired session a chat screen runs in, with the computer reachable and this chat's own outbox. */
 const session = (): Session => {
   const sender = new Sender('bracket', 'connected', () => {})
-  return { link: 'connected', sends: 0, listen: () => () => {}, sender: () => sender }
+  return { link: 'connected', sends: 0, reconnects: 0, listen: () => () => {}, sender: () => sender }
 }
 
 const ASTRA = { provider: 'openai-codex', modelId: 'gpt-6-astra' }
@@ -78,7 +78,7 @@ describe('ChatScreen', () => {
     const sender = new Sender('bracket', 'offline', () => {})
     sender.setRunning(true, 5)
     render(
-      <SessionContext.Provider value={{ link: 'offline', sends: 0, listen: () => () => {}, sender: () => sender }}>
+      <SessionContext.Provider value={{ link: 'offline', sends: 0, reconnects: 0, listen: () => () => {}, sender: () => sender }}>
         <ChatScreen chat={chat} writing={false} confirmed={() => true} onPick={() => {}} onBack={() => {}} />
       </SessionContext.Provider>,
     )
@@ -96,7 +96,7 @@ describe('ChatScreen', () => {
     screenSize.tablet = false
     const heard: ((change: ChatView) => void)[] = []
     const sender = new Sender('bracket', 'connected', () => {})
-    const live: Session = { link: 'connected', sends: 0, listen: (hear) => (heard.push(hear), () => {}), sender: () => sender }
+    const live: Session = { link: 'connected', sends: 0, reconnects: 0, listen: (hear) => (heard.push(hear), () => {}), sender: () => sender }
     render(
       <SessionContext.Provider value={live}>
         <ChatScreen chat={chat} writing={false} confirmed={() => true} onPick={() => {}} onBack={() => {}} />

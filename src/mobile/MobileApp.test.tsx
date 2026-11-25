@@ -718,6 +718,39 @@ describe('MobileApp', () => {
       expect(log.filter((write) => write.startsWith('PUT /chats/bracket/draft') || write.startsWith('POST /chats/bracket/send'))).toEqual([])
     })
 
+    it('reads nothing on opening a chat, so no extra read drops a reconnect’s', async () => {
+      computerWithRoles()
+      await openBracket()
+      fireEvent.click(screen.getByRole('button', { name: 'Chats' }))
+      await screen.findByRole('button', { name: 'Shelf bracket' })
+      const reads: string[] = []
+      const answer = globalThis.fetch
+      vi.stubGlobal('fetch', (url: string, init?: RequestInit) => {
+        if (url.endsWith('/api/v1/chats')) reads.push(url)
+        return answer(url, init)
+      })
+      fireEvent.click(screen.getByRole('button', { name: 'Shelf bracket' }))
+      await screen.findByTestId('model-picker')
+      await act(() => new Promise((resolve) => setTimeout(resolve, 50)))
+      expect(reads).toEqual([])
+    })
+
+    it('reads the open chat again after a drop and reconnect that reach the screen together', async () => {
+      computerWithRoles()
+      await openBracket()
+      const reads: string[] = []
+      const answer = globalThis.fetch
+      vi.stubGlobal('fetch', (url: string, init?: RequestInit) => {
+        if (url.endsWith('/api/v1/chats/bracket')) reads.push(url)
+        return answer(url, init)
+      })
+      await act(async () => {
+        stream.heard?.({ kind: 'offline', detail: 'The computer did not answer.' })
+        stream.heard?.({ kind: 'connected' })
+      })
+      await waitFor(() => expect(reads).toHaveLength(1))
+    })
+
     it('turns Send off within the event itself, so a tap queued right behind it sends nothing', async () => {
       computerWithRoles()
       await openBracket()

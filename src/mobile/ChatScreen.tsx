@@ -79,7 +79,7 @@ export default function ChatScreen({
   onPick: (change: Partial<Roles>) => void
   onBack: () => void
 }) {
-  const { link, sends, listen, sender: senderOf } = useSession()
+  const { link, sends, reconnects, listen, sender: senderOf } = useSession()
   const sender = senderOf(chat.id)
   const outbox = useSyncExternalStore(sender.subscribe, sender.outbox)
   const kept = useSyncExternalStore(sender.subscribe, sender.saved)
@@ -170,7 +170,7 @@ export default function ChatScreen({
     return () => {
       current = false
     }
-  }, [chat.id, link, sends, tries])
+  }, [chat.id, link, sends, reconnects, tries])
 
   useEffect(() => {
     if (link !== 'connected') return
@@ -186,7 +186,7 @@ export default function ChatScreen({
     return () => {
       current = false
     }
-  }, [chat.id, link, sends, tries, ended])
+  }, [chat.id, link, sends, reconnects, tries, ended])
 
   const items = useMemo(() => buildChat(view?.entries ?? [], view === null || running, view?.handoffs ?? []), [view, running])
   // What the chat shows, in the measure the chat follows its newest line by: its items, their lines (a trace's steps,

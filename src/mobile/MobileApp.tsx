@@ -195,6 +195,7 @@ function Paired({ computer, onForget }: { computer: Computer; onForget: () => Pr
   const reload = () => setLoads((n) => n + 1)
   const [link, setLink] = useState<Link>('connecting')
   const [sends, setSends] = useState(0)
+  const [reconnects, setReconnects] = useState(0)
   const [writing, setWriting] = useState(0)
   /**
    * True from the start of each write, and from the moment the link comes up, until a list read after them shows the
@@ -238,6 +239,7 @@ function Paired({ computer, onForget }: { computer: Computer; onForget: () => Pr
           hold(true)
           connected.current = true
           setError(null)
+          setReconnects((n) => n + 1)
           refresh()
         }
         return setLink('connected')
@@ -264,9 +266,11 @@ function Paired({ computer, onForget }: { computer: Computer; onForget: () => Pr
     }).catch((err) => setError(errorText(err)))
   }, [computer.id])
 
+  // Each sender hears each reconnect too, so a send left unconfirmed is settled even when the drop and the return
+  // reached the screen together.
   useEffect(() => {
     for (const sender of senders.current.values()) sender.link(link)
-  }, [link])
+  }, [link, reconnects])
 
   // The list reads the computer again each time it shows, after a chat or Refresh, so a chat made on the computer
   // meanwhile appears. While the computer is away, the list from the last read stands, and the link says why it is not
@@ -304,12 +308,15 @@ function Paired({ computer, onForget }: { computer: Computer; onForget: () => Pr
     )
   }
 
-  // Read at once and on each return to the list. Each time the link comes up, the reconnect reads the list itself, so
-  // a list that failed while the computer was away comes back, with one read only.
+  // Read at once and on each return to the list, not on opening a chat, whose extra read would drop a reconnect's.
+  // Each time the link comes up, the reconnect reads the list itself, so a list that failed while the computer was
+  // away comes back, with one read only.
+  const onList = openId === null
   useEffect(() => {
+    if (!onList) return
     setError(null)
     refresh()
-  }, [computer.id, loads, openId === null])
+  }, [computer.id, loads, onList])
 
   const write: Write = (work) => {
     writes.current.started += 1
@@ -347,6 +354,7 @@ function Paired({ computer, onForget }: { computer: Computer; onForget: () => Pr
     () => ({
       link,
       sends,
+      reconnects,
       listen,
       sender: (project) => {
         let sender = senders.current.get(project)
@@ -359,7 +367,7 @@ function Paired({ computer, onForget }: { computer: Computer; onForget: () => Pr
         return sender
       },
     }),
-    [link, sends, listen],
+    [link, sends, reconnects, listen],
   )
 
   // Every sender pauses before anything waits, so nothing goes to the computer. Its draft writes already queued land
