@@ -162,9 +162,9 @@ export function createDrafts(clock: Clock, onSent: (project: Project) => void) {
 
   /**
    * Sends the open screen's draft by its revision: saved first if it changed, and a save that fails ends the send. The
-   * sidecar makes the project for a first message, copies the pictures, and removes the draft it sent. From the start
-   * screen, `pair` names the helper that project gets only when the person picked one. `pair` is the roles shown when
-   * Send was pressed, which the turn runs with. Answers the project the message went to, or undefined when it did not go.
+   * sidecar makes the project for a first message, copies the pictures, and removes the draft it sent. `pair` is the
+   * roles shown when Send was pressed, which the turn runs with, and which a project made from the start screen keeps.
+   * Answers the project the message went to, or undefined when it did not go.
    */
   const send = async (pair?: SentPair): Promise<Project | undefined> => {
     const key = openKey()
@@ -312,9 +312,10 @@ export function createDrafts(clock: Clock, onSent: (project: Project) => void) {
 
 /**
  * The window's drafts while it is open, with what the open screen's composer shows. It starts the window's store, and
- * `onStarted` hears the saved state once the drafts took it. Both callbacks are taken once.
+ * `onStarted` hears the saved state once the drafts took it. A quit saves the drafts once `pending`, the other saves
+ * still on their way, went through. The callbacks are taken once.
  */
-export function useDrafts({ onSent, onStarted }: { onSent: (project: Project) => void; onStarted: (saved: AppState) => void }) {
+export function useDrafts({ onSent, onStarted, pending }: { onSent: (project: Project) => void; onStarted: (saved: AppState) => void; pending: () => Promise<unknown> }) {
   const [drafts] = useState(() => createDrafts(windowClock, onSent))
   useEffect(() => {
     void start()
@@ -325,7 +326,7 @@ export function useDrafts({ onSent, onStarted }: { onSent: (project: Project) =>
       .catch((err: unknown) => setError(String(err)))
   }, [drafts])
   useEffect(() => drafts.close, [drafts])
-  useEffect(() => onQuitFlush(drafts.quit).stop, [drafts])
+  useEffect(() => onQuitFlush(() => pending().then(drafts.quit)).stop, [drafts])
   // Files dropped anywhere on the window join the next message, as Attach adds them.
   useEffect(() => onFileDrop(drafts.attach).stop, [drafts])
   return { drafts, ...useStore(drafts.state) }

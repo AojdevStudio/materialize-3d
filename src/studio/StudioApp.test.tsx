@@ -977,7 +977,7 @@ describe('StudioApp', () => {
     fireEvent.click(screen.getByTestId('send'))
     await waitFor(() => expect(sends()).toHaveLength(1))
     expect(last(saves())).toEqual({ key: 'new', text: 'A clip', attachments: ['/Users/me/a.jpg'] })
-    expect(sends()).toEqual([{ key: 'new', rev: draftRevs, pair: { lead: { provider: 'anthropic', modelId: 'claude-opus-5-5' } } }])
+    expect(sends()).toEqual([{ key: 'new', rev: draftRevs, pair: { lead: { provider: 'anthropic', modelId: 'claude-opus-5-5' }, helper: null } }])
   })
 
   it("starts the start screen's helper at the newest Astra, sends its pick with the first message only, and saves a project's own pick", async () => {
@@ -1011,20 +1011,35 @@ describe('StudioApp', () => {
     expect(helper().textContent).toBe('Astra')
   })
 
-  it('leaves the start helper to the sidecar until the person picks one, as before the model list arrives', async () => {
+  it('keeps Send off on the start screen until the model list arrives, as the helper it shows comes from it', async () => {
     let answerModels: () => void = () => {}
-    mockSidecar({
-      'state.get': (_, real) => real().then((state) => ({ ...(state as AppState), settings: { ...(state as AppState).settings, astra: true } })),
-      'models.list': () => new Promise((resolve) => (answerModels = () => resolve([...models, { provider: 'openai-codex', modelId: 'gpt-6-astra', name: 'Astra' }]))),
-    })
+    mockSidecar({ 'models.list': () => new Promise((resolve) => (answerModels = () => resolve(models))) })
     render(<StudioApp />)
     await screen.findByText('Engine 1.2.3')
+    type('A clip')
+    await pause(50)
+    expect((screen.getByTestId('send') as HTMLButtonElement).disabled).toBe(true)
+    await act(async () => answerModels())
+    await waitFor(() => expect((screen.getByTestId('send') as HTMLButtonElement).disabled).toBe(false))
+  })
+
+  // A start screen send carries the helper it shows, picked or the default, so the sidecar picks none for it: a change
+  // of the Astra setting after Send cannot change the turn.
+  it.each([
+    { shown: 'Astra', astra: true, helper: { provider: 'openai-codex', modelId: 'gpt-6-astra' } },
+    { shown: 'None', astra: false, helper: null },
+  ])('sends the default helper the start screen shows: $shown', async ({ shown, astra, helper }) => {
+    mockSidecar({
+      'state.get': (_, real) => real().then((state) => ({ ...(state as AppState), settings: { ...(state as AppState).settings, astra } })),
+      'models.list': () => Promise.resolve([...models, { provider: 'openai-codex', modelId: 'gpt-6-astra', name: 'Astra' }]),
+    })
+    render(<StudioApp />)
+    await waitFor(() => expect(screen.getByTestId('helper-picker').textContent).toBe(shown))
     type('A clip')
     await waitFor(() => expect((screen.getByTestId('send') as HTMLButtonElement).disabled).toBe(false))
     fireEvent.click(screen.getByTestId('send'))
     await waitFor(() => expect(sends()).toHaveLength(1))
-    await act(async () => answerModels())
-    expect(sends()).toEqual([{ key: 'new', rev: draftRevs, pair: { lead: { provider: 'anthropic', modelId: 'claude-opus-5-5' } } }])
+    expect(sends()[0]).toMatchObject({ key: 'new', pair: { lead: { provider: 'anthropic', modelId: 'claude-opus-5-5' }, helper } })
   })
 
   // The five ways a pick and a send raced before a send carried its own roles (#373). Each now holds by construction:
@@ -1157,6 +1172,27 @@ describe('StudioApp', () => {
       await waitFor(() => expect(openTitle()).toBe('A clip'))
       fireEvent.click(screen.getByTestId('new-project'))
       expect(helper().textContent).toBe('Sonnet 5.5')
+    })
+
+    it('quits only once every pick is saved, a pick waiting behind an earlier save included', async () => {
+      let answerFirst: () => void = () => {}
+      let held = false
+      mockSidecar(
+        { 'projects.setHelper': (_, real) => (held ? real() : ((held = true), new Promise((resolve) => (answerFirst = () => resolve(real()))))) },
+        [projectA, projectB],
+      )
+      render(<StudioApp />)
+      await openA()
+      pickHelper('Sonnet 5.5')
+      pickHelper('No helper')
+      await waitFor(() => expect(sidecarCalls('projects.setHelper')).toHaveLength(1))
+      await act(async () => listeners.flush.forEach((listener) => listener({ payload: null })))
+      await pause(50)
+      const flushed = () => invokeMock.mock.calls.some(([command]) => command === 'studio_flushed')
+      expect(flushed()).toBe(false)
+      await act(async () => answerFirst())
+      await waitFor(() => expect(flushed()).toBe(true))
+      expect(sidecarCalls('projects.setHelper').map((call) => call.model)).toEqual([sonnet, null])
     })
 
     it('leaves a message already on its way alone when a role is picked after Send', async () => {
@@ -1524,7 +1560,7 @@ describe('StudioApp', () => {
     fireEvent.click(screen.getByTestId('send'))
     await waitFor(() => expect(sends()).toHaveLength(1))
     expect(last(saves())).toEqual({ key: 'new', text: 'Make this', attachments: files })
-    expect(sends()).toEqual([{ key: 'new', rev: draftRevs, pair: { lead: { provider: 'anthropic', modelId: 'claude-opus-5-5' } } }])
+    expect(sends()).toEqual([{ key: 'new', rev: draftRevs, pair: { lead: { provider: 'anthropic', modelId: 'claude-opus-5-5' }, helper: null } }])
   })
 
   it("lists the signed-in providers' models with their marks, and keeps each project's pick", async () => {

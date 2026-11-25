@@ -75,9 +75,16 @@ export default function StudioApp() {
   const takeProjects = (state: AppState) =>
     setProjects((made) => [...made.filter((p) => !state.projects.some((saved) => saved.id === p.id)), ...state.projects])
 
+  /**
+   * The saves of the role picks, one after another in the order they were made, so two picks of one role land in that
+   * order. A quit waits for them.
+   */
+  const saves = useRef<Promise<unknown>>(Promise.resolve())
+
   const { drafts, shown, attachments, sending, sendErrors } = useDrafts({
     onSent: (project) => setProjects((prev) => (prev.some((p) => p.id === project.id) ? prev : [project, ...prev])),
     onStarted: takeProjects,
+    pending: () => saves.current,
   })
 
   const retryImport = () => {
@@ -119,15 +126,14 @@ export default function StudioApp() {
   const nextWaitsForLogin = turnLogin !== undefined && turnLogin.provider === chosenModel?.provider
   const blocker: Blocker | undefined = needs?.[0] ?? (nextWaitsForLogin ? turnLogin : undefined)
   const cause: SetupCause | undefined = blocker ?? turnLogin ?? (slicerFound === false && !wentOnInSetup ? { kind: 'slicer' } : undefined)
-  // Send waits for the saved state, which says whether setup is done, and for the check.
-  const notReady = setup?.done !== true || needs === null || blocker !== undefined
+  // Send waits for the saved state, which says whether setup is done, and for the check. On the start screen it also
+  // waits for the model list, as the helper shown there comes from it, and a send carries the roles shown.
+  const notReady = setup?.done !== true || needs === null || blocker !== undefined || (!current && models.length === 0)
 
   /**
-   * Shows a pick at once and saves it in the background. The saves of all picks go out one after another, in the order
-   * they were made, so two picks of one role land in that order. A send never waits for them: it carries the roles
-   * shown when Send was pressed (#373).
+   * Shows a pick at once and saves it in the background, after the saves of earlier picks. A send never waits for
+   * them: it carries the roles shown when Send was pressed (#373).
    */
-  const saves = useRef<Promise<unknown>>(Promise.resolve())
   const pickCount = useRef(0)
   const pickRole = (key: string, role: keyof ShownPicks, model: ModelChoice | null, save: () => Promise<unknown>) => {
     pickCount.current += 1
@@ -175,12 +181,11 @@ export default function StudioApp() {
       onRemove={(index) => drafts.remove(attachments[index], index)}
       onSend={() => {
         if (running || notReady || chosenModel === null) return
-        // The send carries the roles shown now, whatever saves are still on their way. On the start screen only a
-        // helper the person picked goes with it: without one the sidecar gives the default, which the window may not
-        // know yet, as before the model list arrives.
-        if (current) void drafts.send({ lead: chosenModel, helper: chosenHelper })
+        // The send carries the roles shown now, whatever saves are still on their way, and a setting changed later.
+        const pair = { lead: chosenModel, helper: chosenHelper }
+        if (current) void drafts.send(pair)
         else
-          void drafts.send({ lead: chosenModel, ...(startHelper === null ? {} : { helper: startHelper.pick }) }).then((project) => {
+          void drafts.send(pair).then((project) => {
             // A helper picked while this send was on its way is the next chat's, so only the choice it carried resets.
             if (project !== undefined) setStartHelper((now) => (now === startHelper ? null : now))
           })
