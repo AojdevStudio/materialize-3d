@@ -20,6 +20,18 @@ function show(chosen: ModelChoice | null = { provider: opus.provider, modelId: o
 const menu = () => screen.queryByRole('menu', { name: 'Lead models' })
 
 describe('ModelPicker', () => {
+  it('names each button by its role and model, so the same model in both roles reads apart', () => {
+    const same = { provider: sol.provider, modelId: sol.modelId }
+    render(
+      <>
+        <ModelPicker role="Lead" models={[opus, sol]} chosen={same} onPick={onPick} />
+        <ModelPicker role="Helper" models={[opus, sol]} chosen={same} onPick={() => {}} />
+      </>,
+    )
+    expect(screen.getByRole('button', { name: 'Lead: GPT 6.1 Sol' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Helper: GPT 6.1 Sol' })).toBeTruthy()
+  })
+
   it('opens on its button with the chosen model checked, and closes on a second click', () => {
     const button = show()
     expect(button.textContent).toBe('Opus 5.5')

@@ -1459,6 +1459,27 @@ describe('StudioApp', () => {
     await waitFor(() => expect(sidecarCalls('setup.check').length).toBeGreaterThan(checks))
   })
 
+  it('applies a helper picked after Send to later turns only, not to the message already on its way', async () => {
+    let answerSave: () => void = () => {}
+    let held = false
+    // Only the save Send makes is held. Later saves answer at once.
+    mockSidecar({ 'drafts.set': (_, real) => (held ? real() : ((held = true), new Promise((resolve) => (answerSave = () => resolve(real()))))) }, [projectA, projectB])
+    render(<StudioApp />)
+    fireEvent.click(await projectList().findByText('Project A'))
+    await waitFor(() => expect(openTitle()).toBe('Project A'))
+    type('A clip')
+    await waitFor(() => expect((screen.getByTestId('send') as HTMLButtonElement).disabled).toBe(false))
+    fireEvent.click(screen.getByTestId('send'))
+    // The draft's save is still on its way when the person picks a helper.
+    await waitFor(() => expect(saves()).toHaveLength(1))
+    fireEvent.click(screen.getByTestId('helper-picker'))
+    fireEvent.click(within(screen.getByRole('menu', { name: 'Helper models' })).getByText('Sonnet 5.5'))
+    await act(async () => answerSave())
+    await waitFor(() => expect(sidecarCalls('projects.setHelper')).toHaveLength(1))
+    const order = invokeMock.mock.calls.flatMap(([command, args]) => (command === 'sidecar' && ['chat.send', 'projects.setHelper'].includes(args.method) ? [args.method] : []))
+    expect(order).toEqual(['chat.send', 'projects.setHelper'])
+  })
+
   it("keeps a helper a paired phone saved after a desktop pick, when the desktop pick's reply comes late", async () => {
     let answerPick: () => void = () => {}
     // The save lands at once, and its reply waits.

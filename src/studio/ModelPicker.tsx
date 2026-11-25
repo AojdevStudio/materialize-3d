@@ -36,6 +36,7 @@ export default function ModelPicker(props: Props) {
   }
 
   useDismiss(open, box, () => setOpen(false))
+  const shownName = chosen === null ? (helper ? 'None' : 'Model') : modelName(chosen)
 
   return (
     <div className={`model-picker${helper ? ' helper-picker' : ''}`} ref={box}>
@@ -72,9 +73,11 @@ export default function ModelPicker(props: Props) {
         disabled={(chosen === null && !helper) || models.length === 0}
         onClick={() => setOpen(!open)}
         data-testid={helper ? 'helper-picker' : 'model-picker'}
+        // The role comes first in the name, so two pickers on the same model still read apart.
+        aria-label={`${role}: ${shownName}`}
       >
         {chosen !== null && <Mark modelId={chosen.modelId} />}
-        <span>{chosen === null ? (helper ? 'None' : 'Model') : modelName(chosen)}</span>
+        <span>{shownName}</span>
         <svg viewBox="0 0 16 16" width={12} height={12} aria-hidden="true">
           <path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
         </svg>
