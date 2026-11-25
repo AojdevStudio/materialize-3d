@@ -5,14 +5,16 @@ import { astraSignedIn, sameModel } from './agents'
 import { projectsFolder } from './api'
 import { agentRows, buildRows, forgetRefused, type Row, slicerRow } from './checkRows'
 import { BrandRow, Icon } from './marks'
+import Phones from './Phones'
 import { AstraSwitch, CheckGroup, ModelRow, useFound } from './setupRows'
 import { checkReady, saveSettings, useStudio } from './store'
 import chat from '../assets/icons/message-square.svg?raw'
 import layers from '../assets/icons/layers.svg?raw'
 import blocks from '../assets/icons/module-three.svg?raw'
+import smartphone from '../assets/icons/smartphone.svg?raw'
 import terminal from '../assets/icons/terminal.svg?raw'
 
-const ORDER = ['agents', 'slicer', 'tools', 'folder'] as const
+const ORDER = ['agents', 'slicer', 'tools', 'folder', 'phone'] as const
 export type Section = (typeof ORDER)[number]
 
 const SECTIONS: Record<Section, { name: string; about: string; icon: string }> = {
@@ -20,6 +22,7 @@ const SECTIONS: Record<Section, { name: string; about: string; icon: string }> =
   slicer: { name: 'Slicer and printer', about: 'What makes the print-ready 3MF, and the printer it slices for.', icon: layers },
   tools: { name: 'Build tools', about: 'What the agent builds and checks your parts with.', icon: terminal },
   folder: { name: 'Projects folder', about: 'Each project is a folder here, with its parts, guides, and print files.', icon: blocks },
+  phone: { name: 'Phone and tablet', about: 'Read and send to your chats from your iPhone or iPad, over your Tailscale network.', icon: smartphone },
 }
 
 type Props = {
@@ -143,6 +146,8 @@ export default function Settings({ section, onSection, onFix, onClose, onError, 
             )}
           </div>
         )
+      case 'phone':
+        return <Phones onError={onError} />
     }
   }
 

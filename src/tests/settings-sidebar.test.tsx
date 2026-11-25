@@ -106,7 +106,8 @@ describe('Settings sidebar', () => {
     { from: 'agents', name: 'Slicer and printer' },
     { from: 'slicer', name: 'Build tools' },
     { from: 'tools', name: 'Projects folder' },
-    { from: 'folder', name: 'Agents and models' },
+    { from: 'folder', name: 'Phone and tablet' },
+    { from: 'phone', name: 'Agents and models' },
   ] as const)('$name opens its section, and only it has the selected fill', ({ from, name }) => {
     const { main, nav } = sidebars(from)
     // A role query reads a fresh style for each button it checks, and a click throws those away. So the reference rows,
@@ -118,8 +119,8 @@ describe('Settings sidebar', () => {
     fireEvent.mouseOut(item)
     expect(screen.getByRole('region', { name })).toBeTruthy()
     const items = within(nav).getAllByRole('button')
-    // The role query leaves out hidden buttons, so all four items, the clicked one among them, must still be listed.
-    expect(items).toHaveLength(4)
+    // The role query leaves out hidden buttons, so all five items, the clicked one among them, must still be listed.
+    expect(items).toHaveLength(5)
     expect(items).toContain(item)
     expect(items.map((each) => looks(each, row))).toEqual(items.map((each) => (each === item ? open : closed)))
   })
@@ -137,7 +138,7 @@ describe('Settings sidebar', () => {
     const projectsRow = within(main).getByTestId('projects-row')
     const mainIcon = placed(projectsRow.firstElementChild as Element)
     const items = within(nav).getAllByRole('button')
-    expect(items.map((item) => item.textContent?.trim())).toEqual(['Agents and models', 'Slicer and printer', 'Build tools', 'Projects folder'])
+    expect(items.map((item) => item.textContent?.trim())).toEqual(['Agents and models', 'Slicer and printer', 'Build tools', 'Projects folder', 'Phone and tablet'])
     for (const item of items) {
       const first = item.firstElementChild as Element
       expect(item.firstChild).toBe(first)

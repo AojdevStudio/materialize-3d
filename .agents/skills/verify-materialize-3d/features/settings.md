@@ -1,6 +1,6 @@
 # Settings
 
-The gear in the sidebar footer opens Settings in place of the studio. Settings has its own nav on the left with four sections: Agents and models, Slicer and printer, Build tools, and Projects folder. It shows one section at a time. Agents and models shows each sign-in's state, the default model new projects start with, and the Astra switch. Slicer and printer shows Bambu Studio's state and the chosen printer with `Change`. Build tools shows uv and Python. Projects folder shows where projects live, with `Reveal`. A row that is not Ready has `Fix in setup`, which opens Check your Mac, as the [studio](./studio.md) banner does. `Change` opens setup's printer step. `Back` in setup returns to the same Settings section. `Close` returns to the screen Settings was opened from.
+The gear in the sidebar footer opens Settings in place of the studio. Settings has its own nav on the left with five sections: Agents and models, Slicer and printer, Build tools, Projects folder, and Phone and tablet. It shows one section at a time. Agents and models shows each sign-in's state, the default model new projects start with, and the Astra switch. Slicer and printer shows Bambu Studio's state and the chosen printer with `Change`. Build tools shows uv and Python. Projects folder shows where projects live, with `Reveal`. Phone and tablet shows a pairing code as a QR image when Tailscale Serve forwards an HTTPS address to the phone service, or else the command that sets Serve up, and the paired devices with `Forget`. A row that is not Ready has `Fix in setup`, which opens Check your Mac, as the [studio](./studio.md) banner does. `Change` opens setup's printer step. `Back` in setup returns to the same Settings section. `Close` returns to the screen Settings was opened from.
 
 ## Sub-features
 
@@ -10,6 +10,7 @@ The gear in the sidebar footer opens Settings in place of the studio. Settings h
 - `#settings-astra` is the Astra switch. It saves through `settings.set`. Without a ChatGPT sign-in it shows off, cannot change, and says `Needs a ChatGPT sign-in.`
 - `settings-printer` holds the printer preset name, its filament, process, and plate, and `Change`, which opens setup's printer step.
 - Projects folder shows the path in a `code` element. Opening it makes the folder when it is missing. `Reveal` opens the file manager at the folder.
+- Phone and tablet has `section[aria-label="Pair a device"]` and `section[aria-label="Paired devices"]`. Without Serve, the first shows the setup command in a `code` element and `Check again`. With Serve, it shows `img[alt="Pairing code"]` and `New code`. Each paired device is a `settings-device` row with `Forget`. The service and its routes are in `docs/adr/0001-mobile-service-over-tailscale-serve.md`.
 
 ## How to get to it (user POV)
 
@@ -33,6 +34,10 @@ $S/wd.ts wait '[data-testid=start-screen]'
 ```
 
 Prove a model pick saved by a relaunch: `$S/wd.ts end`, `$S/wd.ts session`, then open Settings again and read the checked radio.
+
+## Phone and tablet
+
+The sidecar's phone service listens on `127.0.0.1:47380`. On the Linux host, turn Serve on with `tailscale serve --bg --https=47380 http://127.0.0.1:47380` (the `ossie` user is the Tailscale operator there), press `Check again`, and the QR appears. `zbarimg --raw -q <shot>.png` reads its URL from a `wd.ts shot`. Pair from another tailnet node with `POST <origin>/api/v1/pair` and the code. Turn Serve off after with `tailscale serve --https=47380 off`, and check `tailscale serve status --json` shows what it showed before.
 
 ## Gotchas
 

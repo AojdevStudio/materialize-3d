@@ -26,7 +26,7 @@ The sidebar icons in `src/assets/icons/` are by Streamline (https://www.streamli
 
 The Attach icon, `src/assets/icons/attach.svg`, is Streamline's Form Edition Image Attach icon from its Freehand Color set, under the same CC BY 4.0 license. Its black parts were changed to draw in the current text color, so it shows in dark mode. Its blue stays as Streamline drew it.
 
-The run trace icons and the Settings gear in `src/assets/icons/` are by Lucide (https://lucide.dev), from lucide-static 1.70.0, under the ISC License. The terminal icon comes from Feather by Cole Bemis, under the MIT License. Both licenses are reproduced at the end of this file. The files are as Lucide ships them.
+The run trace icons, the Settings gear, and the phone icon in `src/assets/icons/` are by Lucide (https://lucide.dev), from lucide-static 1.70.0, under the ISC License. The terminal icon comes from Feather by Cole Bemis, under the MIT License. Both licenses are reproduced at the end of this file. The files are as Lucide ships them.
 
 | Icon | File |
 |---|---|
@@ -37,6 +37,7 @@ The run trace icons and the Settings gear in `src/assets/icons/` are by Lucide (
 | Message square | `src/assets/icons/message-square.svg` |
 | Circle x | `src/assets/icons/circle-x.svg` |
 | Settings | `src/assets/icons/settings.svg` |
+| Smartphone | `src/assets/icons/smartphone.svg` |
 
 ## Model marks
 
@@ -59,6 +60,8 @@ The Open in Bambu Studio button shows Bambu Lab's mark, `src/assets/icons/bambul
 ## Software dependencies
 
 The app is built from open source Rust crates and JavaScript packages, each under its own license. `src-tauri/Cargo.lock` and `bun.lock` pin the exact versions.
+
+The sidecar bundles uqr 0.1.3 (https://github.com/unjs/uqr, MIT License), which draws the pairing code's QR image. Its license text is reproduced at the end of this file.
 
 The landing site in `site/` bundles three.js (https://threejs.org, MIT License) for its 3D scroll story. `site/bun.lock` pins its version. The site ships the license text with its copyright line as `site/public/licenses/three-LICENSE.txt`, and the page footer links to it. The site's printer and dock mount models are made for this project by the scripts in `site/models/`.
 
@@ -181,6 +184,35 @@ This covers the terminal icon, which Lucide took from Feather.
 The MIT License (MIT)
 
 Copyright (c) 2013-present Cole Bemis
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+## uqr MIT License
+
+This covers uqr 0.1.3, compiled into the sidecar.
+
+```text
+MIT License
+
+Copyright (c) Project Nayuki
+Copyright (c) 2023 Anthony Fu <https://github.com/antfu>
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

@@ -20,6 +20,7 @@ import {
   type Draft,
   META_DIR,
   type ModelChoice,
+  type PairedDevice,
   type Printer,
   type Project,
   type Retired,
@@ -95,6 +96,20 @@ const DraftsDoc = defineDoc<{ drafts: Record<string, SavedDraft>; seq: number }>
   checkpointWhen: always,
 })
 
+/**
+ * The phone service's own record: `computer`, the id a paired device knows this computer by, made on first need, and
+ * each paired device with the SHA-256 hex of its token. A token itself is never kept.
+ */
+const MobileDoc = defineDoc<{ computer: string; devices: (PairedDevice & { tokenHash: string })[] }>({
+  kind: 'm3d.mobile',
+  version: 1,
+  scope: 'conversation',
+  history: 'latest',
+  fork: 'initial',
+  initial: () => ({ computer: '', devices: [] }),
+  checkpointWhen: always,
+})
+
 /** How many times each provider's login was saved, so a wait can tell a new sign-in from the one a provider refused. */
 const LoginSavesDoc = defineDoc<{ saves: Record<string, number> }>({
   kind: 'm3d.login-saves',
@@ -126,6 +141,16 @@ const holds = (draft: SavedDraft | undefined, rev: number): draft is SavedDraft 
  * files are copied to. A start screen send also keeps its project in `madeFor` under `rev`.
  */
 export const sendName = (rev: number) => `draft-${rev}`
+
+/**
+ * The draft key of a paired device's draft for a project, apart from the computer's own draft for it. No project id
+ * holds a `/`, so no device key is a project's.
+ */
+export const deviceDraft = (device: string, project: string) => `device/${device}/${project}`
+const isDeviceDraft = (key: string) => key.startsWith('device/')
+
+/** A device as the window and the phone see it, without its token's hash. */
+const shown = ({ id, name, pairedMs }: PairedDevice): PairedDevice => ({ id, name, pairedMs })
 
 export class StoreInUse extends Error {}
 
@@ -243,7 +268,18 @@ export class Store {
       context,
     )
     state.projects.sort((a, b) => b.createdMs - a.createdMs)
+    // A paired device's drafts are its own, and the window never shows them.
+    for (const key of Object.keys(state.drafts)) if (isDeviceDraft(key)) delete state.drafts[key]
     return state
+  }
+
+  /**
+   * Every draft the store holds, the paired devices' too, and the drafts start screen sends moved to their projects,
+   * which a send of the same revision again still sends.
+   */
+  async keptDrafts(): Promise<SavedDraft[]> {
+    const [drafts, index] = await Promise.all([this.harness.snapshot(DraftsDoc, this.root.id, context), this.harness.snapshot(ProjectsDoc, this.root.id, context)])
+    return [...Object.values(drafts?.drafts ?? {}), ...Object.values(index?.madeFor ?? {}).map(({ draft }) => draft)]
   }
 
   async setSetup(setup: Setup): Promise<void> {
@@ -321,12 +357,6 @@ export class Store {
     }, context)
   }
 
-  /** The drafts start screen sends moved to their projects, which a send of the same revision again still sends. */
-  async startedDrafts(): Promise<SavedDraft[]> {
-    const index = await this.harness.snapshot(ProjectsDoc, this.root.id, context)
-    return index === undefined ? [] : Object.values(index.madeFor).map(({ draft }) => draft)
-  }
-
   /** The draft saved as `rev` under `key`, a project id or `START`, while no newer save took its place. */
   async draft(key: string, rev: number): Promise<SavedDraft> {
     const draft = (await this.harness.snapshot(DraftsDoc, this.root.id, context))?.drafts[key]
@@ -335,18 +365,19 @@ export class Store {
   }
 
   /**
-   * The store's part of a send's commit, for the draft saved as `rev` under the project's id: the pair the turn runs
-   * with, and that draft taken away. A newer save stays. `saves` counts the saves of the login of the lead's provider.
-   * A role the chat found retired is refused, with the fix, and nothing changes.
+   * The store's part of a send's commit, for the draft saved as `rev` under `key`, the project's id or a device's key
+   * for it: the pair the turn runs with, and that draft taken away. A newer save stays, and so does every other key's.
+   * `saves` counts the saves of the login of the lead's provider. A role the chat found retired is refused, with the
+   * fix, and nothing changes.
    */
-  async send(tx: Tx, project: string, rev: number): Promise<{ lead: ModelChoice; helper: ModelChoice | null; thinking: Thinking; saves: number }> {
+  async send(tx: Tx, project: string, key: string, rev: number): Promise<{ lead: ModelChoice; helper: ModelChoice | null; thinking: Thinking; saves: number }> {
     const { thinking, astra } = await tx.doc(SettingsDoc, this.root.id)
     const saved = await this.#projectIn(tx, project)
     const { model, helper } = this.#gated(saved, astra)
     const [gone] = this.#retiredRoles(saved, astra)
     if (gone !== undefined) throw new Error(this.retiredFix(gone))
     const { drafts } = await tx.doc(DraftsDoc, this.root.id)
-    if (holds(drafts[project], rev)) delete drafts[project]
+    if (holds(drafts[key], rev)) delete drafts[key]
     return { lead: copy(model), helper: helper === null ? null : copy(helper), thinking, saves: await this.loginSavesIn(tx, model.provider) }
   }
 
@@ -482,24 +513,18 @@ export class Store {
     return imported
   }
 
-  /** Saves the lead the next turn of project `id` runs on. The choice lets go a lead the chat found retired. */
-  async setLead(id: string, model: ModelChoice): Promise<void> {
-    await this.harness.commit(async (tx) => {
-      const project = await this.#projectIn(tx, id)
-      project.model = copy(model)
-      project.retired = (project.retired ?? []).filter((r) => r.role !== 'lead')
-    }, context)
-  }
-
   /**
-   * Saves the helper the next turn of project `id` can hand tasks to, or null for none. The choice lets go a helper the
-   * chat found retired.
+   * Saves the roles given for the next turn of project `id`: its lead, and its helper or null for none, and answers the
+   * project. Choosing a role lets go a version the chat found retired in it, the same version included.
    */
-  async setHelper(id: string, model: ModelChoice | null): Promise<void> {
-    await this.harness.commit(async (tx) => {
+  async setRoles(id: string, { lead, helper }: { lead?: ModelChoice; helper?: ModelChoice | null }): Promise<Project> {
+    return this.harness.commit(async (tx) => {
       const project = await this.#projectIn(tx, id)
-      project.helper = model === null ? null : copy(model)
-      project.retired = (project.retired ?? []).filter((r) => r.role !== 'helper')
+      if (lead !== undefined) project.model = copy(lead)
+      if (helper !== undefined) project.helper = helper === null ? null : copy(helper)
+      project.retired = (project.retired ?? []).filter((r) => (r.role === 'lead' ? lead : helper) === undefined)
+      // A plain copy, since the documents a commit hands out are only valid inside it.
+      return JSON.parse(JSON.stringify(project))
     }, context)
   }
 
@@ -520,6 +545,46 @@ export class Store {
     mkdirSync(join(dir, META_DIR), { recursive: true })
     writeFileSync(join(dir, META_DIR, 'guide-template.html'), GUIDE_TEMPLATE)
     return dir
+  }
+
+  /** The id paired devices know this computer by, made the first time it is asked for. */
+  async computer(): Promise<string> {
+    return this.harness.commit(async (tx) => {
+      const doc = await tx.doc(MobileDoc, this.root.id)
+      if (doc.computer === '') doc.computer = crypto.randomUUID()
+      return doc.computer
+    }, context)
+  }
+
+  /** Pairs a device by the hash of its new token, and answers it. */
+  async addDevice(name: string, tokenHash: string): Promise<PairedDevice> {
+    const device: PairedDevice = { id: crypto.randomUUID(), name, pairedMs: Date.now() }
+    await this.harness.commit(async (tx) => {
+      ;(await tx.doc(MobileDoc, this.root.id)).devices.push({ ...device, tokenHash })
+    }, context)
+    return device
+  }
+
+  /** The paired devices, first paired first. */
+  async devices(): Promise<PairedDevice[]> {
+    return ((await this.harness.snapshot(MobileDoc, this.root.id, context))?.devices ?? []).map(shown)
+  }
+
+  /** The paired device whose token has this hash, or undefined when none has. */
+  async deviceFor(tokenHash: string): Promise<PairedDevice | undefined> {
+    const device = (await this.harness.snapshot(MobileDoc, this.root.id, context))?.devices.find((d) => d.tokenHash === tokenHash)
+    return device === undefined ? undefined : shown(device)
+  }
+
+  /** Forgets a paired device and its drafts, in one commit, and answers the devices left. */
+  async forgetDevice(id: string): Promise<PairedDevice[]> {
+    await this.harness.commit(async (tx) => {
+      const doc = await tx.doc(MobileDoc, this.root.id)
+      doc.devices = doc.devices.filter((device) => device.id !== id)
+      const { drafts } = await tx.doc(DraftsDoc, this.root.id)
+      for (const key of Object.keys(drafts)) if (key.startsWith(deviceDraft(id, ''))) delete drafts[key]
+    }, context)
+    return this.devices()
   }
 
   async close(): Promise<void> {
