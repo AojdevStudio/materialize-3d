@@ -382,13 +382,11 @@ function Chat({ chat, onBack }: { chat: MobileChat; onBack: () => void }) {
   useEffect(() => {
     if (view !== null) sender.setRunning(view.running)
   }, [sender, view])
-  // A turn that ends may have made a model, so the files are read again once, when it ends.
-  const ran = useRef(running)
-  const [turnsEnded, setTurnsEnded] = useState(0)
-  useEffect(() => {
-    if (ran.current && !running) setTurnsEnded((n) => n + 1)
-    ran.current = running
-  }, [running])
+  // A turn that ends may have made a model, so the files are read again for each idle view whose last entry is new.
+  // That holds however the end arrives, and the first idle view after opening reads them once more.
+  const idleAt = view?.running === false ? (view.entries[view.entries.length - 1]?.id ?? null) : null
+  const [ended, setEnded] = useState<number | null>(null)
+  if (idleAt !== null && idleAt !== ended) setEnded(idleAt)
   const [tries, setTries] = useState(0)
 
   // The chat is read whole each time the link comes up, since its changes while the link was down were not heard. The
@@ -426,7 +424,7 @@ function Chat({ chat, onBack }: { chat: MobileChat; onBack: () => void }) {
     return () => {
       current = false
     }
-  }, [chat.id, link, sends, tries, turnsEnded])
+  }, [chat.id, link, sends, tries, ended])
 
   const editable = outbox.kind === 'draft'
   const saved = useSyncExternalStore(sender.subscribe, sender.saved)

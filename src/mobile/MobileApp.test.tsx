@@ -1016,4 +1016,24 @@ describe('a draft and the link to the computer', () => {
     await waitFor(() => expect(sendButton().disabled).toBe(false))
   })
 
+  it('reads the model files again when the turn ends before the chat was first read, and not for a repeated end', async () => {
+    computerSide.chat = { ...view, entries: [{ id: 1, kind: 'user', text: 'Draw it' }], running: true, seq: 4 }
+    const release = hold('GET /chats/desk-clip')
+    await openChat()
+    await linkIs({ kind: 'connected' })
+    const fileReads = () => computerSide.requests.filter((r) => r === 'GET /chats/desk-clip/files').length
+    await waitFor(() => expect(fileReads()).toBe(1))
+
+    computerSide.files = [{ rel: 'new.stl', size: 1000, modifiedMs: 2 }]
+    const answer = { id: 2, kind: 'assistant', text: 'Here is the clip.', calls: [], model: { provider: 'faux', modelId: 'faux-a' } }
+    await linkIs({ kind: 'event', event: { type: 'chat', ...view, entries: [answer], running: false, seq: 6 } })
+    expect(await screen.findByRole('button', { name: 'new.stl' })).toBeTruthy()
+    await linkIs({ kind: 'event', event: { type: 'chat', ...view, entries: [answer], running: false, seq: 7 } })
+    // The held read answers with the chat as it was before the turn ended.
+    release()
+    expect(await screen.findByText('Draw it')).toBeTruthy()
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(fileReads()).toBe(2)
+  })
+
 })
