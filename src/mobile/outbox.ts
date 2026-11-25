@@ -200,11 +200,16 @@ export class Sender {
 
   running = () => this.#running
 
-  /** Takes whether the turn runs from a chat view or event, unless a newer one (by `seq`) already said. */
-  setRunning(running: boolean, seq: number) {
-    if (seq < this.#runningSeq) return
+  /**
+   * Takes whether the chat's turn runs. An event counts unless a newer one (by `seq`) already said. A `fresh` whole read of
+   * the chat is the computer's word now, so it counts always, even with a lower `seq`, as after a restart.
+   */
+  setRunning(running: boolean, seq: number, fresh = false) {
+    if (!fresh && seq < this.#runningSeq) return
     this.#runningSeq = seq
+    if (this.#running === running) return
     this.#running = running
+    this.#tell()
   }
 
   link(link: Link) {

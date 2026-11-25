@@ -380,11 +380,8 @@ function Chat({ chat, onBack }: { chat: MobileChat; onBack: () => void }) {
 
   useEffect(() => listen((change) => change.project === chat.id && setView((kept) => merge(kept, change))), [listen, chat.id])
 
-  // Only a view the computer sent says whether the turn runs. Until one comes, the chat shows what it last showed.
-  const running = view === null ? sender.running() : view.running
-  useEffect(() => {
-    if (view !== null) sender.setRunning(view.running, view.seq)
-  }, [sender, view])
+  // The sender holds whether the turn runs, from the chat's events and whole reads, so Send and the send agree.
+  const running = useSyncExternalStore(sender.subscribe, sender.running)
   // A turn that ends may have made a model, so the files are read again for each idle view whose last entry is new.
   // That holds however the end arrives, and the first idle view after opening reads them once more.
   const idleAt = view?.running === false ? (view.entries[view.entries.length - 1]?.id ?? null) : null
@@ -401,6 +398,7 @@ function Chat({ chat, onBack }: { chat: MobileChat; onBack: () => void }) {
       (opened) => {
         if (!current) return
         setView((kept) => merge(kept, opened))
+        sender.setRunning(opened.running, opened.seq, true)
         setError(null)
       },
       (err) => current && setError(errorText(err)),
