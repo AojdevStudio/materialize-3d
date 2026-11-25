@@ -5,27 +5,22 @@
  * phone only `chat` and `project` events.
  */
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
-import { closeSync, constants, createReadStream, existsSync, fstatSync, lstatSync, openSync, readdirSync, realpathSync } from 'node:fs'
+import { existsSync } from 'node:fs'
 import { hostname } from 'node:os'
-import { extname, join } from 'node:path'
-import { Readable } from 'node:stream'
 import type { Models } from '@earendil-works/pi-ai'
 import { arr, bool, compile, int, map, nullable, obj, opt, str, type Validator } from '@earendil-works/pi-schema'
 import type { Server } from 'bun'
 import { renderSVG } from 'uqr'
-import { type Chats, inside, SendRefused } from './chat'
-import { skipped } from './folder'
+import { type Chats, SendRefused } from './chat'
+import { chatFolder, modelFiles, openModelFile } from './folder'
 import type { Logins } from './inference'
 import { model, offeredModels, saveRoles } from './methods'
 import { savePicture } from './pictures'
-import type { Computer, MobileChat, MobilePairing, ModelFile, PairedDevice, SidecarEvent } from './protocol'
+import type { Computer, MobileChat, MobilePairing, PairedDevice, SidecarEvent } from './protocol'
 import { deviceDraft, DraftChanged, type Store } from './store'
 
 /** Where Tailscale's command line lives in the Mac app, for a Mac that has no `tailscale` on its PATH. */
 const MAC_TAILSCALE = '/Applications/Tailscale.app/Contents/MacOS/Tailscale'
-
-/** The model files a phone can list and read, by extension, with the content type each is sent as. */
-const MODEL_TYPES: Record<string, string> = { '.stl': 'model/stl', '.3mf': 'model/3mf', '.glb': 'model/gltf-binary' }
 
 /** A stream with no change for this long gets a comment line, so nothing between it and the phone closes it. */
 const KEEPALIVE_MS = 15_000
@@ -218,36 +213,6 @@ async function body<T>(request: Request, schema: Validator<T>, limit = Number.PO
 
 const json = (value: unknown) => Response.json(value)
 
-/** The model files in a project folder, newest first. Names the file list skips, and links, are left out. */
-function modelFiles(root: string): ModelFile[] {
-  const files: ModelFile[] = []
-  // A folder is read, and a file measured, only while its real path is the one its name spells, so a folder swapped for
-  // a link during the walk is passed over, not followed. One removed meanwhile is passed over too.
-  const here = (path: string) => {
-    try {
-      return realpathSync.native(path) === path
-    } catch (error) {
-      if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return false
-      throw error
-    }
-  }
-  const walk = (dir: string, rel: string) => {
-    if (!here(dir)) return
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      if (skipped(entry.name)) continue
-      const path = join(dir, entry.name)
-      const name = rel === '' ? entry.name : `${rel}/${entry.name}`
-      if (entry.isDirectory()) walk(path, name)
-      else if (entry.isFile() && MODEL_TYPES[extname(entry.name).toLowerCase()] !== undefined) {
-        const found = lstatSync(path, { throwIfNoEntry: false })
-        if (found?.isFile() === true && here(path)) files.push({ rel: name, size: found.size, modifiedMs: found.mtimeMs })
-      }
-    }
-  }
-  walk(root, '')
-  return files.sort((a, b) => b.modifiedMs - a.modifiedMs)
-}
-
 const drafted = compile(obj({ text: str(), pictures: arr(obj({ name: str({ pattern: '^[^./][^/]*$' }), data: str() })) }))
 const sent = compile(obj({ rev: int() }))
 const roles = compile(obj({ lead: opt(model), helper: opt(nullable(model)) }))
@@ -311,17 +276,12 @@ export class Mobile {
       if (found === undefined) throw new Refused(404, `no project ${id}`)
       return found
     }
-    /**
-     * A chat's folder where it really is, or undefined before the agent made it. A folder that is a link is refused, so
-     * the files a phone lists and reads stay under the projects folder.
-     */
+    /** A chat's folder where it really is, or `unmade` before the agent made it. A folder that is a link is refused. */
     const folderOf = async (params: Params) => {
       const { id } = await project(params)
-      const folder = join(store.projectsDir, id)
-      if (!existsSync(folder)) return undefined
-      const real = join(realpathSync.native(store.projectsDir), id)
-      if (realpathSync.native(folder) !== real) throw new Refused(404, `${id} is not a chat folder here`)
-      return real
+      const folder = chatFolder(store.projectsDir, id)
+      if (folder === 'link') throw new Refused(404, `${id} is not a chat folder here`)
+      return folder
     }
     return [
       { method: 'GET', path: '/api/v1/computer', run: async (_, __, device) => json({ ...(await this.#computer()), device }) },
@@ -396,7 +356,7 @@ export class Mobile {
         path: '/api/v1/chats/:project/files',
         run: async (_, params) => {
           const folder = await folderOf(params)
-          return json(folder === undefined ? [] : modelFiles(folder))
+          return json(folder === 'unmade' ? [] : modelFiles(folder))
         },
       },
       {
@@ -405,30 +365,9 @@ export class Mobile {
         run: async (_, params) => {
           const folder = await folderOf(params)
           const rel = params.rel ?? ''
-          const type = MODEL_TYPES[extname(rel).toLowerCase()]
-          const missing = new Refused(404, `${rel} is not a model file in this chat`)
-          if (folder === undefined || type === undefined || rel.split('/').some(skipped)) throw missing
-          const named = join(folder, rel)
-          try {
-            // The list leaves links out, so a read takes only the file the name spells, with no link on its way.
-            if (realpathSync.native(inside(folder, rel)) !== named) throw missing
-          } catch {
-            throw missing
-          }
-          // The bytes stream from the file opened here, checked to be the one named, so a swap after the check serves
-          // nothing, and a large model is never held in memory whole. The stream closes the file when it ends.
-          // Opened without waiting, so a pipe put in the file's place cannot hold the sidecar before the check refuses it.
-          const fd = openSync(named, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
-          try {
-            const opened = fstatSync(fd)
-            const there = lstatSync(named)
-            if (!opened.isFile() || opened.ino !== there.ino || opened.dev !== there.dev || realpathSync.native(named) !== named) throw missing
-          } catch (error) {
-            closeSync(fd)
-            throw error
-          }
-          const bytes = Readable.toWeb(createReadStream(named, { fd })) as ReadableStream<Uint8Array>
-          return new Response(bytes, { headers: { 'content-type': type } })
+          const file = folder === 'unmade' ? undefined : openModelFile(folder, rel)
+          if (file === undefined) throw new Refused(404, `${rel} is not a model file in this chat`)
+          return new Response(file.bytes, { headers: { 'content-type': file.type } })
         },
       },
     ]

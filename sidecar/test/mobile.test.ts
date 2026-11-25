@@ -555,34 +555,42 @@ describe('a paired device', () => {
     await app.quit()
   }, 60_000)
 
-  test('reads no file outside the chat, through a link, in the app records, or that is not a model', async () => {
+  test('a file path that leaves the chat, by an encoded part, through a link, or into the app records, answers 404', async () => {
     const { app, base, dir, projects } = await start(forwarding)
     const project = await chat(app)
     const { token } = await pair(app, base)
     const call = as(base, token)
     const folder = join(projects, project)
     writeFileSync(join(projects, 'escape.stl'), 'outside the chat')
-    writeFileSync(join(dir, 'outside.stl'), 'outside the projects')
-    symlinkSync(join(dir, 'outside.stl'), join(folder, 'linked.stl'))
     writeFileSync(join(folder, '.m3d', 'hidden.stl'), 'the app records')
-    writeFileSync(join(folder, 'notes.txt'), 'not a model')
     writeFileSync(join(folder, 'part.stl'), 'solid part')
-    // Links that stay in the chat but name a model: one to the app records, one to a file that is not a model.
+    writeFileSync(join(folder, 'my part.stl'), 'solid spaced')
     symlinkSync(join(folder, '.m3d', 'hidden.stl'), join(folder, 'records.stl'))
-    symlinkSync(join(folder, 'notes.txt'), join(folder, 'notes.glb'))
 
-    expect(((await (await call(`/chats/${project}/files`)).json()) as ModelFile[]).map((f) => f.rel)).toEqual(['part.stl'])
-    for (const rel of ['..%2Fescape.stl', '%2E%2E/escape.stl', 'linked.stl', 'records.stl', 'notes.glb', '.m3d/hidden.stl', '.m3d%2Fhidden.stl', 'notes.txt', 'missing.stl']) {
+    // `folder.test.ts` holds the file rules. This checks how the route decodes a path and answers a refusal.
+    expect(((await (await call(`/chats/${project}/files`)).json()) as ModelFile[]).map((f) => f.rel).sort()).toEqual(['my part.stl', 'part.stl'])
+    expect(await (await call(`/chats/${project}/files/my%20part.stl`)).text()).toBe('solid spaced')
+    // Each refusal names the decoded path, so a route that skipped decoding would answer with other words.
+    const refusals: [string, string][] = [
+      ['..%2Fescape.stl', '../escape.stl is not a model file in this chat'],
+      // The URL parser folds an encoded `..` away before the route sees it, so the path names no route.
+      ['%2E%2E/escape.stl', `no route GET /api/v1/chats/${project}/escape.stl`],
+      ['records.stl', 'records.stl is not a model file in this chat'],
+      ['.m3d%2Fhidden.stl', '.m3d/hidden.stl is not a model file in this chat'],
+    ]
+    for (const [rel, error] of refusals) {
       const answer = await call(`/chats/${project}/files/${rel}`)
-      expect([rel, answer.status]).toEqual([rel, 404])
+      expect([rel, answer.status, await answer.json()]).toEqual([rel, 404, { error }])
     }
     expect((await call(`/chats/${project}/files/part.stl`)).status).toBe(200)
 
     // A chat folder that became a link reads nothing, listed or by name.
     renameSync(folder, join(dir, 'moved'))
     symlinkSync(join(dir, 'moved'), folder)
-    expect((await call(`/chats/${project}/files`)).status).toBe(404)
-    expect((await call(`/chats/${project}/files/part.stl`)).status).toBe(404)
+    for (const path of ['files', 'files/part.stl']) {
+      const answer = await call(`/chats/${project}/${path}`)
+      expect([path, answer.status, await answer.json()]).toEqual([path, 404, { error: `${project} is not a chat folder here` }])
+    }
     await app.quit()
   })
 
