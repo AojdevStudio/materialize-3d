@@ -75,8 +75,6 @@ export class Sender {
   #running = false
   /** The `seq` of the view `#running` came from. */
   #runningSeq = -1
-  /** How many of the chat's events this sender has heard, so a whole read can tell whether one came while it ran. */
-  #events = 0
   /** Set when the link comes up again while a settle is under way. */
   #relinked = false
   readonly #heard = new Set<() => void>()
@@ -202,27 +200,12 @@ export class Sender {
 
   running = () => this.#running
 
-  /** Takes whether the chat's turn runs from an event, unless a newer one (by `seq`) already said. */
-  setRunning(running: boolean, seq: number) {
-    this.#events++
-    if (seq < this.#runningSeq) return
-    this.#take(running, seq)
-  }
-
-  /** Marks the start of a whole read of the chat, for `readRunning`. */
-  reading = () => this.#events
-
   /**
-   * Takes whether the chat's turn runs from a whole read that started at `mark`. With no event since it started, the read
-   * is the computer's newest word, so it counts even with a lower `seq`, as after a restart. After an event, it counts
-   * only when newer.
+   * Takes whether the chat's turn runs, from an event or a whole read of the chat, unless a newer one already said. The
+   * computer's `seq` grows across its restarts (`ChatView` in `sidecar/src/protocol.ts`), so the newest always wins.
    */
-  readRunning(running: boolean, seq: number, mark: number) {
-    if (this.#events !== mark && seq < this.#runningSeq) return
-    this.#take(running, seq)
-  }
-
-  #take(running: boolean, seq: number) {
+  setRunning(running: boolean, seq: number) {
+    if (seq < this.#runningSeq) return
     this.#runningSeq = seq
     if (this.#running === running) return
     this.#running = running

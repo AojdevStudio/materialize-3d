@@ -394,12 +394,11 @@ function Chat({ chat, onBack }: { chat: MobileChat; onBack: () => void }) {
   useEffect(() => {
     if (link !== 'connected') return
     let current = true
-    const mark = sender.reading()
     remoteJson<ChatView>(chatPath(chat.id)).then(
       (opened) => {
         if (!current) return
         setView((kept) => merge(kept, opened))
-        sender.readRunning(opened.running, opened.seq, mark)
+        sender.setRunning(opened.running, opened.seq)
         setError(null)
       },
       (err) => current && setError(errorText(err)),

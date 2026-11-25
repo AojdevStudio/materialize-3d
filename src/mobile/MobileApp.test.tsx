@@ -1068,7 +1068,7 @@ describe('a draft and the link to the computer', () => {
     expect(sendButton().disabled).toBe(true)
   })
 
-  it('takes a whole read of the chat as the turn state, even with a lower seq, so Send and the send agree', async () => {
+  it('turns Send on from a newer whole read of the chat, and the tap sends, so Send and the send agree', async () => {
     kept.set('desk-clip', { text: 'Now make it blue', pictures: [], sent: null })
     const asked = { id: 1, kind: 'user', text: 'Draw it' }
     await openChat()
@@ -1077,8 +1077,7 @@ describe('a draft and the link to the computer', () => {
     backToChats()
     await linkIs({ kind: 'event', event: { type: 'chat', ...view, entries: [asked], running: true, seq: 50 } })
 
-    // The computer restarted with its clock set back, so its whole read says idle with a lower seq.
-    computerSide.chat = { ...view, entries: [asked], running: false, seq: 3 }
+    computerSide.chat = { ...view, entries: [asked], running: false, seq: 60 }
     await reopen()
     await waitFor(() => expect(sendButton().disabled).toBe(false))
     fireEvent.click(sendButton())
