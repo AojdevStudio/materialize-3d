@@ -13,6 +13,12 @@ export type ModelChoice = { provider: string; modelId: string }
 export type Role = 'lead' | 'helper'
 
 /**
+ * The roles a send carries: the lead and helper the window showed when Send was pressed, which its turn freezes.
+ * `helper` left out, from the start screen only, means the helper a new chat gets by default.
+ */
+export type SentPair = { lead: ModelChoice; helper?: ModelChoice | null }
+
+/**
  * A model version a provider reported removed while a chat ran it, the role it held there, and the newest version of its
  * family, or null when that is the removed one.
  */
@@ -306,10 +312,9 @@ export interface Methods {
   /**
    * Sends the draft saved as revision `rev` under `key`, and answers the project it went to. From the start screen it
    * makes that project first. Sent again with the same revision, as after a lost answer, it sends nothing more and
-   * answers the same project. `helper`, from the start screen only, is the helper that project gets in place of the
-   * default, or null for none.
+   * answers the same project. `pair` is the roles the window showed when Send was pressed, which the turn runs with.
    */
-  'chat.send': { params: { key: string; rev: number; helper?: ModelChoice | null }; result: { project: Project } }
+  'chat.send': { params: { key: string; rev: number; pair?: SentPair }; result: { project: Project } }
   'chat.stop': { params: { project: string }; result: null }
   'chat.retry': { params: { project: string }; result: null }
   /** The newest version of each model family, for the providers the person signed in to. Both roles offer this list. */

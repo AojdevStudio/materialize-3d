@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { CATALOG } from '../../sidecar/src/offered'
-import type { AppState, ModelChoice, Project, Setup } from '../../sidecar/src/protocol'
+import { type AppState, type ModelChoice, type Project, type Setup, START } from '../../sidecar/src/protocol'
 import { onSidecarEvent, sidecar } from './api'
 import { ChatView } from './Chat'
 import { Composer } from './Composer'
@@ -30,6 +30,26 @@ import { UpdateBanner } from '../update/UpdateBanner'
 import { checkForUpdatesAtLaunch, useUpdateEvents } from '../update/store'
 import './studio.css'
 
+/**
+ * A role picked here, shown until the sidecar's word on it overtakes it. `seen` is set once a project event showed this
+ * pick saved, so a later event that differs, as from a paired phone, is newer and takes its place.
+ */
+type ShownPick = { model: ModelChoice | null; seen: boolean }
+type ShownPicks = { lead?: ShownPick & { model: ModelChoice }; helper?: ShownPick }
+
+const sameRole = (a: ModelChoice | null, b: ModelChoice | null) => a === b || (a !== null && b !== null && a.provider === b.provider && a.modelId === b.modelId)
+
+/** A pick as a project event leaves it: marked seen when the event saved it, gone when a newer save replaced it. */
+function afterEvent<P extends ShownPick>(pick: P | undefined, saved: ModelChoice | null): P | undefined {
+  if (pick === undefined) return undefined
+  if (sameRole(pick.model, saved)) {
+    pick.seen = true
+    return pick
+  }
+  // An event that differs before this pick was seen is older than its save, so the pick still stands.
+  return pick.seen ? undefined : pick
+}
+
 export default function StudioApp() {
   const [projects, setProjects] = useState<Project[]>([])
   const { current, view, files, selected, panelView, status, error, engine, setup, settings: savedSettings, importBlocked, needs, models, signIn, slicerFound, wentOnInSetup } = useStudio()
@@ -57,6 +77,8 @@ export default function StudioApp() {
       onSidecarEvent((event) => {
         if (event.type !== 'project') return
         setProjects((all) => all.map((p) => (p.id === event.project.id ? event.project : p)))
+        const project = event.project
+        setPicks((all) => ({ ...all, [project.id]: { lead: afterEvent(all[project.id]?.lead, project.model), helper: afterEvent(all[project.id]?.helper, project.helper) } }))
         checkReady()
       }).stop,
     [],
@@ -88,8 +110,15 @@ export default function StudioApp() {
     if (current) drafts.dismissSendError(current.id)
   }
 
+  /**
+   * Picks shown before the sidecar answers, by project id, or `START` for the start screen's lead. A pick shows at once
+   * and its save runs in the background. It gives way to a newer save of the project, and at once when its save fails.
+   */
+  const [picks, setPicks] = useState<Record<string, ShownPicks>>({})
+  const picked = picks[current?.id ?? START]
+
   /** The open project's own model, or the default for one from before the picker. On the start screen, the default. */
-  const chosenModel = (current ? projects.find((p) => p.id === current.id)?.model : undefined) ?? savedSettings?.model ?? null
+  const chosenModel = picked?.lead?.model ?? (current ? projects.find((p) => p.id === current.id)?.model : undefined) ?? savedSettings?.model ?? null
 
   /**
    * The helper the next start screen send gives its project, once the person picked one there. Until then, and again
@@ -99,7 +128,8 @@ export default function StudioApp() {
   const helperFamily = CATALOG.families[CATALOG.helper]
   const astra = models.find((m) => m.provider === helperFamily?.provider && helperFamily.versions.some((v) => v.modelId === m.modelId))
   const defaultHelper = savedSettings?.astra === true && astra !== undefined ? { provider: astra.provider, modelId: astra.modelId } : null
-  const chosenHelper = current ? (projects.find((p) => p.id === current.id)?.helper ?? null) : startHelper === null ? defaultHelper : startHelper.pick
+  const chosenHelper =
+    picked?.helper !== undefined ? picked.helper.model : current ? (projects.find((p) => p.id === current.id)?.helper ?? null) : startHelper === null ? defaultHelper : startHelper.pick
 
   const waiting = view?.waiting ?? null
   const turnLogin: TurnLogin | undefined = waiting?.kind === 'login' ? { kind: 'turn-login', provider: waiting.provider, name: waiting.name } : undefined
@@ -110,42 +140,49 @@ export default function StudioApp() {
   const notReady = setup?.done !== true || needs === null || blocker !== undefined
 
   /**
-   * Role saves still on their way. Send waits while any is, and the pickers wait while a send is, so a message always
-   * goes out with the roles shown when Send was pressed, and a pick never overlaps a send (#373).
+   * Shows a pick at once and saves it in the background. The saves of all picks go out one after another, in the order
+   * they were made, so two picks of one role land in that order. A send never waits for them: it carries the roles
+   * shown when Send was pressed (#373).
    */
-  const [savingRoles, setSavingRoles] = useState(0)
-  const saveRole = (save: Promise<unknown>) => {
-    setSavingRoles((n) => n + 1)
-    void save.catch((err: unknown) => setError(String(err))).finally(() => setSavingRoles((n) => n - 1))
+  const saves = useRef<Promise<unknown>>(Promise.resolve())
+  const pickRole = (key: string, role: keyof ShownPicks, model: ModelChoice | null, save: () => Promise<unknown>) => {
+    const shown: ShownPick = { model, seen: false }
+    // Only this pick goes: a newer pick of the role keeps showing while its own save runs.
+    const drop = () => setPicks((all) => (all[key]?.[role] === shown ? { ...all, [key]: { ...all[key], [role]: undefined } } : all))
+    setPicks((all) => ({ ...all, [key]: { ...all[key], [role]: shown } }))
+    saves.current = saves.current.then(save).then(
+      () => {
+        // The start screen's lead has no project event to wait for: its saved setting is already read.
+        if (key === START) drop()
+      },
+      (err: unknown) => {
+        setError(String(err))
+        drop()
+      },
+    )
   }
 
   /**
-   * Saves a pick: the open project's model, or on the start screen the default the next project takes. The check runs
+   * A pick of the open project's lead, or on the start screen the default the next project takes. The check runs
    * again then, as the new model's provider may differ.
    */
   const pickModel = (model: ModelChoice) => {
     const project = current?.id
     if (project === undefined) {
-      saveRole(saveSettings({ model }).then(() => checkReady()))
+      pickRole(START, 'lead', model, () => saveSettings({ model }).then(() => checkReady()))
       return
     }
-    // The saved project comes back as a `project` event, which updates the picker. The reply carries no roles, so a
-    // reply that arrives after a newer save, as from a paired phone, cannot bring an older pick back.
-    saveRole(sidecar('projects.setLead', { project, model }))
+    pickRole(project, 'lead', model, () => sidecar('projects.setLead', { project, model }))
   }
 
-  /**
-   * Saves a helper pick: the open project's helper, which the check reads again, as a retired one holds the next
-   * message. On the start screen it is the helper the next project starts with.
-   */
+  /** A pick of the open project's helper. On the start screen it is the helper the next project starts with. */
   const pickHelper = (model: ModelChoice | null) => {
     const project = current?.id
     if (project === undefined) {
       setStartHelper({ pick: model })
       return
     }
-    // As for the lead: the `project` event, not this reply, updates the picker.
-    saveRole(sidecar('projects.setHelper', { project, model }))
+    pickRole(project, 'helper', model, () => sidecar('projects.setHelper', { project, model }))
   }
 
   const composer = (
@@ -158,25 +195,26 @@ export default function StudioApp() {
       onPaste={drafts.paste}
       onRemove={(index) => drafts.remove(attachments[index], index)}
       onSend={() => {
-        if (running || notReady || savingRoles > 0) return
-        if (current) void drafts.send()
-        // Only a helper the person picked goes with the send. Without a pick the sidecar gives the default, which the
-        // window may not know yet, as before the model list arrives.
+        if (running || notReady || chosenModel === null) return
+        // The send carries the roles shown now, whatever saves are still on their way. On the start screen only a
+        // helper the person picked goes with it: without one the sidecar gives the default, which the window may not
+        // know yet, as before the model list arrives.
+        if (current) void drafts.send({ lead: chosenModel, helper: chosenHelper })
         else
-          void drafts.send(startHelper?.pick).then((project) => {
+          void drafts.send({ lead: chosenModel, ...(startHelper === null ? {} : { helper: startHelper.pick }) }).then((project) => {
             if (project !== undefined) setStartHelper(null)
           })
       }}
       onError={setError}
       onStop={current ? () => void sidecar('chat.stop', { project: current.id }).catch((err: unknown) => setError(String(err))) : undefined}
-      busy={sending || running || notReady || savingRoles > 0}
+      busy={sending || running || notReady}
       running={running}
       locked={blocker === undefined ? undefined : lockedText(blocker)}
       picker={
         blocker !== undefined && models.length === 0 ? null : (
           <span className="model-roles">
-            <ModelPicker role="Lead" models={models} chosen={chosenModel} onPick={pickModel} held={sending} />
-            <ModelPicker role="Helper" models={models} chosen={chosenHelper} onPick={pickHelper} held={sending} />
+            <ModelPicker role="Lead" models={models} chosen={chosenModel} onPick={pickModel} />
+            <ModelPicker role="Helper" models={models} chosen={chosenHelper} onPick={pickHelper} />
           </span>
         )
       }

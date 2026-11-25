@@ -24,6 +24,7 @@ import {
   type Printer,
   type Project,
   type Retired,
+  type SentPair,
   type Role,
   type SavedDraft,
   type Settings,
@@ -126,6 +127,9 @@ const carried = (settings: Settings, model: ModelChoice | undefined) => ({
   model: { ...(model ?? settings.model) },
   helper: settings.astra ? { ...ASTRA_MODEL } : null,
 })
+
+/** Whether two choices name the same model version. */
+const sameVersion = (a: ModelChoice, b: ModelChoice) => a.provider === b.provider && a.modelId === b.modelId
 
 /** A plain copy of a model, since the documents a commit hands out are only valid inside it. */
 const copy = ({ provider, modelId }: ModelChoice): ModelChoice => ({ provider, modelId })
@@ -330,7 +334,7 @@ export class Store {
    * Asked again for the same revision, as after a lost answer or a crash before the message, it answers the project
    * that revision made and the draft it moved, and changes nothing. The project gets `helper`. A retired one is refused.
    */
-  async startProject(rev: number, helper: ModelChoice | null): Promise<{ project: Project; draft: SavedDraft }> {
+  async startProject(rev: number, lead: ModelChoice | undefined, helper: ModelChoice | null): Promise<{ project: Project; draft: SavedDraft }> {
     const now = new Date()
     // The person's own date, as the folder name shows it.
     const today = new Date(now.getTime() - now.getTimezoneOffset() * 60_000).toISOString().slice(0, 10)
@@ -351,8 +355,8 @@ export class Store {
       for (let n = 2; taken.has(id) || existsSync(join(this.projectsDir, id)); n++) id = `${base}-${n}`
       this.projectFolder(id)
       const conversation = await tx.createConversation({ ownership: { kind: 'ownerless' } })
-      // The project keeps the lead picked on the start screen, so a later pick there leaves it alone.
-      const { model } = await tx.doc(SettingsDoc, this.root.id)
+      // The project keeps the lead shown on the start screen at Send, or the saved default without one.
+      const model = lead ?? (await tx.doc(SettingsDoc, this.root.id)).model
       const created: Project = { id, conversation: conversation.id, title, createdMs: now.getTime(), model: copy(model), helper: helper === null ? null : copy(helper) }
       index.projects.push(created)
       const moved: SavedDraft = { text: draft.text, attachments: [...draft.attachments], rev }
@@ -381,25 +385,33 @@ export class Store {
    * for it: the pair the turn runs with, and that draft taken away. A newer save stays, and so does every other key's.
    * `saves` counts the saves of the login of the lead's provider. A role the chat found retired is refused, with the
    * fix, and nothing changes. So is a device's send whose draft was saved again since it was read, so a send that
-   * stalled past an edit starts no job beside the edited message's. `pick`, when given, is a helper the person picked on
-   * the start screen since this project was made, which the project takes first.
+   * stalled past an edit starts no job beside the edited message's. `pair` is the roles the window showed at Send, which
+   * the turn runs with, and `keep` makes them the project's roles too, as for a start screen send.
    */
-  async send(tx: Tx, project: string, key: string, rev: number, pick?: ModelChoice | null): Promise<{ lead: ModelChoice; helper: ModelChoice | null; thinking: Thinking; saves: number }> {
+  async send(tx: Tx, project: string, key: string, rev: number, pair: SentPair | undefined, keep: boolean): Promise<{ lead: ModelChoice; helper: ModelChoice | null; thinking: Thinking; saves: number }> {
     const { thinking } = await tx.doc(SettingsDoc, this.root.id)
     const saved = await this.#projectIn(tx, project)
-    // A pick lets go a helper the chat found retired, as a pick in the chat does (`setHelper`).
-    if (pick !== undefined) {
-      saved.helper = pick === null ? null : copy(pick)
-      saved.retired = (saved.retired ?? []).filter((r) => r.role !== 'helper')
+    // The pair the window showed at Send, or the saved one for a send that names none, as a phone's.
+    const model = pair?.lead ?? saved.model
+    const helper = pair?.helper === undefined ? saved.helper : pair.helper
+    // A start screen send, first or retried, is how its project's roles were chosen, so the project keeps them, and a
+    // changed role lets go the retirement it held. A send in a chat leaves the saved roles to the pickers, so a pick
+    // saved while this send was on its way stays.
+    if (keep) {
+      if (!sameVersion(saved.model, model)) saved.retired = (saved.retired ?? []).filter((r) => r.role !== 'lead')
+      if (saved.helper === null || helper === null || !sameVersion(saved.helper, helper)) saved.retired = (saved.retired ?? []).filter((r) => r.role !== 'helper')
+      saved.model = copy(model)
+      saved.helper = helper === null ? null : copy(helper)
     }
-    const { model, helper } = saved
-    const [gone] = this.#retiredRoles(saved)
+    // A role the chat found retired holds the send only while the send would run that same version again.
+    const [gone] = this.#retiredRoles(saved).filter((r) => (r.role === 'lead' ? sameVersion(r.model, model) : helper !== null && sameVersion(r.model, helper)))
     if (gone !== undefined) throw new RoleRetired(this.retiredFix(gone))
     const { drafts } = await tx.doc(DraftsDoc, this.root.id)
     if (holds(drafts[key], rev)) delete drafts[key]
     else if (isDeviceDraft(key)) throw new DraftChanged()
     return { lead: copy(model), helper: helper === null ? null : copy(helper), thinking, saves: await this.loginSavesIn(tx, model.provider) }
   }
+
 
   /**
    * The roles of `project` its provider reported removed, lead first, while the person has not chosen again.

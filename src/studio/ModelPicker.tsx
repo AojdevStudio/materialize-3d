@@ -13,8 +13,7 @@ type Role =
   | { role: 'Lead'; chosen: ModelChoice | null; onPick: (model: ModelChoice) => void }
   | { role: 'Helper'; chosen: ModelChoice | null; onPick: (model: ModelChoice | null) => void }
 
-/** `held` keeps the button off while a send is on its way, so a pick never overlaps it. */
-type Props = Role & { models: ModelOption[]; held?: boolean }
+type Props = Role & { models: ModelOption[] }
 
 const Check = () => (
   <svg className="model-check" viewBox="0 0 16 16" width={14} height={14} aria-hidden="true">
@@ -24,7 +23,7 @@ const Check = () => (
 
 /** A role's model, with the role's word before it. The menu offers the short list for the signed-in providers. */
 export default function ModelPicker(props: Props) {
-  const { models, chosen, role, held = false } = props
+  const { models, chosen, role } = props
   const [open, setOpen] = useState(false)
   const box = useRef<HTMLDivElement>(null)
   const helper = props.role === 'Helper'
@@ -71,7 +70,7 @@ export default function ModelPicker(props: Props) {
         className={`model-button${chosen === null && helper ? ' model-none' : ''}`}
         aria-haspopup="menu"
         aria-expanded={open}
-        disabled={held || (chosen === null && !helper) || models.length === 0}
+        disabled={(chosen === null && !helper) || models.length === 0}
         onClick={() => setOpen(!open)}
         data-testid={helper ? 'helper-picker' : 'model-picker'}
         // The role comes first in the name, so two pickers on the same model still read apart.

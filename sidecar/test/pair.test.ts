@@ -90,7 +90,7 @@ describe('a new chat', () => {
     await app.call('auth.setKey', { provider: 'openai-codex', key: 'codex-key' })
     const startWith = async (text: string, helper: ModelChoice | null) => {
       const { rev } = (await app.call('drafts.set', { key: 'new', text, attachments: [] })) as { rev: number }
-      return ((await app.call('chat.send', { key: 'new', rev, helper })) as { project: Project }).project.id
+      return ((await app.call('chat.send', { key: 'new', rev, pair: { lead: OPUS, helper } })) as { project: Project }).project.id
     }
     expect(await projectIn(app, await startWith('a clip', FAUX_B))).toMatchObject({ model: OPUS, helper: FAUX_B })
     expect(await projectIn(app, await startWith('a knob', null))).toMatchObject({ model: OPUS, helper: null })
@@ -103,12 +103,24 @@ describe('a new chat', () => {
     const app = await start(where, 'models')
     await app.call('settings.set', { model: FAUX_A })
     const { rev } = (await app.call('drafts.set', { key: 'new', text: 'a clip', attachments: [] })) as { rev: number }
-    const { project } = (await app.call('chat.send', { key: 'new', rev, helper: FAUX_B })) as { project: Project }
+    const { project } = (await app.call('chat.send', { key: 'new', rev, pair: { lead: FAUX_A, helper: FAUX_B } })) as { project: Project }
     await answered(app, project.id, 'answered by faux-a')
     await app.call('projects.setHelper', { project: project.id, model: null })
-    const replay = (await app.call('chat.send', { key: 'new', rev, helper: FAUX_B })) as { project: Project }
+    const replay = (await app.call('chat.send', { key: 'new', rev, pair: { lead: FAUX_A, helper: FAUX_B } })) as { project: Project }
     expect(replay.project).toMatchObject({ id: project.id, helper: null })
     expect(await projectIn(app, project.id)).toMatchObject({ helper: null })
+    await app.quit()
+  })
+
+  test('runs a chat send on the pair the window showed at Send, and leaves the saved roles to the pickers', async () => {
+    const where = scratch()
+    const app = await start(where, 'models')
+    const id = await project(app, FAUX_A, FAUX_B)
+    const { rev } = (await app.call('drafts.set', { key: id, text: 'which model?', attachments: [] })) as { rev: number }
+    await app.call('chat.send', { key: id, rev, pair: { lead: FAUX_B, helper: null } })
+    await answered(app, id, 'answered by faux-b')
+    expect((await view(app, id)).turn).toMatchObject({ model: FAUX_B, helper: null })
+    expect(await projectIn(app, id)).toMatchObject({ model: FAUX_A, helper: FAUX_B })
     await app.quit()
   })
 
@@ -117,9 +129,9 @@ describe('a new chat', () => {
     const store = await openStore(where)
     await store.setSettings({ model: FAUX_A })
     const rev = await store.setDraft('new', { text: 'a clip', attachments: [] })
-    const { project } = await store.startProject(rev, FAUX_B)
+    const { project } = await store.startProject(rev, undefined, FAUX_B)
     await store.harness.commit((tx) => store.retire(tx, project.id, 'helper', FAUX_B), BACKGROUND_CONTEXT)
-    const sent = await store.harness.commit((tx) => store.send(tx, project.id, project.id, rev, null), BACKGROUND_CONTEXT)
+    const sent = await store.harness.commit((tx) => store.send(tx, project.id, project.id, rev, { lead: FAUX_A, helper: null }, true), BACKGROUND_CONTEXT)
     expect(sent).toMatchObject({ lead: FAUX_A, helper: null })
     expect(await store.retiredFor(project.id)).toEqual([])
     expect((await store.project(project.id)).helper).toBeNull()
@@ -133,9 +145,9 @@ describe('a new chat', () => {
     const { rev } = (await app.call('drafts.set', { key: 'new', text: 'make the project', attachments: [] })) as { rev: number }
     // The first try makes the project, then an installing update refuses its message.
     app.gate.installing = true
-    await expect(app.call('chat.send', { key: 'new', rev, helper: FAUX_B })).rejects.toThrow('An update is installing.')
+    await expect(app.call('chat.send', { key: 'new', rev, pair: { lead: FAUX_A, helper: FAUX_B } })).rejects.toThrow('An update is installing.')
     app.gate.installing = false
-    const { project } = (await app.call('chat.send', { key: 'new', rev, helper: null })) as { project: Project }
+    const { project } = (await app.call('chat.send', { key: 'new', rev, pair: { lead: FAUX_A, helper: null } })) as { project: Project }
     expect(project).toMatchObject({ helper: null })
     expect(await projectIn(app, project.id)).toMatchObject({ helper: null })
     expect((await view(app, project.id)).turn).toMatchObject({ model: FAUX_A, helper: null })
@@ -472,7 +484,7 @@ describe('the catalog', () => {
     const before = await openStore(where)
     await before.setSettings({ model: opus })
     const rev = await before.setDraft('new', { text: 'a clip', attachments: [] })
-    const { project } = await before.startProject(rev, null)
+    const { project } = await before.startProject(rev, undefined, null)
     await before.harness.commit((tx) => before.retire(tx, project.id, 'lead', opus), BACKGROUND_CONTEXT)
     expect(await before.retiredFor(project.id)).toEqual([{ role: 'lead', model: opus, replacement: null }])
     await before.close()

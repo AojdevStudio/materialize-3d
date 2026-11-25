@@ -977,7 +977,7 @@ describe('StudioApp', () => {
     fireEvent.click(screen.getByTestId('send'))
     await waitFor(() => expect(sends()).toHaveLength(1))
     expect(last(saves())).toEqual({ key: 'new', text: 'A clip', attachments: ['/Users/me/a.jpg'] })
-    expect(sends()).toEqual([{ key: 'new', rev: draftRevs }])
+    expect(sends()).toEqual([{ key: 'new', rev: draftRevs, pair: { lead: { provider: 'anthropic', modelId: 'claude-opus-5-5' } } }])
   })
 
   it("starts the start screen's helper at the newest Astra, sends its pick with the first message only, and saves a project's own pick", async () => {
@@ -999,7 +999,7 @@ describe('StudioApp', () => {
     await waitFor(() => expect((screen.getByTestId('send') as HTMLButtonElement).disabled).toBe(false))
     fireEvent.click(screen.getByTestId('send'))
     await waitFor(() => expect(sends()).toHaveLength(1))
-    expect(sends()).toEqual([{ key: 'new', rev: draftRevs, helper: null }])
+    expect(sends()).toEqual([{ key: 'new', rev: draftRevs, pair: { lead: { provider: 'anthropic', modelId: 'claude-opus-5-5' }, helper: null } }])
 
     await waitFor(() => expect(openTitle()).toBe('A clip'))
     expect(helper().textContent).toBe('None')
@@ -1024,61 +1024,114 @@ describe('StudioApp', () => {
     fireEvent.click(screen.getByTestId('send'))
     await waitFor(() => expect(sends()).toHaveLength(1))
     await act(async () => answerModels())
-    expect(sends()).toEqual([{ key: 'new', rev: draftRevs }])
+    expect(sends()).toEqual([{ key: 'new', rev: draftRevs, pair: { lead: { provider: 'anthropic', modelId: 'claude-opus-5-5' } } }])
   })
 
-  it('holds Send while a role save is on its way, then sends with that pick', async () => {
-    let answerPick: () => void = () => {}
-    mockSidecar({ 'projects.setHelper': (_, real) => new Promise((resolve) => (answerPick = () => resolve(real()))) }, [projectA, projectB])
-    render(<StudioApp />)
-    fireEvent.click(await projectList().findByText('Project A'))
-    await waitFor(() => expect(openTitle()).toBe('Project A'))
-    type('A clip')
-    await waitFor(() => expect((screen.getByTestId('send') as HTMLButtonElement).disabled).toBe(false))
-    fireEvent.click(screen.getByTestId('helper-picker'))
-    fireEvent.click(within(screen.getByRole('menu', { name: 'Helper models' })).getByText('No helper'))
-    await waitFor(() => expect((screen.getByTestId('send') as HTMLButtonElement).disabled).toBe(true))
-    await act(async () => answerPick())
-    await waitFor(() => expect((screen.getByTestId('send') as HTMLButtonElement).disabled).toBe(false))
-    fireEvent.click(screen.getByTestId('send'))
-    await waitFor(() => expect(sends()).toHaveLength(1))
-    const order = invokeMock.mock.calls.flatMap(([command, args]) => (command === 'sidecar' && ['chat.send', 'projects.setHelper'].includes(args.method) ? [args.method] : []))
-    expect(order).toEqual(['projects.setHelper', 'chat.send'])
-  })
+  // The five ways a pick and a send raced before a send carried its own roles (#373). Each now holds by construction:
+  // the send carries the roles shown when Send was pressed, and never waits on a save.
+  describe('a send and the role picks around it', () => {
+    const sonnet = { provider: 'anthropic', modelId: 'claude-sonnet-5-5' }
+    const opus = { provider: 'anthropic', modelId: 'claude-opus-5-5' }
+    const pickHelper = (name: string) => {
+      fireEvent.click(screen.getByTestId('helper-picker'))
+      fireEvent.click(within(screen.getByRole('menu', { name: 'Helper models' })).getByText(name))
+    }
+    const openA = async () => {
+      fireEvent.click(await projectList().findByText('Project A'))
+      await waitFor(() => expect(openTitle()).toBe('Project A'))
+    }
+    const sendShown = async (text: string) => {
+      type(text)
+      await waitFor(() => expect((screen.getByTestId('send') as HTMLButtonElement).disabled).toBe(false))
+      fireEvent.click(screen.getByTestId('send'))
+    }
 
-  it('holds the Lead and Helper pickers while a send is on its way, so a pick counts only for later turns', async () => {
-    let answerSend: () => void = () => {}
-    mockSidecar({ 'chat.send': (_, real) => new Promise((resolve) => (answerSend = () => resolve(real()))) }, [projectA, projectB])
-    render(<StudioApp />)
-    fireEvent.click(await projectList().findByText('Project A'))
-    await waitFor(() => expect(openTitle()).toBe('Project A'))
-    type('A clip')
-    await waitFor(() => expect((screen.getByTestId('send') as HTMLButtonElement).disabled).toBe(false))
-    fireEvent.click(screen.getByTestId('send'))
-    await waitFor(() => expect(sends()).toHaveLength(1))
-    expect((screen.getByTestId('model-picker') as HTMLButtonElement).disabled).toBe(true)
-    expect((screen.getByTestId('helper-picker') as HTMLButtonElement).disabled).toBe(true)
-    await act(async () => answerSend())
-    await waitFor(() => expect((screen.getByTestId('helper-picker') as HTMLButtonElement).disabled).toBe(false))
-    expect((screen.getByTestId('model-picker') as HTMLButtonElement).disabled).toBe(false)
-  })
+    it('sends from the chat where Send was pressed, while a pick in it is still saving', async () => {
+      mockSidecar({ 'projects.setHelper': () => new Promise(() => {}) }, [projectA, projectB])
+      render(<StudioApp />)
+      await openA()
+      pickHelper('Sonnet 5.5')
+      await sendShown('A clip')
+      fireEvent.click(projectList().getByText('Project B'))
+      await waitFor(() => expect(sends()).toHaveLength(1))
+      expect(sends()[0]).toMatchObject({ key: projectA.id, pair: { lead: opus, helper: sonnet } })
+    })
 
-  it('frees Send and keeps the draft when a role save fails, so the person sees the roles that stand', async () => {
-    let failPick: () => void = () => {}
-    mockSidecar({ 'projects.setHelper': () => new Promise((_, reject) => (failPick = () => reject(new Error(LOST)))) }, [projectA, projectB])
-    render(<StudioApp />)
-    fireEvent.click(await projectList().findByText('Project A'))
-    await waitFor(() => expect(openTitle()).toBe('Project A'))
-    type('A clip')
-    fireEvent.click(screen.getByTestId('helper-picker'))
-    fireEvent.click(within(screen.getByRole('menu', { name: 'Helper models' })).getByText('Sonnet 5.5'))
-    await waitFor(() => expect((screen.getByTestId('send') as HTMLButtonElement).disabled).toBe(true))
-    await act(async () => failPick())
-    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain(LOST))
-    await waitFor(() => expect((screen.getByTestId('send') as HTMLButtonElement).disabled).toBe(false))
-    expect(screen.getByTestId('helper-picker').textContent).toBe('None')
-    expect(sends()).toEqual([])
-    expect(prompt().value).toBe('A clip')
+    it('sends with the helper picked just before Send, while an earlier pick is still saving', async () => {
+      mockSidecar({ 'projects.setHelper': () => new Promise(() => {}) }, [projectA, projectB])
+      render(<StudioApp />)
+      await openA()
+      pickHelper('Sonnet 5.5')
+      pickHelper('No helper')
+      await sendShown('A clip')
+      await waitFor(() => expect(sends()).toHaveLength(1))
+      expect(sends()[0]).toMatchObject({ pair: { lead: opus, helper: null } })
+    })
+
+    it('keeps the message on the roles shown at Send when that pick fails to save afterwards', async () => {
+      let failPick: () => void = () => {}
+      mockSidecar({ 'projects.setHelper': () => new Promise((_, reject) => (failPick = () => reject(new Error(LOST)))) }, [{ ...projectA, helper: sonnet }, projectB])
+      render(<StudioApp />)
+      await openA()
+      pickHelper('No helper')
+      await sendShown('A clip')
+      await waitFor(() => expect(sends()).toHaveLength(1))
+      await act(async () => failPick())
+      await waitFor(() => expect(screen.getByRole('alert').textContent).toContain(LOST))
+      expect(sends()[0]).toMatchObject({ pair: { helper: null } })
+      // The pick that did not save gives way to the helper that stands.
+      expect(screen.getByTestId('helper-picker').textContent).toBe('Sonnet 5.5')
+    })
+
+    it('sends a retry after a failed draft save with the roles shown at the retry', async () => {
+      let failedOnce = false
+      mockSidecar(
+        {
+          'projects.setHelper': () => new Promise(() => {}),
+          'drafts.set': (_, real) => (failedOnce ? real() : ((failedOnce = true), Promise.reject(new Error(LOST)))),
+        },
+        [{ ...projectA, helper: sonnet }, projectB],
+      )
+      render(<StudioApp />)
+      await openA()
+      pickHelper('No helper')
+      await sendShown('A clip')
+      await waitFor(() => expect(screen.getByRole('alert').textContent).toContain(LOST))
+      expect(sends()).toEqual([])
+      fireEvent.click(screen.getByTestId('send'))
+      await waitFor(() => expect(sends()).toHaveLength(1))
+      expect(sends()[0]).toMatchObject({ pair: { helper: null } })
+    })
+
+    it('saves two picks of one role in the order they were made, and shows the newest throughout', async () => {
+      let answerFirst: () => void = () => {}
+      let held = false
+      mockSidecar(
+        { 'projects.setHelper': (_, real) => (held ? real() : ((held = true), new Promise((resolve) => (answerFirst = () => resolve(real()))))) },
+        [projectA, projectB],
+      )
+      render(<StudioApp />)
+      await openA()
+      pickHelper('Sonnet 5.5')
+      pickHelper('No helper')
+      expect(screen.getByTestId('helper-picker').textContent).toBe('None')
+      await waitFor(() => expect(sidecarCalls('projects.setHelper')).toHaveLength(1))
+      await act(async () => answerFirst())
+      await waitFor(() => expect(sidecarCalls('projects.setHelper')).toHaveLength(2))
+      expect(sidecarCalls('projects.setHelper').map((call) => call.model)).toEqual([sonnet, null])
+      expect(screen.getByTestId('helper-picker').textContent).toBe('None')
+    })
+
+    it('leaves a message already on its way alone when a role is picked after Send', async () => {
+      mockSidecar({ 'chat.send': () => new Promise(() => {}) }, [projectA, projectB])
+      render(<StudioApp />)
+      await openA()
+      await sendShown('A clip')
+      await waitFor(() => expect(sends()).toHaveLength(1))
+      pickHelper('Sonnet 5.5')
+      await waitFor(() => expect(sidecarCalls('projects.setHelper')).toHaveLength(1))
+      expect(sends()[0]).toMatchObject({ pair: { lead: opus, helper: null } })
+    })
   })
 
   it('never brings back a sent start picture from a saved state that was read before the send', async () => {
@@ -1434,7 +1487,7 @@ describe('StudioApp', () => {
     fireEvent.click(screen.getByTestId('send'))
     await waitFor(() => expect(sends()).toHaveLength(1))
     expect(last(saves())).toEqual({ key: 'new', text: 'Make this', attachments: files })
-    expect(sends()).toEqual([{ key: 'new', rev: draftRevs }])
+    expect(sends()).toEqual([{ key: 'new', rev: draftRevs, pair: { lead: { provider: 'anthropic', modelId: 'claude-opus-5-5' } } }])
   })
 
   it("lists the signed-in providers' models with their marks, and keeps each project's pick", async () => {
