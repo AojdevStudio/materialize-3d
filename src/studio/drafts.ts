@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useStore } from 'zustand'
 import { createStore } from 'zustand/vanilla'
-import { type AppState, type Draft, type Project, type SentPair, START } from '../../sidecar/src/protocol'
+import { type AppState, type Draft, type Project, type SentRoles, START } from '../../sidecar/src/protocol'
 import { onFileDrop, onQuitFlush, sidecar } from './api'
 import { releaseAttachment, savedAttachment, type Attachment, type PastedPicture } from './Composer'
 import { checkReady, load, onNextReady, retry, setError, show as showProject, start, useStudio } from './store'
@@ -166,7 +166,7 @@ export function createDrafts(clock: Clock, onSent: (project: Project) => void) {
    * roles shown when Send was pressed, which the turn runs with, and which a project made from the start screen keeps.
    * Answers the project the message went to, or undefined when it did not go.
    */
-  const send = async (pair?: SentPair): Promise<Project | undefined> => {
+  const send = async (pair?: SentRoles): Promise<Project | undefined> => {
     const key = openKey()
     const screen = screens[key]
     if (screen === undefined || (screen.draft.text.trim() === '' && screen.draft.attachments.length === 0) || state.getState().sending) return undefined

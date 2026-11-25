@@ -97,11 +97,9 @@ export default function StudioApp() {
       ...state.projects.map((saved) => take(made.find((p) => p.id === saved.id), saved)),
     ])
   // An engine that started again may have saved roles or settings whose events or answers it never sent, so the window
-  // reads its state again, in the line of settings saves, and takes the chats' roles by revision like any other. Send
-  // waits for that read, as it waits for the first one, and only the newest read lets it go. The first ready at launch
-  // reads nothing more: the window's first read covers it, and brings the drafts with the chats.
-  const [rereading, setRereading] = useState(false)
-  const rereads = useRef(0)
+  // reads its state again, in the line of settings saves, and shows the chats' roles by revision like any other. A send
+  // never waits for it, as the sidecar runs its saved roles. The first ready at launch reads nothing more: the window's
+  // first read covers it, and brings the drafts with the chats.
   const restarted = useRef(false)
   useEffect(
     () =>
@@ -109,12 +107,7 @@ export default function StudioApp() {
         if (event.type === 'engine') restarted.current = true
         if (event.type !== 'ready' || !restarted.current) return
         restarted.current = false
-        rereads.current += 1
-        const read = rereads.current
-        setRereading(true)
-        void readSavedAgain()
-          .then(takeProjects, (err: unknown) => setError(String(err)))
-          .finally(() => read === rereads.current && setRereading(false))
+        void readSavedAgain().then(takeProjects, (err: unknown) => setError(String(err)))
       }).stop,
     [],
   )
@@ -185,13 +178,12 @@ export default function StudioApp() {
   const blocker: Blocker | undefined = needs?.[0] ?? (nextWaitsForLogin ? turnLogin : undefined)
   const cause: SetupCause | undefined = blocker ?? turnLogin ?? (slicerFound === false && !wentOnInSetup ? { kind: 'slicer' } : undefined)
   // Send waits for the saved state, which says whether setup is done, and for the check. On the start screen it also
-  // waits for the model list, as the helper shown there comes from it, and a send carries the roles shown. After the
-  // engine started again, it waits for the chats to be read again.
-  const notReady = setup?.done !== true || needs === null || blocker !== undefined || (!current && models.length === 0) || rereading
+  // waits for the model list, as the helper shown there comes from it, and a start screen send carries that helper.
+  const notReady = setup?.done !== true || needs === null || blocker !== undefined || (!current && models.length === 0)
 
   /**
    * Shows a pick at once and saves it in the background, after the saves of earlier picks. A send never waits for
-   * them: it carries the roles shown when Send was pressed (#373).
+   * them: it carries the picks whose save it has not heard back from (#373).
    */
   const pickCount = useRef(0)
   const pickRole = (key: string, role: keyof ShownPicks, model: ModelChoice | null, save: () => Promise<unknown>) => {
@@ -244,11 +236,13 @@ export default function StudioApp() {
       onRemove={(index) => drafts.remove(attachments[index], index)}
       onSend={() => {
         if (running || notReady || chosenModel === null) return
-        // The send carries the roles shown now, whatever saves are still on their way, and a setting changed later.
-        const pair = { lead: chosenModel, helper: chosenHelper }
-        if (current) void drafts.send(pair)
+        // A send carries only the picks whose save the window has not heard back from, and the sidecar runs each other
+        // role as it saved it when it takes the send, which the window may not have heard yet, as after a restart. A
+        // start screen send also carries the helper it shows, and a setting changed later leaves that helper.
+        const pending = { ...(picked?.lead === undefined ? {} : { lead: picked.lead.model }), ...(picked?.helper === undefined ? {} : { helper: picked.helper.model }) }
+        if (current) void drafts.send(pending)
         else
-          void drafts.send(pair).then((project) => {
+          void drafts.send({ ...pending, helper: chosenHelper }).then((project) => {
             // A helper picked while this send was on its way is the next chat's, so only the choice it carried resets.
             if (project !== undefined) setStartHelper((now) => (now === startHelper ? null : now))
           })
