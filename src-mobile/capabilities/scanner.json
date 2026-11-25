@@ -1,0 +1,8 @@
+{
+  "$schema": "../gen/schemas/mobile-schema.json",
+  "identifier": "scanner",
+  "description": "The camera scan of the computer's pairing code",
+  "webviews": ["main"],
+  "platforms": ["iOS", "android"],
+  "permissions": ["barcode-scanner:allow-scan", "barcode-scanner:allow-cancel", "barcode-scanner:allow-check-permissions", "barcode-scanner:allow-request-permissions"]
+}

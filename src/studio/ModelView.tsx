@@ -42,6 +42,9 @@ async function loadModel(url: string, ext: string): Promise<THREE.Object3D> {
   return gltf.scene
 }
 
+/** The file a model URL names, for the view's label. */
+const fileName = (url: string) => decodeURIComponent(url.split('?')[0].split('/').pop() ?? '')
+
 /** STL and 3MF files are Z-up like the printer. three.js is Y-up. */
 function zUp(object: THREE.Object3D): THREE.Object3D {
   object.rotation.x = -Math.PI / 2
@@ -55,11 +58,13 @@ function zUp(object: THREE.Object3D): THREE.Object3D {
 export default function ModelView({ url, ext }: { url: string; ext: string }) {
   const host = useRef<HTMLDivElement>(null)
   const [error, setError] = useState<string | null>(null)
+  const [loaded, setLoaded] = useState(false)
 
   useEffect(() => {
     const element = host.current
     if (!element) return
     setError(null)
+    setLoaded(false)
     let renderer: THREE.WebGLRenderer
     try {
       renderer = new THREE.WebGLRenderer({ antialias: true })
@@ -127,6 +132,7 @@ export default function ModelView({ url, ext }: { url: string; ext: string }) {
         camera.updateProjectionMatrix()
         controls.update()
         resize()
+        setLoaded(true)
       })
       .catch((err: unknown) => {
         if (!disposed) setError(err instanceof Error ? err.message : String(err))
@@ -151,7 +157,7 @@ export default function ModelView({ url, ext }: { url: string; ext: string }) {
   }, [url, ext])
 
   return (
-    <div className="model-view" ref={host} data-testid="model-view">
+    <div className="model-view" ref={host} data-testid="model-view" role="group" aria-label={error ? undefined : loaded ? `3D model ${fileName(url)}` : 'Loading the 3D model'} aria-busy={!loaded && !error}>
       {error && <p className="preview-note">Could not show this model. {error}</p>}
     </div>
   )
