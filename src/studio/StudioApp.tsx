@@ -110,43 +110,28 @@ export default function StudioApp() {
   const notReady = setup?.done !== true || needs === null || blocker !== undefined
 
   /**
+   * Role saves still on their way. Send waits while any is, and the pickers wait while a send is, so a message always
+   * goes out with the roles shown when Send was pressed, and a pick never overlaps a send (#373).
+   */
+  const [savingRoles, setSavingRoles] = useState(0)
+  const saveRole = (save: Promise<unknown>) => {
+    setSavingRoles((n) => n + 1)
+    void save.catch((err: unknown) => setError(String(err))).finally(() => setSavingRoles((n) => n - 1))
+  }
+
+  /**
    * Saves a pick: the open project's model, or on the start screen the default the next project takes. The check runs
    * again then, as the new model's provider may differ.
    */
-  /**
-   * What the person clicked, in click order: role saves and sends. A send reads its chat and draft at the click, then
-   * waits for everything clicked before it. A role save waits for everything clicked before it, sends included, so a
-   * pick made before Send counts for that message and one made after counts only for later turns.
-   */
-  // It settles true while every role save since the last send went through. A send that finds one failed keeps its
-  // draft, since it would go out on roles the person did not choose, and the next send starts clean.
-  const clicked = useRef<Promise<boolean>>(Promise.resolve(true))
-  const afterClicked = (save: () => Promise<unknown>) => {
-    clicked.current = clicked.current.then((ok) =>
-      save().then(
-        () => ok,
-        (err: unknown) => {
-          setError(String(err))
-          return false
-        },
-      ),
-    )
-  }
-  const send = (startHelper?: ModelChoice | null) => {
-    const sent = drafts.send(startHelper, clicked.current)
-    clicked.current = sent.then(() => true)
-    return sent
-  }
-
   const pickModel = (model: ModelChoice) => {
     const project = current?.id
     if (project === undefined) {
-      afterClicked(() => saveSettings({ model }).then(() => checkReady()))
+      saveRole(saveSettings({ model }).then(() => checkReady()))
       return
     }
     // The saved project comes back as a `project` event, which updates the picker. The reply carries no roles, so a
     // reply that arrives after a newer save, as from a paired phone, cannot bring an older pick back.
-    afterClicked(() => sidecar('projects.setLead', { project, model }))
+    saveRole(sidecar('projects.setLead', { project, model }))
   }
 
   /**
@@ -160,7 +145,7 @@ export default function StudioApp() {
       return
     }
     // As for the lead: the `project` event, not this reply, updates the picker.
-    afterClicked(() => sidecar('projects.setHelper', { project, model }))
+    saveRole(sidecar('projects.setHelper', { project, model }))
   }
 
   const composer = (
@@ -173,26 +158,25 @@ export default function StudioApp() {
       onPaste={drafts.paste}
       onRemove={(index) => drafts.remove(attachments[index], index)}
       onSend={() => {
-        if (running || notReady) return
-        if (current) void send()
+        if (running || notReady || savingRoles > 0) return
+        if (current) void drafts.send()
         // Only a helper the person picked goes with the send. Without a pick the sidecar gives the default, which the
         // window may not know yet, as before the model list arrives.
         else
-          void send(startHelper?.pick).then((project) => {
-            // A pick made while the send was out is the next chat's, so only the pick that went resets.
-            if (project !== undefined) setStartHelper((now) => (now === startHelper ? null : now))
+          void drafts.send(startHelper?.pick).then((project) => {
+            if (project !== undefined) setStartHelper(null)
           })
       }}
       onError={setError}
       onStop={current ? () => void sidecar('chat.stop', { project: current.id }).catch((err: unknown) => setError(String(err))) : undefined}
-      busy={sending || running || notReady}
+      busy={sending || running || notReady || savingRoles > 0}
       running={running}
       locked={blocker === undefined ? undefined : lockedText(blocker)}
       picker={
         blocker !== undefined && models.length === 0 ? null : (
           <span className="model-roles">
-            <ModelPicker role="Lead" models={models} chosen={chosenModel} onPick={pickModel} />
-            <ModelPicker role="Helper" models={models} chosen={chosenHelper} onPick={pickHelper} />
+            <ModelPicker role="Lead" models={models} chosen={chosenModel} onPick={pickModel} held={sending} />
+            <ModelPicker role="Helper" models={models} chosen={chosenHelper} onPick={pickHelper} held={sending} />
           </span>
         )
       }
