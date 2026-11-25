@@ -680,6 +680,22 @@ describe('MobileApp', () => {
       expect(reads).toHaveLength(1)
     })
 
+    it('sends nothing for a tap that lands after a drop and reconnect, before the screen redraws or the list is read', async () => {
+      const { log } = computerWithRoles()
+      await openBracket()
+      fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'Make it thicker' } })
+      const send = () => screen.getByRole('button', { name: 'Send' }) as HTMLButtonElement
+      await waitFor(() => expect(send().disabled).toBe(false))
+
+      // The link drops and comes back in one batch, outside act, as the native channel delivers it, and the tap lands
+      // on the Send the screen still draws as on.
+      stream.heard?.({ kind: 'offline', detail: 'The computer did not answer.' })
+      stream.heard?.({ kind: 'connected' })
+      fireEvent.click(send())
+      await act(() => new Promise((resolve) => setTimeout(resolve, 50)))
+      expect(log.filter((write) => write.startsWith('PUT /chats/bracket/draft') || write.startsWith('POST /chats/bracket/send'))).toEqual([])
+    })
+
     it('turns Send off within the event itself, so a tap queued right behind it sends nothing', async () => {
       computerWithRoles()
       await openBracket()

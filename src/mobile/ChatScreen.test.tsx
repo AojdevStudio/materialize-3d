@@ -62,7 +62,7 @@ describe('ChatScreen', () => {
     const picks: unknown[] = []
     const { container } = render(
       <SessionContext.Provider value={session()}>
-        <ChatScreen chat={chat} writing={false} onPick={(change) => picks.push(change)} onBack={() => {}} />
+        <ChatScreen chat={chat} writing={false} confirmed={() => true} onPick={(change) => picks.push(change)} onBack={() => {}} />
       </SessionContext.Provider>,
     )
     await screen.findAllByTestId('handoff')
@@ -79,7 +79,7 @@ describe('ChatScreen', () => {
     sender.setRunning(true, 5)
     render(
       <SessionContext.Provider value={{ link: 'offline', sends: 0, listen: () => () => {}, sender: () => sender }}>
-        <ChatScreen chat={chat} writing={false} onPick={() => {}} onBack={() => {}} />
+        <ChatScreen chat={chat} writing={false} confirmed={() => true} onPick={() => {}} onBack={() => {}} />
       </SessionContext.Provider>,
     )
     await screen.findByRole('button', { name: 'Send' })
@@ -99,7 +99,7 @@ describe('ChatScreen', () => {
     const live: Session = { link: 'connected', sends: 0, listen: (hear) => (heard.push(hear), () => {}), sender: () => sender }
     render(
       <SessionContext.Provider value={live}>
-        <ChatScreen chat={chat} writing={false} onPick={() => {}} onBack={() => {}} />
+        <ChatScreen chat={chat} writing={false} confirmed={() => true} onPick={() => {}} onBack={() => {}} />
       </SessionContext.Provider>,
     )
     await screen.findAllByTestId('handoff')
@@ -158,7 +158,7 @@ describe('ChatScreen', () => {
     })
     const { container } = render(
       <SessionContext.Provider value={session()}>
-        <ChatScreen chat={chat} writing={false} onPick={() => {}} onBack={() => {}} />
+        <ChatScreen chat={chat} writing={false} confirmed={() => true} onPick={() => {}} onBack={() => {}} />
       </SessionContext.Provider>,
     )
     await screen.findByTestId('helper-picker')
@@ -171,7 +171,7 @@ describe('ChatScreen', () => {
     const shared = session()
     const screenWith = (writing: boolean) => (
       <SessionContext.Provider value={shared}>
-        <ChatScreen chat={chat} writing={writing} onPick={() => {}} onBack={() => {}} />
+        <ChatScreen chat={chat} writing={writing} confirmed={() => !writing} onPick={() => {}} onBack={() => {}} />
       </SessionContext.Provider>
     )
     const { rerender } = render(screenWith(true))

@@ -62,16 +62,20 @@ const OUTBOX_NOTE: Partial<Record<Outbox['kind'], string>> = {
  * The chat is the desktop's own chat view, kept live from the computer's stream. The composer is the chat's outbox for
  * this pairing, so a draft and a send outlive the screen, and it holds the desktop's Lead and Helper pickers. The
  * chat's roles are its newest requested pair, and `onPick` asks for a new one. `writing` holds Send while a write to
- * the computer is out or the roles it kept are not read yet.
+ * the computer is out or the roles it kept are not read yet. `confirmed` says the same at the moment of a tap, from
+ * the paired screen's own record rather than the last drawn screen, so a tap that lands before the screen redraws
+ * sends nothing either.
  */
 export default function ChatScreen({
   chat,
   writing,
+  confirmed,
   onPick,
   onBack,
 }: {
   chat: MobileChat
   writing: boolean
+  confirmed: () => boolean
   onPick: (change: Partial<Roles>) => void
   onBack: () => void
 }) {
@@ -314,7 +318,7 @@ export default function ChatScreen({
             className="composer"
             onSubmit={(event) => {
               event.preventDefault()
-              void sender.send()
+              if (confirmed()) void sender.send()
             }}
           >
             {message.pictures.length > 0 && (

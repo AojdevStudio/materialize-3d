@@ -389,7 +389,13 @@ function Paired({ computer, onForget }: { computer: Computer; onForget: () => Pr
   if (open !== undefined)
     return (
       <SessionContext.Provider value={session}>
-        <ChatScreen chat={open} writing={writing > 0 || unsure} onPick={(change) => pick(open.id, change)} onBack={() => setOpenId(null)} />
+        <ChatScreen
+          chat={open}
+          writing={writing > 0 || unsure}
+          confirmed={() => !required.current && writes.current.finished === writes.current.started}
+          onPick={(change) => pick(open.id, change)}
+          onBack={() => setOpenId(null)}
+        />
         {error && (
           <p className="mobile-error" role="alert">
             {error}{' '}
