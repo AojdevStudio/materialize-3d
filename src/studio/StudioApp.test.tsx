@@ -1195,6 +1195,43 @@ describe('StudioApp', () => {
       expect(sidecarCalls('projects.setHelper').map((call) => call.model)).toEqual([sonnet, null])
     })
 
+    it('quits only once the picks made while it waits are saved too', async () => {
+      const answers: (() => void)[] = []
+      mockSidecar({ 'projects.setHelper': (_, real) => new Promise((resolve) => answers.push(() => resolve(real()))) }, [projectA, projectB])
+      render(<StudioApp />)
+      await openA()
+      pickHelper('Sonnet 5.5')
+      await waitFor(() => expect(answers).toHaveLength(1))
+      await act(async () => listeners.flush.forEach((listener) => listener({ payload: null })))
+      pickHelper('No helper')
+      pickHelper('GPT 6.1 Sol')
+      const flushed = () => invokeMock.mock.calls.some(([command]) => command === 'studio_flushed')
+      await act(async () => answers[0]())
+      await waitFor(() => expect(answers).toHaveLength(2))
+      await act(async () => answers[1]())
+      await waitFor(() => expect(answers).toHaveLength(3))
+      await pause(50)
+      expect(flushed()).toBe(false)
+      await act(async () => answers[2]())
+      await waitFor(() => expect(flushed()).toBe(true))
+      expect(sidecarCalls('projects.setHelper').map((call) => call.model)).toEqual([sonnet, null, { provider: 'openai-codex', modelId: 'gpt-6.1-sol' }])
+    })
+
+    it("sends a new chat's next message on a role a paired phone saved before the start reply came", async () => {
+      let answerSend: () => void = () => {}
+      mockSidecar({ 'chat.send': (params, real) => (params.key === 'new' ? new Promise((resolve) => (answerSend = () => resolve(real()))) : real()) })
+      render(<StudioApp />)
+      await sendShown('A clip')
+      await waitFor(() => expect(sends()).toHaveLength(1))
+      await emit({ type: 'project', project: { ...made, helper: sonnet } })
+      await act(async () => answerSend())
+      await waitFor(() => expect(openTitle()).toBe('A clip'))
+      expect(screen.getByTestId('helper-picker').textContent).toBe('Sonnet 5.5')
+      await sendShown('A lid')
+      await waitFor(() => expect(sends()).toHaveLength(2))
+      expect(sends()[1]).toMatchObject({ key: made.id, pair: { lead: opus, helper: sonnet } })
+    })
+
     it('leaves a message already on its way alone when a role is picked after Send', async () => {
       mockSidecar({ 'chat.send': () => new Promise(() => {}) }, [projectA, projectB])
       render(<StudioApp />)

@@ -55,12 +55,13 @@ export default function StudioApp() {
 
   useStudioEvents(projects)
   // A paired phone can change a chat's roles too, so the window takes each project the sidecar says changed, and checks
-  // again what the next send needs, as after a pick here.
+  // again what the next send needs, as after a pick here. A project not listed yet, as one whose start reply is still
+  // on its way, joins the list, so that reply finds it and keeps it.
   useEffect(
     () =>
       onSidecarEvent((event) => {
         if (event.type !== 'project') return
-        setProjects((all) => all.map((p) => (p.id === event.project.id ? event.project : p)))
+        setProjects((all) => (all.some((p) => p.id === event.project.id) ? all.map((p) => (p.id === event.project.id ? event.project : p)) : [event.project, ...all]))
         checkReady()
       }).stop,
     [],
