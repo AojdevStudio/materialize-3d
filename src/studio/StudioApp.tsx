@@ -165,8 +165,9 @@ export default function StudioApp() {
   const notReady = setup?.done !== true || needs === null || blocker !== undefined
 
   /**
-   * Shows a pick at once and saves it in the background, after the saves of earlier picks. A send never waits for
-   * them: it carries the picks whose save it has not heard back from (#373).
+   * Shows a pick at once and saves it in the background, after the saves of earlier picks and after any send pressed
+   * before it was answered. A send never waits for them: it carries the picks whose save it has not heard back from
+   * (#373).
    */
   const pickCount = useRef(0)
   const pickRole = (key: string, role: keyof ShownPicks, model: ModelChoice | null, save: () => Promise<unknown>) => {
@@ -224,9 +225,12 @@ export default function StudioApp() {
         // on the start screen is saved only by the send, so it always goes with it.
         const helper = current ? picked?.helper : startHelper === null ? undefined : { model: startHelper.pick }
         const pending = { ...(picked?.lead === undefined ? {} : { lead: picked.lead.model }), ...(helper === undefined ? {} : { helper: helper.model }) }
-        if (current) void drafts.send(pending)
-        else
-          void drafts.send(pending).then((project) => {
+        const sent = drafts.send(pending)
+        // A pick made from now on saves once the sidecar answered this send, which it does after it accepted the turn,
+        // so the pick goes to the next message and never to this one. The calls themselves can reach it in any order.
+        saves.current = saves.current.then(() => sent)
+        if (!current)
+          void sent.then((project) => {
             // A helper picked while this send was on its way is the next chat's, so only the choice it carried resets.
             if (project !== undefined) setStartHelper((now) => (now === startHelper ? null : now))
           })

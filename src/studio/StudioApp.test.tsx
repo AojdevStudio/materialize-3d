@@ -1465,6 +1465,39 @@ describe('StudioApp', () => {
       expect(sends()[0]?.pair).toEqual({})
     })
 
+    it('runs a message on the roles saved before Send, and the next one on a pick made right after it', async () => {
+      // The sidecar takes a role the send leaves out from what is saved when it accepts the turn, which it does only when
+      // the send's answer goes out. This one records the helper each turn ran.
+      const turns: (typeof sonnet | null)[] = []
+      let accept: () => void = () => {}
+      const store = mockSidecar(
+        {
+          'chat.send': (params, real) =>
+            new Promise((resolve) => {
+              accept = () => {
+                const pair = params.pair as { helper?: typeof sonnet | null }
+                turns.push(pair.helper === undefined ? (store.projects.find((p) => p.id === params.key)?.helper ?? null) : pair.helper)
+                resolve(real())
+              }
+            }),
+        },
+        [projectA, projectB],
+      )
+      render(<StudioApp />)
+      await openA()
+      await sendShown('A clip')
+      await waitFor(() => expect(sends()).toHaveLength(1))
+      pickHelper('Sonnet 5.5')
+      await pause(50)
+      await act(async () => accept())
+      await waitFor(() => expect(sidecarCalls('projects.setHelper')).toHaveLength(1))
+      await waitFor(() => expect(screen.getByTestId('helper-picker').textContent).toBe('Sonnet 5.5'))
+      await sendShown('A lid')
+      await waitFor(() => expect(sends()).toHaveLength(2))
+      await act(async () => accept())
+      expect(turns).toEqual([null, sonnet])
+    })
+
     it('leaves a message already on its way alone when a role is picked after Send', async () => {
       mockSidecar({ 'chat.send': () => new Promise(() => {}) }, [projectA, projectB])
       render(<StudioApp />)
@@ -1472,7 +1505,10 @@ describe('StudioApp', () => {
       await sendShown('A clip')
       await waitFor(() => expect(sends()).toHaveLength(1))
       pickHelper('Sonnet 5.5')
-      await waitFor(() => expect(sidecarCalls('projects.setHelper')).toHaveLength(1))
+      // The pick shows at once, and its save waits for the send's answer, so the sidecar never takes it for this turn.
+      expect(screen.getByTestId('helper-picker').textContent).toBe('Sonnet 5.5')
+      await pause(50)
+      expect(sidecarCalls('projects.setHelper')).toHaveLength(0)
       expect(sends()[0]?.pair).toEqual({})
     })
   })
