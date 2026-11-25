@@ -222,6 +222,7 @@ function Paired({ computer, onForget }: { computer: Computer; onForget: () => Pr
   // the link is up shows why. A read that ends after the device forgot the computer keeps nothing.
   useEffect(() => {
     if (open !== null) return
+    // A newer read replaces this one, so a slow earlier answer cannot put an older list back.
     let current = true
     setError(null)
     remoteJson<MobileChat[]>(api('/chats')).then(
