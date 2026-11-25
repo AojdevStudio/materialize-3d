@@ -91,11 +91,7 @@ export default function ChatScreen({
   const tablet = useSyncExternalStore(watchTablet, isTablet)
   const [modelOpened, setModelOpened] = useState(false)
   if (tablet && !modelOpened) setModelOpened(true)
-  // The chat keeps itself at its newest line, but cannot while the Model tab hides it. So on the way back, the newest
-  // line comes into view only if the chat changed meanwhile, and a reader who changed nothing keeps their place.
   const chatPane = useRef<HTMLDivElement>(null)
-  const leftChatAt = useRef('')
-  const [catchUp, setCatchUp] = useState(false)
   // A role menu opens 4 px above the composer, which `studio.css` positions it from. The room it has there is measured,
   // as the composer grows with pictures and a phone on its side is short, and `mobile.css` caps the menu to it, so the
   // menu scrolls rather than leave the screen. A composer the Model tab hides has no box, and keeps the last room.
@@ -118,11 +114,6 @@ export default function ChatScreen({
       window.removeEventListener('resize', measure)
     }
   }, [composerShown])
-  useEffect(() => {
-    if (tab !== 'chat' || !catchUp) return
-    chatPane.current?.querySelector('[data-testid=messages]')?.lastElementChild?.scrollIntoView({ block: 'end' })
-    setCatchUp(false)
-  }, [tab, catchUp])
   /** The model file the person chose. Until then, the newest this device can show, so a sliced file takes over from its draft part. */
   const [chosenFile, setChosenFile] = useState<string | null>(null)
   /** Bumped by Reset view, which turns the viewer back to its first angle without loading the model again. */
@@ -195,12 +186,33 @@ export default function ChatScreen({
 
   const items = useMemo(() => buildChat(view?.entries ?? [], view === null || running, view?.handoffs ?? []), [view, running])
   // What the chat shows, in the measure the chat follows its newest line by: its items, their lines (a trace's steps,
-  // a handoff's progress), and whether the turn runs. A reread that shows the same is no change.
+  // a handoff's progress), whether the turn runs, and each handoff's state. A reread that shows the same is no change.
   const shownLines = items.reduce(
     (count, item) => count + (item.kind === 'trace' ? item.lines.length : item.kind === 'handoff' ? 1 + (item.progress?.steps ?? 0) : 1),
     0,
   )
-  const shownState = `${items.length}:${shownLines}:${running}`
+  // A handoff that ends keeps its line count but changes its state and shows its result, so those count too.
+  const handoffs = items.map((item) => (item.kind === 'handoff' ? `${item.state}:${item.result?.length ?? 0}` : '')).join(',')
+  const shownState = `${items.length}:${shownLines}:${running}:${handoffs}`
+  // The chat keeps itself at its newest line, but cannot while it is hidden, which only a phone-sized screen on the
+  // Model tab does. What it showed when it was hidden is noted. When it shows again, the newest line comes into view
+  // only if that changed, so a reader who missed nothing keeps their place.
+  const chatHidden = !tablet && tab === 'model'
+  const shownNow = useRef(shownState)
+  useEffect(() => {
+    shownNow.current = shownState
+  })
+  const hiddenAt = useRef<string | null>(null)
+  useEffect(() => {
+    if (chatHidden) {
+      hiddenAt.current = shownNow.current
+      return
+    }
+    if (hiddenAt.current !== null && hiddenAt.current !== shownNow.current) {
+      chatPane.current?.querySelector('[data-testid=messages]')?.lastElementChild?.scrollIntoView({ block: 'end' })
+    }
+    hiddenAt.current = null
+  }, [chatHidden])
   const newest = [...items].reverse().find((item): item is HandoffItem => item.kind === 'handoff')
   const file = files.find((f) => f.rel === chosenFile) ?? files.find(fits) ?? files[0]
   const editable = outbox.kind === 'draft'
@@ -227,8 +239,6 @@ export default function ChatScreen({
               key={name}
               aria-selected={tab === name}
               onClick={() => {
-                if (name === 'model' && tab === 'chat') leftChatAt.current = shownState
-                if (name === 'chat' && tab === 'model') setCatchUp(leftChatAt.current !== shownState)
                 setTab(name)
                 if (name === 'model') setModelOpened(true)
               }}

@@ -39,8 +39,23 @@ vi.stubGlobal('fetch', async (url: string) => {
 })
 
 afterEach(cleanup)
-// jsdom has no media queries. These tests run on a tablet, which shows the model beside the chat.
-vi.stubGlobal('matchMedia', () => ({ matches: true, addEventListener: () => {}, removeEventListener: () => {} }))
+// jsdom has no media queries. These tests run on a tablet, which shows the model beside the chat, unless one says phone.
+const screenSize = {
+  tablet: true,
+  heard: new Set<() => void>(),
+  resize(tablet: boolean) {
+    this.tablet = tablet
+    for (const changed of this.heard) changed()
+  },
+}
+vi.stubGlobal('matchMedia', () => ({
+  matches: screenSize.tablet,
+  addEventListener: (_: string, changed: () => void) => screenSize.heard.add(changed),
+  removeEventListener: (_: string, changed: () => void) => screenSize.heard.delete(changed),
+}))
+afterEach(() => {
+  screenSize.tablet = true
+})
 
 describe('ChatScreen', () => {
   it('names each saved handoff by the pair it ran with, and asks to save a lead picked for the next message', async () => {
@@ -78,6 +93,7 @@ describe('ChatScreen', () => {
     const spy = vi.spyOn(Element.prototype, 'scrollIntoView').mockImplementation(function (this: Element) {
       scrolled.push(this)
     })
+    screenSize.tablet = false
     const heard: ((change: ChatView) => void)[] = []
     const sender = new Sender('bracket', 'connected', () => {})
     const live: Session = { link: 'connected', sends: 0, listen: (hear) => (heard.push(hear), () => {}), sender: () => sender }
@@ -97,6 +113,14 @@ describe('ChatScreen', () => {
     fireEvent.click(screen.getByRole('tab', { name: 'Chat' }))
     expect(scrolled).not.toContain(end())
 
+    // A handoff ends while the Model tab shows, which adds no line: the way back still brings its result into view.
+    fireEvent.click(screen.getByRole('tab', { name: 'Model' }))
+    const ended = saved.entries.map((entry) => (entry.kind === 'tool' && entry.id === 12 ? { ...entry, text: 'It fits, with 0.2 mm to spare.' } : entry))
+    act(() => heard.forEach((hear) => hear({ ...saved, entries: ended, seq: 5.5 })))
+    scrolled.length = 0
+    fireEvent.click(screen.getByRole('tab', { name: 'Chat' }))
+    expect(scrolled).toContain(end())
+
     // A reply comes while the Model tab shows: the way back brings it into view.
     fireEvent.click(screen.getByRole('tab', { name: 'Model' }))
     const reply = { id: 20, kind: 'assistant' as const, text: 'Here it is.', calls: [], model: SOL }
@@ -104,6 +128,17 @@ describe('ChatScreen', () => {
     scrolled.length = 0
     fireEvent.click(screen.getByRole('tab', { name: 'Chat' }))
     expect(scrolled).toContain(end())
+
+    // On the Model tab the screen widens to a split view, so the chat shows, and a reply comes while it shows. The
+    // chat follows it itself. Narrowed and back on Chat, the reader missed nothing and keeps their place.
+    fireEvent.click(screen.getByRole('tab', { name: 'Model' }))
+    act(() => screenSize.resize(true))
+    const later = { id: 21, kind: 'assistant' as const, text: 'And the lid.', calls: [], model: SOL }
+    act(() => heard.forEach((hear) => hear({ ...saved, entries: [...saved.entries, reply, later], seq: 7 })))
+    act(() => screenSize.resize(false))
+    scrolled.length = 0
+    fireEvent.click(screen.getByRole('tab', { name: 'Chat' }))
+    expect(scrolled).not.toContain(end())
     spy.mockRestore()
   })
 
