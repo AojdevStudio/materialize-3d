@@ -652,6 +652,25 @@ describe('MobileApp', () => {
       expect(screen.queryByText('The chat list could not be read.')).toBeNull()
     })
 
+    it('keeps Send off through a reconnect until the list read it brings, never on in between', async () => {
+      computerWithRoles()
+      await openBracket()
+      fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'Make it thicker' } })
+      const send = () => screen.getByRole('button', { name: 'Send' }) as HTMLButtonElement
+      await waitFor(() => expect(send().disabled).toBe(false))
+      await linkIs({ kind: 'offline', detail: 'The computer did not answer.' })
+      expect(send().disabled).toBe(true)
+
+      // Every state Send passes through on the way back, as the screen draws it.
+      const seen: boolean[] = []
+      const watch = new MutationObserver(() => seen.push(send().disabled))
+      watch.observe(send(), { attributes: true, attributeFilter: ['disabled'] })
+      await linkIs({ kind: 'connected' })
+      await waitFor(() => expect(send().disabled).toBe(false))
+      watch.disconnect()
+      expect(seen).toEqual([false])
+    })
+
     it('turns Send off within the event itself, so a tap queued right behind it sends nothing', async () => {
       computerWithRoles()
       await openBracket()

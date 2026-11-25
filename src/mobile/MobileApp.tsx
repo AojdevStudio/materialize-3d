@@ -231,8 +231,17 @@ function Paired({ computer, onForget }: { computer: Computer; onForget: () => Pr
   useEffect(() => {
     watchLink((message) => {
       // The link stays current while Forget waits, so a Forget that fails leaves it right.
-      if (message.kind === 'connected') return setLink('connected')
-      if (message.kind === 'offline') return setLink('offline')
+      if (message.kind === 'connected') {
+        // Pairs changed elsewhere while the link was down were not heard, so Send waits for the list read it brings.
+        // The hold lands in the same render as the link, so Send is never on in between.
+        if (!connected.current) hold(true)
+        connected.current = true
+        return setLink('connected')
+      }
+      if (message.kind === 'offline') {
+        connected.current = false
+        return setLink('offline')
+      }
       if (closing.current) return
       const change = chatEvent(message.event)
       if (change !== null) {
@@ -253,9 +262,6 @@ function Paired({ computer, onForget }: { computer: Computer; onForget: () => Pr
 
   useEffect(() => {
     for (const sender of senders.current.values()) sender.link(link)
-    // Pairs changed elsewhere while the link was down were not heard, so Send waits for the list read it brings.
-    connected.current = link === 'connected'
-    if (link === 'connected') hold(true)
   }, [link])
 
   // The list reads the computer again each time it shows, after a chat or Refresh, so a chat made on the computer
