@@ -15,6 +15,9 @@ const SCENE: Record<Theme, { background: number; axis: number; line: number }> =
   dark: { background: 0x000000, axis: 0x3d3d3d, line: 0x1f1f1f },
 }
 
+/** The camera's vertical view, in degrees, in a view at least as wide as it is tall. */
+const FOV = 40
+
 async function loadModel(url: string, ext: string): Promise<THREE.Object3D> {
   const response = await fetch(url)
   if (!response.ok) throw new Error(await response.text())
@@ -55,9 +58,13 @@ function zUp(object: THREE.Object3D): THREE.Object3D {
  * A simple orbit viewer. It draws only when the view or the theme changes, so an idle
  * preview costs nothing.
  */
-export default function ModelView({ url, ext }: { url: string; ext: string }) {
+export default function ModelView({ url, ext, reset = 0 }: { url: string; ext: string; reset?: number }) {
   const host = useRef<HTMLDivElement>(null)
+  /** The viewer's controls, so a reset turns the same view back without loading the model again. */
+  const controlling = useRef<OrbitControls | null>(null)
   const [error, setError] = useState<string | null>(null)
+  /** Bumped when a reset finds the model never loaded, which loads it again. */
+  const [attempt, setAttempt] = useState(0)
   const [loaded, setLoaded] = useState(false)
 
   useEffect(() => {
@@ -78,8 +85,9 @@ export default function ModelView({ url, ext }: { url: string; ext: string }) {
     scene.add(new THREE.HemisphereLight(0xffffff, 0xb8b4ac, 2.2))
     const sun = new THREE.DirectionalLight(0xffffff, 1.6)
     scene.add(sun)
-    const camera = new THREE.PerspectiveCamera(40, 1, 0.1, 100000)
+    const camera = new THREE.PerspectiveCamera(FOV, 1, 0.1, 100000)
     const controls = new OrbitControls(camera, renderer.domElement)
+    controlling.current = controls
     const render = () => {
       sun.position.copy(camera.position)
       renderer.render(scene, camera)
@@ -90,6 +98,8 @@ export default function ModelView({ url, ext }: { url: string; ext: string }) {
       if (width === 0 || height === 0) return
       renderer.setSize(width, height)
       camera.aspect = width / height
+      // A view taller than it is wide, as on a phone, keeps the same width of view, so the part still fits across it.
+      camera.fov = camera.aspect >= 1 ? FOV : THREE.MathUtils.radToDeg(2 * Math.atan(Math.tan(THREE.MathUtils.degToRad(FOV / 2)) / camera.aspect))
       camera.updateProjectionMatrix()
       render()
     }
@@ -131,6 +141,8 @@ export default function ModelView({ url, ext }: { url: string; ext: string }) {
         camera.far = radius * 100
         camera.updateProjectionMatrix()
         controls.update()
+        // The first angle, which a reset goes back to.
+        controls.saveState()
         resize()
         setLoaded(true)
       })
@@ -154,10 +166,20 @@ export default function ModelView({ url, ext }: { url: string; ext: string }) {
       renderer.dispose()
       element.removeChild(renderer.domElement)
     }
-  }, [url, ext])
+  }, [url, ext, attempt])
+
+  // Each new `reset` turns the view back to its first angle, and the model stays loaded. A model that failed to load
+  // is loaded again.
+  useEffect(() => {
+    if (reset === 0) return
+    if (error !== null) setAttempt((n) => n + 1)
+    else controlling.current?.reset()
+  }, [reset])
 
   return (
-    <div className="model-view" ref={host} data-testid="model-view" role="group" aria-label={error ? undefined : loaded ? `3D model ${fileName(url)}` : 'Loading the 3D model'} aria-busy={!loaded && !error}>
+    // Once the model shows, the view is one image to assistive tech, so a test on a device can tell a drawn model from a
+    // load still running or failed. Before that, it is a group, so its label and its note stay readable.
+    <div className="model-view" ref={host} data-testid="model-view" role={loaded ? 'img' : 'group'} aria-label={error ? undefined : loaded ? `3D model ${fileName(url)}` : 'Loading the 3D model'} aria-busy={!loaded && !error}>
       {error && <p className="preview-note">Could not show this model. {error}</p>}
     </div>
   )

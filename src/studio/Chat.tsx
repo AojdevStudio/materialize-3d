@@ -1,6 +1,5 @@
 import { useEffect, useRef } from 'react'
 import { modelName } from '../../sidecar/src/offered'
-import { fileUrl } from './api'
 import { fileName } from './files'
 import Markdown from './Markdown'
 import { Mark } from './marks'
@@ -8,7 +7,8 @@ import Trace, { Handoff, Working } from './Trace'
 import type { ChatItem } from './transcript'
 
 interface ChatViewProps {
-  project: string
+  /** Where a message's picture loads from. Without it a picture shows by its name, as the phone does. */
+  pictureUrl?: (rel: string) => string
   items: ChatItem[]
   running: boolean
   /** When the running turn started, for how long it has worked. */
@@ -16,7 +16,7 @@ interface ChatViewProps {
   onError: (message: string) => void
 }
 
-export function ChatView({ project, items, running, startedMs, onError }: ChatViewProps) {
+export function ChatView({ pictureUrl, items, running, startedMs, onError }: ChatViewProps) {
   const end = useRef<HTMLDivElement>(null)
   // A new step joins its trace, and a helper's step its handoff, so the steps count as lines too.
   const lines = items.reduce(
@@ -32,22 +32,24 @@ export function ChatView({ project, items, running, startedMs, onError }: ChatVi
     <div className="messages" data-testid="messages">
       {items.map((item, i) => {
         switch (item.kind) {
-          case 'user':
+          case 'user': {
+            const named = pictureUrl === undefined ? [...item.images, ...item.files] : item.files
             return (
               <div key={i} className="msg-user">
-                {item.images.length > 0 && (
+                {pictureUrl !== undefined && item.images.length > 0 && (
                   <div className="msg-images">
-                    {item.images.map((rel) => <img key={rel} src={fileUrl(project, rel)} alt={rel} />)}
+                    {item.images.map((rel) => <img key={rel} src={pictureUrl(rel)} alt={rel} />)}
                   </div>
                 )}
-                {item.files.length > 0 && (
+                {named.length > 0 && (
                   <ul className="msg-files">
-                    {item.files.map((rel) => <li key={rel}>{fileName(rel)}</li>)}
+                    {named.map((rel) => <li key={rel}>{fileName(rel)}</li>)}
                   </ul>
                 )}
                 {item.text && <div className="bubble">{item.text}</div>}
               </div>
             )
+          }
           case 'byline':
             return (
               <div key={i} className="msg-byline" data-testid="byline">

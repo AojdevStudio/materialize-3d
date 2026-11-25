@@ -19,6 +19,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri = { version = "~2.12.5", features = [] }
 sha2 = "0.11"
+# Opens a web link from an agent reply in the browser, as on desktop.
+tauri-plugin-opener = "2"
 thiserror = "1"
 url = "2"
 # The Keychain on iOS. Other targets get keyring's in-memory store, which the tests use.

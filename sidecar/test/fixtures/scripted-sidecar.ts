@@ -270,5 +270,18 @@ await runSidecar({
       ...codex.provider,
       auth: { apiKey: { name: 'OpenAI Codex test key', resolve: async ({ credential }) => (credential?.key === undefined ? undefined : { auth: { apiKey: credential.key } }) } },
     })
+    // With M3D_MORE_PROVIDERS set, Anthropic and OpenCode Go answer as scripted too, so a saved key offers their models
+    // and the role menus hold the whole catalog, as a person signed in to all three sees them.
+    if (process.env.M3D_MORE_PROVIDERS !== undefined) {
+      for (const provider of ['anthropic', 'opencode-go']) {
+        const ids = catalog.families.filter((family) => family.provider === provider).flatMap((family) => family.versions.map((v) => ({ id: v.modelId })))
+        const scripted = fauxProvider({ provider, models: ids })
+        scripted.setResponses(Array.from({ length: 200 }, () => (context, _options, _state, model) => answer(context, model)))
+        models.setProvider({
+          ...scripted.provider,
+          auth: { apiKey: { name: `${provider} test key`, resolve: async ({ credential }) => (credential?.key === undefined ? undefined : { auth: { apiKey: credential.key } }) } },
+        })
+      }
+    }
   },
 })

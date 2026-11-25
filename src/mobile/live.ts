@@ -53,6 +53,11 @@ export interface Session {
   listen: (heard: ChatListener) => () => void
   /** Counts the messages the computer took from this device, so an open chat reads itself again after each. */
   sends: number
+  /**
+   * Counts the times the link came up again, so an open chat reads itself again after each, even when the drop and the
+   * return reached the screen together and `link` never changed.
+   */
+  reconnects: number
 }
 
 export const SessionContext = createContext<Session | null>(null)

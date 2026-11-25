@@ -81,15 +81,19 @@ export class Sender {
   readonly #chat: string
   /** Called when the computer holds a message this device sent. */
   readonly #sent: () => void
+  /** Runs a send's saves and send in their turn among the device's other writes to the computer, such as role picks. */
+  readonly #order: (work: () => Promise<void>) => Promise<unknown>
 
   constructor(
     readonly project: string,
     link: Link,
     sent: () => void,
+    order: (work: () => Promise<void>) => Promise<unknown> = (work) => work(),
   ) {
     this.#chat = `/api/v1/chats/${encodeURIComponent(project)}`
     this.#link = link
     this.#sent = sent
+    this.#order = order
     this.#load()
   }
 
@@ -265,6 +269,10 @@ export class Sender {
     const { message } = outbox
     clearTimeout(this.#saving)
     this.#set({ kind: 'sending', message })
+    await this.#order(() => this.#sendNow(message))
+  }
+
+  async #sendNow(message: Message) {
     let rev: number
     try {
       // The words as typed reach the device first, so a computer that never answers loses none of them.
