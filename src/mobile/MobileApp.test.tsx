@@ -996,4 +996,24 @@ describe('a draft and the link to the computer', () => {
     await new Promise((resolve) => setTimeout(resolve, 50))
     expect(fileReads()).toBe(2)
   })
+
+  it('keeps Send off on a chat opened again while its turn is known to run, until a view says it ended', async () => {
+    kept.set('desk-clip', { text: 'Now make it blue', pictures: [], sent: null })
+    const asked = { id: 1, kind: 'user', text: 'Draw it' }
+    computerSide.chat = { ...view, entries: [asked], running: true, seq: 4 }
+    await openChat()
+    await linkIs({ kind: 'connected' })
+    expect(await screen.findByText('Draw it')).toBeTruthy()
+    backToChats()
+
+    const release = hold('GET /chats/desk-clip')
+    expect((await reopen()).value).toBe('Now make it blue')
+    await act(() => new Promise((resolve) => setTimeout(resolve, 0)))
+    expect(sendButton().disabled).toBe(true)
+
+    computerSide.chat = { ...view, entries: [asked], running: false, seq: 6 }
+    release()
+    await waitFor(() => expect(sendButton().disabled).toBe(false))
+  })
+
 })

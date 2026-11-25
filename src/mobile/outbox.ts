@@ -68,7 +68,10 @@ export class Sender {
    */
   #gate: Promise<void> = Promise.resolve()
   #lift: ((forgot: boolean) => void) | null = null
-  /** Whether the chat's last view says the agent still works on a turn, so a send would be refused. */
+  /**
+   * Whether the chat's last view says the agent still works on a turn, so a send would be refused. It outlives the chat
+   * screen, so a chat opened again keeps Send off until a newer view says the turn ended.
+   */
   #running = false
   /** Set when the link comes up again while a settle is under way. */
   #relinked = false
@@ -193,7 +196,9 @@ export class Sender {
     this.#lift?.(true)
   }
 
-  running(running: boolean) {
+  running = () => this.#running
+
+  setRunning(running: boolean) {
     this.#running = running
   }
 

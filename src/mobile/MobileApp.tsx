@@ -377,8 +377,11 @@ function Chat({ chat, onBack }: { chat: MobileChat; onBack: () => void }) {
 
   useEffect(() => listen((change) => change.project === chat.id && setView((kept) => merge(kept, change))), [listen, chat.id])
 
-  const running = view?.running === true
-  useEffect(() => sender.running(running), [sender, running])
+  // Only a view the computer sent says whether the turn runs. Until one comes, the chat shows what it last showed.
+  const running = view === null ? sender.running() : view.running
+  useEffect(() => {
+    if (view !== null) sender.setRunning(view.running)
+  }, [sender, view])
   // A turn that ends may have made a model, so the files are read again once, when it ends.
   const ran = useRef(running)
   const [turnsEnded, setTurnsEnded] = useState(0)
