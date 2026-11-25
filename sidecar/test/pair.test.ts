@@ -141,7 +141,7 @@ describe('a new chat', () => {
     const rev = await store.setDraft('new', { text: 'a clip', attachments: [] })
     const { project } = await store.startProject(rev, undefined, FAUX_B)
     await store.harness.commit((tx) => store.retire(tx, project.id, 'helper', FAUX_B), BACKGROUND_CONTEXT)
-    const sent = await store.harness.commit((tx) => store.send(tx, project.id, project.id, rev, { lead: FAUX_A, helper: null }, true), BACKGROUND_CONTEXT)
+    const sent = await store.harness.commit((tx) => store.send(tx, project.id, project.id, rev, { lead: FAUX_A, helper: null }, { astra: null }), BACKGROUND_CONTEXT)
     expect(sent).toMatchObject({ lead: FAUX_A, helper: null })
     expect(await store.retiredFor(project.id)).toEqual([])
     expect((await store.project(project.id)).helper).toBeNull()
@@ -183,6 +183,46 @@ describe('a new chat', () => {
     expect((await view(app, project.id)).turn).toMatchObject({ model: FAUX_A, helper: null })
     await app.quit()
   })
+
+  test('sent again, takes the Astra setting as saved when it accepts the turn, not when it started', async () => {
+    const where = scratch()
+    let holdPass = false
+    let release: () => void = () => {}
+    const held = Promise.withResolvers<void>()
+    // The pass a send asks for just before its commit waits while the test saves new defaults.
+    const app = spawnSidecar(where.data, where.projects, where.keychain, {
+      script: 'models',
+      env: where.env,
+      hold: (request, answer) => {
+        if (holdPass && request.method === 'busy' && (request.params as { busy: boolean }).busy) {
+          holdPass = false
+          release = answer
+          held.resolve()
+          return
+        }
+        answer()
+      },
+    })
+    await app.next()
+    await app.call('auth.setKey', { provider: 'openai-codex', key: 'codex-key' })
+    await app.call('settings.set', { model: OPUS })
+    const { rev } = (await app.call('drafts.set', { key: 'new', text: 'a clip', attachments: [] })) as { rev: number }
+    app.gate.installing = true
+    await expect(app.call('chat.send', { key: 'new', rev, pair: {} })).rejects.toThrow('An update is installing.')
+    app.gate.installing = false
+    holdPass = true
+    const retry = app.call('chat.send', { key: 'new', rev, pair: {} }) as Promise<{ project: Project }>
+    await held.promise
+    // The lead and the Astra switch change while the retry waits for its pass, after it found the Astra it could run.
+    app.send({ kind: 'call', id: 900_001, method: 'settings.set', params: { model: FAUX_A, astra: false } })
+    await Bun.sleep(500)
+    release()
+    const { project } = await retry
+    expect(project).toMatchObject({ model: FAUX_A, helper: null })
+    await answered(app, project.id, 'answered by faux-a')
+    expect((await view(app, project.id)).turn).toMatchObject({ model: FAUX_A, helper: null })
+    await app.quit()
+  }, 30_000)
 
   test('counts each save of its roles, and the read, the event, and the reply that carry them carry the count', async () => {
     const where = scratch()

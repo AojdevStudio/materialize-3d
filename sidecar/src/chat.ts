@@ -437,10 +437,11 @@ export class Chats {
     const { store, extension, tools, version, busy } = this.#o
     // A start screen send goes out as the draft its project took, even if the project's draft changed since, as after a
     // crash before the message. Any other send goes out as its draft, only while that is still this revision.
-    // A start screen send fills a helper it leaves out with the default as it is now, so a retry of a first try that
-    // never went out takes the default saved since. The default lead is filled the same way, in the send's commit.
-    const roles = key === START ? { ...pair, helper: pair?.helper === undefined ? await this.#newHelper() : pair.helper } : pair
-    const started = key === START ? await store.startProject(rev, roles?.lead, roles?.helper ?? null) : undefined
+    // A start screen send fills a role it leaves out with the default as saved when the send's commit accepts the turn,
+    // so a retry of a first try that never went out takes the defaults saved since. The Astra a new chat can run is
+    // found here, as it reads a sign-in, and the commit takes it only while the Astra setting is on then.
+    const astra = key === START && pair?.helper === undefined ? await this.#newHelper() : null
+    const started = key === START ? await store.startProject(rev, pair?.lead, pair?.helper === undefined ? astra : pair.helper) : undefined
     const project = started?.project ?? (await store.project(to))
     const saved = started === undefined ? key : project.id
     const conversation = await this.#conversation(project.id)
@@ -464,7 +465,7 @@ export class Chats {
         if ((await tx.submissionByRequest(conversation.id, requestId)) !== undefined) return
         // Both roles freeze here, the carried ones as carried and the rest as saved now: the lead in the conversation's
         // model, and the helper in the turn the helper call reads. A start screen send also keeps them as its project's.
-        const { lead, helper: frozen, thinking, saves } = await store.send(tx, project.id, saved, rev, roles, started !== undefined)
+        const { lead, helper: frozen, thinking, saves } = await store.send(tx, project.id, saved, rev, pair, started === undefined ? undefined : { astra })
         const offered = frozen === null ? tools.filter((tool) => tool.name !== HELPER) : tools
         await conversation.submit(tx, {
           type: 'input',
