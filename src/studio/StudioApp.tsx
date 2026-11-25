@@ -98,13 +98,17 @@ export default function StudioApp() {
     ])
   // An engine that started again may have saved roles or settings whose events or answers it never sent, so the window
   // reads its state again, in the line of settings saves, and takes the chats' roles by revision like any other. Send
-  // waits for that read, as it waits for the first one, and only the newest read lets it go.
+  // waits for that read, as it waits for the first one, and only the newest read lets it go. The first ready at launch
+  // reads nothing more: the window's first read covers it, and brings the drafts with the chats.
   const [rereading, setRereading] = useState(false)
   const rereads = useRef(0)
+  const restarted = useRef(false)
   useEffect(
     () =>
       onSidecarEvent((event) => {
-        if (event.type !== 'ready') return
+        if (event.type === 'engine') restarted.current = true
+        if (event.type !== 'ready' || !restarted.current) return
+        restarted.current = false
         rereads.current += 1
         const read = rereads.current
         setRereading(true)

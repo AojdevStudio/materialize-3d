@@ -1478,6 +1478,20 @@ describe('StudioApp', () => {
       expect(sends()[0]).toMatchObject({ pair: { helper: sonnet } })
     })
 
+    it('reads the chats again only after the engine started again, not at the first ready', async () => {
+      mockSidecar({}, [projectA, projectB])
+      render(<StudioApp />)
+      await openA()
+      const reads = sidecarCalls('state.get').length
+      // The first ready at launch: the window's own first read covers it, and the drafts come with that read.
+      await emit({ type: 'ready', version: '1.2.3' })
+      await pause(50)
+      expect(sidecarCalls('state.get')).toHaveLength(reads)
+      await emit({ type: 'engine', state: 'restarting' })
+      await emit({ type: 'ready', version: '1.2.3' })
+      await waitFor(() => expect(sidecarCalls('state.get')).toHaveLength(reads + 1))
+    })
+
     it('leaves a message already on its way alone when a role is picked after Send', async () => {
       mockSidecar({ 'chat.send': () => new Promise(() => {}) }, [projectA, projectB])
       render(<StudioApp />)
