@@ -665,11 +665,19 @@ describe('MobileApp', () => {
       const changes: MutationRecord[] = []
       const watch = new MutationObserver((records) => changes.push(...records))
       watch.observe(send(), { attributes: true, attributeFilter: ['disabled'] })
+      // The reconnect reads the list once, so a second read cannot drop the first one's answer.
+      const reads: string[] = []
+      const answer = globalThis.fetch
+      vi.stubGlobal('fetch', (url: string, init?: RequestInit) => {
+        if (url.endsWith('/api/v1/chats')) reads.push(url)
+        return answer(url, init)
+      })
       await linkIs({ kind: 'connected' })
       await waitFor(() => expect(send().disabled).toBe(false))
       changes.push(...watch.takeRecords())
       watch.disconnect()
       expect(changes).toHaveLength(1)
+      expect(reads).toHaveLength(1)
     })
 
     it('turns Send off within the event itself, so a tap queued right behind it sends nothing', async () => {

@@ -224,8 +224,7 @@ function Paired({ computer, onForget }: { computer: Computer; onForget: () => Pr
   const forgets = useRef(0)
   /** The newest list read. An older one that answers late is dropped. */
   const lists = useRef(0)
-  const up = link === 'connected'
-  /** The same as `up`, for a list read's answer to see. */
+  /** Whether the link is up, for the link handler and a list read's answer to see. */
   const connected = useRef(false)
 
   useEffect(() => {
@@ -238,6 +237,7 @@ function Paired({ computer, onForget }: { computer: Computer; onForget: () => Pr
         if (!connected.current) {
           hold(true)
           connected.current = true
+          setError(null)
           refresh()
         }
         return setLink('connected')
@@ -301,12 +301,12 @@ function Paired({ computer, onForget }: { computer: Computer; onForget: () => Pr
     )
   }
 
-  // Read at once, again each time the link comes up, so a list that failed while the computer was away comes back, and
-  // on each return to the list.
+  // Read at once and on each return to the list. Each time the link comes up, the reconnect reads the list itself, so
+  // a list that failed while the computer was away comes back, with one read only.
   useEffect(() => {
     setError(null)
     refresh()
-  }, [computer.id, loads, up, openId === null])
+  }, [computer.id, loads, openId === null])
 
   const write: Write = (work) => {
     writes.current.started += 1
