@@ -390,38 +390,49 @@ describe('a picture sent with a message', () => {
   })
 })
 
-describe('Astra', () => {
+describe('the helper', () => {
+  const ASTRA = { provider: 'openai-codex', modelId: 'gpt-6-astra' }
+  const drew = 'parent saw: gpt-6-astra drew it'
+
+  /** A project whose helper is Astra, made on the start screen and set after, as no ChatGPT sign-in gave it one. */
+  async function withAstra(app: App) {
+    const project = await newProject(app)
+    await app.call('projects.setHelper', { project, model: ASTRA })
+    await app.sendDraft(project, 'go')
+    return project
+  }
+
   test('without its sign-in, the turn waits with the fix named, and goes on once the person signs in', async () => {
     const where = scratch()
-    const app = start(where, 'astra')
+    const app = start(where, 'helper')
     await app.next()
-    const project = await firstSend(app)
+    const project = await withAstra(app)
     const waiting = await app.until((event) => event.type === 'chat' && event.waiting !== null)
     expect(waiting.waiting).toEqual({
       kind: 'login',
       provider: 'openai-codex',
       name: 'openai-codex',
-      fix: 'Sign in to openai-codex. Astra picks up where it stopped.',
+      fix: 'Sign in to openai-codex. The helper picks up where it stopped.',
     })
     expect(waiting.running).toBe(true)
     await app.call('auth.setKey', { provider: 'openai-codex', key: 'astra-key' })
-    await answered(app, project, 'parent saw: astra drew it')
+    await answered(app, project, drew)
     expect(((await app.call('chat.open', { project })) as ChatView).waiting).toBeNull()
-    expect(readFileSync(join(where.projects, project, 'astra.txt'), 'utf8')).toBe('astra-ran\n')
+    expect(readFileSync(join(where.projects, project, 'helper.txt'), 'utf8')).toBe('gpt-6-astra\n')
     await app.quit()
   })
 
   test('a sign-in the provider refuses makes the turn wait for a new one, instead of asking again and again', async () => {
     const where = scratch()
-    const app = start(where, 'astra')
+    const app = start(where, 'helper')
     await app.next()
     await app.call('auth.setKey', { provider: 'openai-codex', key: 'refused' })
-    const project = await firstSend(app)
+    const project = await withAstra(app)
     const waiting = await app.until((event) => event.type === 'chat' && event.waiting !== null, 30_000)
     expect(waiting.waiting).toMatchObject({ kind: 'login', provider: 'openai-codex' })
     expect(waiting.running).toBe(true)
     await app.call('auth.setKey', { provider: 'openai-codex', key: 'astra-key' })
-    await answered(app, project, 'parent saw: astra drew it')
+    await answered(app, project, drew)
     expect(((await app.call('chat.open', { project })) as ChatView).waiting).toBeNull()
     await app.quit()
   }, 60_000)
@@ -429,32 +440,32 @@ describe('Astra', () => {
   test('a sign-in saved while a request it replaces was still out is not missed when that request is refused', async () => {
     const gate = mkdtempSync(join(tmpdir(), 'm3d-astra-gate-'))
     const where = scratch({ M3D_ASTRA_GATE: gate })
-    const app = start(where, 'astra')
+    const app = start(where, 'helper')
     await app.next()
     await app.call('auth.setKey', { provider: 'openai-codex', key: 'refused' })
-    const project = await firstSend(app)
+    const project = await withAstra(app)
     while (!existsSync(join(gate, 'asked'))) await Bun.sleep(25)
     await app.call('auth.setKey', { provider: 'openai-codex', key: 'astra-key' })
     writeFileSync(join(gate, 'release'), '')
-    await answered(app, project, 'parent saw: astra drew it')
+    await answered(app, project, drew)
     await app.quit()
   }, 60_000)
 
   test('a wait a crash cut off is let go once the sign-in is there, and the turn finishes', async () => {
     const where = scratch()
     const keychain = new Map<string, string>()
-    const first = spawnSidecar(where.data, where.projects, keychain, { script: 'astra', env: where.env })
+    const first = spawnSidecar(where.data, where.projects, keychain, { script: 'helper', env: where.env })
     await first.next()
-    const project = await firstSend(first)
+    const project = await withAstra(first)
     await first.until((event) => event.type === 'chat' && event.waiting !== null)
     first.child.kill('SIGKILL')
     await first.child.exited
 
     // The sign-in lands in the Keychain while the app is closed.
     keychain.set('openai-codex', JSON.stringify({ type: 'api_key', key: 'astra-key' }))
-    const second = spawnSidecar(where.data, where.projects, keychain, { script: 'astra', env: where.env })
+    const second = spawnSidecar(where.data, where.projects, keychain, { script: 'helper', env: where.env })
     await second.next()
-    await answered(second, project, 'parent saw: astra drew it')
+    await answered(second, project, drew)
     expect(((await second.call('chat.open', { project })) as ChatView).waiting).toBeNull()
     await second.quit()
   })

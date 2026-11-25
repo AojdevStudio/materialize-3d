@@ -1,11 +1,12 @@
 import type { Models } from '@earendil-works/pi-ai'
-import { arr, bool, compile, int, lit, obj, opt, str, union } from '@earendil-works/pi-schema'
+import { arr, bool, compile, int, lit, nullable, obj, opt, str, union } from '@earendil-works/pi-schema'
 import { toolchain, toolchainNeeds } from './agent'
 import type { Chats } from './chat'
 import type { Handlers, Host } from './host'
 import type { Logins } from './inference'
+import { offered } from './offered'
 import { savePicture } from './pictures'
-import { type AppState, PLATES, PROVIDERS, SETUP_STEPS, THINKING } from './protocol'
+import { type AppState, type ModelChoice, type Need, PLATES, PROVIDERS, SETUP_STEPS, THINKING } from './protocol'
 import type { Store } from './store'
 
 export interface Services {
@@ -34,6 +35,9 @@ const provider = union(PROVIDERS.map((value) => lit(value)))
  */
 export function handlers({ host, store, models, logins, chats, version, legacy, pictures }: Services) {
   const state = async (): Promise<AppState> => ({ ...(await store.state()), importBlocked: legacy.blocked() })
+  const runnable = (model: ModelChoice) => {
+    if (models.getModel(model.provider, model.modelId) === undefined) throw new Error(`${model.provider} has no model ${model.modelId}`)
+  }
   return {
     'app.ping': { params: compile(obj({})), run: async () => ({ version }) },
     'state.get': { params: compile(obj({})), run: state },
@@ -62,7 +66,9 @@ export function handlers({ host, store, models, logins, chats, version, legacy, 
     'setup.check': {
       params: compile(obj({ project: opt(str()) })),
       run: async ({ project }) => {
-        return [...(await logins.needsFor(await store.modelFor(project))), ...(await toolchainNeeds())]
+        const retired = project === undefined ? [] : await store.retiredFor(project)
+        const replace = retired.map((r): Need => ({ kind: 'model', fix: store.retiredFix(r), retired: r }))
+        return [...replace, ...(await logins.needsFor((await store.pairFor(project)).lead)), ...(await toolchainNeeds())]
       },
     },
     'setup.tools': { params: compile(obj({})), run: () => toolchain() },
@@ -123,12 +129,20 @@ export function handlers({ host, store, models, logins, chats, version, legacy, 
         return null
       },
     },
-    'models.list': { params: compile(obj({})), run: () => logins.offered() },
-    'projects.setModel': {
+    'models.list': { params: compile(obj({})), run: () => logins.runnable(offered(store.catalog)) },
+    'projects.setLead': {
       params: compile(obj({ project: str(), model })),
       run: async ({ project, model }) => {
-        if (models.getModel(model.provider, model.modelId) === undefined) throw new Error(`${model.provider} has no model ${model.modelId}`)
-        await store.setModel(project, model)
+        runnable(model)
+        await store.setLead(project, model)
+        return null
+      },
+    },
+    'projects.setHelper': {
+      params: compile(obj({ project: str(), model: nullable(model) })),
+      run: async ({ project, model }) => {
+        if (model !== null) runnable(model)
+        await store.setHelper(project, model)
         return null
       },
     },

@@ -1,4 +1,4 @@
-import { ASTRA, type ChatEntry, type ModelChoice, RUN_PROGRAM, STEP_LINES, type ToolArgs, type ToolName } from '../../sidecar/src/protocol'
+import { ASTRA, type ChatEntry, HELPER, type ModelChoice, RUN_PROGRAM, STEP_LINES, type ToolArgs, type ToolName } from '../../sidecar/src/protocol'
 
 /** What a step does, which picks its icon. */
 export type Action = 'read' | 'write' | 'run' | 'slice' | 'helper' | 'other'
@@ -71,10 +71,11 @@ function describe(name: string, raw: unknown): Omit<ToolItem, 'kind' | 'id' | 's
       const sent: SentArgs<'slice'> = args
       return { action: 'slice', ...STEP_LINES.slice, summary: str(sent.output), detail }
     }
-    case ASTRA: {
-      const sent: SentArgs<typeof ASTRA> = args
+    case ASTRA:
+    case HELPER: {
+      const sent: SentArgs<typeof name> = args
       const task = str(sent.task)
-      return { action: 'helper', ...STEP_LINES.astra, summary: task.split('\n')[0] ?? '', detail: task }
+      return { action: 'helper', ...STEP_LINES[name], summary: task.split('\n')[0] ?? '', detail: task }
     }
     default:
       return { action: 'other', label: name, doing: name, summary: '', detail }

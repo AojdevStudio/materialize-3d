@@ -21,7 +21,6 @@ import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-code
 import { opencodeGoProvider } from '@earendil-works/pi-ai/providers/opencode-go'
 import { compile, lit, map, num, obj, opt, str, union } from '@earendil-works/pi-schema'
 import type { Host } from './host'
-import { OFFERED } from './offered'
 import { type Login, type LoginEvent, type LoginKind, type ModelChoice, type ModelOption, type Need, PROVIDERS, type ProviderId } from './protocol'
 
 /** Auth sees an empty world: every env var is unset and no file exists. */
@@ -65,6 +64,19 @@ const credential = compile(
 const LOGIN_FAILURE = /not configured|\b401\b|unauthori[sz]ed|authentication|invalid (api )?(key|token)|expired/i
 
 export const isLoginFailure = (detail: string) => LOGIN_FAILURE.test(detail)
+
+/**
+ * A provider's answer that says the model version itself was removed, not that the request failed for now. The model
+ * must be the subject: `model <id> has been deprecated`, `model <id> was retired`, `model <id> is no longer
+ * available`. The answer must also say nothing of a failure for now, of access, or of a parameter. Not found alone is
+ * not enough: a provider answers so for a model this account lacks. A misread answer costs little, since the removal
+ * holds only that role of that chat until the person chooses again.
+ */
+const MODEL_REMOVED =
+  /\bmodel\s+[`'"]?[\w.:/-]+?[`'"]?\s+(has been|was|is|is being)\s+(deprecated|retired|decommissioned|removed|no longer (available|supported))\b/i
+const NOT_REMOVAL = /\b(5\d\d|429)\b|overload|rate.?limit|timed? ?out|temporar|access|permission|parameter|argument|field|option|feature/i
+
+export const isRetired = (detail: string) => MODEL_REMOVED.test(detail) && !NOT_REMOVAL.test(detail)
 
 /** A Keychain item as this app writes it, or undefined for any other text, which counts as signed out. */
 function savedLogin(secret: string): Credential | undefined {
@@ -218,12 +230,12 @@ export class Logins {
   }
 
   /**
-   * The short list's models of each provider the person signed in to. The pi-ai catalog can lack a model on the short
-   * list. That model cannot run, so its row stays out.
+   * The models of `options` the person can run: each of a provider they signed in to. The pi-ai catalog can lack a
+   * model the app's catalog lists. That model cannot run, so it stays out.
    */
-  async offered(): Promise<ModelOption[]> {
-    const signedIn = new Set((await this.status()).flatMap((login) => (login.login === null ? [] : [login.provider])))
-    return OFFERED.filter((m) => signedIn.has(m.provider) && this.#models.getModel(m.provider, m.modelId) !== undefined)
+  async runnable(options: readonly ModelOption[]): Promise<ModelOption[]> {
+    const signedIn = new Set<string>((await this.status()).flatMap((login) => (login.login === null ? [] : [login.provider])))
+    return options.filter((m) => signedIn.has(m.provider) && this.#models.getModel(m.provider, m.modelId) !== undefined)
   }
 
   /** Saves a key as the provider's login. A provider that has no key sign-in refuses it before its login changes. */

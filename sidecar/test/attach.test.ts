@@ -113,7 +113,7 @@ describe('the model', () => {
     await answers(first, b, 1)
     expect(await projects(first)).toEqual({ [a]: 'faux-a', [b]: 'faux-b' })
 
-    await first.call('projects.setModel', { project: a, model: { provider: 'faux', modelId: 'faux-b' } })
+    await first.call('projects.setLead', { project: a, model: { provider: 'faux', modelId: 'faux-b' } })
     await first.call('settings.set', { model: { provider: 'faux', modelId: 'faux-a' } })
     expect(await projects(first)).toEqual({ [a]: 'faux-b', [b]: 'faux-b' })
     await first.quit()
@@ -122,10 +122,10 @@ describe('the model', () => {
     expect(await projects(second)).toEqual({ [a]: 'faux-b', [b]: 'faux-b' })
     await second.sendDraft(a, 'which model?')
     expect((await answers(second, a, 2))[1]).toBe('answered by faux-b')
-    await second.call('projects.setModel', { project: b, model: { provider: 'faux', modelId: 'faux-a' } })
+    await second.call('projects.setLead', { project: b, model: { provider: 'faux', modelId: 'faux-a' } })
     await second.sendDraft(b, 'which model?')
     expect((await answers(second, b, 2))[1]).toBe('answered by faux-a')
-    await expect(second.call('projects.setModel', { project: a, model: { provider: 'faux', modelId: 'faux-z' } })).rejects.toThrow('faux has no model faux-z')
+    await expect(second.call('projects.setLead', { project: a, model: { provider: 'faux', modelId: 'faux-z' } })).rejects.toThrow('faux has no model faux-z')
     await second.quit()
   }, 60_000)
 
@@ -134,7 +134,7 @@ describe('the model', () => {
     const app = await start(where, 'models')
     const { project } = await app.sendDraft('new', 'make the project')
     await answers(app, project, 1)
-    await app.call('projects.setModel', { project, model: { provider: 'anthropic', modelId: 'claude-opus-5-5' } })
+    await app.call('projects.setLead', { project, model: { provider: 'anthropic', modelId: 'claude-opus-5-5' } })
     await app.call('settings.set', { model: { provider: 'openai-codex', modelId: 'gpt-6-astra' } })
     const logins = async (params: object) =>
       ((await app.call('setup.check', params)) as Need[]).flatMap((need) => (need.kind === 'login' ? [need.provider] : []))
@@ -158,7 +158,12 @@ describe('the model', () => {
     ]
     expect(await app.call('models.list')).toEqual(anthropic)
     await app.call('auth.setKey', { provider: 'openai-codex', key: 'sk-test-dummy-0000' })
-    expect(await app.call('models.list')).toEqual([...anthropic, { provider: 'openai-codex', modelId: 'gpt-6.1-sol', name: 'GPT 6.1 Sol', description: 'Use GPT as the main agent instead.' }])
+    // The test catalog's Sol family has a newer version than the app ships, which takes the older one's place.
+    expect(await app.call('models.list')).toEqual([
+      ...anthropic,
+      { provider: 'openai-codex', modelId: 'gpt-6.3-sol', name: 'GPT 6.3 Sol', description: 'Use GPT as the main agent instead.' },
+      { provider: 'openai-codex', modelId: 'gpt-6-astra', name: 'Astra', description: 'GPT on your ChatGPT plan, good for drawings.' },
+    ])
     await app.quit()
   }, 30_000)
 

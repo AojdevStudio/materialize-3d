@@ -166,11 +166,13 @@ describe('a turn whose provider is not signed in', () => {
   test('a turn that failed with no login goes on when one is saved while the failure is read', async () => {
     const proxy = anthropicProxy('Hello after the slow read')
     const dir = mkdtempSync(join(tmpdir(), 'm3d-wait-'))
-    // While `holding`, each Keychain read waits in `held` until the test answers it.
+    // While `holding`, each Keychain read of the turn's provider waits in `held` until the test answers it. The read of
+    // the ChatGPT login, which decides whether the new chat gets Astra as its helper, is answered at once.
     let holding = true
     const held: (() => void)[] = []
     const app = spawnSidecar(join(dir, 'state'), join(dir, 'projects'), new Map(), {
-      hold: (request, answer) => (holding && request.method === 'keychain.get' ? held.push(answer) : answer()),
+      hold: (request, answer) =>
+        holding && request.method === 'keychain.get' && (request.params as { account: string }).account === 'anthropic' ? held.push(answer) : answer(),
     })
     await app.next()
     const nextRead = async (count: number) => {

@@ -3,7 +3,7 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { InMemoryCredentialStore, type OAuthAuth } from '@earendil-works/pi-ai'
-import { inferenceModels, isLoginFailure, KeychainCredentials, keyCredential, Logins } from '../src/inference'
+import { inferenceModels, isLoginFailure, isRetired, KeychainCredentials, keyCredential, Logins } from '../src/inference'
 import { FLAGS, type LoginEvent } from '../src/protocol'
 import { spawnSidecar } from './sidecar'
 
@@ -90,6 +90,23 @@ describe('a refused request', () => {
     expect(
       isLoginFailure('403 {"type":"error","error":{"type":"permission_error","message":"Your API key does not have permission to use the specified resource."}}'),
     ).toBe(false)
+  })
+
+  test('counts as a retirement only when the provider says the model was removed', () => {
+    expect(isRetired("404 model_not_found: The model 'gpt-6.1-sol' has been deprecated")).toBe(true)
+    expect(isRetired('The model claude-opus-4-1 was retired on 2026-10-01')).toBe(true)
+    expect(isRetired('400 invalid_request_error: model gpt-6.1-sol is no longer available')).toBe(true)
+    // Not found alone can mean this account lacks the model, which another account or a later sign-in can change.
+    expect(isRetired('404 {"type":"error","error":{"type":"not_found_error","message":"model: claude-fable-5-2"}}')).toBe(false)
+    expect(isRetired("404 model_not_found: The model 'gpt-6.1-sol' does not exist")).toBe(false)
+    // A failure for now, or a login that lacks access, is not one either.
+    expect(isRetired('503 the model was deprecated from this region for now, try again')).toBe(false)
+    expect(isRetired('429 rate limit reached for model gpt-6.1-sol')).toBe(false)
+    expect(isRetired("The model 'gpt-6.1-sol' was removed from your plan's access")).toBe(false)
+    // A request the model refuses, such as a parameter it dropped, is not one either.
+    expect(isRetired('400 invalid_request_error: temperature is no longer supported for this model')).toBe(false)
+    expect(isRetired('400 invalid_request_error: the model claude-opus-5-5 no longer supports the temperature parameter')).toBe(false)
+    expect(isRetired('400 invalid_request_error: Model gpt-6.1-sol: temperature is no longer supported')).toBe(false)
   })
 })
 

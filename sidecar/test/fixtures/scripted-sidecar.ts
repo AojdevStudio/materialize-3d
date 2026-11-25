@@ -1,14 +1,28 @@
 /**
- * The sidecar with a scripted model beside the app's providers, for tests: provider `faux`, models `faux-a` and
- * `faux-b`. `M3D_SCRIPT` picks the script. Each answer depends only on the transcript, so a sidecar that restarts
- * mid-turn goes on with the same script. OpenAI Codex, Astra's provider, is replaced by a scripted Astra that answers
- * only once a key is saved for it, as the real one answers only once the person signs in.
+ * The sidecar with scripted models beside the app's providers, for tests: provider `faux`, models `faux-a` and
+ * `faux-b`, and OpenAI Codex, replaced by scripted models that answer only once a key is saved for it, as the real one
+ * answers only once the person signs in. `M3D_SCRIPT` picks the lead's script. Every model plays either role: a
+ * request whose newest message is one of the helper tasks below gets that task's helper answer. Each answer depends
+ * only on the transcript, so a sidecar that restarts mid-turn goes on with the same script.
+ *
+ * Per request, before any script: a model listed in `M3D_RETIRED` (a comma list) answers as a provider that removed
+ * it, and with `M3D_FLAKY` set, each model's first request answers that the provider is overloaded.
+ *
+ * The app's catalog gains `gpt-6.3-sol`, a newer Sol version than the app ships.
  */
 import { existsSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { type AssistantMessage, fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall, type Message, type Model } from '@earendil-works/pi-ai'
+import { type AssistantMessage, type Context, fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall, type Message, type Model } from '@earendil-works/pi-ai'
 import type { JsonObject } from '@earendil-works/pi-durable'
 import { runSidecar } from '../../src/app'
+import { CATALOG, type Catalog } from '../../src/offered'
+
+/** The task a helper draws for: it writes its model id to `helper.txt`, then says it drew it. */
+export const DRAW = 'Draw it as an HTML page.'
+/** The task a helper tries to hand on with its own `helper` call, then repeats what that call gave it. */
+export const HAND_ON = 'Hand this on.'
+/** The task a helper fails, with an error that is neither a missing login nor a retired model. */
+export const FAIL = 'Fail.'
 
 /** The messages since the person's newest message, and that message's text. */
 function sinceUser(messages: Message[]) {
@@ -52,17 +66,27 @@ const scripts: Record<string, (messages: Message[], model: Model<string>) => Ass
     const texts = users.map((m) => (typeof m.content === 'string' ? m.content : m.content.map((b) => ('text' in b ? b.text : '')).join('')))
     return fauxAssistantMessage(fauxText(`pictures=${pictures} | ${texts.join(' || ')}`))
   },
-  /** Hands Astra a task, then repeats what Astra answered. */
-  astra: (messages) => {
-    const { results } = sinceUser(messages)
-    if (results.length === 0) return call('astra', { task: 'Draw it as an HTML page.' })
+  /**
+   * Hands the helper a task, then repeats what the helper answered. The task is what follows `ask: ` in the person's
+   * message, or `DRAW`.
+   */
+  helper: (messages) => {
+    const { text, results } = sinceUser(messages)
+    if (results.length === 0) return call('helper', { task: text.startsWith('ask: ') ? text.slice('ask: '.length) : DRAW })
     return fauxAssistantMessage(fauxText(`parent saw: ${resultText(results[0])}`))
   },
-  /** Reads a file and hands Astra a task in the same step, then repeats what Astra answered. */
-  'astra-and-read': (messages) => {
+  /** Runs a command that waits for `go`, then hands the helper `DRAW`, then repeats what the helper answered. */
+  'wait-then-helper': (messages) => {
+    const { results } = sinceUser(messages)
+    if (results.length === 0) return run('touch started; while [ ! -f go ]; do sleep 0.05; done')
+    if (results.length === 1) return call('helper', { task: DRAW })
+    return fauxAssistantMessage(fauxText(`parent saw: ${resultText(results[1])}`))
+  },
+  /** Reads a file and hands the helper a task in the same step, then repeats what the helper answered. */
+  'helper-and-read': (messages) => {
     const { results } = sinceUser(messages)
     if (results.length === 0) {
-      return fauxAssistantMessage([fauxToolCall('read', { path: 'note.txt' }), fauxToolCall('astra', { task: 'Draw it as an HTML page.' })], { stopReason: 'toolUse' })
+      return fauxAssistantMessage([fauxToolCall('read', { path: 'note.txt' }), fauxToolCall('helper', { task: DRAW })], { stopReason: 'toolUse' })
     }
     return fauxAssistantMessage(fauxText('both done'))
   },
@@ -126,36 +150,61 @@ const scripts: Record<string, (messages: Message[], model: Model<string>) => Ass
 const script = scripts[process.env.M3D_SCRIPT ?? '']
 if (script === undefined) throw new Error(`M3D_SCRIPT must be one of ${Object.keys(scripts).join(', ')}`)
 
+const fails = (errorMessage: string) => fauxAssistantMessage([], { stopReason: 'error', errorMessage })
+const retired = new Set((process.env.M3D_RETIRED ?? '').split(',').filter((id) => id !== ''))
+const flaky = process.env.M3D_FLAKY !== undefined
+/** The models that already had their first request, which `M3D_FLAKY` fails. */
+const asked = new Set<string>()
+
+/** Any model's answer, in either role. */
+const answer = (context: Context, model: Model<string>): AssistantMessage => {
+  if (retired.has(model.id)) return fails(`404 model_not_found: The model '${model.id}' has been deprecated`)
+  if (flaky && !asked.has(model.id)) {
+    asked.add(model.id)
+    return fails('529 overloaded_error: Overloaded')
+  }
+  const { text, results } = sinceUser(context.messages)
+  // Every script answers `make the project` with `made`, so a test can make a project before its first real message.
+  if (text === 'make the project') return fauxAssistantMessage(fauxText('made'))
+  if (text === DRAW) return results.length === 0 ? run(`echo ${model.id} > helper.txt`) : fauxAssistantMessage(fauxText(`${model.id} drew it`))
+  if (text === HAND_ON) return results.length === 0 ? call('helper', { task: DRAW }) : fauxAssistantMessage(fauxText(`child saw: ${resultText(results[0])}`))
+  // Pi retries a provider's temporary failures, such as a 500, by itself. This one it does not.
+  if (text === FAIL) return fails('400 invalid_request_error: the helper could not do this task')
+  return script(context.messages, model)
+}
+
+/** The app's catalog with a newer Sol version first, served by the scripted OpenAI Codex. */
+const catalog: Catalog = {
+  ...CATALOG,
+  families: CATALOG.families.map((family) => (family.name === 'GPT Sol' ? { ...family, versions: [{ modelId: 'gpt-6.3-sol', name: 'GPT 6.3 Sol' }, ...family.versions] } : family)),
+}
+
 await runSidecar({
   argv: process.argv.slice(2),
+  catalog,
   addProviders: (models) => {
     const faux = fauxProvider({ provider: 'faux', models: [{ id: 'faux-a' }, { id: 'faux-b' }] })
-    // Every script answers `make the project` with `made`, so a test can make a project before its first real message.
-    faux.setResponses(
-      Array.from({ length: 200 }, () => (context, _options, _state, model) =>
-        sinceUser(context.messages).text === 'make the project' ? fauxAssistantMessage(fauxText('made')) : script(context.messages, model),
-      ),
-    )
+    faux.setResponses(Array.from({ length: 200 }, () => (context, _options, _state, model) => answer(context, model)))
     models.setProvider(faux.provider)
-    const astra = fauxProvider({ provider: 'openai-codex', models: [{ id: 'gpt-6-astra' }, { id: 'gpt-6.1-sol' }] })
-    // Astra runs a command of its own first, in the project folder it shares. The provider refuses the key `refused`,
-    // and with M3D_ASTRA_GATE set, it holds that request open until the test writes `release` there.
+    const codex = fauxProvider({ provider: 'openai-codex', models: [{ id: 'gpt-6-astra' }, { id: 'gpt-6.1-sol' }, { id: 'gpt-6.3-sol' }] })
+    // The provider refuses the key `refused`, and with M3D_ASTRA_GATE set, it holds that request open until the test
+    // writes `release` there.
     const gate = process.env.M3D_ASTRA_GATE
-    astra.setResponses(
-      Array.from({ length: 50 }, () => async (context, options) => {
+    codex.setResponses(
+      Array.from({ length: 200 }, () => async (context, options, _state, model) => {
         if (options?.apiKey === 'refused') {
           if (gate !== undefined) {
             writeFileSync(join(gate, 'asked'), '')
             while (!existsSync(join(gate, 'release'))) await Bun.sleep(25)
           }
-          return fauxAssistantMessage([], { stopReason: 'error', errorMessage: '401 Unauthorized: invalid token' })
+          return fails('401 Unauthorized: invalid token')
         }
-        return sinceUser(context.messages).results.length === 0 ? run('echo astra-ran > astra.txt') : fauxAssistantMessage(fauxText('astra drew it'))
+        return answer(context, model)
       }),
     )
     models.setProvider({
-      ...astra.provider,
-      auth: { apiKey: { name: 'Astra test key', resolve: async ({ credential }) => (credential?.key === undefined ? undefined : { auth: { apiKey: credential.key } }) } },
+      ...codex.provider,
+      auth: { apiKey: { name: 'OpenAI Codex test key', resolve: async ({ credential }) => (credential?.key === undefined ? undefined : { auth: { apiKey: credential.key } }) } },
     })
   },
 })

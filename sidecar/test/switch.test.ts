@@ -107,7 +107,7 @@ describe('a picture pasted into a draft', () => {
         throw new Error('no conversation runs here')
       },
     })
-    const { project } = await store.startProject(rev)
+    const { project } = await store.startProject(rev, null)
     // The person saved a newer draft in the project, without the picture, before sending from the start screen again.
     await store.setDraft(project.id, { text: 'A knob, in black', attachments: [] })
     await store.close()
@@ -297,30 +297,45 @@ describe('the update gate', () => {
     await app.quit()
   }, 30_000)
 
+  const drew = (entries: ChatEntry[]) => entries.some((entry) => entry.kind === 'assistant' && entry.text === 'parent saw: gpt-6-astra drew it')
+
+  /**
+   * Makes a project on the start screen, gives it Astra as its helper, and sends `go`, which hands Astra a task.
+   * Answers the project and how many gate requests came before that send.
+   */
+  async function sendWithAstra(app: ReturnType<typeof spawnSidecar>) {
+    await app.call('settings.set', { model: { provider: 'faux', modelId: 'faux-a' } })
+    const { project } = await app.sendDraft('new', 'make the project')
+    await app.until((event) => event.type === 'chat' && (event.entries as ChatEntry[]).some((entry) => entry.kind === 'assistant' && entry.text === 'made'))
+    await app.call('projects.setHelper', { project, model: { provider: 'openai-codex', modelId: 'gpt-6-astra' } })
+    while (app.gate.requests.at(-1) !== false) await Bun.sleep(25)
+    const before = app.gate.requests.length
+    await app.sendDraft(project, 'go')
+    return { project, before }
+  }
+
   test('a tool that waited on a sign-in goes on only with the pass, so an install that started meanwhile holds it', async () => {
     const where = scratch()
-    const app = spawnSidecar(where.data, where.projects, new Map(), { script: 'astra', env: where.env })
+    const app = spawnSidecar(where.data, where.projects, new Map(), { script: 'helper', env: where.env })
     await app.next()
-    await app.call('settings.set', { model: { provider: 'faux', modelId: 'faux-a' } })
-    const { project } = await app.sendDraft('new', 'go')
+    const { project } = await sendWithAstra(app)
     await app.until((event) => event.type === 'chat' && event.waiting !== null)
     app.gate.installing = true
     await app.call('auth.setKey', { provider: 'openai-codex', key: 'astra-key' })
     await Bun.sleep(2_000)
-    expect(existsSync(join(where.projects, project, 'astra.txt'))).toBe(false)
+    expect(existsSync(join(where.projects, project, 'helper.txt'))).toBe(false)
     app.gate.installing = false
-    await app.until((event) => event.type === 'chat' && (event.entries as ChatEntry[]).some((entry) => entry.kind === 'assistant' && entry.text === 'parent saw: astra drew it'), 30_000)
+    await app.until((event) => event.type === 'chat' && drew(event.entries as ChatEntry[]), 30_000)
     await app.quit()
   }, 40_000)
 
-  /** A turn whose Astra tool signed in while an update installs, so it waits for the pass. */
+  /** A turn whose helper tool signed in while an update installs, so it waits for the pass. */
   async function waitingForPass() {
     const where = scratch()
     const keychain = new Map<string, string>()
-    const app = spawnSidecar(where.data, where.projects, keychain, { script: 'astra', env: where.env })
+    const app = spawnSidecar(where.data, where.projects, keychain, { script: 'helper', env: where.env })
     await app.next()
-    await app.call('settings.set', { model: { provider: 'faux', modelId: 'faux-a' } })
-    const { project } = await app.sendDraft('new', 'go')
+    const { project } = await sendWithAstra(app)
     await app.until((event) => event.type === 'chat' && event.waiting !== null)
     app.gate.installing = true
     await app.call('auth.setKey', { provider: 'openai-codex', key: 'astra-key' })
@@ -332,7 +347,7 @@ describe('the update gate', () => {
     const { where, app, project } = await waitingForPass()
     await app.call('chat.stop', { project })
     await app.until((event) => event.type === 'chat' && event.project === project && event.running === false, 5_000)
-    expect(existsSync(join(where.projects, project, 'astra.txt'))).toBe(false)
+    expect(existsSync(join(where.projects, project, 'helper.txt'))).toBe(false)
     await app.quit()
   }, 40_000)
 
@@ -340,23 +355,21 @@ describe('the update gate', () => {
     const { where, keychain, app, project } = await waitingForPass()
     const quit = await Promise.race([app.quit().then(() => 'exited'), Bun.sleep(5_000).then(() => 'still running')])
     expect(quit).toBe('exited')
-    expect(existsSync(join(where.projects, project, 'astra.txt'))).toBe(false)
+    expect(existsSync(join(where.projects, project, 'helper.txt'))).toBe(false)
 
-    const after = spawnSidecar(where.data, where.projects, keychain, { script: 'astra', env: where.env })
+    const after = spawnSidecar(where.data, where.projects, keychain, { script: 'helper', env: where.env })
     await after.next()
-    const done = (entries: ChatEntry[]) => entries.some((entry) => entry.kind === 'assistant' && entry.text === 'parent saw: astra drew it')
-    if (!done(((await after.call('chat.open', { project })) as ChatView).entries)) {
-      await after.until((event) => event.type === 'chat' && done(event.entries as ChatEntry[]), 30_000)
+    if (!drew(((await after.call('chat.open', { project })) as ChatView).entries)) {
+      await after.until((event) => event.type === 'chat' && drew(event.entries as ChatEntry[]), 30_000)
     }
     await after.quit()
   }, 60_000)
 
-  test('gives the pass back while Astra waits on a sign-in, even when a tool beside it already finished', async () => {
+  test('gives the pass back while the helper waits on a sign-in, even when a tool beside it already finished', async () => {
     const where = scratch()
-    const app = spawnSidecar(where.data, where.projects, new Map(), { script: 'astra-and-read', env: where.env })
+    const app = spawnSidecar(where.data, where.projects, new Map(), { script: 'helper-and-read', env: where.env })
     await app.next()
-    await app.call('settings.set', { model: { provider: 'faux', modelId: 'faux-a' } })
-    const { project } = await app.sendDraft('new', 'go')
+    await sendWithAstra(app)
     await app.until((event) => event.type === 'chat' && event.waiting !== null)
     const deadline = Date.now() + 5_000
     while (app.gate.requests.at(-1) !== false && Date.now() < deadline) await Bun.sleep(25)
@@ -366,19 +379,18 @@ describe('the update gate', () => {
 
   test('gives the pass back while a turn waits on a sign-in, and takes it again when the turn goes on', async () => {
     const where = scratch()
-    const app = spawnSidecar(where.data, where.projects, new Map(), { script: 'astra', env: where.env })
+    const app = spawnSidecar(where.data, where.projects, new Map(), { script: 'helper', env: where.env })
     await app.next()
-    await app.call('settings.set', { model: { provider: 'faux', modelId: 'faux-a' } })
-    const { project } = await app.sendDraft('new', 'go')
+    const { before } = await sendWithAstra(app)
     await app.until((event) => event.type === 'chat' && event.waiting !== null)
     const deadline = Date.now() + 5_000
     while (app.gate.requests.at(-1) !== false && Date.now() < deadline) await Bun.sleep(25)
-    expect(app.gate.requests).toEqual([true, false])
+    expect(app.gate.requests.slice(before)).toEqual([true, false])
 
     await app.call('auth.setKey', { provider: 'openai-codex', key: 'astra-key' })
-    await app.until((event) => event.type === 'chat' && (event.entries as ChatEntry[]).some((entry) => entry.kind === 'assistant' && entry.text === 'parent saw: astra drew it'))
+    await app.until((event) => event.type === 'chat' && drew(event.entries as ChatEntry[]))
     while (app.gate.requests.at(-1) !== false) await Bun.sleep(25)
-    expect(app.gate.requests.slice(2)).toContain(true)
+    expect(app.gate.requests.slice(before + 2)).toContain(true)
     await app.quit()
   }, 30_000)
 })

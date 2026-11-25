@@ -22,7 +22,7 @@ afterEach(() => {
   listeners.length = 0
 })
 
-const project: Project = { id: '2026-11-17-clip', conversation: 1, title: 'Clip', createdMs: 0 }
+const project: Project = { id: '2026-11-17-clip', conversation: 1, title: 'Clip', createdMs: 0, model: { provider: 'anthropic', modelId: 'claude-opus-5-5' }, helper: null }
 const projects = [project]
 
 function Window() {

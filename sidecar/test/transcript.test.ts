@@ -99,6 +99,14 @@ describe('chatEntry', () => {
     expect(plain !== undefined && 'durationMs' in plain).toBe(false)
   })
 
+  test('a helper result holds its handoff, and a result of the Astra tool from before pairs keeps its name', () => {
+    const handoff = { task: '41', conversation: 42, helper: { provider: 'faux', modelId: 'faux-b' } }
+    const helper = toolResult({ toolName: 'helper', content: [{ type: 'text', text: 'drew it' }], details: { handoff } })
+    expect(chatEntry(record(13, 'pi.tool-result', { model: [helper] }))).toEqual({ id: 13, kind: 'tool', callId: 'call-1', name: 'helper', text: 'drew it', failed: false, handoff })
+    const astra = toolResult({ toolName: 'astra', content: [{ type: 'text', text: 'drew it' }], details: { astra: 42 } })
+    expect(chatEntry(record(14, 'pi.tool-result', { model: [astra] }))).toEqual({ id: 14, kind: 'tool', callId: 'call-1', name: 'astra', text: 'drew it', failed: false })
+  })
+
   test('entries only the model reads, and a kind whose message does not match it, show nothing', () => {
     expect(chatEntry(record(9, 'pi.user', { model: [{ role: 'user', content: 'hi', timestamp: 0 }] }))).toBeUndefined()
     expect(chatEntry(record(10, 'pi.assistant', { model: [toolResult()] }))).toBeUndefined()

@@ -43,7 +43,7 @@ type Drifted = {
 
 /** The tools, by place, whose params schema and `ToolArgs` take different values. Never, when none do. */
 type Tools = ReturnType<typeof agentTools>
-const ORDER = ['read', 'write', 'edit', 'run', 'slice', 'astra'] as const
+const ORDER = ['read', 'write', 'edit', 'run', 'slice', 'helper'] as const
 type DriftedOf<O extends readonly ToolName[]> = {
   [I in keyof O]: Tools[I & keyof Tools] extends { parameters: infer P } ? (Same<Static<P>, ToolArgs[O[I] & ToolName]> extends true ? never : O[I]) : O[I]
 }[number]
@@ -60,7 +60,8 @@ const noParams: Same<Record<never, never>, Record<string, never>> = true
 
 test('the agent offers its tools by the names and in the order the protocol lists them', () => {
   const unused = () => Promise.reject(new Error('not used here'))
-  const tools = agentTools({ host: new Host(() => {}), projectOf: unused, signedIn: unused, loginSaves: unused, printer: unused })
+  const tools = agentTools({ host: new Host(() => {}), projectOf: unused, signedIn: unused, loginSaves: unused, printer: unused, helperOf: unused, retired: unused })
   expect(tools.map((tool) => tool.name)).toEqual([...ORDER])
-  expect(Object.keys(STEP_LINES)).toEqual([...ORDER])
+  // Older chats still show the steps of the tool that handed Astra a task.
+  expect(Object.keys(STEP_LINES)).toEqual([...ORDER, 'astra'])
 })

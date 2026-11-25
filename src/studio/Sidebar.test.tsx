@@ -24,9 +24,9 @@ import { useStudio, useStudioEvents } from './store'
 // jsdom has no layout, so the open row menu's scroll into view is a no-op here.
 Element.prototype.scrollIntoView = vi.fn()
 
-const bracket: Project = { id: '2026-11-10-bracket', conversation: 1, title: 'Bracket', createdMs: 1_000 }
-const knob: Project = { id: '2026-11-11-knob', conversation: 2, title: 'Knob', createdMs: 2_000 }
-const clip: Project = { id: '2026-11-12-clip', conversation: 3, title: 'Clip', createdMs: 3_000 }
+const bracket: Project = { id: '2026-11-10-bracket', conversation: 1, title: 'Bracket', createdMs: 1_000, model: { provider: 'anthropic', modelId: 'claude-opus-5-5' }, helper: null }
+const knob: Project = { id: '2026-11-11-knob', conversation: 2, title: 'Knob', createdMs: 2_000, model: { provider: 'anthropic', modelId: 'claude-opus-5-5' }, helper: null }
+const clip: Project = { id: '2026-11-12-clip', conversation: 3, title: 'Clip', createdMs: 3_000, model: { provider: 'anthropic', modelId: 'claude-opus-5-5' }, helper: null }
 const projects = [bracket, knob, clip]
 
 let read: Record<string, ProjectStatus>
