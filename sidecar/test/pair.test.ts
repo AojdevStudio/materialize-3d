@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
@@ -320,30 +320,44 @@ describe('a helper call that runs', () => {
     const app = await start(where, 'two-helpers', { M3D_READ_GATE: gate })
     const id = await project(app, FAUX_A, FAUX_B)
     const folder = join(where.projects, id)
-    const exists = async (path: string) => {
-      while (!existsSync(path)) await Bun.sleep(25)
+    const exists = async (path: string, ms = 30_000) => {
+      const deadline = Date.now() + ms
+      while (!existsSync(path)) {
+        if (Date.now() > deadline) throw new Error(`no ${path} in time`)
+        await Bun.sleep(25)
+      }
     }
+    const at = (file: string) => join(gate, file)
     const shows = (match: (handoffs: HandoffProgress[]) => boolean, ms?: number) =>
       app.until((e) => e.type === 'chat' && e.project === id && match(e.handoffs as HandoffProgress[]), ms)
-    // The second helper call waits as it starts, so the first helper runs alone.
-    writeFileSync(join(gate, 'hold-turn'), '1')
+    // Both helper calls wait as they start. The first one to read its turn goes on alone.
+    writeFileSync(at('hold-turn'), '')
     await app.sendDraft(id, 'two at once')
-    await exists(join(gate, 'held-turn'))
-    const [first] = (await shows((handoffs) => handoffs[0]?.steps === 1, 30_000)).handoffs as [HandoffProgress]
-    // The first helper's next step wakes its own watch. That read finds only the first helper, and is held once it took
-    // its place in the order of reads.
-    writeFileSync(join(gate, 'hold-waiting'), '5')
-    writeFileSync(join(folder, 'next'), '')
-    await exists(join(gate, 'held-waiting'))
-    // The second helper begins, and the lead's newer read follows it.
-    writeFileSync(join(gate, 'release-turn'), '')
-    const second = (handoffs: HandoffProgress[]) => handoffs.find((h) => h.handoff.conversation !== first.handoff.conversation)
-    await shows((handoffs) => second(handoffs)?.steps === 1, 30_000)
-    // The older read ends last. The second helper's next step still reaches the chat.
-    writeFileSync(join(gate, 'release-waiting'), '')
+    await exists(at('held-turn-2'))
+    unlinkSync(at('hold-turn'))
+    writeFileSync(at('release-turn-1'), '')
+    const [first] = (await shows((handoffs) => handoffs[0]?.steps === 1)).handoffs as [HandoffProgress]
+    // The helper that went on is the one whose first step ran, and the file that step makes says which task it has.
+    while (!existsSync(join(folder, 'first')) && !existsSync(join(folder, 'firstB'))) await Bun.sleep(25)
+    const own = existsSync(join(folder, 'first')) ? { next: 'next', second: 'second', other: 'nextB' } : { next: 'nextB', second: 'secondB', other: 'next' }
+    // Its next step wakes its own watch. Each read of that watch is held once it took its place in the order of reads,
+    // and the last, which comes after the step's commits all landed, finds only this helper.
+    writeFileSync(at('hold-waiting'), '')
+    writeFileSync(join(folder, own.next), '')
+    await exists(at('held-waiting-1'))
+    await exists(join(folder, own.second))
+    writeFileSync(at('release-waiting-1'), '')
+    await exists(at('held-waiting-2'), 10_000)
+    unlinkSync(at('hold-waiting'))
+    // The other helper begins, and the lead's newer read follows it.
+    writeFileSync(at('release-turn-2'), '')
+    const other = (handoffs: HandoffProgress[]) => handoffs.find((h) => h.handoff.conversation !== first.handoff.conversation)
+    await shows((handoffs) => other(handoffs)?.steps === 1)
+    // The older read ends last. The other helper's next step still reaches the chat.
+    writeFileSync(at('release-waiting-2'), '')
     await shows((handoffs) => handoffs.length === 1)
-    writeFileSync(join(folder, 'nextB'), '')
-    await shows((handoffs) => second(handoffs)?.steps === 2, 10_000)
+    writeFileSync(join(folder, own.other), '')
+    await shows((handoffs) => other(handoffs)?.steps === 2, 10_000)
     writeFileSync(join(folder, 'go'), '')
     writeFileSync(join(folder, 'goB'), '')
     await answered(app, id, 'both waited')

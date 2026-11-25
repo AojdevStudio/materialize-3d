@@ -12,7 +12,7 @@
  * `M3D_PAIRING_TTL_MS` set the phone service's port and how long a pairing code works. `M3D_READ_GATE` lets a test
  * hold a read, as `holdReads` says.
  */
-import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { type AssistantMessage, type Context, fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall, type Message, type Model } from '@earendil-works/pi-ai'
 import { type JsonObject, LiveDoc } from '@earendil-works/pi-durable'
@@ -207,8 +207,8 @@ const catalog: Catalog = {
 /**
  * Lets a test hold a chat's reads made on their own, not beside a read of the chat's live state, as a chat read does:
  * a helper call's read of its turn as it starts (`turn`), and a chat read's look at its waiting state once it took its
- * place in the order of reads (`waiting`). Once the test writes `hold-<doc>` in folder `gate`, the read of that doc
- * after as many as the file says goes through, then writes `held-<doc>` and waits for `release-<doc>`.
+ * place in the order of reads (`waiting`). While the test keeps `hold-<doc>` in folder `gate`, the nth such read of
+ * that doc since writes `held-<doc>-<n>`, then waits for `release-<doc>-<n>`.
  */
 function holdReads(gate: string) {
   const open = Store.open.bind(Store)
@@ -217,7 +217,7 @@ function holdReads(gate: string) {
     const { harness } = store
     const snapshot = harness.snapshot.bind(harness)
     let beside = false
-    const passed = new Map<string, number>()
+    const counts = new Map<string, number>()
     harness.snapshot = (async (...args: Parameters<typeof snapshot>) => {
       const [doc] = args
       if (doc.definition.kind === LiveDoc.definition.kind) {
@@ -225,16 +225,11 @@ function holdReads(gate: string) {
         queueMicrotask(() => (beside = false))
       }
       const name = new Map([['m3d.turn', 'turn'], ['m3d.waiting', 'waiting']]).get(doc.definition.kind)
-      const hold = join(gate, `hold-${name}`)
-      if (name !== undefined && !beside && existsSync(hold)) {
-        const through = passed.get(name) ?? 0
-        if (through < Number(readFileSync(hold, 'utf8') || '0')) passed.set(name, through + 1)
-        else {
-          unlinkSync(hold)
-          passed.delete(name)
-          writeFileSync(join(gate, `held-${name}`), '')
-          while (!existsSync(join(gate, `release-${name}`))) await Bun.sleep(25)
-        }
+      if (name !== undefined && !beside && existsSync(join(gate, `hold-${name}`))) {
+        const n = (counts.get(name) ?? 0) + 1
+        counts.set(name, n)
+        writeFileSync(join(gate, `held-${name}-${n}`), '')
+        while (!existsSync(join(gate, `release-${name}-${n}`))) await Bun.sleep(25)
       }
       return snapshot(...args)
     }) as typeof snapshot
