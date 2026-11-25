@@ -790,6 +790,19 @@ describe('MobileApp', () => {
       await waitFor(() => expect(send().disabled).toBe(false))
     })
 
+    it('lets Send go after a refused pick once the read after it shows the pair the computer kept', async () => {
+      computerWithRoles([], (change) => 'lead' in change)
+      await openBracket()
+      fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'Make it thicker' } })
+      const send = () => screen.getByRole('button', { name: 'Send' }) as HTMLButtonElement
+      await waitFor(() => expect(send().disabled).toBe(false))
+
+      pickLead('GPT 6 Astra')
+      expect(await screen.findByRole('alert')).toBeTruthy()
+      await waitFor(() => expect(screen.getByTestId('model-picker').textContent).toBe('GPT 6.1 Sol'))
+      await waitFor(() => expect(send().disabled).toBe(false))
+    })
+
     it('shows the pair the computer kept once a refused pick and the picks after it are done', async () => {
       const { saves } = computerWithRoles([], (change) => 'lead' in change)
       await openBracket({ forget: null })

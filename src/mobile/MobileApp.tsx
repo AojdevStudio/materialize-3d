@@ -352,9 +352,9 @@ function Paired({ computer, onForget }: { computer: Computer; onForget: () => Pr
         ? Promise.resolve(undefined)
         : remoteJson<Roles>(`${api('/chats')}/${encodeURIComponent(chat)}/roles`, { method: 'PUT', body: change }),
     ).catch((err: unknown) => {
+      // The write held Send when it began, and the lane's read after it lets Send go with the pair the computer kept.
       listFailed.current = false
       setError(errorText(err))
-      hold(true)
     })
   }
 
