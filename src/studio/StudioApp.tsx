@@ -30,6 +30,17 @@ import { UpdateBanner } from '../update/UpdateBanner'
 import { checkForUpdatesAtLaunch, useUpdateEvents } from '../update/store'
 import './studio.css'
 
+/**
+ * `incoming`, a chat as a read, an event, or a reply brings it, in place of `row`, the one the window has. The roles go
+ * with the higher revision, so the newest the sidecar saved win whatever way and order they came in.
+ */
+const take = (row: Project | undefined, incoming: Project): Project =>
+  row !== undefined && row.roles >= incoming.roles ? { ...incoming, model: row.model, helper: row.helper, roles: row.roles } : incoming
+
+/** `projects` with `incoming` taken in, in place of its row, or first when the window does not list it yet. */
+const takeIn = (projects: Project[], incoming: Project): Project[] =>
+  projects.some((p) => p.id === incoming.id) ? projects.map((p) => (p.id === incoming.id ? take(p, incoming) : p)) : [incoming, ...projects]
+
 /** A role picked here, with its place in the order of picks, shown until its own save went through. */
 type ShownPick = { model: ModelChoice | null; seq: number }
 type ShownPicks = { lead?: ShownPick & { model: ModelChoice }; helper?: ShownPick }
@@ -54,20 +65,13 @@ export default function StudioApp() {
   const running = view?.running ?? false
 
   useStudioEvents(projects)
-  /**
-   * The newest project event of each chat. The sidecar sends one for every role change, so its roles are the newest the
-   * window heard, newer than a saved state read before it.
-   */
-  const heard = useRef(new Map<string, Project>())
   // A paired phone can change a chat's roles too, so the window takes each project the sidecar says changed, and checks
-  // again what the next send needs, as after a pick here. A project not listed yet, as one whose start reply is still
-  // on its way, joins the list, so that reply finds it and keeps it.
+  // again what the next send needs, as after a pick here.
   useEffect(
     () =>
       onSidecarEvent((event) => {
         if (event.type !== 'project') return
-        heard.current.set(event.project.id, event.project)
-        setProjects((all) => (all.some((p) => p.id === event.project.id) ? all.map((p) => (p.id === event.project.id ? event.project : p)) : [event.project, ...all]))
+        setProjects((all) => takeIn(all, event.project))
         checkReady()
       }).stop,
     [],
@@ -78,15 +82,11 @@ export default function StudioApp() {
     void checkForUpdatesAtLaunch()
   }, [])
 
-  // A project made while this was on its way is newer than the saved list, so it stays, and so do the roles a project
-  // event gave a chat.
+  // A project made while this was on its way is newer than the saved list, so it stays.
   const takeProjects = (state: AppState) =>
     setProjects((made) => [
       ...made.filter((p) => !state.projects.some((saved) => saved.id === p.id)),
-      ...state.projects.map((saved) => {
-        const event = heard.current.get(saved.id)
-        return event === undefined ? saved : { ...saved, model: event.model, helper: event.helper }
-      }),
+      ...state.projects.map((saved) => take(made.find((p) => p.id === saved.id), saved)),
     ])
 
   /**
@@ -110,7 +110,7 @@ export default function StudioApp() {
   }
 
   const { drafts, shown, attachments, sending, sendErrors } = useDrafts({
-    onSent: (project) => setProjects((prev) => (prev.some((p) => p.id === project.id) ? prev : [project, ...prev])),
+    onSent: (project) => setProjects((all) => takeIn(all, project)),
     onStarted: takeProjects,
     quit,
   })

@@ -42,7 +42,7 @@ const models: ModelOption[] = [
   { provider: 'anthropic', modelId: 'claude-sonnet-5-5', name: 'Sonnet 5.5', description: 'Fast for everyday parts.' },
 ]
 const FOLDER = '/Users/someone/Documents/Materialize 3D'
-const project: Project = { id: '2026-11-12-clip', conversation: 1, title: 'Cable clip', createdMs: 1, model: { provider: 'anthropic', modelId: 'claude-opus-5-5' }, helper: null }
+const project: Project = { id: '2026-11-12-clip', conversation: 1, title: 'Cable clip', createdMs: 1, model: { provider: 'anthropic', modelId: 'claude-opus-5-5' }, helper: null, roles: 0 }
 
 const A1_MINI = { machine: 'Bambu Lab A1 mini 0.4 nozzle', process: '0.20mm Standard @BBL A1M', filament: 'Bambu PLA Basic @BBL A1M' }
 const printers: PrinterChoice[] = [

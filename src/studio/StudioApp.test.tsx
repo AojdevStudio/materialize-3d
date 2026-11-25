@@ -36,8 +36,8 @@ Element.prototype.scrollIntoView = vi.fn()
 URL.createObjectURL = vi.fn(() => 'blob:preview')
 URL.revokeObjectURL = vi.fn()
 
-const projectA = { id: '2026-11-06-a', conversation: 2, title: 'Project A', createdMs: 2, model: { provider: 'anthropic', modelId: 'claude-opus-5-5' }, helper: null }
-const projectB = { id: '2026-11-06-b', conversation: 3, title: 'Project B', createdMs: 1, model: { provider: 'anthropic', modelId: 'claude-opus-5-5' }, helper: null }
+const projectA = { id: '2026-11-06-a', conversation: 2, title: 'Project A', createdMs: 2, model: { provider: 'anthropic', modelId: 'claude-opus-5-5' }, helper: null, roles: 0 }
+const projectB = { id: '2026-11-06-b', conversation: 3, title: 'Project B', createdMs: 1, model: { provider: 'anthropic', modelId: 'claude-opus-5-5' }, helper: null, roles: 0 }
 const view = (project: string, more: object = {}) => ({ project, entries: [], running: false, waiting: null, turn: null, handoffs: [], seq: 1, ...more })
 const settings = { model: { provider: 'anthropic', modelId: 'claude-opus-5-5' }, thinking: 'high', printer: { machine: 'Bambu Lab P2S 0.4 nozzle', process: '0.20mm Standard @BBL P2S', filament: 'Bambu PETG Basic @BBL P2S' } }
 const models = [
@@ -87,7 +87,7 @@ function held() {
 }
 
 /** The project a send from the start screen makes. */
-const made = { id: '2026-11-06-a-clip', conversation: 10, title: 'A clip', createdMs: 10, model: { provider: 'anthropic', modelId: 'claude-opus-5-5' }, helper: null }
+const made = { id: '2026-11-06-a-clip', conversation: 10, title: 'A clip', createdMs: 10, model: { provider: 'anthropic', modelId: 'claude-opus-5-5' }, helper: null, roles: 0 }
 
 /**
  * The sidecar as the window sees it: one `sidecar` command, by method. A save answers a new revision, and a send
@@ -116,7 +116,7 @@ function mockSidecar(overrides: Calls = {}, projects: Project[] = [projectB], dr
       case 'projects.setHelper': {
         // As the sidecar does: save the role, then tell every window the project changed.
         const change = method === 'projects.setLead' ? { model: params.model as typeof settings.model } : { helper: params.model as typeof settings.model | null }
-        store.projects = store.projects.map((p) => (p.id === params.project ? { ...p, ...change } : p))
+        store.projects = store.projects.map((p) => (p.id === params.project ? { ...p, ...change, roles: p.roles + 1 } : p))
         const saved = store.projects.find((p) => p.id === params.project)
         listeners.sidecar.forEach((listener) => listener({ payload: { type: 'project', project: saved } }))
         return Promise.resolve(null)
@@ -434,7 +434,7 @@ describe('StudioApp', () => {
   })
 
   it('groups the projects by status, with a count on each group, and hides an empty group', async () => {
-    const projectC = { id: '2026-11-06-c', conversation: 4, title: 'Project C', createdMs: 0, model: { provider: 'anthropic', modelId: 'claude-opus-5-5' }, helper: null }
+    const projectC = { id: '2026-11-06-c', conversation: 4, title: 'Project C', createdMs: 0, model: { provider: 'anthropic', modelId: 'claude-opus-5-5' }, helper: null, roles: 0 }
     const now = Date.now()
     mockSidecar({
       'projects.status': () => Promise.resolve({
@@ -458,7 +458,7 @@ describe('StudioApp', () => {
   })
 
   it('counts every project on the Projects row', async () => {
-    const projectC = { id: '2026-11-06-c', conversation: 4, title: 'Project C', createdMs: 0, model: { provider: 'anthropic', modelId: 'claude-opus-5-5' }, helper: null }
+    const projectC = { id: '2026-11-06-c', conversation: 4, title: 'Project C', createdMs: 0, model: { provider: 'anthropic', modelId: 'claude-opus-5-5' }, helper: null, roles: 0 }
     mockSidecar({
       'projects.status': () => Promise.resolve({ [projectA.id]: { running: true, printed: false, printFiles: 0, lastMs: Date.now() } }),
     }, [projectA, projectB, projectC])
@@ -468,7 +468,7 @@ describe('StudioApp', () => {
   })
 
   it('narrows the projects to titles that match the search, and shows them all again when it ends', async () => {
-    const clip = { id: '2026-11-06-clip', conversation: 4, title: 'Cable clip', createdMs: 0, model: { provider: 'anthropic', modelId: 'claude-opus-5-5' }, helper: null }
+    const clip = { id: '2026-11-06-clip', conversation: 4, title: 'Cable clip', createdMs: 0, model: { provider: 'anthropic', modelId: 'claude-opus-5-5' }, helper: null, roles: 0 }
     mockSidecar({
       'projects.status': () => Promise.resolve({ [projectA.id]: { running: false, printed: false, printFiles: 1, lastMs: Date.now() } }),
     }, [projectA, projectB, clip])
@@ -1237,7 +1237,7 @@ describe('StudioApp', () => {
       render(<StudioApp />)
       await sendShown('A clip')
       await waitFor(() => expect(sends()).toHaveLength(1))
-      await emit({ type: 'project', project: { ...made, helper: sonnet } })
+      await emit({ type: 'project', project: { ...made, helper: sonnet, roles: 1 } })
       await act(async () => answerSend())
       await waitFor(() => expect(openTitle()).toBe('A clip'))
       expect(screen.getByTestId('helper-picker').textContent).toBe('Sonnet 5.5')
@@ -1330,13 +1330,62 @@ describe('StudioApp', () => {
       mockSidecar({ 'state.get': (_, real) => (++reads === 1 ? new Promise((resolve) => (answerState = () => resolve(real()))) : real()) }, [projectA, projectB])
       render(<StudioApp />)
       await waitFor(() => expect(reads).toBe(1))
-      await emit({ type: 'project', project: { ...projectA, helper: sonnet } })
+      await emit({ type: 'project', project: { ...projectA, helper: sonnet, roles: 1 } })
       await act(async () => answerState())
       await openA()
       expect(screen.getByTestId('helper-picker').textContent).toBe('Sonnet 5.5')
       await sendShown('A clip')
       await waitFor(() => expect(sends()).toHaveLength(1))
       expect(sends()[0]).toMatchObject({ key: projectA.id, pair: { lead: opus, helper: sonnet } })
+    })
+
+    // A chat's roles reach the window three ways, a saved state read, a project event, and a send's reply, in any order.
+    // Whatever way each of three saves came, and in whatever order, the chat ends on the newest.
+    const updates = [
+      { roles: 1, helper: sonnet, shown: 'Sonnet 5.5' },
+      { roles: 2, helper: { provider: 'openai-codex', modelId: 'gpt-6.1-sol' }, shown: 'GPT 6.1 Sol' },
+      { roles: 3, helper: opus, shown: 'Opus 5.5' },
+    ]
+    const orders = <T,>(items: T[]): T[][] => (items.length <= 1 ? [items] : items.flatMap((item, i) => orders([...items.slice(0, i), ...items.slice(i + 1)]).map((rest) => [item, ...rest])))
+    const sources = ['read', 'event', 'reply'] as const
+    it.each(
+      orders([0, 1, 2]).flatMap((saves) =>
+        orders([...sources]).map((arrival) => ({
+          name: `${sources.map((source, i) => `${source} ${updates[saves[i] ?? 0]?.roles}`).join(', ')}; arrive ${arrival.join(', ')}`,
+          carried: Object.fromEntries(sources.map((source, i) => [source, updates[saves[i] ?? 0]])),
+          arrival,
+        })),
+      ),
+    )('ends on the newest roles: $name', async ({ carried, arrival }) => {
+      const at = (source: (typeof sources)[number]) => ({ ...projectA, ...carried[source] })
+      let reads = 0
+      let answerRead: () => void = () => {}
+      let answerReply: () => void = () => {}
+      mockSidecar(
+        {
+          'state.get': (_, real) => {
+            reads += 1
+            if (reads === 1) return real().then((state) => ({ ...(state as AppState), importBlocked: '/Users/me/Documents/Materialize 3D' }))
+            if (reads > 2) return real()
+            return new Promise((resolve) => (answerRead = () => resolve(real().then((state) => ({ ...(state as AppState), projects: [at('read'), projectB] })))))
+          },
+          'legacy.import': () => Promise.resolve({ imported: 0, blocked: null }),
+          'chat.send': () => new Promise((resolve) => (answerReply = () => resolve({ project: at('reply') }))),
+        },
+        [projectA, projectB],
+      )
+      render(<StudioApp />)
+      await openA()
+      await sendShown('A clip')
+      await waitFor(() => expect(sends()).toHaveLength(1))
+      fireEvent.click(await screen.findByText('Try again'))
+      await waitFor(() => expect(reads).toBe(2))
+      const deliver = { read: () => answerRead(), reply: () => answerReply(), event: () => listeners.sidecar.forEach((listener) => listener({ payload: { type: 'project', project: at('event') } })) }
+      for (const source of arrival) {
+        await act(async () => deliver[source]())
+        await pause(0)
+      }
+      await waitFor(() => expect(screen.getByTestId('helper-picker').textContent).toBe('Opus 5.5'))
     })
 
     it('leaves a message already on its way alone when a role is picked after Send', async () => {
@@ -1623,8 +1672,8 @@ describe('StudioApp', () => {
   })
 
   it('fills the prompt from a suggestion, and offers the newest projects with their newest render and their status', async () => {
-    const projectC = { id: '2026-11-06-c', conversation: 4, title: 'Project C', createdMs: 0, model: { provider: 'anthropic', modelId: 'claude-opus-5-5' }, helper: null }
-    const projectD = { id: '2026-11-06-d', conversation: 5, title: 'Project D', createdMs: 0, model: { provider: 'anthropic', modelId: 'claude-opus-5-5' }, helper: null }
+    const projectC = { id: '2026-11-06-c', conversation: 4, title: 'Project C', createdMs: 0, model: { provider: 'anthropic', modelId: 'claude-opus-5-5' }, helper: null, roles: 0 }
+    const projectD = { id: '2026-11-06-d', conversation: 5, title: 'Project D', createdMs: 0, model: { provider: 'anthropic', modelId: 'claude-opus-5-5' }, helper: null, roles: 0 }
     const status = (lastMs: number, more: object = {}) => ({ running: false, printed: false, printFiles: 0, lastMs, ...more })
     mockSidecar(
       {
@@ -1755,7 +1804,7 @@ describe('StudioApp', () => {
     await waitFor(() => expect(picked()).toBe('Opus 5.5'))
 
     const checks = sidecarCalls('setup.check').length
-    emit({ type: 'project', project: { ...projectA, model: { provider: 'openai-codex', modelId: 'gpt-6.1-sol' } } })
+    emit({ type: 'project', project: { ...projectA, model: { provider: 'openai-codex', modelId: 'gpt-6.1-sol' }, roles: 1 } })
     await waitFor(() => expect(picked()).toBe('GPT 6.1 Sol'))
     // What the next send needs is checked again for the new lead, so Send does not wait on the old one's sign-in.
     await waitFor(() => expect(sidecarCalls('setup.check').length).toBeGreaterThan(checks))
@@ -1773,7 +1822,8 @@ describe('StudioApp', () => {
     fireEvent.click(within(screen.getByRole('menu', { name: 'Helper models' })).getByText('Sonnet 5.5'))
     await waitFor(() => expect(helper().textContent).toBe('Sonnet 5.5'))
     // The phone clears the helper, and only then does the desktop hear the reply to its own pick.
-    emit({ type: 'project', project: { ...projectA, helper: null } })
+    // The desktop pick saved as revision 1, so the phone's change is revision 2.
+    emit({ type: 'project', project: { ...projectA, helper: null, roles: 2 } })
     // The desktop's own pick shows until its save answers. Then the saved helper shows, which the phone changed.
     await act(async () => answerPick())
     expect(helper().textContent).toBe('None')

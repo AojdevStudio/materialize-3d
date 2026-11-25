@@ -29,10 +29,10 @@ const clock: Clock = {
   },
 }
 
-const projectA: Project = { id: '2026-11-06-a', conversation: 2, title: 'Project A', createdMs: 2, model: { provider: 'anthropic', modelId: 'claude-opus-5-5' }, helper: null }
-const projectB: Project = { id: '2026-11-06-b', conversation: 3, title: 'Project B', createdMs: 1, model: { provider: 'anthropic', modelId: 'claude-opus-5-5' }, helper: null }
+const projectA: Project = { id: '2026-11-06-a', conversation: 2, title: 'Project A', createdMs: 2, model: { provider: 'anthropic', modelId: 'claude-opus-5-5' }, helper: null, roles: 0 }
+const projectB: Project = { id: '2026-11-06-b', conversation: 3, title: 'Project B', createdMs: 1, model: { provider: 'anthropic', modelId: 'claude-opus-5-5' }, helper: null, roles: 0 }
 /** The project a send from the start screen makes. */
-const made: Project = { id: '2026-11-06-a-clip', conversation: 10, title: 'A clip', createdMs: 10, model: { provider: 'anthropic', modelId: 'claude-opus-5-5' }, helper: null }
+const made: Project = { id: '2026-11-06-a-clip', conversation: 10, title: 'A clip', createdMs: 10, model: { provider: 'anthropic', modelId: 'claude-opus-5-5' }, helper: null, roles: 0 }
 
 const LOST = 'The engine restarted before it answered. Try again.'
 

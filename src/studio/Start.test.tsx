@@ -15,7 +15,7 @@ afterEach(() => {
   invokeMock.mockReset()
 })
 
-const project = (id: string): Project => ({ id, conversation: 1, title: id, createdMs: 0, model: { provider: 'anthropic', modelId: 'claude-opus-5-5' }, helper: null })
+const project = (id: string): Project => ({ id, conversation: 1, title: id, createdMs: 0, model: { provider: 'anthropic', modelId: 'claude-opus-5-5' }, helper: null, roles: 0 })
 const status = (lastMs: number, more: Partial<ProjectStatus> = {}): ProjectStatus => ({ running: false, printed: false, printFiles: 0, lastMs, ...more })
 const file = (rel: string): ProjectFile => ({ rel, size: 1, modifiedMs: 1 })
 const ignore = () => {}
