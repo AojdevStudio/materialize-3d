@@ -195,24 +195,25 @@ export default function ChatScreen({
   const handoffs = items.map((item) => (item.kind === 'handoff' ? `${item.state}:${item.result?.length ?? 0}` : '')).join(',')
   const shownState = `${items.length}:${shownLines}:${running}:${handoffs}`
   // The chat keeps itself at its newest line, but cannot while it is hidden, which only a phone-sized screen on the
-  // Model tab does. What it showed when it was hidden is noted. When it shows again, the newest line comes into view
-  // only if that changed, so a reader who missed nothing keeps their place.
+  // Model tab does. What it showed in the last render it was visible is kept. When it shows again, the newest line
+  // comes into view only if that changed, so a reader who missed nothing keeps their place, and a reply that came in
+  // the very render that hid the chat still counts as missed.
   const chatHidden = !tablet && tab === 'model'
-  const shownNow = useRef(shownState)
-  useEffect(() => {
-    shownNow.current = shownState
-  })
-  const hiddenAt = useRef<string | null>(null)
+  const lastVisible = useRef(shownState)
+  const wasHidden = useRef(false)
   useEffect(() => {
     if (chatHidden) {
-      hiddenAt.current = shownNow.current
+      wasHidden.current = true
       return
     }
-    if (hiddenAt.current !== null && hiddenAt.current !== shownNow.current) {
+    if (wasHidden.current && lastVisible.current !== shownState) {
       chatPane.current?.querySelector('[data-testid=messages]')?.lastElementChild?.scrollIntoView({ block: 'end' })
     }
-    hiddenAt.current = null
+    wasHidden.current = false
   }, [chatHidden])
+  useEffect(() => {
+    if (!chatHidden) lastVisible.current = shownState
+  })
   const newest = [...items].reverse().find((item): item is HandoffItem => item.kind === 'handoff')
   const file = files.find((f) => f.rel === chosenFile) ?? files.find(fits) ?? files[0]
   const editable = outbox.kind === 'draft'

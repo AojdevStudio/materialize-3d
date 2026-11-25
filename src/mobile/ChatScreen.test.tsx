@@ -129,12 +129,22 @@ describe('ChatScreen', () => {
     fireEvent.click(screen.getByRole('tab', { name: 'Chat' }))
     expect(scrolled).toContain(end())
 
+    // A reply comes in the very render that hides the chat: the way back still brings it into view.
+    const same = { id: 22, kind: 'assistant' as const, text: 'One more thing.', calls: [], model: SOL }
+    act(() => {
+      fireEvent.click(screen.getByRole('tab', { name: 'Model' }))
+      heard.forEach((hear) => hear({ ...saved, entries: [...saved.entries, reply, same], seq: 6.5 }))
+    })
+    scrolled.length = 0
+    fireEvent.click(screen.getByRole('tab', { name: 'Chat' }))
+    expect(scrolled).toContain(end())
+
     // On the Model tab the screen widens to a split view, so the chat shows, and a reply comes while it shows. The
     // chat follows it itself. Narrowed and back on Chat, the reader missed nothing and keeps their place.
     fireEvent.click(screen.getByRole('tab', { name: 'Model' }))
     act(() => screenSize.resize(true))
     const later = { id: 21, kind: 'assistant' as const, text: 'And the lid.', calls: [], model: SOL }
-    act(() => heard.forEach((hear) => hear({ ...saved, entries: [...saved.entries, reply, later], seq: 7 })))
+    act(() => heard.forEach((hear) => hear({ ...saved, entries: [...saved.entries, reply, same, later], seq: 7 })))
     act(() => screenSize.resize(false))
     scrolled.length = 0
     fireEvent.click(screen.getByRole('tab', { name: 'Chat' }))
