@@ -66,7 +66,11 @@ test)
       grep -qF "\"$shot " $out/attachments/$1/manifest.json || { echo "sim-proof: $1 has no screenshot $shot" >&2; exit 1; }
     done
   }
-  run pair testPairFromAPictureOpenTheModelsAndRelaunch 01 02 03 04 05 06
+  run pair testPairFromAPictureOpenTheModelsAndRelaunch 01 02 03 05 06
+  # One 04 screenshot per model. Xcode rewrites their names (it drops a folder's slash), so they are counted, not matched.
+  models=(${(s:;:)M3D_MODELS})
+  (( $(grep -oF '"04 model ' $out/attachments/pair/manifest.json | wc -l) == ${#models} )) \
+    || { echo "sim-proof: pair lacks a screenshot for one of its ${#models} models" >&2; exit 1; }
   # Only after a pass: the reset shows the pairing lived in the Keychain.
   xcrun simctl keychain $device reset
   run keychain testAKeychainResetForgetsThePairing 07
