@@ -119,7 +119,7 @@ function mockSidecar(overrides: Calls = {}, projects: Project[] = [projectB], dr
         store.projects = store.projects.map((p) => (p.id === params.project ? { ...p, ...change, roles: p.roles + 1 } : p))
         const saved = store.projects.find((p) => p.id === params.project)
         listeners.sidecar.forEach((listener) => listener({ payload: { type: 'project', project: saved } }))
-        return Promise.resolve(null)
+        return Promise.resolve(saved)
       }
       case 'chat.open':
         return Promise.resolve(view(String(params.project)))
@@ -138,10 +138,15 @@ function mockSidecar(overrides: Calls = {}, projects: Project[] = [projectB], dr
         return Promise.resolve({})
       case 'drafts.set':
         return Promise.resolve({ rev: ++draftRevs })
-      case 'chat.send':
-        // A start screen send makes its project, which the store then holds, as the sidecar's does.
-        if (params.key === 'new' && !store.projects.some((p) => p.id === made.id)) store.projects = [made, ...store.projects]
-        return Promise.resolve({ project: params.key === 'new' ? made : store.projects.find((p) => p.id === params.key) })
+      case 'chat.send': {
+        // A start screen send makes its project with the pair it carries, which the store then holds, as the sidecar's
+        // does.
+        const pair = params.pair as { lead: typeof settings.model; helper: typeof settings.model | null } | undefined
+        if (params.key === 'new' && !store.projects.some((p) => p.id === made.id)) {
+          store.projects = [pair === undefined ? made : { ...made, model: pair.lead, helper: pair.helper, roles: 1 }, ...store.projects]
+        }
+        return Promise.resolve({ project: store.projects.find((p) => p.id === (params.key === 'new' ? made.id : params.key)) })
+      }
       default:
         return Promise.resolve(null)
     }
@@ -1042,7 +1047,7 @@ describe('StudioApp', () => {
   it.each([
     { shown: 'Astra', astra: true, helper: { provider: 'openai-codex', modelId: 'gpt-6-astra' } },
     { shown: 'None', astra: false, helper: null },
-  ])('sends the default helper the start screen shows: $shown', async ({ shown, astra, helper }) => {
+  ])('sends the default helper the start screen shows, and the chat keeps it: $shown', async ({ shown, astra, helper }) => {
     mockSidecar({
       'state.get': (_, real) => real().then((state) => ({ ...(state as AppState), settings: { ...(state as AppState).settings, astra } })),
       'models.list': () => Promise.resolve([...models, { provider: 'openai-codex', modelId: 'gpt-6-astra', name: 'Astra' }]),
@@ -1054,6 +1059,9 @@ describe('StudioApp', () => {
     fireEvent.click(screen.getByTestId('send'))
     await waitFor(() => expect(sends()).toHaveLength(1))
     expect(sends()[0]).toMatchObject({ key: 'new', pair: { lead: { provider: 'anthropic', modelId: 'claude-opus-5-5' }, helper } })
+    // The chat the send made opens with that helper.
+    await waitFor(() => expect(openTitle()).toBe('A clip'))
+    expect(screen.getByTestId('helper-picker').textContent).toBe(shown)
   })
 
   // The five ways a pick and a send raced before a send carried its own roles (#373). Each now holds by construction:
@@ -1446,6 +1454,28 @@ describe('StudioApp', () => {
       await sendShown('A clip')
       await waitFor(() => expect(sends()).toHaveLength(1))
       expect(sends()[0]).toMatchObject({ key: 'new', pair: { lead: sonnet } })
+    })
+
+    it('shows and sends a saved pick when its save answers before its project event comes', async () => {
+      const store = mockSidecar(
+        {
+          // The save lands and answers, and its event is still on its way.
+          'projects.setHelper': (params) => {
+            store.projects = store.projects.map((p) => (p.id === params.project ? { ...p, helper: params.model as typeof sonnet, roles: p.roles + 1 } : p))
+            return Promise.resolve(store.projects.find((p) => p.id === params.project))
+          },
+        },
+        [projectA, projectB],
+      )
+      render(<StudioApp />)
+      await openA()
+      pickHelper('Sonnet 5.5')
+      await waitFor(() => expect(sidecarCalls('projects.setHelper')).toHaveLength(1))
+      await pause(50)
+      expect(screen.getByTestId('helper-picker').textContent).toBe('Sonnet 5.5')
+      await sendShown('A clip')
+      await waitFor(() => expect(sends()).toHaveLength(1))
+      expect(sends()[0]).toMatchObject({ pair: { helper: sonnet } })
     })
 
     it('leaves a message already on its way alone when a role is picked after Send', async () => {

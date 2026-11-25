@@ -203,6 +203,9 @@ export default function StudioApp() {
     })
   }
 
+  /** A role save's answer, the project as saved, which the window takes before the pick gives way to it. */
+  const takeSaved = (saved: Project) => setProjects((all) => takeIn(all, saved))
+
   /**
    * A pick of the open project's lead, or on the start screen the default the next project takes. The check runs
    * again then, as the new model's provider may differ.
@@ -213,7 +216,7 @@ export default function StudioApp() {
       pickRole(START, 'lead', model, () => saveSettings({ model }).then(() => checkReady()))
       return
     }
-    pickRole(project, 'lead', model, () => sidecar('projects.setLead', { project, model }))
+    pickRole(project, 'lead', model, () => sidecar('projects.setLead', { project, model }).then(takeSaved))
   }
 
   /** A pick of the open project's helper. On the start screen it is the helper the next project starts with. */
@@ -223,7 +226,7 @@ export default function StudioApp() {
       setStartHelper({ pick: model })
       return
     }
-    pickRole(project, 'helper', model, () => sidecar('projects.setHelper', { project, model }))
+    pickRole(project, 'helper', model, () => sidecar('projects.setHelper', { project, model }).then(takeSaved))
   }
 
   const composer = (
