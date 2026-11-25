@@ -28,7 +28,7 @@ import { leaves, WORKFLOW, WORKFLOW_VERSION } from './agent'
 import type { Busy } from './busy'
 import { type SentMessage, UserMessage } from './entries'
 import { folderSummary } from './folder'
-import { copyAttachments, removeAttachments } from './pictures'
+import { copyAttachments, type Made, removeAttachments } from './pictures'
 import { modelName, newest } from './offered'
 import {
   ASTRA,
@@ -172,8 +172,20 @@ type State = { running: boolean; waiting: Waiting | null; turn: Turn | null; fai
 /** What the window sees of a chat. Every view and `chat` event is made here. */
 const view = (project: string, entries: ChatEntry[], { running, waiting, turn, seq }: State): ChatView => ({ project, entries, running, waiting, turn, seq })
 
-/** A send while the agent still works on the last message. Nothing is sent. */
-export class AgentWorking extends Error {}
+/**
+ * A send refused before it committed: the agent still works on the last message, or the role it would run with is
+ * retired, as `message` says. Nothing is sent. `made` is what this send copied into the project, for the caller that
+ * retires the revision to remove.
+ */
+export class SendRefused extends Error {
+  constructor(
+    message: string,
+    readonly reason: 'working' | 'retired',
+    readonly made: Made,
+  ) {
+    super(message)
+  }
+}
 
 export class Chats {
   readonly #o: ChatsOptions
@@ -356,7 +368,7 @@ export class Chats {
       return project
     }
     const folder = store.projectFolder(project.id)
-    const attachments = await copyAttachments(folder, rev, draft.attachments)
+    const { copied: attachments, made } = await copyAttachments(folder, rev, draft.attachments)
     // The chat entry keeps the split the model got: a picture it could not read is shown as a file, by its path.
     const { content, shown, named } = userContent(folder, draft.text, attachments)
     try {
@@ -378,9 +390,10 @@ export class Chats {
         await wait(tx, conversation.id, null, { saves })
       }, context))
     } catch (error) {
-      if (error instanceof ConversationBusy) throw new AgentWorking('The agent is still working on the last message.')
-      // This revision never goes out, so the files copied for it leave the project.
-      if (error instanceof DraftChanged) removeAttachments(folder, rev)
+      if (error instanceof ConversationBusy) throw new SendRefused('The agent is still working on the last message.', 'working', made)
+      if (error instanceof RoleRetired) throw new SendRefused(error.message, 'retired', made)
+      // This revision never goes out, so the files this send copied for it leave the project.
+      if (error instanceof DraftChanged) removeAttachments(folder, made)
       throw error
     }
     await this.#watch(project.id, conversation)

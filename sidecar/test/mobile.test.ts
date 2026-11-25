@@ -507,6 +507,36 @@ describe('a paired device', () => {
     await app.quit()
   }, 60_000)
 
+  test('a refused send removes only the copies it made, and leaves the files it found in the project', async () => {
+    const { app, base, projects } = await start(forwarding)
+    const project = await chat(app)
+    const { token } = await pair(app, base)
+    const device = phone(base, token, project)
+    expect((await device.send(await device.draft('please wait'))).status).toBe(200)
+    while (!existsSync(join(projects, project, 'started'))) await Bun.sleep(20)
+    const refs = join(projects, project, 'refs')
+    const found = (rev: number, name: string) => {
+      mkdirSync(join(refs, `draft-${rev}`), { recursive: true })
+      writeFileSync(join(refs, `draft-${rev}`, name), 'made by the person')
+    }
+
+    // A text-only send copies nothing, so its refusal removes nothing.
+    const text = await device.draft('make it red')
+    found(text, 'keep.txt')
+    expect((await device.send(text)).status).toBe(423)
+    expect(existsSync(join(refs, `draft-${text}`, 'keep.txt'))).toBe(true)
+
+    const photo = await device.draft('make it blue', [{ name: 'blue.png', data: PNG }])
+    found(photo, 'beside.txt')
+    expect((await device.send(photo)).status).toBe(423)
+    expect(existsSync(join(refs, `draft-${photo}`, 'blue.png'))).toBe(false)
+    expect(existsSync(join(refs, `draft-${photo}`, 'beside.txt'))).toBe(true)
+
+    writeFileSync(join(projects, project, 'go'), '')
+    await settled(app, project, 'answered by faux-a')
+    await app.quit()
+  }, 60_000)
+
   test('reads no file outside the chat, through a link, in the app records, or that is not a model', async () => {
     const { app, base, dir, projects } = await start(forwarding)
     const project = await chat(app)
