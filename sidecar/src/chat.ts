@@ -211,6 +211,8 @@ export class Chats {
    * Each is kept while it starts, so two reads at once start one watch.
    */
   readonly #helperWatches = new Map<number, { project: string; watch: Promise<WatchHandle<ConversationView> | undefined> }>()
+  /** By project, the order of the newest read whose helpers the watches follow. */
+  readonly #helperReads = new Map<string, number>()
   /** The newest entry each watched chat has sent the window. */
   readonly #sent = new Map<string, number>()
   #seq = 0
@@ -273,17 +275,25 @@ export class Chats {
 
   /**
    * Keeps a watch on each helper conversation of `handoffs`, the chat's helper calls that still run, so each step a
-   * helper takes reaches the window. The lead's watch does not see them. A watch whose call ended is dropped.
+   * helper takes reaches the window. The lead's watch does not see them. A watch whose call ended is dropped. Reads end
+   * out of order, so only the newest read of the chat changes its watches: an older one that ends later, or is still
+   * at work when a newer one starts, stops and starts none.
    */
-  async #followHelpers(project: string, lead: Conversation, handoffs: HandoffProgress[]): Promise<void> {
+  async #followHelpers(project: string, lead: Conversation, { handoffs, seq }: State): Promise<void> {
+    if (seq < (this.#helperReads.get(project) ?? 0)) return
+    this.#helperReads.set(project, seq)
+    const newest = () => this.#helperReads.get(project) === seq
     const live = new Set(handoffs.map(({ handoff }) => handoff.conversation))
-    for (const [id, followed] of this.#helperWatches) {
+    for (const [id, followed] of [...this.#helperWatches]) {
+      if (!newest()) return
       if (followed.project !== project || live.has(id)) continue
       this.#helperWatches.delete(id)
       await (await followed.watch)?.stop()
     }
     let attached = false
     for (const id of live) {
+      // A watch this read started still gets the read below, which a newer read that found it in place does not give.
+      if (!newest()) break
       if (this.#helperWatches.has(id)) continue
       const watch = this.#followHelper(id, () => this.#changed(project, lead))
       this.#helperWatches.set(id, { project, watch })
@@ -315,7 +325,7 @@ export class Chats {
     // another window has not heard yet still reaches it. A window merges entries by id, so one it holds is harmless.
     if (!this.#sent.has(project)) this.#sent.set(project, entries.at(-1)?.id ?? 0)
     const state = await this.#state(conversation)
-    await this.#followHelpers(project, conversation, state.handoffs)
+    await this.#followHelpers(project, conversation, state)
     return view(project, entries, state)
   }
 
@@ -347,7 +357,7 @@ export class Chats {
       if (await this.#read(conversation, failure, state.turn)) this.#resume(project, failure.taskId)
       state = await this.#state(conversation)
     }
-    await this.#followHelpers(project, conversation, state.handoffs)
+    await this.#followHelpers(project, conversation, state)
     const entries = await this.#entries(conversation, this.#sent.get(project) ?? 0)
     if (entries.length > 0) this.#sent.set(project, entries.at(-1)?.id ?? 0)
     this.#o.emit({ type: 'chat', ...view(project, entries, state) })

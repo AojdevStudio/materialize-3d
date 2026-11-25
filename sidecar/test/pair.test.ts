@@ -314,6 +314,42 @@ describe('a helper call that runs', () => {
     expect(owned.items.map((conversation) => conversation.id)).toEqual([first.handoff.conversation as ConversationId])
     await store.close()
   }, 60_000)
+  test("keeps a helper's steps coming when a read another helper woke before it began ends after it began", async () => {
+    const where = scratch()
+    const gate = mkdtempSync(join(tmpdir(), 'm3d-gate-'))
+    const app = await start(where, 'two-helpers', { M3D_READ_GATE: gate })
+    const id = await project(app, FAUX_A, FAUX_B)
+    const folder = join(where.projects, id)
+    const exists = async (path: string) => {
+      while (!existsSync(path)) await Bun.sleep(25)
+    }
+    const shows = (match: (handoffs: HandoffProgress[]) => boolean, ms?: number) =>
+      app.until((e) => e.type === 'chat' && e.project === id && match(e.handoffs as HandoffProgress[]), ms)
+    // The second helper call waits as it starts, so the first helper runs alone.
+    writeFileSync(join(gate, 'hold-turn'), '1')
+    await app.sendDraft(id, 'two at once')
+    await exists(join(gate, 'held-turn'))
+    const [first] = (await shows((handoffs) => handoffs[0]?.steps === 1, 30_000)).handoffs as [HandoffProgress]
+    // The first helper's next step wakes its own watch. That read finds only the first helper, and is held once it took
+    // its place in the order of reads.
+    writeFileSync(join(gate, 'hold-waiting'), '5')
+    writeFileSync(join(folder, 'next'), '')
+    await exists(join(gate, 'held-waiting'))
+    // The second helper begins, and the lead's newer read follows it.
+    writeFileSync(join(gate, 'release-turn'), '')
+    const second = (handoffs: HandoffProgress[]) => handoffs.find((h) => h.handoff.conversation !== first.handoff.conversation)
+    await shows((handoffs) => second(handoffs)?.steps === 1, 30_000)
+    // The older read ends last. The second helper's next step still reaches the chat.
+    writeFileSync(join(gate, 'release-waiting'), '')
+    await shows((handoffs) => handoffs.length === 1)
+    writeFileSync(join(folder, 'nextB'), '')
+    await shows((handoffs) => second(handoffs)?.steps === 2, 10_000)
+    writeFileSync(join(folder, 'go'), '')
+    writeFileSync(join(folder, 'goB'), '')
+    await answered(app, id, 'both waited')
+    await app.quit()
+  }, 90_000)
+
   test('stopped by the person ends as stopped, with its handoff, not as a failure', async () => {
     const where = scratch()
     const app = await start(where, 'helper')
