@@ -8,6 +8,9 @@ const port = 4173;
 export default defineConfig({
   testDir: "tests",
   fullyParallel: true,
+  // Headless Chrome may draw the 3D view in software, and one software-drawn page already keeps every core busy.
+  // More pages at once finish no sooner: each test only runs slower, past its timeout on a loaded machine.
+  workers: 2,
   reporter: "list",
   use: {
     baseURL: `http://127.0.0.1:${port}${base}`,

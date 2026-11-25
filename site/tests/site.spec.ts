@@ -16,29 +16,19 @@ async function open(page: Page, theme: Theme = "light") {
   await page.goto("./");
 }
 
-/** Waits for the 3D view to load, so the labels and the scene are live. */
+/**
+ * Waits until the 3D view has loaded and drawn its settled frame for the current scroll offset, so the scene,
+ * the labels, and the readout all show that offset. A software-drawn frame can hold the page for seconds.
+ */
 async function storyReady(page: Page) {
   await expect(page.locator(".story-status"), "the 3D view loaded").toHaveText("", { timeout: 30_000 });
+  await page.waitForFunction(() => document.querySelector<HTMLElement>(".story-canvas")?.dataset.drawn === String(scrollY));
 }
 
-/** Scrolls the story to a position in vh and waits until it stops writing to the view, so eased motion has settled. */
+/** Scrolls the story to a position in vh and waits until the 3D view has drawn its settled frame there. */
 async function scrollStory(page: Page, vh: number) {
   await page.evaluate((top) => window.scrollTo({ top: (top * innerHeight) / 100, behavior: "instant" }), vh);
-  await page.evaluate(
-    () =>
-      new Promise<void>((done) => {
-        const view = document.querySelector(".story-view") ?? document.body;
-        let last = performance.now();
-        const observer = new MutationObserver(() => (last = performance.now()));
-        observer.observe(view, { subtree: true, attributes: true, characterData: true, childList: true });
-        const check = () => {
-          if (performance.now() - last < 800) return void setTimeout(check, 100);
-          observer.disconnect();
-          done();
-        };
-        setTimeout(check, 100);
-      }),
-  );
+  await storyReady(page);
 }
 
 const readout = (page: Page) =>
@@ -114,6 +104,7 @@ test("external links are exactly the configured ones", async ({ page }) => {
 
 test("keyboard reaches every link and the theme toggle with a visible focus ring", async ({ page }) => {
   await open(page);
+  await storyReady(page);
   const total = await page.locator("a[href], button").evaluateAll((els) => {
     els.forEach((el, i) => el.setAttribute("data-kb", String(i)));
     return els.length;
@@ -415,13 +406,16 @@ test("the readout follows the scroll: parts lifted, then Z height, then the rewi
 });
 
 test("the 3D view survives a reduced-motion change while the page is open", async ({ page }) => {
+  test.slow(); // each motion change replaces the canvas, so the 3D view loads and draws three times, maybe in software
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await open(page);
   await storyReady(page);
   await page.emulateMedia({ reducedMotion: "reduce" });
+  await expect(page.locator(".story")).toHaveAttribute("data-motion", "still");
   await storyReady(page);
   await page.emulateMedia({ reducedMotion: "no-preference" });
+  await expect(page.locator(".story")).toHaveAttribute("data-motion", "full");
   await storyReady(page);
   expect(errors).toEqual([]);
 });
@@ -430,7 +424,9 @@ test("at the end, the header is solid over the install guide and the hidden rail
   await page.setViewportSize({ width: 1440, height: 600 });
   await page.emulateMedia({ reducedMotion: "reduce" });
   await open(page);
+  await storyReady(page);
   await page.locator('a[href="#install"]').first().evaluate((link: HTMLAnchorElement) => link.click());
+  await storyReady(page);
   await expect(page.locator(".site-header"), "the header turns solid after an instant jump").toHaveAttribute("data-solid", "true");
   const headerBottom = await page.locator(".site-header").evaluate((h) => h.getBoundingClientRect().bottom);
   const installTop = await page.locator("#install-title").evaluate((h) => h.getBoundingClientRect().top);
