@@ -13,6 +13,13 @@ export type ModelChoice = { provider: string; modelId: string }
 export type Role = 'lead' | 'helper'
 
 /**
+ * The roles a send carries, which its turn runs with: in a chat, only the roles picked in the window whose save it has
+ * not heard back from yet, and from the start screen, the helper it shows and a lead picked there. A role left out runs
+ * as the sidecar saved it when it takes the send, so a role saved where the window did not hear of it still counts.
+ */
+export type SentRoles = { lead?: ModelChoice; helper?: ModelChoice | null }
+
+/**
  * A model version a provider reported removed while a chat ran it, the role it held there, and the newest version of its
  * family, or null when that is the removed one.
  */
@@ -67,6 +74,11 @@ export type Project = {
   printed?: boolean
   model: ModelChoice
   helper: ModelChoice | null
+  /**
+   * The revision of `model` and `helper`. It goes up by one with each save of them, in the same commit, so a window
+   * takes the roles with the highest revision it heard, from a read, an event, or a reply, in any order.
+   */
+  roles: number
   retired?: Omit<Retired, 'replacement'>[]
 }
 
@@ -127,20 +139,24 @@ export type ImportedEntry =
 
 /**
  * What a `helper` call ran: `task` is the durable task id of the call, which owns the helper's conversation,
- * `conversation` is that conversation's id, and `helper` is the model it ran on.
+ * `conversation` is that conversation's id, `helper` is the model it ran on, and `startedMs` is when the call started.
  */
-export type Handoff = { task: string; conversation: number; helper: ModelChoice }
+export type Handoff = { task: string; conversation: number; helper: ModelChoice; startedMs: number }
+
+/** A helper call that still runs: its call, its handoff, and how far the helper got: its step count and newest step. */
+export type HandoffProgress = { callId: string; handoff: Handoff; steps: number; last: { name: string; args: unknown } | null }
 
 /**
  * One committed line of a chat. Tool calls fold under their assistant line; each result is its own line. A person's
  * message holds the paths of its pictures, which went to the model as pictures, and of its other files, which the
- * message named. An assistant line holds the model its turn ran on. A `helper` call's result holds its handoff.
+ * message named. An assistant line holds the model its turn ran on. A `helper` call's result holds its handoff, and
+ * `stopped` when the person stopped it while it ran.
  */
 export type ChatEntry =
   | ({ id: number; kind: 'imported' } & ImportedEntry)
   | { id: number; kind: 'user'; text: string; images: string[]; files: string[] }
   | { id: number; kind: 'assistant'; text: string; calls: { id: string; name: string; args: unknown }[]; model: ModelChoice }
-  | { id: number; kind: 'tool'; callId: string; name: string; text: string; failed: boolean; durationMs?: number; handoff?: Handoff }
+  | { id: number; kind: 'tool'; callId: string; name: string; text: string; failed: boolean; durationMs?: number; handoff?: Handoff; stopped?: true }
 
 /**
  * Why a turn stopped before its answer, and the one thing that lets it go on. `retired` marks a lead its provider
@@ -170,7 +186,16 @@ export type Turn = {
  * earlier, such as a change that arrives after `chat.open` answered, never takes the place of a newer one's `running`,
  * `waiting`, and `turn`.
  */
-export type ChatView = { project: string; entries: ChatEntry[]; running: boolean; waiting: Waiting | null; turn: Turn | null; seq: number }
+export type ChatView = {
+  project: string
+  entries: ChatEntry[]
+  running: boolean
+  waiting: Waiting | null
+  turn: Turn | null
+  /** The turn's helper calls that still run. */
+  handoffs: HandoffProgress[]
+  seq: number
+}
 
 /** What the store keeps of the app. */
 export type StoredState = { setup: Setup; settings: Settings; projects: Project[]; drafts: Record<string, SavedDraft> }
@@ -293,17 +318,21 @@ export interface Methods {
   /**
    * Sends the draft saved as revision `rev` under `key`, and answers the project it went to. From the start screen it
    * makes that project first. Sent again with the same revision, as after a lost answer, it sends nothing more and
-   * answers the same project.
+   * answers the same project. `pair` is the roles the window carries, which the turn runs with, and the saved ones
+   * for the rest.
    */
-  'chat.send': { params: { key: string; rev: number }; result: { project: Project } }
+  'chat.send': { params: { key: string; rev: number; pair?: SentRoles }; result: { project: Project } }
   'chat.stop': { params: { project: string }; result: null }
   'chat.retry': { params: { project: string }; result: null }
   /** The newest version of each model family, for the providers the person signed in to. Both roles offer this list. */
   'models.list': { params: Record<string, never>; result: ModelOption[] }
-  /** Saves the lead model a project's next turn runs on. A model the app cannot run, or a retired one, is refused. */
-  'projects.setLead': { params: { project: string; model: ModelChoice }; result: null }
-  /** Saves the helper model a project's next turn can hand tasks to, or null for the lead alone. Refused as `setLead`. */
-  'projects.setHelper': { params: { project: string; model: ModelChoice | null }; result: null }
+  /**
+   * Saves the lead model a project's next turn runs on, and answers the project as saved, with its roles' revision. A
+   * model the app cannot run, or a retired one, is refused.
+   */
+  'projects.setLead': { params: { project: string; model: ModelChoice }; result: Project }
+  /** Saves the helper model a project's next turn can hand tasks to, or null for the lead alone. Answers and refuses as `setLead`. */
+  'projects.setHelper': { params: { project: string; model: ModelChoice | null }; result: Project }
   /** Each project's status for the sidebar, by project id. */
   'projects.status': { params: Record<string, never>; result: Record<string, ProjectStatus> }
   /** Marks a project printed, which moves it to the sidebar's Printed group. */

@@ -86,7 +86,7 @@ export function AstraSwitch({ id, signedIn, on, busy, onChange }: { id: string; 
         aria-describedby={signedIn ? undefined : `${id}-needs`}
         onChange={(event) => onChange(event.target.checked)}
       />
-      <label htmlFor={id}>Let the main agent ask GPT (Astra) for drawings</label>
+      <label htmlFor={id}>New chats start with Astra as the helper</label>
       {!signedIn && (
         <span id={`${id}-needs`} className="setup-detail">
           Needs a ChatGPT sign-in.

@@ -100,7 +100,7 @@ describe('chatEntry', () => {
   })
 
   test('a helper result holds its handoff, and a result of the Astra tool from before pairs keeps its name', () => {
-    const handoff = { task: '41', conversation: 42, helper: { provider: 'faux', modelId: 'faux-b' } }
+    const handoff = { task: '41', conversation: 42, helper: { provider: 'faux', modelId: 'faux-b' }, startedMs: 1000 }
     const helper = toolResult({ toolName: 'helper', content: [{ type: 'text', text: 'drew it' }], details: { handoff } })
     expect(chatEntry(record(13, 'pi.tool-result', { model: [helper] }))).toEqual({ id: 13, kind: 'tool', callId: 'call-1', name: 'helper', text: 'drew it', failed: false, handoff })
     const astra = toolResult({ toolName: 'astra', content: [{ type: 'text', text: 'drew it' }], details: { astra: 42 } })

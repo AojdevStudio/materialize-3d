@@ -1,7 +1,8 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { ChatView } from './Chat'
 import Trace, { clock } from './Trace'
-import { STOPPED, type ToolItem, type TraceItem } from './transcript'
+import { type HandoffItem, STOPPED, type ToolItem, type TraceItem } from './transcript'
 
 const NOW = Date.UTC(2026, 10, 9, 12, 0, 0)
 
@@ -122,5 +123,47 @@ describe('clock', () => {
     expect(clock(14 * 60_000 + 5000)).toBe('14:05')
     expect(clock(3_725_000)).toBe('1:02:05')
     expect(clock(-2000)).toBe('0:00')
+  })
+})
+
+describe('a handoff in the chat', () => {
+  const opus = { provider: 'anthropic', modelId: 'claude-opus-5-5' }
+  const astra = { provider: 'openai-codex', modelId: 'gpt-6-astra' }
+  const task = 'Check that bracket.stl fits a 25 mm pole.'
+  const running: HandoffItem = {
+    kind: 'handoff', id: 'h1', lead: opus, helper: astra, task, state: 'running', startedMs: NOW - 42_000,
+    progress: { steps: 3, doing: 'Running uv run python fit.py' },
+  }
+  const chat = (handoff: HandoffItem) => (
+    <ChatView project="p" items={[trace([write('grid', { state: 'done', result: 'ok' })], false), handoff]} running startedMs={NOW - 60_000} onError={() => {}} />
+  )
+  const entry = () => screen.getByTestId('handoff')
+
+  it('shows the task and the helper\'s progress with the trace folded, and is the only line that says the turn works', () => {
+    Element.prototype.scrollIntoView = vi.fn()
+    const { rerender } = render(chat(running))
+    fireEvent.click(head())
+    expect(head().getAttribute('aria-expanded')).toBe('false')
+    expect(entry().getAttribute('data-state')).toBe('running')
+    expect(text(entry())).toBe(`LeadOpus 5.5askedhelperAstra0:42Task${task}Running uv run python fit.py3 steps`)
+    expect(screen.queryByTestId('working')).toBeNull()
+    act(() => void vi.advanceTimersByTime(2000))
+    expect(text(entry().querySelector('.trace-head'))).toBe('LeadOpus 5.5askedhelperAstra0:44')
+
+    rerender(chat({ ...running, state: 'done', durationMs: 68_000, result: 'Fits.', progress: undefined }))
+    expect(text(entry())).toBe(`LeadOpus 5.5askedhelperAstra1:08Task${task}ResultFits.`)
+    rerender(chat({ ...running, state: 'failed', durationMs: 31_000, result: 'Helper Astra failed.', progress: undefined }))
+    expect(entry().getAttribute('data-state')).toBe('failed')
+    expect(text(entry().querySelector('.handoff-result'))).toBe('failedHelper Astra failed.')
+  })
+
+  it('shows each of two turns\' handoffs when a provider gave both calls the same id', () => {
+    Element.prototype.scrollIntoView = vi.fn()
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const done = (helper: typeof opus, result: string): HandoffItem => ({ ...running, helper, state: 'done', result, progress: undefined })
+    render(<ChatView project="p" items={[done(astra, 'Fits.'), done(opus, 'Fits too.')]} running={false} startedMs={undefined} onError={() => {}} />)
+    expect(screen.getAllByTestId('handoff').map((e) => text(e.querySelector('.handoff-result')))).toEqual(['ResultFits.', 'ResultFits too.'])
+    expect(errors.mock.calls.filter(([message]) => String(message).includes('same key'))).toEqual([])
+    errors.mockRestore()
   })
 })

@@ -24,9 +24,9 @@ import { useStudio, useStudioEvents } from './store'
 // jsdom has no layout, so the open row menu's scroll into view is a no-op here.
 Element.prototype.scrollIntoView = vi.fn()
 
-const bracket: Project = { id: '2026-11-10-bracket', conversation: 1, title: 'Bracket', createdMs: 1_000, model: { provider: 'anthropic', modelId: 'claude-opus-5-5' }, helper: null }
-const knob: Project = { id: '2026-11-11-knob', conversation: 2, title: 'Knob', createdMs: 2_000, model: { provider: 'anthropic', modelId: 'claude-opus-5-5' }, helper: null }
-const clip: Project = { id: '2026-11-12-clip', conversation: 3, title: 'Clip', createdMs: 3_000, model: { provider: 'anthropic', modelId: 'claude-opus-5-5' }, helper: null }
+const bracket: Project = { id: '2026-11-10-bracket', conversation: 1, title: 'Bracket', createdMs: 1_000, model: { provider: 'anthropic', modelId: 'claude-opus-5-5' }, helper: null, roles: 0 }
+const knob: Project = { id: '2026-11-11-knob', conversation: 2, title: 'Knob', createdMs: 2_000, model: { provider: 'anthropic', modelId: 'claude-opus-5-5' }, helper: null, roles: 0 }
+const clip: Project = { id: '2026-11-12-clip', conversation: 3, title: 'Clip', createdMs: 3_000, model: { provider: 'anthropic', modelId: 'claude-opus-5-5' }, helper: null, roles: 0 }
 const projects = [bracket, knob, clip]
 
 let read: Record<string, ProjectStatus>
@@ -66,7 +66,7 @@ function show() {
 
 const emit = (event: object) => act(() => listeners.forEach((listener) => listener({ payload: event })))
 const chat = (project: Project, running: boolean, seq: number) =>
-  emit({ type: 'chat', project: project.id, entries: [], running, waiting: null, turn: null, seq })
+  emit({ type: 'chat', project: project.id, entries: [], running, waiting: null, turn: null, handoffs: [], seq })
 const statusReads = () => invokeMock.mock.calls.filter(([, call]) => call.method === 'projects.status').length
 const groupOf = (project: Project) => screen.getByTestId(`project-${project.id}`).closest('section')?.getAttribute('data-testid')
 const groups = () => Object.fromEntries(projects.map((p) => [p.title, groupOf(p)]))

@@ -4,7 +4,7 @@ import { fileUrl } from './api'
 import { fileName } from './files'
 import Markdown from './Markdown'
 import { Mark } from './marks'
-import Trace, { Working } from './Trace'
+import Trace, { Handoff, Working } from './Trace'
 import type { ChatItem } from './transcript'
 
 interface ChatViewProps {
@@ -18,8 +18,13 @@ interface ChatViewProps {
 
 export function ChatView({ project, items, running, startedMs, onError }: ChatViewProps) {
   const end = useRef<HTMLDivElement>(null)
-  // A new step joins its trace, so the steps count as lines too.
-  const lines = items.reduce((count, item) => count + (item.kind === 'trace' ? item.lines.length : 1), 0)
+  // A new step joins its trace, and a helper's step its handoff, so the steps count as lines too.
+  const lines = items.reduce(
+    (count, item) => count + (item.kind === 'trace' ? item.lines.length : item.kind === 'handoff' ? 1 + (item.progress?.steps ?? 0) : 1),
+    0,
+  )
+  // A running trace or handoff says the turn works, so the separate line would say it twice.
+  const shownWorking = items.some((item) => (item.kind === 'trace' && item.running) || (item.kind === 'handoff' && item.state === 'running'))
   useEffect(() => {
     end.current?.scrollIntoView({ block: 'end' })
   }, [lines, running])
@@ -54,9 +59,12 @@ export function ChatView({ project, items, running, startedMs, onError }: ChatVi
             return <div key={i} className="msg-agent"><Markdown text={item.text} onError={onError} /></div>
           case 'trace':
             return <Trace key={item.id} trace={item} startedMs={startedMs} onError={onError} />
+          case 'handoff':
+            // A provider can reuse a call id in a later turn, so the place in the chat keeps two such entries apart.
+            return <Handoff key={`${i}:${item.id}`} handoff={item} />
         }
       })}
-      {running && !items.some((item) => item.kind === 'trace' && item.running) && <Working startedMs={startedMs} />}
+      {running && !shownWorking && <Working startedMs={startedMs} />}
       <div ref={end} />
     </div>
   )

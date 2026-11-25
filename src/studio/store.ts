@@ -91,7 +91,7 @@ function merge(view: ChatView, change: ChatView): ChatView {
   for (const entry of change.entries) byId.set(entry.id, entry)
   const entries = [...byId.values()].sort((a, b) => a.id - b.id)
   if (!newer(view, change.seq)) return { ...view, entries }
-  return { ...view, entries, running: change.running, waiting: change.waiting, turn: change.turn, seq: change.seq }
+  return { ...view, entries, running: change.running, waiting: change.waiting, turn: change.turn, handoffs: change.handoffs, seq: change.seq }
 }
 
 /**

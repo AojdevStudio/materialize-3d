@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react'
+import { modelName } from '../../sidecar/src/offered'
+import type { ModelChoice } from '../../sidecar/src/protocol'
 import Markdown from './Markdown'
-import { Icon, WorkingRing } from './marks'
-import type { Action, ToolItem, TraceItem } from './transcript'
+import { Icon, Mark, WorkingRing } from './marks'
+import type { Action, HandoffItem, ToolItem, TraceItem } from './transcript'
 import circleX from '../assets/icons/circle-x.svg?raw'
 import filePen from '../assets/icons/file-pen-line.svg?raw'
 import fileText from '../assets/icons/file-text.svg?raw'
@@ -73,7 +75,7 @@ export function Working({ startedMs }: { startedMs: number | undefined }) {
 const actionOf = (step: ToolItem) => (step.state === 'done' || step.state === 'failed' ? step.label : step.doing)
 
 /** Says a step that ended badly failed or stopped. Nothing for one that runs or is done. */
-function Flag({ step }: { step: ToolItem }) {
+function Flag({ step }: { step: Pick<ToolItem, 'state'> }) {
   return step.state === 'failed' || step.state === 'stopped' ? <span className={`step-flag flag-${step.state}`}>{step.state}</span> : null
 }
 
@@ -161,6 +163,59 @@ export default function Trace({ trace, startedMs, onError }: { trace: TraceItem;
           )}
         </ul>
       )}
+    </div>
+  )
+}
+
+/** A role's word, then its model's mark and name, so the same model in both roles still reads apart. */
+const Role = ({ word, model }: { word: string; model: ModelChoice }) => (
+  <>
+    <span className="handoff-role">{word}</span>
+    <Mark modelId={model.modelId} />
+    <b>{modelName(model)}</b>
+  </>
+)
+
+/**
+ * A task the lead handed its helper: one line like a trace head, which names both models and how long the helper has
+ * worked or took, then under a left rule the task, the helper's newest step while it runs, and its result or why it
+ * failed. It stays open, so it shows with the traces around it folded.
+ */
+export function Handoff({ handoff }: { handoff: HandoffItem }) {
+  const { lead, helper, task, state, startedMs, durationMs, result, progress } = handoff
+  const icon =
+    state === 'running' ? <WorkingRing className="trace-icon trace-ring" /> : state === 'done' ? <Ended /> : <Icon className="trace-icon" svg={circleX} />
+  const steps = progress === undefined ? '' : `${progress.steps} ${progress.steps === 1 ? 'step' : 'steps'}`
+  return (
+    <div className={`handoff${state === 'running' ? ' trace-running' : ''}`} data-testid="handoff" data-state={state}>
+      <p className="trace-head">
+        {icon}
+        <span className="handoff-who">
+          <Role word="Lead" model={lead} />
+          <span className="handoff-role">asked</span>
+          <Role word="helper" model={helper} />
+        </span>
+        <span className="trace-count">{state === 'running' ? <Since startedMs={startedMs} before="" /> : durationMs !== undefined && clock(durationMs)}</span>
+      </p>
+      <div className="handoff-body">
+        <p>
+          <span className="handoff-label">Task</span>
+          {task}
+        </p>
+        {state === 'running' && progress !== undefined && (
+          <p className="handoff-status">
+            <WorkingRing className="trace-icon trace-ring" />
+            <span className="step-target">{progress.doing === '' ? 'Starting' : progress.doing}</span>
+            <span className="trace-count">{steps}</span>
+          </p>
+        )}
+        {state !== 'running' && result !== undefined && (
+          <p className="handoff-result">
+            {state === 'done' ? <span className="handoff-label">Result</span> : <Flag step={handoff} />}
+            {result}
+          </p>
+        )}
+      </div>
     </div>
   )
 }

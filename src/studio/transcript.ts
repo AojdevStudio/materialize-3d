@@ -1,4 +1,4 @@
-import { ASTRA, type ChatEntry, HELPER, type ModelChoice, RUN_PROGRAM, STEP_LINES, type ToolArgs, type ToolName } from '../../sidecar/src/protocol'
+import { ASTRA, type ChatEntry, type HandoffProgress, HELPER, type ModelChoice, RUN_PROGRAM, STEP_LINES, type ToolArgs, type ToolName } from '../../sidecar/src/protocol'
 
 /** What a step does, which picks its icon. */
 export type Action = 'read' | 'write' | 'run' | 'slice' | 'helper' | 'other'
@@ -33,11 +33,30 @@ export type NoteItem = { kind: 'note'; text: string }
  */
 export type TraceItem = { kind: 'trace'; id: string; lines: (ToolItem | NoteItem)[]; running: boolean }
 
+/**
+ * A task the lead handed its helper, as one entry of its own beside the traces. `id` is the call's id. `startedMs` is
+ * when the call started, once it published its handoff. `durationMs` and `result` come once it ended. `progress` is
+ * how far the helper got while it runs: its step count, and its newest step as a trace line says it.
+ */
+export type HandoffItem = {
+  kind: 'handoff'
+  id: string
+  lead: ModelChoice
+  helper: ModelChoice
+  task: string
+  state: StepState
+  startedMs?: number
+  durationMs?: number
+  result?: string
+  progress?: { steps: number; doing: string }
+}
+
 export type ChatItem =
   | { kind: 'user'; text: string; images: string[]; files: string[] }
   | { kind: 'byline'; model: ModelChoice }
   | { kind: 'text'; text: string }
   | TraceItem
+  | HandoffItem
 
 /** The result a step gets when its turn ended before the step did. */
 export const STOPPED = 'It stopped before it finished.'
@@ -100,10 +119,27 @@ const OLD_STEPS: Record<string, { action: Action; label: string }> = {
  * agent said between them in its place. What it said before its first step shows above the trace, and an answer
  * without steps ends it. A step left without a result, as a stop or a crash leaves it, shows as stopped once a later
  * message starts a new turn, or once its own turn no longer `running`.
+ *
+ * A `helper` call is a handoff entry of its own, which ends the trace it was in. The call's own handoff names its
+ * helper: the one its result recorded, or while it runs, the one in `handoffs`, the open turn's running helper calls.
+ * A call without a handoff stays a trace step: one that has not started its helper yet, one refused before it ran, a
+ * result that recorded none, and every `astra` call from before pairs.
  */
-export function buildChat(entries: ChatEntry[], running = true): ChatItem[] {
+export function buildChat(entries: ChatEntry[], running = true, handoffs: HandoffProgress[] = []): ChatItem[] {
   const items: ChatItem[] = []
-  const tools = new Map<string, ToolItem>()
+  const tools = new Map<string, ToolItem | HandoffItem>()
+  // Each call's result, by the assistant entry that made the call and the call's id. A provider can give calls in
+  // different turns the same id, so a result belongs to the newest call with its id before it.
+  const results = new Map<string, Extract<ChatEntry, { kind: 'tool' }>>()
+  const madeBy = new Map<string, number>()
+  for (const entry of entries) {
+    if (entry.kind === 'assistant') for (const call of entry.calls) madeBy.set(call.id, entry.id)
+    if (entry.kind !== 'tool') continue
+    const owner = madeBy.get(entry.callId)
+    if (owner !== undefined) results.set(`${owner}:${entry.callId}`, entry)
+  }
+  // The open turn is the one after the newest message, so only its calls can still run.
+  const openTurn = entries.map((entry) => entry.kind).lastIndexOf('user')
   /** The trace the next step joins. A message or an answer without steps closes it. */
   let trace: TraceItem | undefined
   let bylined = false
@@ -122,6 +158,23 @@ export function buildChat(entries: ChatEntry[], running = true): ChatItem[] {
       item.state = 'stopped'
       item.result = STOPPED
     }
+  }
+  /** A `helper` call as its handoff entry, or undefined when it has no handoff. */
+  const handoffItem = (call: { id: string; args: unknown }, made: { id: number; model: ModelChoice }, inOpenTurn: boolean): HandoffItem | undefined => {
+    const task = describe(HELPER, call.args).detail
+    const lead = made.model
+    const recorded = results.get(`${made.id}:${call.id}`)
+    if (recorded !== undefined) {
+      if (recorded.handoff === undefined) return undefined
+      const { helper, startedMs } = recorded.handoff
+      return { kind: 'handoff', id: call.id, lead, helper, task, state: 'running', startedMs }
+    }
+    const progress = inOpenTurn ? handoffs.find((live) => live.callId === call.id) : undefined
+    if (progress === undefined) return undefined
+    const { handoff, steps, last } = progress
+    const newest = last === null ? undefined : describe(last.name, last.args)
+    const doing = newest === undefined ? '' : [newest.doing, newest.summary].filter((part) => part !== '').join(' ')
+    return { kind: 'handoff', id: call.id, lead, helper: handoff.helper, task, state: 'running', startedMs: handoff.startedMs, progress: { steps, doing } }
   }
   const endTurn = () => {
     trace = undefined
@@ -159,6 +212,13 @@ export function buildChat(entries: ChatEntry[], running = true): ChatItem[] {
           else trace.lines.push({ kind: 'note', text: entry.text })
         }
         for (const call of entry.calls) {
+          const handoff = call.name === HELPER ? handoffItem(call, entry, i > openTurn) : undefined
+          if (handoff !== undefined) {
+            tools.set(call.id, handoff)
+            items.push(handoff)
+            trace = undefined
+            continue
+          }
           const item: ToolItem = { kind: 'tool', id: call.id, ...describe(call.name, call.args), state: 'running' }
           tools.set(call.id, item)
           step(item)
@@ -168,8 +228,9 @@ export function buildChat(entries: ChatEntry[], running = true): ChatItem[] {
         const item = tools.get(entry.callId)
         if (item === undefined) break
         item.durationMs = entry.durationMs
-        item.state = entry.failed ? 'failed' : 'done'
-        item.result = entry.text
+        // A helper call the person stopped did not fail, and its raw error text is Pi's, not the helper's.
+        item.state = entry.stopped ? 'stopped' : entry.failed ? 'failed' : 'done'
+        item.result = entry.stopped ? STOPPED : entry.text
         break
       }
       case 'imported':

@@ -107,7 +107,7 @@ describe('a picture pasted into a draft', () => {
         throw new Error('no conversation runs here')
       },
     })
-    const { project } = await store.startProject(rev, null)
+    const { project } = await store.startProject(rev, undefined, null)
     // The person saved a newer draft in the project, without the picture, before sending from the start screen again.
     await store.setDraft(project.id, { text: 'A knob, in black', attachments: [] })
     await store.close()

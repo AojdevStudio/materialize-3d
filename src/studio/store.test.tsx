@@ -22,7 +22,7 @@ afterEach(() => {
   listeners.length = 0
 })
 
-const project: Project = { id: '2026-11-17-clip', conversation: 1, title: 'Clip', createdMs: 0, model: { provider: 'anthropic', modelId: 'claude-opus-5-5' }, helper: null }
+const project: Project = { id: '2026-11-17-clip', conversation: 1, title: 'Clip', createdMs: 0, model: { provider: 'anthropic', modelId: 'claude-opus-5-5' }, helper: null, roles: 0 }
 const projects = [project]
 
 function Window() {
@@ -44,7 +44,7 @@ it('drops a chat load that answers after the window opened again', async () => {
   render(<Window />)
 
   await act(async () => {
-    finishOpen({ project: project.id, entries: [], running: true, waiting: null, turn: null, seq: 2 })
+    finishOpen({ project: project.id, entries: [], running: true, waiting: null, turn: null, handoffs: [], seq: 2 })
     await loading
   })
   expect(useStudio.getState().view).toBeNull()

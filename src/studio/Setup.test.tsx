@@ -133,7 +133,7 @@ const calls = (method: string) => invokeMock.mock.calls.filter(([command, args])
 const saved = () => calls('setup.set')
 const row = (name: string) => within(screen.getByTestId(`check-${name}`))
 const button = (name: string) => screen.getByRole('button', { name }) as HTMLButtonElement
-const astra = () => screen.getByRole('switch', { name: 'Let the main agent ask GPT (Astra) for drawings' }) as HTMLInputElement
+const astra = () => screen.getByRole('switch', { name: 'New chats start with Astra as the helper' }) as HTMLInputElement
 const radio = (name: string) => screen.getByRole('radio', { name: new RegExp(`^${name}`) }) as HTMLInputElement
 const radios = () => screen.getAllByRole('radio').map((input) => input.closest('label')?.querySelector('.setup-name')?.textContent)
 const summary = (name: string) => screen.getByTestId(`ready-${name}`).querySelector('dd')?.textContent
@@ -363,7 +363,7 @@ describe('setup: pick a model', () => {
     expect(radios()).toEqual(['GPT 6.1 Sol', 'Astra'])
     fireEvent.click(button('Continue'))
     fireEvent.click(await screen.findByRole('button', { name: 'Looks right' }))
-    expect(await screen.findByText('ChatGPT, GPT 6.1 Sol. Astra helps with drawings.')).toBeTruthy()
+    expect(await screen.findByText('ChatGPT, GPT 6.1 Sol. New chats start with Astra as the helper.')).toBeTruthy()
     expect(calls('settings.set')).toEqual([{ model: { provider: 'openai-codex', modelId: 'gpt-6.1-sol' }, astra: true }])
   })
 
@@ -428,12 +428,12 @@ describe('setup: ready', () => {
   it('sums up the agent, the slicer, the printer, and the build tools, with no agent tools line', async () => {
     mockApp({ step: 'ready', done: false }, { ...ready, logins: bothIn })
     render(<StudioApp />)
-    expect(await screen.findByText('Claude, Opus 5.5. Astra helps with drawings.')).toBeTruthy()
+    expect(await screen.findByText('Claude, Opus 5.5. New chats start with Astra as the helper.')).toBeTruthy()
     expect(await screen.findByText('Bambu Studio')).toBeTruthy()
     expect(await screen.findByText('uv 0.9.2, Python 3.12.1')).toBeTruthy()
     expect(await screen.findByText('Bambu Lab P2S, 0.4 mm, PETG Basic')).toBeTruthy()
     expect(screen.getAllByRole('term').map((term) => term.textContent)).toEqual(['Agent', 'Slicer', 'Printer', 'Build tools'])
-    expect(summary('agent')).toBe('Claude, Opus 5.5. Astra helps with drawings.')
+    expect(summary('agent')).toBe('Claude, Opus 5.5. New chats start with Astra as the helper.')
   })
 
   it('names a Bambu Studio that cannot slice, with the reason', async () => {

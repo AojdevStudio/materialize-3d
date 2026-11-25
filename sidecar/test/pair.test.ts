@@ -1,11 +1,11 @@
 import { describe, expect, test } from 'bun:test'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
 import { createModels, InMemoryCredentialStore } from '@earendil-works/pi-ai'
 import { AgentDoc, type ConversationId, createRegistry, defineDoc, type TaskId } from '@earendil-works/pi-durable'
-import type { AppState, ChatEntry, ChatView, ModelChoice, Need, Project, Turn } from '../src/protocol'
+import type { AppState, ChatEntry, ChatView, HandoffProgress, ModelChoice, Need, Project, Turn } from '../src/protocol'
 import { CATALOG, type Catalog } from '../src/offered'
 import { Store } from '../src/store'
 import { spawnSidecar } from './sidecar'
@@ -20,6 +20,8 @@ const SOL_6_1 = { provider: 'openai-codex', modelId: 'gpt-6.1-sol' }
 const SOL_6_3 = { provider: 'openai-codex', modelId: 'gpt-6.3-sol' }
 const OPUS = { provider: 'anthropic', modelId: 'claude-opus-5-5' }
 const CODEX_KEY = JSON.stringify({ type: 'api_key', key: 'codex-key' })
+/** The scripted helper task that takes two steps, as `STEPS` in the scripted sidecar. Importing that file would run it. */
+const STEPS = 'Take two steps.'
 
 /** A scratch store, project root, and a `uv` that runs what follows `uv run`, so tests need neither uv nor Python. */
 function scratch() {
@@ -81,6 +83,189 @@ describe('a new chat', () => {
     expect(await projectIn(app, paired)).toMatchObject({ model: OPUS, helper: ASTRA })
     await app.quit()
   })
+
+  test('takes the helper picked on the start screen, none included, and the saved default as it is at the send for no pick', async () => {
+    const where = scratch()
+    const app = await start(where, 'models')
+    await app.call('auth.setKey', { provider: 'openai-codex', key: 'codex-key' })
+    const startWith = async (text: string, roles: { helper?: ModelChoice | null }) => {
+      const { rev } = (await app.call('drafts.set', { key: 'new', text, attachments: [] })) as { rev: number }
+      return ((await app.call('chat.send', { key: 'new', rev, pair: roles })) as { project: Project }).project.id
+    }
+    expect(await projectIn(app, await startWith('a clip', { helper: FAUX_B }))).toMatchObject({ model: OPUS, helper: FAUX_B })
+    expect(await projectIn(app, await startWith('a knob', { helper: null }))).toMatchObject({ model: OPUS, helper: null })
+    expect(await projectIn(app, await startWith('a cap', {}))).toMatchObject({ model: OPUS, helper: ASTRA })
+    // The window showed Astra, then the Astra setting went off before the send arrived. With no pick, the saved setting
+    // decides, and the chat starts with no helper. Astra picked there still runs.
+    await app.call('settings.set', { astra: false })
+    const lid = await startWith('a lid', {})
+    expect(await projectIn(app, lid)).toMatchObject({ model: OPUS, helper: null })
+    expect((await view(app, lid)).turn).toMatchObject({ model: OPUS, helper: null })
+    const box = await startWith('a box', { helper: ASTRA })
+    expect(await projectIn(app, box)).toMatchObject({ model: OPUS, helper: ASTRA })
+    expect((await view(app, box)).turn).toMatchObject({ model: OPUS, helper: ASTRA })
+    await expect(startWith('a hook', { helper: { provider: 'faux', modelId: 'faux-z' } })).rejects.toThrow('faux has no model faux-z')
+    await app.quit()
+  })
+
+  test('sent again after its message went out, as after a lost answer, leaves a helper picked in the project since', async () => {
+    const where = scratch()
+    const app = await start(where, 'models')
+    await app.call('settings.set', { model: FAUX_A })
+    const { rev } = (await app.call('drafts.set', { key: 'new', text: 'a clip', attachments: [] })) as { rev: number }
+    const { project } = (await app.call('chat.send', { key: 'new', rev, pair: { lead: FAUX_A, helper: FAUX_B } })) as { project: Project }
+    await answered(app, project.id, 'answered by faux-a')
+    await app.call('projects.setHelper', { project: project.id, model: null })
+    const replay = (await app.call('chat.send', { key: 'new', rev, pair: { lead: FAUX_A, helper: FAUX_B } })) as { project: Project }
+    expect(replay.project).toMatchObject({ id: project.id, helper: null })
+    expect(await projectIn(app, project.id)).toMatchObject({ helper: null })
+    await app.quit()
+  })
+
+  test('runs a chat send on the pair the window showed at Send, and leaves the saved roles to the pickers', async () => {
+    const where = scratch()
+    const app = await start(where, 'models')
+    const id = await project(app, FAUX_A, FAUX_B)
+    const { rev } = (await app.call('drafts.set', { key: id, text: 'which model?', attachments: [] })) as { rev: number }
+    await app.call('chat.send', { key: id, rev, pair: { lead: FAUX_B, helper: null } })
+    await answered(app, id, 'answered by faux-b')
+    expect((await view(app, id)).turn).toMatchObject({ model: FAUX_B, helper: null })
+    expect(await projectIn(app, id)).toMatchObject({ model: FAUX_A, helper: FAUX_B })
+    await app.quit()
+  })
+
+  test('sent again with a new helper, lets go of a retirement its chat recorded for the old one', async () => {
+    const where = scratch()
+    const store = await openStore(where)
+    await store.setSettings({ model: FAUX_A })
+    const rev = await store.setDraft('new', { text: 'a clip', attachments: [] })
+    const { project } = await store.startProject(rev, undefined, FAUX_B)
+    await store.harness.commit((tx) => store.retire(tx, project.id, 'helper', FAUX_B), BACKGROUND_CONTEXT)
+    const sent = await store.harness.commit((tx) => store.send(tx, project.id, project.id, rev, { lead: FAUX_A, helper: null }, { astra: null }), BACKGROUND_CONTEXT)
+    expect(sent).toMatchObject({ lead: FAUX_A, helper: null })
+    expect(await store.retiredFor(project.id)).toEqual([])
+    expect((await store.project(project.id)).helper).toBeNull()
+    await store.close()
+  })
+
+  test('sent again after its first try failed, takes the helper picked on the start screen since, and says so to paired devices', async () => {
+    const where = scratch()
+    const app = await start(where, 'helper')
+    await app.call('settings.set', { model: FAUX_A })
+    const { rev } = (await app.call('drafts.set', { key: 'new', text: 'make the project', attachments: [] })) as { rev: number }
+    // The first try makes the project, then an installing update refuses its message.
+    app.gate.installing = true
+    await expect(app.call('chat.send', { key: 'new', rev, pair: { lead: FAUX_A, helper: FAUX_B } })).rejects.toThrow('An update is installing.')
+    app.gate.installing = false
+    const { project } = (await app.call('chat.send', { key: 'new', rev, pair: { lead: FAUX_A, helper: null } })) as { project: Project }
+    expect(project).toMatchObject({ helper: null })
+    // A phone with the project open updates its pickers only from project events.
+    await app.until((event) => event.type === 'project' && (event.project as Project).id === project.id && (event.project as Project).helper === null)
+    expect(await projectIn(app, project.id)).toMatchObject({ helper: null })
+    expect((await view(app, project.id)).turn).toMatchObject({ model: FAUX_A, helper: null })
+    await app.quit()
+  })
+
+  test('sent again after its first try never went out, takes the defaults saved since for the roles it leaves out', async () => {
+    const where = scratch()
+    const app = await start(where, 'models')
+    await app.call('auth.setKey', { provider: 'openai-codex', key: 'codex-key' })
+    await app.call('settings.set', { model: OPUS })
+    const { rev } = (await app.call('drafts.set', { key: 'new', text: 'a clip', attachments: [] })) as { rev: number }
+    // The first try makes the project, then an installing update refuses its message.
+    app.gate.installing = true
+    await expect(app.call('chat.send', { key: 'new', rev, pair: {} })).rejects.toThrow('An update is installing.')
+    app.gate.installing = false
+    await app.call('settings.set', { model: FAUX_A, astra: false })
+    const { project } = (await app.call('chat.send', { key: 'new', rev, pair: {} })) as { project: Project }
+    expect(project).toMatchObject({ model: FAUX_A, helper: null })
+    await answered(app, project.id, 'answered by faux-a')
+    expect((await view(app, project.id)).turn).toMatchObject({ model: FAUX_A, helper: null })
+    await app.quit()
+  })
+
+  test('sent again, takes the Astra setting as saved when it accepts the turn, not when it started', async () => {
+    const where = scratch()
+    let holdPass = false
+    let release: () => void = () => {}
+    const held = Promise.withResolvers<void>()
+    // The pass a send asks for just before its commit waits while the test saves new defaults.
+    const app = spawnSidecar(where.data, where.projects, where.keychain, {
+      script: 'models',
+      env: where.env,
+      hold: (request, answer) => {
+        if (holdPass && request.method === 'busy' && (request.params as { busy: boolean }).busy) {
+          holdPass = false
+          release = answer
+          held.resolve()
+          return
+        }
+        answer()
+      },
+    })
+    await app.next()
+    await app.call('auth.setKey', { provider: 'openai-codex', key: 'codex-key' })
+    await app.call('settings.set', { model: OPUS })
+    const { rev } = (await app.call('drafts.set', { key: 'new', text: 'a clip', attachments: [] })) as { rev: number }
+    app.gate.installing = true
+    await expect(app.call('chat.send', { key: 'new', rev, pair: {} })).rejects.toThrow('An update is installing.')
+    app.gate.installing = false
+    holdPass = true
+    const retry = app.call('chat.send', { key: 'new', rev, pair: {} }) as Promise<{ project: Project }>
+    await held.promise
+    // The lead and the Astra switch change while the retry waits for its pass, after it found the Astra it could run.
+    app.send({ kind: 'call', id: 900_001, method: 'settings.set', params: { model: FAUX_A, astra: false } })
+    await Bun.sleep(500)
+    release()
+    const { project } = await retry
+    expect(project).toMatchObject({ model: FAUX_A, helper: null })
+    await answered(app, project.id, 'answered by faux-a')
+    expect((await view(app, project.id)).turn).toMatchObject({ model: FAUX_A, helper: null })
+    await app.quit()
+  }, 30_000)
+
+  test('counts each save of its roles, and the read, the event, and the reply that carry them carry the count', async () => {
+    const where = scratch()
+    const app = await start(where, 'models')
+    const { rev } = (await app.call('drafts.set', { key: 'new', text: 'a clip', attachments: [] })) as { rev: number }
+    const { project } = (await app.call('chat.send', { key: 'new', rev, pair: { lead: FAUX_A, helper: null } })) as { project: Project }
+    expect(project.roles).toBe(1)
+    await app.call('projects.setHelper', { project: project.id, model: FAUX_B })
+    const heard = await app.until((event) => event.type === 'project' && (event.project as Project).roles === 2)
+    expect(heard.project).toMatchObject({ helper: FAUX_B, roles: 2 })
+    // A chat send runs its own pair and leaves the saved roles, and their count, alone.
+    const { rev: next } = (await app.call('drafts.set', { key: project.id, text: 'a knob', attachments: [] })) as { rev: number }
+    const sent = (await app.call('chat.send', { key: project.id, rev: next, pair: { lead: FAUX_A, helper: null } })) as { project: Project }
+    expect(sent.project).toMatchObject({ helper: FAUX_B, roles: 2 })
+    expect(await projectIn(app, project.id)).toMatchObject({ helper: FAUX_B, roles: 2 })
+    await app.quit()
+  })
+})
+
+// A send carries only the roles picked in the window whose save it had not heard back from, and runs every other role
+// as the sidecar saved it when it takes the send. Saved roles a phone changed, or that a lost event or answer kept from
+// the window, count even across a restart.
+describe('a chat send runs its pending picks and the saved roles', () => {
+  const rows = [false, true].flatMap((picked) =>
+    [false, true].flatMap((changed) => [false, true].map((restart) => ({ picked, changed, restart }))),
+  )
+  test.each(rows)('picked $picked, saved roles changed elsewhere $changed, restart between $restart', async ({ picked, changed, restart }) => {
+    const where = scratch()
+    let app = await start(where, 'models')
+    const id = await project(app, FAUX_A, FAUX_A)
+    await answered(app, id, 'made')
+    // A phone saves no helper, and the window never hears of it.
+    if (changed) await app.call('projects.setHelper', { project: id, model: null })
+    if (restart) {
+      await app.quit()
+      app = await start(where, 'models')
+    }
+    const { rev } = (await app.call('drafts.set', { key: id, text: 'which model?', attachments: [] })) as { rev: number }
+    await app.call('chat.send', { key: id, rev, pair: picked ? { helper: FAUX_B } : {} })
+    await answered(app, id, 'answered by faux-a')
+    expect((await view(app, id)).turn).toMatchObject({ model: FAUX_A, helper: picked ? FAUX_B : changed ? null : FAUX_A })
+    await app.quit()
+  }, 60_000)
 })
 
 describe('a pair', () => {
@@ -106,21 +291,15 @@ describe('a pair', () => {
     await app.quit()
   })
 
-  test("runs lead-alone while the Settings Astra switch is off, and keeps the chat's helper for when it is on again", async () => {
+  test("runs the chat's own helper whatever the Settings Astra switch says, which picks only a new chat's default", async () => {
     const where = scratch()
     const app = await start(where, 'models')
     const id = await project(app, FAUX_A, FAUX_B)
     await app.call('settings.set', { astra: false })
     await app.sendDraft(id, 'which model?')
     await answered(app, id, 'answered by faux-a')
-    expect((await view(app, id)).turn).toMatchObject({ model: FAUX_A, helper: null })
-    expect(await app.call('agent.tools', { project: id })).not.toContain('helper')
-    expect(await projectIn(app, id)).toMatchObject({ helper: FAUX_B })
-
-    await app.call('settings.set', { astra: true })
-    await app.sendDraft(id, 'and now?')
-    await app.until((event) => event.type === 'chat' && event.project === id && (event.turn as { helper?: unknown } | null)?.helper !== null)
     expect((await view(app, id)).turn).toMatchObject({ model: FAUX_A, helper: FAUX_B })
+    expect(await app.call('agent.tools', { project: id })).toContain('helper')
     await app.quit()
   })
 
@@ -206,11 +385,110 @@ describe('the helper call', () => {
   })
 })
 
+describe('a helper call that runs', () => {
+  test('shows in the chat with its task, conversation, and helper, grows with each helper step, comes back on a reopen, and goes once it ends', async () => {
+    const where = scratch()
+    const app = await start(where, 'helper')
+    const id = await project(app, FAUX_A, FAUX_B)
+    const sentMs = Date.now()
+    await app.sendDraft(id, `ask: ${STEPS}`)
+    const at = async (steps: number) => {
+      const event = await app.until((e) => e.type === 'chat' && e.project === id && (e.handoffs as HandoffProgress[])[0]?.steps === steps, 30_000)
+      // The event matched only with a first handoff.
+      const [progress] = event.handoffs as [HandoffProgress]
+      return progress
+    }
+    const step = (script: string) => ({ name: 'run', args: { args: ['run', 'sh', '-c', script] } })
+
+    const first = await at(1)
+    expect(first).toMatchObject({ handoff: { helper: FAUX_B }, last: step('touch first; while [ ! -f next ]; do sleep 0.05; done') })
+    expect(first.handoff.startedMs).toBeGreaterThanOrEqual(sentMs)
+    writeFileSync(join(where.projects, id, 'next'), '')
+    const second = await at(2)
+    expect(second).toEqual({ ...first, steps: 2, last: step('touch second; while [ ! -f go ]; do sleep 0.05; done') })
+    expect((await view(app, id)).handoffs).toEqual([second])
+
+    writeFileSync(join(where.projects, id, 'go'), '')
+    await answered(app, id, 'parent saw: waited')
+    const ended = await view(app, id)
+    expect(ended.handoffs).toEqual([])
+    expect(ended.entries.find((entry) => entry.kind === 'tool' && entry.name === 'helper')).toMatchObject({ callId: first.callId, handoff: first.handoff })
+    await app.quit()
+
+    const store = await openStore(where)
+    const owned = await store.harness.commit((tx) => tx.scanConversations({ ownerTaskId: Number(first.handoff.task) as TaskId }, 5), BACKGROUND_CONTEXT)
+    expect(owned.items.map((conversation) => conversation.id)).toEqual([first.handoff.conversation as ConversationId])
+    await store.close()
+  }, 60_000)
+  test("keeps a helper's steps coming when a read another helper woke before it began ends after it began", async () => {
+    const where = scratch()
+    const gate = mkdtempSync(join(tmpdir(), 'm3d-gate-'))
+    const app = await start(where, 'two-helpers', { M3D_READ_GATE: gate })
+    const id = await project(app, FAUX_A, FAUX_B)
+    const folder = join(where.projects, id)
+    const exists = async (path: string, ms = 30_000) => {
+      const deadline = Date.now() + ms
+      while (!existsSync(path)) {
+        if (Date.now() > deadline) throw new Error(`no ${path} in time`)
+        await Bun.sleep(25)
+      }
+    }
+    const at = (file: string) => join(gate, file)
+    const shows = (match: (handoffs: HandoffProgress[]) => boolean, ms?: number) =>
+      app.until((e) => e.type === 'chat' && e.project === id && match(e.handoffs as HandoffProgress[]), ms)
+    // Both helper calls wait as they start. The first one to read its turn goes on alone.
+    writeFileSync(at('hold-turn'), '')
+    await app.sendDraft(id, 'two at once')
+    await exists(at('held-turn-2'))
+    unlinkSync(at('hold-turn'))
+    writeFileSync(at('release-turn-1'), '')
+    const [first] = (await shows((handoffs) => handoffs[0]?.steps === 1)).handoffs as [HandoffProgress]
+    // The helper that went on is the one whose first step ran, and the file that step makes says which task it has.
+    while (!existsSync(join(folder, 'first')) && !existsSync(join(folder, 'firstB'))) await Bun.sleep(25)
+    const own = existsSync(join(folder, 'first')) ? { next: 'next', second: 'second', other: 'nextB' } : { next: 'nextB', second: 'secondB', other: 'next' }
+    // Its next step wakes its own watch. Each read of that watch is held once it took its place in the order of reads,
+    // and the last, which comes after the step's commits all landed, finds only this helper.
+    writeFileSync(at('hold-waiting'), '')
+    writeFileSync(join(folder, own.next), '')
+    await exists(at('held-waiting-1'))
+    await exists(join(folder, own.second))
+    writeFileSync(at('release-waiting-1'), '')
+    await exists(at('held-waiting-2'), 10_000)
+    unlinkSync(at('hold-waiting'))
+    // The other helper begins, and the lead's newer read follows it.
+    writeFileSync(at('release-turn-2'), '')
+    const other = (handoffs: HandoffProgress[]) => handoffs.find((h) => h.handoff.conversation !== first.handoff.conversation)
+    await shows((handoffs) => other(handoffs)?.steps === 1)
+    // The older read ends last. The other helper's next step still reaches the chat.
+    writeFileSync(at('release-waiting-2'), '')
+    await shows((handoffs) => handoffs.length === 1)
+    writeFileSync(join(folder, own.other), '')
+    await shows((handoffs) => other(handoffs)?.steps === 2, 10_000)
+    writeFileSync(join(folder, 'go'), '')
+    writeFileSync(join(folder, 'goB'), '')
+    await answered(app, id, 'both waited')
+    await app.quit()
+  }, 90_000)
+
+  test('stopped by the person ends as stopped, with its handoff, not as a failure', async () => {
+    const where = scratch()
+    const app = await start(where, 'helper')
+    const id = await project(app, FAUX_A, FAUX_B)
+    await app.sendDraft(id, `ask: ${STEPS}`)
+    await app.until((e) => e.type === 'chat' && e.project === id && (e.handoffs as HandoffProgress[])[0]?.steps === 1, 30_000)
+    await app.call('chat.stop', { project: id })
+    const isResult = (entry: ChatEntry) => entry.kind === 'tool' && entry.name === 'helper'
+    if (!(await view(app, id)).entries.some(isResult)) await app.until((e) => e.type === 'chat' && e.project === id && (e.entries as ChatEntry[]).some(isResult), 30_000)
+    expect((await view(app, id)).entries.find(isResult)).toMatchObject({ failed: true, stopped: true, handoff: { helper: FAUX_B } })
+    await app.quit()
+  }, 60_000)
+})
+
 describe('chats from before pairs', () => {
   /** A store whose settings and one project are as an app before pairs left them. */
-  async function before(where: Where, astra: boolean, model: ModelChoice | undefined) {
+  async function before(where: Where, astra: boolean, model: ModelChoice | undefined, helper?: ModelChoice | null) {
     const old = await openStore(where)
-    const ProjectsBeforePairs = defineDoc<{ projects: (Omit<Project, 'model' | 'helper'> & { model?: ModelChoice })[] }>({
+    const ProjectsBeforePairs = defineDoc<{ projects: (Omit<Project, 'model' | 'helper' | 'roles'> & { model?: ModelChoice; helper?: ModelChoice | null })[] }>({
       kind: 'm3d.projects',
       version: 1,
       scope: 'conversation',
@@ -222,7 +500,7 @@ describe('chats from before pairs', () => {
     await old.setSettings({ astra, model: FAUX_A })
     await old.harness.commit(async (tx) => {
       const index = await tx.doc(ProjectsBeforePairs, old.root.id)
-      index.projects.push({ id: 'old', conversation: 1, title: 'Old', createdMs: 0, ...(model === undefined ? {} : { model }) })
+      index.projects.push({ id: 'old', conversation: 1, title: 'Old', createdMs: 0, ...(model === undefined ? {} : { model }), ...(helper === undefined ? {} : { helper }) })
     }, BACKGROUND_CONTEXT)
     await old.close()
   }
@@ -268,6 +546,20 @@ describe('chats from before pairs', () => {
     await second.quit()
   })
 
+  test('from before each chat had its own helper control, keep only the helper the Astra switch let them run', async () => {
+    for (const [astra, runs] of [
+      [true, ASTRA],
+      [false, null],
+    ] as const) {
+      const where = scratch()
+      await before(where, astra, FAUX_A, ASTRA)
+      const app = spawnSidecar(where.data, where.projects)
+      await app.next()
+      expect(await projectIn(app, 'old')).toMatchObject({ model: FAUX_A, helper: runs, roles: 0 })
+      await app.quit()
+    }
+  })
+
   test('carry on with the lead they ran on and the helper the Astra setting gave them', async () => {
     for (const [astra, model, carried] of [
       [true, undefined, { model: FAUX_A, helper: ASTRA }],
@@ -277,7 +569,10 @@ describe('chats from before pairs', () => {
       await before(where, astra, model)
       const app = spawnSidecar(where.data, where.projects)
       await app.next()
-      expect(await projectIn(app, 'old')).toMatchObject(carried)
+      // Roles saved before they had revisions start at 0, and the first save of them makes 1.
+      expect(await projectIn(app, 'old')).toMatchObject({ ...carried, roles: 0 })
+      await app.call('projects.setHelper', { project: 'old', model: null })
+      expect(await projectIn(app, 'old')).toMatchObject({ helper: null, roles: 1 })
       await app.quit()
     }
   })
@@ -369,7 +664,7 @@ describe('the catalog', () => {
     const before = await openStore(where)
     await before.setSettings({ model: opus })
     const rev = await before.setDraft('new', { text: 'a clip', attachments: [] })
-    const { project } = await before.startProject(rev, null)
+    const { project } = await before.startProject(rev, undefined, null)
     await before.harness.commit((tx) => before.retire(tx, project.id, 'lead', opus), BACKGROUND_CONTEXT)
     expect(await before.retiredFor(project.id)).toEqual([{ role: 'lead', model: opus, replacement: null }])
     await before.close()

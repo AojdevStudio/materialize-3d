@@ -134,8 +134,13 @@ export function handlers(services: Services) {
     },
     'chat.open': { params: compile(obj({ project: str() })), run: ({ project }) => chats.open(project) },
     'chat.send': {
-      params: compile(obj({ key: str({ minLength: 1 }), rev: int() })),
-      run: async ({ key, rev }) => ({ project: await chats.send(key, rev) }),
+      params: compile(obj({ key: str({ minLength: 1 }), rev: int(), pair: opt(obj({ lead: opt(model), helper: opt(nullable(model)) })) })),
+      run: async ({ key, rev, pair }) => {
+        for (const role of pair === undefined ? [] : [pair.lead, pair.helper]) {
+          if (role !== undefined && role !== null && services.models.getModel(role.provider, role.modelId) === undefined) throw new Error(`${role.provider} has no model ${role.modelId}`)
+        }
+        return { project: await chats.send(key, rev, key, pair) }
+      },
     },
     'chat.stop': {
       params: compile(obj({ project: str() })),
@@ -155,15 +160,13 @@ export function handlers(services: Services) {
     'projects.setLead': {
       params: compile(obj({ project: str(), model })),
       run: async ({ project, model }) => {
-        await saveRoles(services, project, { lead: model })
-        return null
+        return saveRoles(services, project, { lead: model })
       },
     },
     'projects.setHelper': {
       params: compile(obj({ project: str(), model: nullable(model) })),
       run: async ({ project, model }) => {
-        await saveRoles(services, project, { helper: model })
-        return null
+        return saveRoles(services, project, { helper: model })
       },
     },
     'projects.status': { params: compile(obj({})), run: () => chats.status() },

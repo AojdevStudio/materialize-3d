@@ -24,6 +24,7 @@ import {
   type Printer,
   type Project,
   type Retired,
+  type SentRoles,
   type Role,
   type SavedDraft,
   type Settings,
@@ -126,6 +127,9 @@ const carried = (settings: Settings, model: ModelChoice | undefined) => ({
   model: { ...(model ?? settings.model) },
   helper: settings.astra ? { ...ASTRA_MODEL } : null,
 })
+
+/** Whether two choices name the same model version. */
+const sameVersion = (a: ModelChoice, b: ModelChoice) => a.provider === b.provider && a.modelId === b.modelId
 
 /** A plain copy of a model, since the documents a commit hands out are only valid inside it. */
 const copy = ({ provider, modelId }: ModelChoice): ModelChoice => ({ provider, modelId })
@@ -254,6 +258,15 @@ export class Store {
       const now = await tx.doc(SettingsDoc, id)
       for (const project of projects.projects) {
         if (project.helper === undefined) Object.assign(project, carried(now, project.model))
+        if (project.roles !== undefined) continue
+        // Before each chat had its own helper control, the Astra switch decided whether any chat ran its helper (#350).
+        // A chat the switch kept from its helper goes on with none, as it ran, and a retired helper no longer holds it.
+        if (!now.astra) {
+          project.helper = null
+          project.retired = (project.retired ?? []).filter((r) => r.role !== 'helper')
+        }
+        // Roles saved before they had revisions start at 0, so the next save of them is newer.
+        project.roles = 0
       }
     }, context)
   }
@@ -328,9 +341,9 @@ export class Store {
    * start screen draft is never sent in its place. The folder is made inside that commit, before anything is kept, so a
    * folder that cannot be made keeps nothing. A crash after the folder leaves an empty folder, which the next id skips.
    * Asked again for the same revision, as after a lost answer or a crash before the message, it answers the project
-   * that revision made and the draft it moved, and changes nothing.
+   * that revision made and the draft it moved, and changes nothing. The project gets `helper`. A retired one is refused.
    */
-  async startProject(rev: number, helper: ModelChoice | null): Promise<{ project: Project; draft: SavedDraft }> {
+  async startProject(rev: number, lead: ModelChoice | undefined, helper: ModelChoice | null): Promise<{ project: Project; draft: SavedDraft }> {
     const now = new Date()
     // The person's own date, as the folder name shows it.
     const today = new Date(now.getTime() - now.getTimezoneOffset() * 60_000).toISOString().slice(0, 10)
@@ -351,10 +364,9 @@ export class Store {
       for (let n = 2; taken.has(id) || existsSync(join(this.projectsDir, id)); n++) id = `${base}-${n}`
       this.projectFolder(id)
       const conversation = await tx.createConversation({ ownership: { kind: 'ownerless' } })
-      // The project keeps the lead picked on the start screen, so a later pick there leaves it alone. It gets `helper`
-      // while the Astra setting is on.
-      const { model, astra } = await tx.doc(SettingsDoc, this.root.id)
-      const created: Project = { id, conversation: conversation.id, title, createdMs: now.getTime(), model: copy(model), helper: astra && helper !== null ? copy(helper) : null }
+      // The project keeps the lead shown on the start screen at Send, or the saved default without one.
+      const model = lead ?? (await tx.doc(SettingsDoc, this.root.id)).model
+      const created: Project = { id, conversation: conversation.id, title, createdMs: now.getTime(), model: copy(model), helper: helper === null ? null : copy(helper), roles: 0 }
       index.projects.push(created)
       const moved: SavedDraft = { text: draft.text, attachments: [...draft.attachments], rev }
       index.madeFor[rev] = { project: id, draft: moved }
@@ -382,13 +394,38 @@ export class Store {
    * for it: the pair the turn runs with, and that draft taken away. A newer save stays, and so does every other key's.
    * `saves` counts the saves of the login of the lead's provider. A role the chat found retired is refused, with the
    * fix, and nothing changes. So is a device's send whose draft was saved again since it was read, so a send that
-   * stalled past an edit starts no job beside the edited message's.
+   * stalled past an edit starts no job beside the edited message's. The turn runs with the roles `pair` carries and the
+   * project's saved ones for the rest, as saved now. `newChat` marks a start screen send, which makes them the project's
+   * roles too, and fills a role it leaves out with the default as saved now: the default lead, and `newChat.astra`, the
+   * Astra a new chat can run, while the Astra setting is on.
    */
-  async send(tx: Tx, project: string, key: string, rev: number): Promise<{ lead: ModelChoice; helper: ModelChoice | null; thinking: Thinking; saves: number }> {
-    const { thinking, astra } = await tx.doc(SettingsDoc, this.root.id)
+  async send(
+    tx: Tx,
+    project: string,
+    key: string,
+    rev: number,
+    pair: SentRoles | undefined,
+    newChat: { astra: ModelChoice | null } | undefined,
+  ): Promise<{ lead: ModelChoice; helper: ModelChoice | null; thinking: Thinking; saves: number }> {
+    const { thinking, model: defaultLead, astra } = await tx.doc(SettingsDoc, this.root.id)
     const saved = await this.#projectIn(tx, project)
-    const { model, helper } = this.#gated(saved, astra)
-    const [gone] = this.#retiredRoles(saved, astra)
+    // Each role the send carries, a pick the window had not heard saved yet, and the saved one for each other role: for a
+    // start screen send, the default as saved now, even when a first try that never went out made the project.
+    const model = pair?.lead ?? (newChat === undefined ? saved.model : defaultLead)
+    const helper = pair?.helper !== undefined ? pair.helper : newChat === undefined ? saved.helper : astra ? newChat.astra : null
+    const keep = newChat !== undefined
+    // A start screen send, first or retried, is how its project's roles were chosen, so the project keeps them, and a
+    // changed role lets go the retirement it held. A send in a chat leaves the saved roles to the pickers, so a pick
+    // saved while this send was on its way stays.
+    if (keep) {
+      if (!sameVersion(saved.model, model)) saved.retired = (saved.retired ?? []).filter((r) => r.role !== 'lead')
+      if (saved.helper === null || helper === null || !sameVersion(saved.helper, helper)) saved.retired = (saved.retired ?? []).filter((r) => r.role !== 'helper')
+      saved.model = copy(model)
+      saved.helper = helper === null ? null : copy(helper)
+      saved.roles += 1
+    }
+    // A role the chat found retired holds the send only while the send would run that same version again.
+    const [gone] = this.#retiredRoles(saved).filter((r) => (r.role === 'lead' ? sameVersion(r.model, model) : helper !== null && sameVersion(r.model, helper)))
     if (gone !== undefined) throw new RoleRetired(this.retiredFix(gone))
     const { drafts } = await tx.doc(DraftsDoc, this.root.id)
     if (holds(drafts[key], rev)) delete drafts[key]
@@ -396,13 +433,13 @@ export class Store {
     return { lead: copy(model), helper: helper === null ? null : copy(helper), thinking, saves: await this.loginSavesIn(tx, model.provider) }
   }
 
+
   /**
-   * The roles of `project` its provider reported removed, lead first, while the person has not chosen again. A helper
-   * the Astra switch keeps off is not one, since the next turn does not run it.
+   * The roles of `project` its provider reported removed, lead first, while the person has not chosen again.
    */
-  #retiredRoles(project: Project, astra: boolean): Retired[] {
+  #retiredRoles(project: Project): Retired[] {
     const retired = project.retired ?? []
-    return [...retired.filter((r) => r.role === 'lead'), ...(astra ? retired.filter((r) => r.role === 'helper') : [])].map(({ role, model }) => ({
+    return [...retired.filter((r) => r.role === 'lead'), ...retired.filter((r) => r.role === 'helper')].map(({ role, model }) => ({
       role,
       model: copy(model),
       replacement: replacementFor(this.catalog, model),
@@ -419,14 +456,6 @@ export class Store {
     return `${modelName(model, this.catalog)}, the ${role} model, was retired. ${choose}${other}.`
   }
 
-  /**
-   * A project's pair as its next turn runs it: lead-alone while the Settings Astra switch is off. Until each chat gets
-   * its own helper control (#350), that switch is the window's only way to stop handoffs.
-   */
-  #gated(project: Project, astra: boolean): Pick<Project, 'model' | 'helper'> {
-    return { model: project.model, helper: astra ? project.helper : null }
-  }
-
   async #projectIn(tx: Tx, id: string): Promise<Project> {
     const project = (await tx.doc(ProjectsDoc, this.root.id)).projects.find((p) => p.id === id)
     if (project === undefined) throw new Error(`no project ${id}`)
@@ -440,7 +469,7 @@ export class Store {
   async pairFor(project?: string): Promise<{ lead: ModelChoice; helper: ModelChoice | null }> {
     return this.harness.commit(async (tx) => {
       if (project === undefined) return { lead: copy((await tx.doc(SettingsDoc, this.root.id)).model), helper: null }
-      const { model, helper } = this.#gated(await this.#projectIn(tx, project), (await tx.doc(SettingsDoc, this.root.id)).astra)
+      const { model, helper } = await this.#projectIn(tx, project)
       return { lead: copy(model), helper: helper === null ? null : copy(helper) }
     }, context)
   }
@@ -452,12 +481,12 @@ export class Store {
 
   /** The roles of `project` its provider reported removed and the person has not chosen again, lead first. */
   async retiredFor(project: string): Promise<Retired[]> {
-    return this.harness.commit(async (tx) => this.#retiredRoles(await this.#projectIn(tx, project), (await tx.doc(SettingsDoc, this.root.id)).astra), context)
+    return this.harness.commit(async (tx) => this.#retiredRoles(await this.#projectIn(tx, project)), context)
   }
 
   /** `retiredFor`, read in the commit `tx`. */
   async retiredIn(tx: Tx, project: string): Promise<Retired[]> {
-    return this.#retiredRoles(await this.#projectIn(tx, project), (await tx.doc(SettingsDoc, this.root.id)).astra)
+    return this.#retiredRoles(await this.#projectIn(tx, project))
   }
 
   /**
@@ -520,7 +549,7 @@ export class Store {
         const conversation = await tx.createConversation({ ownership: { kind: 'ownerless' } })
         for (const data of old.entries) await tx.appendEntry(Imported, conversation.id, { data })
         const pair = carried(await tx.doc(SettingsDoc, this.root.id), undefined)
-        index.projects.push({ id: old.id, conversation: conversation.id, title: old.title, createdMs: old.createdMs, ...pair })
+        index.projects.push({ id: old.id, conversation: conversation.id, title: old.title, createdMs: old.createdMs, ...pair, roles: 0 })
         return true
       }, context)
       if (done) imported.push(old.id)
@@ -537,6 +566,7 @@ export class Store {
       const project = await this.#projectIn(tx, id)
       if (lead !== undefined) project.model = copy(lead)
       if (helper !== undefined) project.helper = helper === null ? null : copy(helper)
+      project.roles += 1
       project.retired = (project.retired ?? []).filter((r) => (r.role === 'lead' ? lead : helper) === undefined)
       // A plain copy, since the documents a commit hands out are only valid inside it.
       return JSON.parse(JSON.stringify(project))
@@ -637,6 +667,6 @@ type DraftsBefore = { drafts: Record<string, Draft & { rev?: number }>; seq?: nu
  * pairs, projects with no helper and maybe no lead.
  */
 type ProjectsBefore = {
-  projects: (Omit<Project, 'model' | 'helper'> & { model?: ModelChoice; helper?: ModelChoice | null })[]
+  projects: (Omit<Project, 'model' | 'helper' | 'roles'> & { model?: ModelChoice; helper?: ModelChoice | null; roles?: number })[]
   madeFor?: Record<string, { project: string; draft: SavedDraft }>
 }

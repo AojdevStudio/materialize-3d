@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest'
+import type { ChatEntry } from '../../sidecar/src/protocol'
 import { buildChat, STOPPED } from './transcript'
 
 const opus = { provider: 'anthropic', modelId: 'claude-opus-5-5' }
+const astra = { provider: 'openai-codex', modelId: 'gpt-6-astra' }
 
 describe('buildChat', () => {
   it("gathers a turn's steps in one trace with their results, and adds no file card for the files it wrote", () => {
@@ -163,5 +165,75 @@ describe('buildChat', () => {
       { kind: 'byline', model: opus },
       { kind: 'byline', model: sol },
     ])
+  })
+
+  describe('a helper call', () => {
+    const task = 'Check the fit.\nWrite fit-check.md.'
+    const handoff = { task: '41', conversation: 42, helper: astra, startedMs: 1_000 }
+    const asked: ChatEntry[] = [
+      { id: 1, kind: 'user', text: 'A bracket', images: [], files: [] },
+      { id: 2, kind: 'assistant', model: opus, text: '', calls: [{ id: 'c1', name: 'write', args: { path: 'bracket.scad' } }] },
+      { id: 3, kind: 'tool', callId: 'c1', name: 'write', text: 'ok', failed: false },
+      { id: 4, kind: 'assistant', model: opus, text: '', calls: [{ id: 'h1', name: 'helper', args: { task } }] },
+    ]
+    const after: ChatEntry[] = [
+      { id: 6, kind: 'assistant', model: opus, text: '', calls: [{ id: 'c2', name: 'slice', args: { inputs: ['bracket.stl'], output: 'print/bracket.3mf' } }] },
+      { id: 7, kind: 'tool', callId: 'c2', name: 'slice', text: 'ok', failed: false },
+    ]
+    const head = { kind: 'handoff', id: 'h1', lead: opus, helper: astra, task }
+
+    it('ends the trace it was in as an entry of its own, with its result once done or its reason once failed, and the steps after it start a new trace', () => {
+      const done = buildChat([...asked, { id: 5, kind: 'tool', callId: 'h1', name: 'helper', text: 'Fits.', failed: false, durationMs: 68_000, handoff }, ...after], false)
+      expect(done.map((item) => item.kind)).toEqual(['user', 'byline', 'trace', 'handoff', 'trace'])
+      expect(done[2]).toMatchObject({ kind: 'trace', lines: [{ id: 'c1' }] })
+      expect(done[3]).toEqual({ ...head, state: 'done', startedMs: 1_000, durationMs: 68_000, result: 'Fits.' })
+      expect(done[4]).toMatchObject({ kind: 'trace', id: 'c2', lines: [{ id: 'c2' }] })
+
+      const failed = buildChat([...asked, { id: 5, kind: 'tool', callId: 'h1', name: 'helper', text: 'Helper GPT 6 Astra failed.', failed: true, handoff }], false)
+      expect(failed[3]).toMatchObject({ ...head, state: 'failed', result: 'Helper GPT 6 Astra failed.' })
+
+      const raw = '<harness> [error] Tool helper was aborted </harness>'
+      const stopped = buildChat([...asked, { id: 5, kind: 'tool', callId: 'h1', name: 'helper', text: raw, failed: true, handoff, stopped: true }], false)
+      expect(stopped[3]).toMatchObject({ ...head, state: 'stopped', result: STOPPED })
+    })
+
+    it('while it runs takes its helper and progress from its live handoff, and is a plain step until it publishes one', () => {
+      const last = { name: 'run', args: { args: ['run', 'python', 'fit.py'] } }
+      const live = [{ callId: 'h1', handoff, steps: 3, last }]
+      expect(buildChat(asked, true, live)[3]).toEqual({ ...head, state: 'running', startedMs: 1_000, progress: { steps: 3, doing: 'Running uv run python fit.py' } })
+      // A call refused before it ran, as one with an empty task, never published a handoff, so it never shows as one.
+      expect(buildChat(asked, true, []).some((item) => item.kind === 'handoff')).toBe(false)
+      expect(buildChat(asked, false, [])[2]).toMatchObject({ kind: 'trace', lines: [{ id: 'c1' }, { id: 'h1', state: 'stopped', result: STOPPED }] })
+    })
+
+    it("keeps each turn's helper when a provider gives a later turn's call the same id", () => {
+      const again: ChatEntry[] = [
+        { id: 6, kind: 'user', text: 'Again', images: [], files: [] },
+        { id: 7, kind: 'assistant', model: opus, text: '', calls: [{ id: 'h1', name: 'helper', args: { task } }] },
+        { id: 8, kind: 'tool', callId: 'h1', name: 'helper', text: 'Fits too.', failed: false, durationMs: 2_000, handoff: { ...handoff, helper: opus } },
+      ]
+      const items = buildChat([...asked, { id: 5, kind: 'tool', callId: 'h1', name: 'helper', text: 'Fits.', failed: false, durationMs: 68_000, handoff }, ...again], false)
+      expect(items.flatMap((item) => (item.kind === 'handoff' ? [[item.helper, item.result]] : []))).toEqual([
+        [astra, 'Fits.'],
+        [opus, 'Fits too.'],
+      ])
+    })
+
+    it('stays a trace step when nothing names its helper, as an Astra call from before pairs or a result that recorded none', () => {
+      const unnamed = (entries: ChatEntry[]) => buildChat(entries, false).flatMap((item) => (item.kind === 'trace' ? item.lines : []))
+      const oldAstra: ChatEntry[] = [
+        { id: 1, kind: 'user', text: 'A bracket', images: [], files: [] },
+        { id: 2, kind: 'assistant', model: opus, text: '', calls: [{ id: 'a1', name: 'astra', args: { task } }] },
+        { id: 3, kind: 'tool', callId: 'a1', name: 'astra', text: 'drew it', failed: false },
+      ]
+      expect(unnamed(oldAstra)).toMatchObject([{ id: 'a1', label: 'Asked Astra (GPT)', state: 'done' }])
+      expect(unnamed([...asked, { id: 5, kind: 'tool', callId: 'h1', name: 'helper', text: 'drew it', failed: false }])).toMatchObject([
+        { id: 'c1' },
+        { id: 'h1', label: 'Asked the helper', state: 'done' },
+      ])
+      // An earlier turn's call with no result cannot take a running call's handoff with its id.
+      const earlier = [...asked, { id: 5, kind: 'user' as const, text: 'Thinner', images: [], files: [] }]
+      expect(buildChat(earlier, true, [{ callId: 'h1', handoff, steps: 0, last: null }]).some((item) => item.kind === 'handoff')).toBe(false)
+    })
   })
 })

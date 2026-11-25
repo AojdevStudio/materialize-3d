@@ -9,14 +9,16 @@
  * it, and with `M3D_FLAKY` set, each model's first request answers that the provider is overloaded.
  *
  * The app's catalog gains `gpt-6.3-sol`, a newer Sol version than the app ships. `M3D_MOBILE_PORT` and
- * `M3D_PAIRING_TTL_MS` set the phone service's port and how long a pairing code works.
+ * `M3D_PAIRING_TTL_MS` set the phone service's port and how long a pairing code works. `M3D_READ_GATE` lets a test
+ * hold a read, as `holdReads` says.
  */
 import { existsSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { type AssistantMessage, type Context, fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall, type Message, type Model } from '@earendil-works/pi-ai'
-import type { JsonObject } from '@earendil-works/pi-durable'
+import { type JsonObject, LiveDoc } from '@earendil-works/pi-durable'
 import { runSidecar } from '../../src/app'
 import { CATALOG, type Catalog } from '../../src/offered'
+import { Store } from '../../src/store'
 
 /** The task a helper draws for: it writes its model id to `helper.txt`, then says it drew it. */
 export const DRAW = 'Draw it as an HTML page.'
@@ -24,6 +26,10 @@ export const DRAW = 'Draw it as an HTML page.'
 export const HAND_ON = 'Hand this on.'
 /** The task a helper fails, with an error that is neither a missing login nor a retired model. */
 export const FAIL = 'Fail.'
+/** The task a helper takes two steps on: the first waits for a `next` file, the second for `go`. Then it says it waited. */
+export const STEPS = 'Take two steps.'
+/** `STEPS` with its own files, `nextB` and `goB`, for a second helper beside the first. */
+export const STEPS_B = 'Take two steps beside.'
 
 /** The messages since the person's newest message, and that message's text. */
 function sinceUser(messages: Message[]) {
@@ -75,6 +81,14 @@ const scripts: Record<string, (messages: Message[], model: Model<string>) => Ass
     const { text, results } = sinceUser(messages)
     if (results.length === 0) return call('helper', { task: text.startsWith('ask: ') ? text.slice('ask: '.length) : DRAW })
     return fauxAssistantMessage(fauxText(`parent saw: ${resultText(results[0])}`))
+  },
+  /** Hands two helpers `STEPS` and `STEPS_B` in one step, so they run at once, then says both were done. */
+  'two-helpers': (messages) => {
+    const { results } = sinceUser(messages)
+    if (results.length === 0) {
+      return fauxAssistantMessage([fauxToolCall('helper', { task: STEPS }), fauxToolCall('helper', { task: STEPS_B })], { stopReason: 'toolUse' })
+    }
+    return fauxAssistantMessage(fauxText('both waited'))
   },
   /** Runs a command that waits for `go`, then hands the helper `DRAW`, then repeats what the helper answered. */
   'wait-then-helper': (messages) => {
@@ -171,6 +185,16 @@ const answer = (context: Context, model: Model<string>): AssistantMessage => {
   if (text === HAND_ON) return results.length === 0 ? call('helper', { task: DRAW }) : fauxAssistantMessage(fauxText(`child saw: ${resultText(results[0])}`))
   // Pi retries a provider's temporary failures, such as a 500, by itself. This one it does not.
   if (text === FAIL) return fails('400 invalid_request_error: the helper could not do this task')
+  if (text === STEPS) {
+    if (results.length === 0) return run('touch first; while [ ! -f next ]; do sleep 0.05; done')
+    if (results.length === 1) return run('touch second; while [ ! -f go ]; do sleep 0.05; done')
+    return fauxAssistantMessage(fauxText('waited'))
+  }
+  if (text === STEPS_B) {
+    if (results.length === 0) return run('touch firstB; while [ ! -f nextB ]; do sleep 0.05; done')
+    if (results.length === 1) return run('touch secondB; while [ ! -f goB ]; do sleep 0.05; done')
+    return fauxAssistantMessage(fauxText('waited beside'))
+  }
   return script(context.messages, model)
 }
 
@@ -179,6 +203,40 @@ const catalog: Catalog = {
   ...CATALOG,
   families: CATALOG.families.map((family) => (family.name === 'GPT Sol' ? { ...family, versions: [{ modelId: 'gpt-6.3-sol', name: 'GPT 6.3 Sol' }, ...family.versions] } : family)),
 }
+
+/**
+ * Lets a test hold a chat's reads made on their own, not beside a read of the chat's live state, as a chat read does:
+ * a helper call's read of its turn as it starts (`turn`), and a chat read's look at its waiting state once it took its
+ * place in the order of reads (`waiting`). While the test keeps `hold-<doc>` in folder `gate`, the nth such read of
+ * that doc since writes `held-<doc>-<n>`, then waits for `release-<doc>-<n>`.
+ */
+function holdReads(gate: string) {
+  const open = Store.open.bind(Store)
+  Store.open = async (options) => {
+    const store = await open(options)
+    const { harness } = store
+    const snapshot = harness.snapshot.bind(harness)
+    // A chat read asks for its live, waiting, and turn state in one go, so the two reads right after a live state read
+    // are that read's own, and only those two pass the gate.
+    let beside = 0
+    const counts = new Map<string, number>()
+    harness.snapshot = (async (...args: Parameters<typeof snapshot>) => {
+      const [doc] = args
+      const name = new Map([['m3d.turn', 'turn'], ['m3d.waiting', 'waiting']]).get(doc.definition.kind)
+      if (doc.definition.kind === LiveDoc.definition.kind) beside = 2
+      else if (name !== undefined && beside > 0) beside -= 1
+      else if (name !== undefined && existsSync(join(gate, `hold-${name}`))) {
+        const n = (counts.get(name) ?? 0) + 1
+        counts.set(name, n)
+        writeFileSync(join(gate, `held-${name}-${n}`), '')
+        while (!existsSync(join(gate, `release-${name}-${n}`))) await Bun.sleep(25)
+      }
+      return snapshot(...args)
+    }) as typeof snapshot
+    return store
+  }
+}
+if (process.env.M3D_READ_GATE !== undefined) holdReads(process.env.M3D_READ_GATE)
 
 const mobilePort = process.env.M3D_MOBILE_PORT
 const pairingTtl = process.env.M3D_PAIRING_TTL_MS

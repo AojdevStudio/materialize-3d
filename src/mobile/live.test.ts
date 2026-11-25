@@ -3,7 +3,7 @@ import type { ChatView } from '../../sidecar/src/protocol'
 import { chatEvent, merge } from './live'
 
 const lead = { provider: 'faux', modelId: 'faux-a' }
-const read: ChatView = { project: 'desk-clip', entries: [{ id: 1, kind: 'user', text: 'Draw it', images: [], files: [] }], running: true, waiting: null, turn: null, seq: 4 }
+const read: ChatView = { project: 'desk-clip', entries: [{ id: 1, kind: 'user', text: 'Draw it', images: [], files: [] }], running: true, waiting: null, turn: null, handoffs: [], seq: 4 }
 
 describe('a chat kept live from the event stream', () => {
   it('shows a turn that ends after the chat was read, from the stream event alone', () => {

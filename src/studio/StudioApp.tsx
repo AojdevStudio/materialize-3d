@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { AppState, ModelChoice, Project, Setup } from '../../sidecar/src/protocol'
+import { CATALOG } from '../../sidecar/src/offered'
+import { type AppState, type ModelChoice, type Project, type Setup, START } from '../../sidecar/src/protocol'
 import { onSidecarEvent, sidecar } from './api'
 import { ChatView } from './Chat'
 import { Composer } from './Composer'
@@ -29,6 +30,28 @@ import { UpdateBanner } from '../update/UpdateBanner'
 import { checkForUpdatesAtLaunch, useUpdateEvents } from '../update/store'
 import './studio.css'
 
+/**
+ * `incoming`, a chat as a read, an event, or a reply brings it, in place of `row`, the one the window has. The roles go
+ * with the higher revision, so the newest the sidecar saved win whatever way and order they came in.
+ */
+const take = (row: Project | undefined, incoming: Project): Project =>
+  row !== undefined && row.roles >= incoming.roles ? { ...incoming, model: row.model, helper: row.helper, roles: row.roles } : incoming
+
+/**
+ * `projects` with `incoming` taken in, in place of its row, or first when the window does not list it yet. A row that
+ * comes back as it was leaves the list as it was, so nothing that follows the list reads again.
+ */
+const takeIn = (projects: Project[], incoming: Project): Project[] => {
+  const row = projects.find((p) => p.id === incoming.id)
+  if (row === undefined) return [incoming, ...projects]
+  const taken = take(row, incoming)
+  return JSON.stringify(taken) === JSON.stringify(row) ? projects : projects.map((p) => (p === row ? taken : p))
+}
+
+/** A role picked here, with its place in the order of picks, shown until its own save went through. */
+type ShownPick = { model: ModelChoice | null; seq: number }
+type ShownPicks = { lead?: ShownPick & { model: ModelChoice }; helper?: ShownPick }
+
 export default function StudioApp() {
   const [projects, setProjects] = useState<Project[]>([])
   const { current, view, files, selected, panelView, status, error, engine, setup, settings: savedSettings, importBlocked, needs, models, signIn, slicerFound, wentOnInSetup } = useStudio()
@@ -42,7 +65,10 @@ export default function StudioApp() {
   /** The Settings section on screen. Closing it shows the screen it was opened from. */
   const [settings, setSettings] = useState<Section | null>(null)
 
-  const items = useMemo(() => buildChat(view?.entries ?? [], view?.running ?? true), [view?.entries, view?.running])
+  const items = useMemo(
+    () => buildChat(view?.entries ?? [], view?.running ?? true, view?.handoffs ?? []),
+    [view?.entries, view?.running, view?.handoffs],
+  )
   const running = view?.running ?? false
 
   useStudioEvents(projects)
@@ -52,7 +78,7 @@ export default function StudioApp() {
     () =>
       onSidecarEvent((event) => {
         if (event.type !== 'project') return
-        setProjects((all) => all.map((p) => (p.id === event.project.id ? event.project : p)))
+        setProjects((all) => takeIn(all, event.project))
         checkReady()
       }).stop,
     [],
@@ -65,11 +91,35 @@ export default function StudioApp() {
 
   // A project made while this was on its way is newer than the saved list, so it stays.
   const takeProjects = (state: AppState) =>
-    setProjects((made) => [...made.filter((p) => !state.projects.some((saved) => saved.id === p.id)), ...state.projects])
+    setProjects((made) => [
+      ...made.filter((p) => !state.projects.some((saved) => saved.id === p.id)),
+      ...state.projects.map((saved) => take(made.find((p) => p.id === saved.id), saved)),
+    ])
+
+  /**
+   * The saves of the role picks, one after another in the order they were made, so two picks of one role land in that
+   * order, and how many failed.
+   */
+  const saves = useRef<Promise<unknown>>(Promise.resolve())
+  const failedSaves = useRef(0)
+  /**
+   * A quit: the role saves, then the drafts, again until a round in which no role save joined, so neither a pick nor
+   * text made while it waited is left behind. A role save that failed since the quit began calls it off.
+   */
+  const quit = async (saveDrafts: () => Promise<void>) => {
+    const failed = failedSaves.current
+    for (let waited: unknown; waited !== saves.current; ) {
+      waited = saves.current
+      await waited
+      if (failedSaves.current !== failed) throw new Error('a role pick could not be saved')
+      await saveDrafts()
+    }
+  }
 
   const { drafts, shown, attachments, sending, sendErrors } = useDrafts({
-    onSent: (project) => setProjects((prev) => (prev.some((p) => p.id === project.id) ? prev : [project, ...prev])),
+    onSent: (project) => setProjects((all) => takeIn(all, project)),
     onStarted: takeProjects,
+    quit,
   })
 
   const retryImport = () => {
@@ -84,8 +134,28 @@ export default function StudioApp() {
     if (current) drafts.dismissSendError(current.id)
   }
 
+  /**
+   * Picks shown before their saves went through, by project id, or `START` for the start screen's lead. A pick shows at
+   * once, while project events only update the saved roles under it, so an older save never decides what shows. Once
+   * the save of the newest pick of a role went through, or failed, the saved role shows again.
+   */
+  const [picks, setPicks] = useState<Record<string, ShownPicks>>({})
+  const picked = picks[current?.id ?? START]
+
   /** The open project's own model, or the default for one from before the picker. On the start screen, the default. */
-  const chosenModel = (current ? projects.find((p) => p.id === current.id)?.model : undefined) ?? savedSettings?.model ?? null
+  const chosenModel = picked?.lead?.model ?? (current ? projects.find((p) => p.id === current.id)?.model : undefined) ?? savedSettings?.model ?? null
+
+  /**
+   * The helper the next start screen send gives its project, once the person picked one there. Until then, and again
+   * after that send, it is the default: the newest Astra offered while the Astra setting is on, or none.
+   */
+  const [startHelper, setStartHelper] = useState<{ pick: ModelChoice | null } | null>(null)
+  const helperFamily = CATALOG.families[CATALOG.helper]
+  const astra = models.find((m) => m.provider === helperFamily?.provider && helperFamily.versions.some((v) => v.modelId === m.modelId))
+  // With the Astra setting on, the default is Astra while the person is signed in to it, which only the model list says.
+  const defaultHelper = savedSettings?.astra !== true ? null : models.length === 0 ? 'default' : astra === undefined ? null : { provider: astra.provider, modelId: astra.modelId }
+  const chosenHelper =
+    picked?.helper !== undefined ? picked.helper.model : current ? (projects.find((p) => p.id === current.id)?.helper ?? null) : startHelper === null ? defaultHelper : startHelper.pick
 
   const waiting = view?.waiting ?? null
   const turnLogin: TurnLogin | undefined = waiting?.kind === 'login' ? { kind: 'turn-login', provider: waiting.provider, name: waiting.name } : undefined
@@ -96,23 +166,48 @@ export default function StudioApp() {
   const notReady = setup?.done !== true || needs === null || blocker !== undefined
 
   /**
-   * Saves a pick: the open project's model, or on the start screen the default the next project takes. The check runs
+   * Shows a pick at once and saves it in the background, after the saves of earlier picks and after any send pressed
+   * before it was answered. A send never waits for them: it carries the picks whose save it has not heard back from
+   * (#373).
+   */
+  const pickCount = useRef(0)
+  const pickRole = (key: string, role: keyof ShownPicks, model: ModelChoice | null, save: () => Promise<unknown>) => {
+    pickCount.current += 1
+    const seq = pickCount.current
+    // Only this pick goes, and only while no newer pick of the role took its place.
+    const drop = () => setPicks((all) => (all[key]?.[role]?.seq === seq ? { ...all, [key]: { ...all[key], [role]: undefined } } : all))
+    setPicks((all) => ({ ...all, [key]: { ...all[key], [role]: { model, seq } } }))
+    saves.current = saves.current.then(save).then(drop, (err: unknown) => {
+      failedSaves.current += 1
+      setError(String(err))
+      drop()
+    })
+  }
+
+  /** A role save's answer, the project as saved, which the window takes before the pick gives way to it. */
+  const takeSaved = (saved: Project) => setProjects((all) => takeIn(all, saved))
+
+  /**
+   * A pick of the open project's lead, or on the start screen the default the next project takes. The check runs
    * again then, as the new model's provider may differ.
    */
   const pickModel = (model: ModelChoice) => {
     const project = current?.id
     if (project === undefined) {
-      void saveSettings({ model })
-        .then(() => checkReady())
-        .catch((err: unknown) => setError(String(err)))
+      pickRole(START, 'lead', model, () => saveSettings({ model }).then(() => checkReady()))
       return
     }
-    void sidecar('projects.setLead', { project, model })
-      .then(() => {
-        setProjects((all) => all.map((p) => (p.id === project ? { ...p, model } : p)))
-        checkReady()
-      })
-      .catch((err: unknown) => setError(String(err)))
+    pickRole(project, 'lead', model, () => sidecar('projects.setLead', { project, model }).then(takeSaved))
+  }
+
+  /** A pick of the open project's helper. On the start screen it is the helper the next project starts with. */
+  const pickHelper = (model: ModelChoice | null) => {
+    const project = current?.id
+    if (project === undefined) {
+      setStartHelper({ pick: model })
+      return
+    }
+    pickRole(project, 'helper', model, () => sidecar('projects.setHelper', { project, model }).then(takeSaved))
   }
 
   const composer = (
@@ -125,14 +220,34 @@ export default function StudioApp() {
       onPaste={drafts.paste}
       onRemove={(index) => drafts.remove(attachments[index], index)}
       onSend={() => {
-        if (!running && !notReady) void drafts.send()
+        if (running || notReady || chosenModel === null) return
+        // A send carries only the roles picked here and not yet saved. The sidecar takes every other role from what is
+        // saved when it accepts the turn, which the window may not have heard yet, as after a restart. A helper picked
+        // on the start screen is saved only by the send, so it always goes with it.
+        const helper = current ? picked?.helper : startHelper === null ? undefined : { model: startHelper.pick }
+        const pending = { ...(picked?.lead === undefined ? {} : { lead: picked.lead.model }), ...(helper === undefined ? {} : { helper: helper.model }) }
+        const sent = drafts.send(pending)
+        // A pick made from now on saves once the sidecar answered this send, which it does after it accepted the turn,
+        // so the pick goes to the next message and never to this one. The calls themselves can reach it in any order.
+        saves.current = saves.current.then(() => sent)
+        if (!current)
+          void sent.then((project) => {
+            // A helper picked while this send was on its way is the next chat's, so only the choice it carried resets.
+            if (project !== undefined) setStartHelper((now) => (now === startHelper ? null : now))
+          })
       }}
       onError={setError}
       onStop={current ? () => void sidecar('chat.stop', { project: current.id }).catch((err: unknown) => setError(String(err))) : undefined}
       busy={sending || running || notReady}
       running={running}
       locked={blocker === undefined ? undefined : lockedText(blocker)}
-      picker={blocker !== undefined && models.length === 0 ? null : <ModelPicker models={models} chosen={chosenModel} onPick={pickModel} />}
+      picker={
+        // A blocked chat with no model list has no lead to offer, but No helper needs no list, and clears a retired helper.
+        <span className="model-roles">
+          {(blocker === undefined || models.length > 0) && <ModelPicker role="Lead" models={models} chosen={chosenModel} onPick={pickModel} />}
+          <ModelPicker role="Helper" models={models} chosen={chosenHelper} onPick={pickHelper} />
+        </span>
+      }
     />
   )
 
