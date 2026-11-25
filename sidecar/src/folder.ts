@@ -47,21 +47,15 @@ export function folderSummary(root: string): { printFiles: number; newestMs: num
  * A chat's folder where it really is: `unmade` before the agent made it, and `link` when the folder is a link, which
  * is refused, so the files a phone lists and reads stay under the projects folder.
  */
-function chatFolder(projectsDir: string, id: string): { real: string } | 'unmade' | 'link' {
+export function chatFolder(projectsDir: string, id: string): { real: string } | 'unmade' | 'link' {
   const folder = join(projectsDir, id)
   if (!existsSync(folder)) return 'unmade'
   const real = join(realpathSync.native(projectsDir), id)
   return realpathSync.native(folder) === real ? { real } : 'link'
 }
 
-/**
- * The model files in a chat's folder, newest first, or undefined when the folder is a link. A folder not made yet has
- * none. Names the file list skips, and links, are left out.
- */
-export function modelFiles(projectsDir: string, id: string): ModelFile[] | undefined {
-  const folder = chatFolder(projectsDir, id)
-  if (folder === 'link') return undefined
-  if (folder === 'unmade') return []
+/** The model files in a chat's real folder, from `chatFolder`, newest first. Names the file list skips, and links, are left out. */
+export function modelFiles(folder: { real: string }): ModelFile[] {
   const files: ModelFile[] = []
   // A folder is read, and a file measured, only while its real path is the one its name spells, so a folder swapped for
   // a link during the walk is passed over, not followed. One removed meanwhile is passed over too.
@@ -91,14 +85,13 @@ export function modelFiles(projectsDir: string, id: string): ModelFile[] | undef
 }
 
 /**
- * The bytes of one model file that `modelFiles` lists, by its `rel`, with its content type. Undefined for anything
- * else: a folder not made or that is a link, a name the file list skips, a file that is not a model, one outside the
- * folder, or one reached through a link.
+ * The bytes of one model file that `modelFiles` lists, by its `rel` in a chat's real folder, with its content type.
+ * Undefined for anything else: a name the file list skips, a file that is not a model, one outside the folder, or one
+ * reached through a link.
  */
-export function openModelFile(projectsDir: string, id: string, rel: string): { bytes: ReadableStream<Uint8Array>; type: string } | undefined {
-  const folder = chatFolder(projectsDir, id)
+export function openModelFile(folder: { real: string }, rel: string): { bytes: ReadableStream<Uint8Array>; type: string } | undefined {
   const type = MODEL_TYPES[extname(rel).toLowerCase()]
-  if (typeof folder === 'string' || type === undefined || rel.split('/').some(skipped)) return undefined
+  if (type === undefined || rel.split('/').some(skipped)) return undefined
   const named = join(folder.real, rel)
   try {
     // The list leaves links out, so a read takes only a regular file inside the folder whose name spells its real path.

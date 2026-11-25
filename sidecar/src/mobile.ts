@@ -12,7 +12,7 @@ import { arr, bool, compile, int, map, nullable, obj, opt, str, type Validator }
 import type { Server } from 'bun'
 import { renderSVG } from 'uqr'
 import { type Chats, SendRefused } from './chat'
-import { modelFiles, openModelFile } from './folder'
+import { chatFolder, modelFiles, openModelFile } from './folder'
 import type { Logins } from './inference'
 import { model, offeredModels, saveRoles } from './methods'
 import { savePicture } from './pictures'
@@ -276,6 +276,13 @@ export class Mobile {
       if (found === undefined) throw new Refused(404, `no project ${id}`)
       return found
     }
+    /** A chat's folder where it really is, or `unmade` before the agent made it. A folder that is a link is refused. */
+    const folderOf = async (params: Params) => {
+      const { id } = await project(params)
+      const folder = chatFolder(store.projectsDir, id)
+      if (folder === 'link') throw new Refused(404, `${id} is not a chat folder here`)
+      return folder
+    }
     return [
       { method: 'GET', path: '/api/v1/computer', run: async (_, __, device) => json({ ...(await this.#computer()), device }) },
       { method: 'GET', path: '/api/v1/models', run: async () => json(await offeredModels(store, logins)) },
@@ -348,19 +355,17 @@ export class Mobile {
         method: 'GET',
         path: '/api/v1/chats/:project/files',
         run: async (_, params) => {
-          const { id } = await project(params)
-          const files = modelFiles(store.projectsDir, id)
-          if (files === undefined) throw new Refused(404, `${id} is not a chat folder here`)
-          return json(files)
+          const folder = await folderOf(params)
+          return json(folder === 'unmade' ? [] : modelFiles(folder))
         },
       },
       {
         method: 'GET',
         path: '/api/v1/chats/:project/files/*rel',
         run: async (_, params) => {
-          const { id } = await project(params)
+          const folder = await folderOf(params)
           const rel = params.rel ?? ''
-          const file = openModelFile(store.projectsDir, id, rel)
+          const file = folder === 'unmade' ? undefined : openModelFile(folder, rel)
           if (file === undefined) throw new Refused(404, `${rel} is not a model file in this chat`)
           return new Response(file.bytes, { headers: { 'content-type': file.type } })
         },

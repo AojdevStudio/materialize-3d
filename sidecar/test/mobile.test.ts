@@ -564,10 +564,12 @@ describe('a paired device', () => {
     writeFileSync(join(projects, 'escape.stl'), 'outside the chat')
     writeFileSync(join(folder, '.m3d', 'hidden.stl'), 'the app records')
     writeFileSync(join(folder, 'part.stl'), 'solid part')
+    writeFileSync(join(folder, 'my part.stl'), 'solid spaced')
     symlinkSync(join(folder, '.m3d', 'hidden.stl'), join(folder, 'records.stl'))
 
     // `folder.test.ts` holds the file rules. This checks how the route decodes a path and answers a refusal.
-    expect(((await (await call(`/chats/${project}/files`)).json()) as ModelFile[]).map((f) => f.rel)).toEqual(['part.stl'])
+    expect(((await (await call(`/chats/${project}/files`)).json()) as ModelFile[]).map((f) => f.rel).sort()).toEqual(['my part.stl', 'part.stl'])
+    expect(await (await call(`/chats/${project}/files/my%20part.stl`)).text()).toBe('solid spaced')
     for (const rel of ['..%2Fescape.stl', '%2E%2E/escape.stl', 'records.stl', '.m3d%2Fhidden.stl']) {
       const answer = await call(`/chats/${project}/files/${rel}`)
       expect([rel, answer.status]).toEqual([rel, 404])
@@ -577,8 +579,10 @@ describe('a paired device', () => {
     // A chat folder that became a link reads nothing, listed or by name.
     renameSync(folder, join(dir, 'moved'))
     symlinkSync(join(dir, 'moved'), folder)
-    expect((await call(`/chats/${project}/files`)).status).toBe(404)
-    expect((await call(`/chats/${project}/files/part.stl`)).status).toBe(404)
+    for (const path of ['files', 'files/part.stl']) {
+      const answer = await call(`/chats/${project}/${path}`)
+      expect([path, answer.status, await answer.json()]).toEqual([path, 404, { error: `${project} is not a chat folder here` }])
+    }
     await app.quit()
   })
 

@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { mkdirSync, mkdtempSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { folderSummary, modelFiles, openModelFile } from '../src/folder'
+import { chatFolder, folderSummary, modelFiles, openModelFile } from '../src/folder'
 
 let dir: string
 
@@ -62,37 +62,37 @@ describe('model files', () => {
     // Links that stay in the chat but name a model: one to the app records, one to a file that is not a model.
     symlinkSync(join(folder, '.m3d', 'hidden.stl'), join(folder, 'records.stl'))
     symlinkSync(join(folder, 'notes.txt'), join(folder, 'notes.glb'))
-    return { root, projects, id, folder }
+    const real = chatFolder(projects, id)
+    if (typeof real === 'string') throw new Error(`the chat folder is ${real}`)
+    return { root, projects, id, folder, real }
   }
 
-  const read = async (projects: string, id: string, rel: string) => {
-    const file = openModelFile(projects, id, rel)
+  const read = async (folder: { real: string }, rel: string) => {
+    const file = openModelFile(folder, rel)
     return file === undefined ? undefined : { type: file.type, text: await new Response(file.bytes).text() }
   }
 
   test('lists only real model files, newest first, and reads each with its type', async () => {
-    const { projects, id } = chatWithFiles()
-    const files = modelFiles(projects, id)
-    expect(files?.map((file) => file.rel)).toEqual(['print/plate.3mf', 'part.STL'])
-    expect(files?.[1]).toEqual({ rel: 'part.STL', size: 'solid part'.length, modifiedMs: 1_000_000 })
-    expect(await read(projects, id, 'print/plate.3mf')).toEqual({ type: 'model/3mf', text: 'PK3mf' })
-    expect(await read(projects, id, 'part.STL')).toEqual({ type: 'model/stl', text: 'solid part' })
+    const { real } = chatWithFiles()
+    const files = modelFiles(real)
+    expect(files.map((file) => file.rel)).toEqual(['print/plate.3mf', 'part.STL'])
+    expect(files[1]).toEqual({ rel: 'part.STL', size: 'solid part'.length, modifiedMs: 1_000_000 })
+    expect(await read(real, 'print/plate.3mf')).toEqual({ type: 'model/3mf', text: 'PK3mf' })
+    expect(await read(real, 'part.STL')).toEqual({ type: 'model/stl', text: 'solid part' })
   })
 
   test('reads no file outside the chat, through a link, in the app records, or that is not a model', async () => {
-    const { projects, id } = chatWithFiles()
+    const { real } = chatWithFiles()
     for (const rel of ['../escape.stl', '../../outside.stl', 'linked.stl', 'records.stl', 'notes.glb', '.m3d/hidden.stl', 'notes.txt', 'missing.stl', 'print']) {
-      expect([rel, await read(projects, id, rel)]).toEqual([rel, undefined])
+      expect([rel, await read(real, rel)]).toEqual([rel, undefined])
     }
   })
 
-  test('a chat folder not made yet has no files, and one that became a link lists and reads nothing', async () => {
+  test('a chat folder is unmade before the agent makes it, and refused once it is a link', () => {
     const { root, projects, id, folder } = chatWithFiles()
-    expect(modelFiles(projects, '2026-11-24-not-made')).toEqual([])
-    expect(openModelFile(projects, '2026-11-24-not-made', 'part.STL')).toBeUndefined()
+    expect(chatFolder(projects, '2026-11-24-not-made')).toBe('unmade')
     renameSync(folder, join(root, 'moved'))
     symlinkSync(join(root, 'moved'), folder)
-    expect(modelFiles(projects, id)).toBeUndefined()
-    expect(openModelFile(projects, id, 'part.STL')).toBeUndefined()
+    expect(chatFolder(projects, id)).toBe('link')
   })
 })
