@@ -454,7 +454,8 @@ function Chat({ chat, onBack }: { chat: MobileChat; onBack: () => void }) {
       )}
       {model && fits(model) && (
         <div className="mobile-model">
-          <RemoteModelView url={remoteUrl(`${chatPath(chat.id)}/files/${model.rel.split('/').map(encodeURIComponent).join('/')}`)} ext={extOf(model.rel)} />
+          {/* The version loads a model again when the agent rebuilt it in place, as the desktop's fileUrl does. */}
+          <RemoteModelView url={remoteUrl(`${chatPath(chat.id)}/files/${model.rel.split('/').map(encodeURIComponent).join('/')}?v=${model.modifiedMs}`)} ext={extOf(model.rel)} />
         </div>
       )}
       {files.length > 0 && (

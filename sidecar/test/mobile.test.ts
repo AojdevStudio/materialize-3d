@@ -317,6 +317,8 @@ describe('a paired device', () => {
     expect([read.status, read.headers.get('content-type'), await read.text()]).toEqual([200, 'model/3mf', 'PK3mf'])
     expect(read.headers.get('access-control-allow-origin')).toBeNull()
     expect((await call(`/chats/${project}/files/part.STL`)).headers.get('content-type')).toBe('model/stl')
+    // The phone names a file's version in the query, which the read leaves out of the file's name.
+    expect(await (await call(`/chats/${project}/files/part.STL?v=1000000`)).text()).toBe('solid part')
     expect((await call('/chats/no-such-project')).status).toBe(404)
     expect((await call(`/chats/${project}/send`, { method: 'POST', body: { rev: 'one' } })).status).toBe(400)
     void stream.close()

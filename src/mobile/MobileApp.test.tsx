@@ -3,8 +3,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { DeviceDraft, LinkMessage } from './remote'
 
-const { invoke, qrText, scanner, stream } = vi.hoisted(() => ({
+const { invoke, qrText, scanner, stream, viewer } = vi.hoisted(() => ({
   invoke: vi.fn(),
+  /** The URL the model viewer loaded, each time it loaded one. */
+  viewer: { loads: [] as string[] },
   qrText: { value: null as string | Error | null },
   scanner: { checkPermissions: vi.fn(), requestPermissions: vi.fn(), scan: vi.fn(), cancel: vi.fn() },
   stream: { heard: null as ((message: LinkMessage) => void) | null },
@@ -18,6 +20,16 @@ vi.mock('@tauri-apps/api/core', () => ({
     }
   },
 }))
+// jsdom has no WebGL. The viewer loads its model each time its URL changes, so this one records those URLs.
+vi.mock('../studio/ModelView', async () => {
+  const { useEffect } = await import('react')
+  return {
+    default: function ModelView({ url }: { url: string }) {
+      useEffect(() => void viewer.loads.push(url), [url])
+      return <div data-testid="model-view" />
+    },
+  }
+})
 vi.mock('@tauri-apps/plugin-barcode-scanner', () => ({ Format: { QRCode: 'QR_CODE' }, ...scanner }))
 // jsdom draws no pictures, so the picture's QR text is set by each test.
 vi.mock('./qr', () => ({
@@ -1036,4 +1048,35 @@ describe('a draft and the link to the computer', () => {
     expect(fileReads()).toBe(2)
   })
 
+  it('loads the shown model again when a turn rebuilt it in place, and not when it is unchanged', async () => {
+    viewer.loads = []
+    computerSide.chat = { ...view, entries: [{ id: 1, kind: 'user', text: 'Draw it' }], running: true, seq: 4 }
+    computerSide.files = [
+      { rel: 'clip.stl', size: 1000, modifiedMs: 1 },
+      { rel: 'base.stl', size: 1000, modifiedMs: 1 },
+    ]
+    await openChat()
+    await linkIs({ kind: 'connected' })
+    fireEvent.click(await screen.findByRole('button', { name: 'base.stl' }))
+    await waitFor(() => expect(viewer.loads[viewer.loads.length - 1]).toBe(`${CHAT}/files/base.stl?v=1`))
+
+    const fileReads = () => computerSide.requests.filter((r) => r === 'GET /chats/desk-clip/files').length
+    const ended = async (id: number, seq: number) => {
+      const reads = fileReads()
+      await linkIs({ kind: 'event', event: { type: 'chat', ...view, entries: [{ id, kind: 'assistant', text: `Answer ${id}` }], running: false, seq } })
+      await waitFor(() => expect(fileReads()).toBe(reads + 1))
+      await act(() => new Promise((resolve) => setTimeout(resolve, 0)))
+    }
+    computerSide.files = [
+      { rel: 'clip.stl', size: 1000, modifiedMs: 1 },
+      { rel: 'base.stl', size: 1000, modifiedMs: 2 },
+    ]
+    await ended(2, 6)
+    expect(viewer.loads[viewer.loads.length - 1]).toBe(`${CHAT}/files/base.stl?v=2`)
+    expect(screen.getByRole('button', { name: 'base.stl', pressed: true })).toBeTruthy()
+
+    const loads = viewer.loads.length
+    await ended(3, 7)
+    expect(viewer.loads).toHaveLength(loads)
+  })
 })
