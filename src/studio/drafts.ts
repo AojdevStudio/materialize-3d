@@ -312,10 +312,18 @@ export function createDrafts(clock: Clock, onSent: (project: Project) => void) {
 
 /**
  * The window's drafts while it is open, with what the open screen's composer shows. It starts the window's store, and
- * `onStarted` hears the saved state once the drafts took it. A quit waits for `pending`, the other saves still on
- * their way, before and after it saves the drafts, and is called off when `pending` fails. The callbacks are taken once.
+ * `onStarted` hears the saved state once the drafts took it. `quit` runs a quit, with the save of the drafts to run
+ * in it, and calls it off by failing. The callbacks are taken once.
  */
-export function useDrafts({ onSent, onStarted, pending }: { onSent: (project: Project) => void; onStarted: (saved: AppState) => void; pending: () => Promise<unknown> }) {
+export function useDrafts({
+  onSent,
+  onStarted,
+  quit,
+}: {
+  onSent: (project: Project) => void
+  onStarted: (saved: AppState) => void
+  quit: (saveDrafts: () => Promise<void>) => Promise<void>
+}) {
   const [drafts] = useState(() => createDrafts(windowClock, onSent))
   useEffect(() => {
     void start()
@@ -326,15 +334,7 @@ export function useDrafts({ onSent, onStarted, pending }: { onSent: (project: Pr
       .catch((err: unknown) => setError(String(err)))
   }, [drafts])
   useEffect(() => drafts.close, [drafts])
-  useEffect(
-    () =>
-      onQuitFlush(async () => {
-        await pending()
-        await drafts.quit()
-        await pending()
-      }).stop,
-    [drafts],
-  )
+  useEffect(() => onQuitFlush(() => quit(drafts.quit)).stop, [drafts])
   // Files dropped anywhere on the window join the next message, as Attach adds them.
   useEffect(() => onFileDrop(drafts.attach).stop, [drafts])
   return { drafts, ...useStore(drafts.state) }

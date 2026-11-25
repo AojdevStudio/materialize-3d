@@ -1268,6 +1268,48 @@ describe('StudioApp', () => {
       await waitFor(() => expect(flushed()).toBe(true))
     })
 
+    it('saves text typed while a quit waits for a role save that joined while it saved the drafts', async () => {
+      const draft = held()
+      const answers: (() => void)[] = []
+      mockSidecar({ 'drafts.set': draft.call, 'projects.setHelper': (_, real) => new Promise((resolve) => answers.push(() => resolve(real()))) }, [projectA, projectB])
+      render(<StudioApp />)
+      await openA()
+      type('a hook')
+      await act(async () => listeners.flush.forEach((listener) => listener({ payload: null })))
+      await waitFor(() => expect(saves(projectA.id).length).toBeGreaterThan(0))
+      pickHelper('Sonnet 5.5')
+      await draft.release()
+      await waitFor(() => expect(answers).toHaveLength(1))
+      type('a hook and a lid')
+      await act(async () => answers[0]())
+      await pause(50)
+      // The text typed while the quit waited is saved before the window says it may close.
+      const order = invokeMock.mock.calls.flatMap(([command, args]) =>
+        command === 'studio_flushed' ? ['flushed'] : command === 'sidecar' && args.method === 'drafts.set' && args.params.text === 'a hook and a lid' ? ['saved'] : [],
+      )
+      expect(order).toEqual(['saved'])
+      await draft.release()
+      await waitFor(() => expect(invokeMock.mock.calls.some(([command]) => command === 'studio_flushed')).toBe(true))
+    })
+
+    it('calls a quit off when a role pick fails to save while the quit saves the drafts', async () => {
+      const draft = held()
+      let failPick: () => void = () => {}
+      mockSidecar({ 'drafts.set': draft.call, 'projects.setHelper': () => new Promise((_, reject) => (failPick = () => reject(new Error(LOST)))) }, [projectA, projectB])
+      render(<StudioApp />)
+      await openA()
+      type('a hook')
+      await act(async () => listeners.flush.forEach((listener) => listener({ payload: null })))
+      await waitFor(() => expect(saves(projectA.id).length).toBeGreaterThan(0))
+      pickHelper('Sonnet 5.5')
+      await waitFor(() => expect(sidecarCalls('projects.setHelper')).toHaveLength(1))
+      await act(async () => failPick())
+      await draft.release()
+      const said = (command: string) => invokeMock.mock.calls.some(([name]) => name === command)
+      await waitFor(() => expect(said('studio_flush_failed')).toBe(true))
+      expect(said('studio_flushed')).toBe(false)
+    })
+
     it('calls a quit off when a role pick it waits for fails to save', async () => {
       let failPick: () => void = () => {}
       mockSidecar({ 'projects.setHelper': () => new Promise((_, reject) => (failPick = () => reject(new Error(LOST)))) }, [projectA, projectB])

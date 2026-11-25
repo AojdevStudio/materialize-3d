@@ -82,20 +82,24 @@ export default function StudioApp() {
    */
   const saves = useRef<Promise<unknown>>(Promise.resolve())
   const failedSaves = useRef(0)
-  /** Waits for every role save, those that join while it waits too, and fails when one failed, which calls a quit off. */
-  const settled = async () => {
+  /**
+   * A quit: the role saves, then the drafts, again until a round in which no role save joined, so neither a pick nor
+   * text made while it waited is left behind. A role save that failed since the quit began calls it off.
+   */
+  const quit = async (saveDrafts: () => Promise<void>) => {
+    const failed = failedSaves.current
     for (let waited: unknown; waited !== saves.current; ) {
       waited = saves.current
-      const failed = failedSaves.current
       await waited
       if (failedSaves.current !== failed) throw new Error('a role pick could not be saved')
+      await saveDrafts()
     }
   }
 
   const { drafts, shown, attachments, sending, sendErrors } = useDrafts({
     onSent: (project) => setProjects((prev) => (prev.some((p) => p.id === project.id) ? prev : [project, ...prev])),
     onStarted: takeProjects,
-    pending: settled,
+    quit,
   })
 
   const retryImport = () => {
