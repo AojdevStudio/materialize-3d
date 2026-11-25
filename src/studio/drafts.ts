@@ -312,8 +312,8 @@ export function createDrafts(clock: Clock, onSent: (project: Project) => void) {
 
 /**
  * The window's drafts while it is open, with what the open screen's composer shows. It starts the window's store, and
- * `onStarted` hears the saved state once the drafts took it. A quit saves the drafts once `pending`, the other saves
- * still on their way, went through, again until no new save joined while it waited. The callbacks are taken once.
+ * `onStarted` hears the saved state once the drafts took it. A quit waits for `pending`, the other saves still on
+ * their way, before and after it saves the drafts, and is called off when `pending` fails. The callbacks are taken once.
  */
 export function useDrafts({ onSent, onStarted, pending }: { onSent: (project: Project) => void; onStarted: (saved: AppState) => void; pending: () => Promise<unknown> }) {
   const [drafts] = useState(() => createDrafts(windowClock, onSent))
@@ -329,11 +329,9 @@ export function useDrafts({ onSent, onStarted, pending }: { onSent: (project: Pr
   useEffect(
     () =>
       onQuitFlush(async () => {
-        for (let saved: unknown; saved !== pending(); ) {
-          saved = pending()
-          await saved
-          await drafts.quit()
-        }
+        await pending()
+        await drafts.quit()
+        await pending()
       }).stop,
     [drafts],
   )

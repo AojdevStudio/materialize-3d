@@ -1023,6 +1023,20 @@ describe('StudioApp', () => {
     await waitFor(() => expect((screen.getByTestId('send') as HTMLButtonElement).disabled).toBe(false))
   })
 
+  it('reads the model list again after a pause when it failed, so Send on the start screen comes back', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    let reads = 0
+    mockSidecar({ 'models.list': (_, real) => (++reads === 1 ? Promise.reject(new Error(LOST)) : real()) })
+    render(<StudioApp />)
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain(LOST))
+    type('A clip')
+    expect((screen.getByTestId('send') as HTMLButtonElement).disabled).toBe(true)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3000)
+    })
+    await waitFor(() => expect((screen.getByTestId('send') as HTMLButtonElement).disabled).toBe(false))
+  })
+
   // A start screen send carries the helper it shows, picked or the default, so the sidecar picks none for it: a change
   // of the Astra setting after Send cannot change the turn.
   it.each([
@@ -1230,6 +1244,42 @@ describe('StudioApp', () => {
       await sendShown('A lid')
       await waitFor(() => expect(sends()).toHaveLength(2))
       expect(sends()[1]).toMatchObject({ key: made.id, pair: { lead: opus, helper: sonnet } })
+    })
+
+    it('quits only once the picks made while a draft save held it are saved too', async () => {
+      const save = held()
+      const answers: (() => void)[] = []
+      mockSidecar({ 'drafts.set': save.call, 'projects.setHelper': (_, real) => new Promise((resolve) => answers.push(() => resolve(real()))) }, [projectA, projectB])
+      render(<StudioApp />)
+      await openA()
+      type('a hook')
+      await act(async () => listeners.flush.forEach((listener) => listener({ payload: null })))
+      await waitFor(() => expect(saves(projectA.id).length).toBeGreaterThan(0))
+      pickHelper('Sonnet 5.5')
+      pickHelper('No helper')
+      await save.release()
+      await waitFor(() => expect(answers).toHaveLength(1))
+      await act(async () => answers[0]())
+      await waitFor(() => expect(answers).toHaveLength(2))
+      await pause(50)
+      const flushed = () => invokeMock.mock.calls.some(([command]) => command === 'studio_flushed')
+      expect(flushed()).toBe(false)
+      await act(async () => answers[1]())
+      await waitFor(() => expect(flushed()).toBe(true))
+    })
+
+    it('calls a quit off when a role pick it waits for fails to save', async () => {
+      let failPick: () => void = () => {}
+      mockSidecar({ 'projects.setHelper': () => new Promise((_, reject) => (failPick = () => reject(new Error(LOST)))) }, [projectA, projectB])
+      render(<StudioApp />)
+      await openA()
+      pickHelper('Sonnet 5.5')
+      await waitFor(() => expect(sidecarCalls('projects.setHelper')).toHaveLength(1))
+      await act(async () => listeners.flush.forEach((listener) => listener({ payload: null })))
+      await act(async () => failPick())
+      const said = (command: string) => invokeMock.mock.calls.some(([name]) => name === command)
+      await waitFor(() => expect(said('studio_flush_failed')).toBe(true))
+      expect(said('studio_flushed')).toBe(false)
     })
 
     it('leaves a message already on its way alone when a role is picked after Send', async () => {

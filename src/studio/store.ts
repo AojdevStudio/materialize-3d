@@ -214,12 +214,19 @@ export function checkReady() {
     .catch((err: unknown) => check === checks && setError(String(err)))
 }
 
-/** Reads the models the person can pick, which change with each sign-in. */
+/**
+ * Reads the models the person can pick, which change with each sign-in. A read that fails is tried again after a
+ * pause, as the start screen keeps Send off until the list comes.
+ */
 export function loadModels() {
   const read = ++modelReads
   void sidecar('models.list', {})
     .then((models) => read === modelReads && set({ models }))
-    .catch((err: unknown) => read === modelReads && setError(String(err)))
+    .catch((err: unknown) => {
+      if (read !== modelReads) return
+      setError(String(err))
+      window.setTimeout(() => read === modelReads && loadModels(), STATE_RETRY_MS)
+    })
 }
 
 function findSlicer() {

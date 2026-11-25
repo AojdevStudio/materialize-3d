@@ -78,14 +78,24 @@ export default function StudioApp() {
 
   /**
    * The saves of the role picks, one after another in the order they were made, so two picks of one role land in that
-   * order. A quit waits for them.
+   * order, and how many failed.
    */
   const saves = useRef<Promise<unknown>>(Promise.resolve())
+  const failedSaves = useRef(0)
+  /** Waits for every role save, those that join while it waits too, and fails when one failed, which calls a quit off. */
+  const settled = async () => {
+    for (let waited: unknown; waited !== saves.current; ) {
+      waited = saves.current
+      const failed = failedSaves.current
+      await waited
+      if (failedSaves.current !== failed) throw new Error('a role pick could not be saved')
+    }
+  }
 
   const { drafts, shown, attachments, sending, sendErrors } = useDrafts({
     onSent: (project) => setProjects((prev) => (prev.some((p) => p.id === project.id) ? prev : [project, ...prev])),
     onStarted: takeProjects,
-    pending: () => saves.current,
+    pending: settled,
   })
 
   const retryImport = () => {
@@ -143,6 +153,7 @@ export default function StudioApp() {
     const drop = () => setPicks((all) => (all[key]?.[role]?.seq === seq ? { ...all, [key]: { ...all[key], [role]: undefined } } : all))
     setPicks((all) => ({ ...all, [key]: { ...all[key], [role]: { model, seq } } }))
     saves.current = saves.current.then(save).then(drop, (err: unknown) => {
+      failedSaves.current += 1
       setError(String(err))
       drop()
     })
