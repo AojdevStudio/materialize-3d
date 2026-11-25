@@ -89,8 +89,10 @@ describe('ChatScreen', () => {
     await screen.findAllByTestId('handoff')
     const end = () => screen.getByTestId('messages').lastElementChild
 
-    // Nothing comes while the Model tab shows: the way back leaves the transcript where the reader left it.
+    // Nothing new comes while the Model tab shows, only a reread of the same chat, as after a reconnect: the way back
+    // leaves the transcript where the reader left it.
     fireEvent.click(screen.getByRole('tab', { name: 'Model' }))
+    act(() => heard.forEach((hear) => hear({ ...saved, seq: 5 })))
     scrolled.length = 0
     fireEvent.click(screen.getByRole('tab', { name: 'Chat' }))
     expect(scrolled).not.toContain(end())
@@ -98,7 +100,7 @@ describe('ChatScreen', () => {
     // A reply comes while the Model tab shows: the way back brings it into view.
     fireEvent.click(screen.getByRole('tab', { name: 'Model' }))
     const reply = { id: 20, kind: 'assistant' as const, text: 'Here it is.', calls: [], model: SOL }
-    act(() => heard.forEach((hear) => hear({ ...saved, entries: [...saved.entries, reply], seq: 2 })))
+    act(() => heard.forEach((hear) => hear({ ...saved, entries: [...saved.entries, reply], seq: 6 })))
     scrolled.length = 0
     fireEvent.click(screen.getByRole('tab', { name: 'Chat' }))
     expect(scrolled).toContain(end())

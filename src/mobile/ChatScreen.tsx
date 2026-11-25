@@ -94,7 +94,6 @@ export default function ChatScreen({
   // The chat keeps itself at its newest line, but cannot while the Model tab hides it. So on the way back, the newest
   // line comes into view only if the chat changed meanwhile, and a reader who changed nothing keeps their place.
   const chatPane = useRef<HTMLDivElement>(null)
-  const shownState = view === null ? '' : `${view.seq}:${view.entries.length}:${view.entries[view.entries.length - 1]?.id}:${view.running}`
   const leftChatAt = useRef('')
   const [catchUp, setCatchUp] = useState(false)
   // A role menu opens 4 px above the composer, which `studio.css` positions it from. The room it has there is measured,
@@ -195,6 +194,13 @@ export default function ChatScreen({
   }, [chat.id, link, sends, tries, ended])
 
   const items = useMemo(() => buildChat(view?.entries ?? [], view === null || running, view?.handoffs ?? []), [view, running])
+  // What the chat shows, in the measure the chat follows its newest line by: its items, their lines (a trace's steps,
+  // a handoff's progress), and whether the turn runs. A reread that shows the same is no change.
+  const shownLines = items.reduce(
+    (count, item) => count + (item.kind === 'trace' ? item.lines.length : item.kind === 'handoff' ? 1 + (item.progress?.steps ?? 0) : 1),
+    0,
+  )
+  const shownState = `${items.length}:${shownLines}:${running}`
   const newest = [...items].reverse().find((item): item is HandoffItem => item.kind === 'handoff')
   const file = files.find((f) => f.rel === chosenFile) ?? files.find(fits) ?? files[0]
   const editable = outbox.kind === 'draft'
