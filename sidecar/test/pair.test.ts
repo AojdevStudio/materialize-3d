@@ -94,6 +94,11 @@ describe('a new chat', () => {
     }
     expect(await projectIn(app, await startWith('a clip', FAUX_B))).toMatchObject({ model: OPUS, helper: FAUX_B })
     expect(await projectIn(app, await startWith('a knob', null))).toMatchObject({ model: OPUS, helper: null })
+    // The window shows Astra and sends it, then the Astra setting goes off before the send arrives: the turn keeps Astra.
+    await app.call('settings.set', { astra: false })
+    const lid = await startWith('a lid', ASTRA)
+    expect(await projectIn(app, lid)).toMatchObject({ model: OPUS, helper: ASTRA })
+    expect((await view(app, lid)).turn).toMatchObject({ model: OPUS, helper: ASTRA })
     await expect(startWith('a hook', { provider: 'faux', modelId: 'faux-z' })).rejects.toThrow('faux has no model faux-z')
     await app.quit()
   })

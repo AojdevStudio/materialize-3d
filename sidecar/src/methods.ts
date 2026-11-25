@@ -134,7 +134,7 @@ export function handlers(services: Services) {
     },
     'chat.open': { params: compile(obj({ project: str() })), run: ({ project }) => chats.open(project) },
     'chat.send': {
-      params: compile(obj({ key: str({ minLength: 1 }), rev: int(), pair: opt(obj({ lead: model, helper: opt(nullable(model)) })) })),
+      params: compile(obj({ key: str({ minLength: 1 }), rev: int(), pair: opt(obj({ lead: model, helper: nullable(model) })) })),
       run: async ({ key, rev, pair }) => {
         for (const role of pair === undefined ? [] : [pair.lead, pair.helper]) {
           if (role !== undefined && role !== null && services.models.getModel(role.provider, role.modelId) === undefined) throw new Error(`${role.provider} has no model ${role.modelId}`)

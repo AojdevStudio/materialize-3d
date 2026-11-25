@@ -13,10 +13,10 @@ export type ModelChoice = { provider: string; modelId: string }
 export type Role = 'lead' | 'helper'
 
 /**
- * The roles a send carries: the lead and helper the window showed when Send was pressed, which its turn freezes.
- * `helper` left out, from the start screen only, means the helper a new chat gets by default.
+ * The roles a send carries: the lead and helper the window showed when Send was pressed, which its turn freezes. A
+ * window's send always carries both, so the sidecar picks no default for it.
  */
-export type SentPair = { lead: ModelChoice; helper?: ModelChoice | null }
+export type SentPair = { lead: ModelChoice; helper: ModelChoice | null }
 
 /**
  * A model version a provider reported removed while a chat ran it, the role it held there, and the newest version of its

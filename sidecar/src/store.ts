@@ -393,7 +393,7 @@ export class Store {
     const saved = await this.#projectIn(tx, project)
     // The pair the window showed at Send, or the saved one for a send that names none, as a phone's.
     const model = pair?.lead ?? saved.model
-    const helper = pair?.helper === undefined ? saved.helper : pair.helper
+    const helper = pair === undefined ? saved.helper : pair.helper
     // A start screen send, first or retried, is how its project's roles were chosen, so the project keeps them, and a
     // changed role lets go the retirement it held. A send in a chat leaves the saved roles to the pickers, so a pick
     // saved while this send was on its way stays.
