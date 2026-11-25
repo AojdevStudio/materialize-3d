@@ -661,14 +661,15 @@ describe('MobileApp', () => {
       await linkIs({ kind: 'offline', detail: 'The computer did not answer.' })
       expect(send().disabled).toBe(true)
 
-      // Every state Send passes through on the way back, as the screen draws it.
-      const seen: boolean[] = []
-      const watch = new MutationObserver(() => seen.push(send().disabled))
+      // Every change the screen makes to Send on the way back: one only, when the list read lets it go.
+      const changes: MutationRecord[] = []
+      const watch = new MutationObserver((records) => changes.push(...records))
       watch.observe(send(), { attributes: true, attributeFilter: ['disabled'] })
       await linkIs({ kind: 'connected' })
       await waitFor(() => expect(send().disabled).toBe(false))
+      changes.push(...watch.takeRecords())
       watch.disconnect()
-      expect(seen).toEqual([false])
+      expect(changes).toHaveLength(1)
     })
 
     it('turns Send off within the event itself, so a tap queued right behind it sends nothing', async () => {

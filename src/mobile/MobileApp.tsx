@@ -232,10 +232,14 @@ function Paired({ computer, onForget }: { computer: Computer; onForget: () => Pr
     watchLink((message) => {
       // The link stays current while Forget waits, so a Forget that fails leaves it right.
       if (message.kind === 'connected') {
-        // Pairs changed elsewhere while the link was down were not heard, so Send waits for the list read it brings.
-        // The hold lands in the same render as the link, so Send is never on in between.
-        if (!connected.current) hold(true)
-        connected.current = true
+        // Pairs changed elsewhere while the link was down were not heard, so Send waits for a list read started now.
+        // The hold lands in the same render as the link, so Send is never on in between, and the new read drops any
+        // read begun before the link came back, so an older answer cannot let Send go.
+        if (!connected.current) {
+          hold(true)
+          connected.current = true
+          refresh()
+        }
         return setLink('connected')
       }
       if (message.kind === 'offline') {
