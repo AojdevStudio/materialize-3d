@@ -216,16 +216,16 @@ function holdReads(gate: string) {
     const store = await open(options)
     const { harness } = store
     const snapshot = harness.snapshot.bind(harness)
-    let beside = false
+    // A chat read asks for its live, waiting, and turn state in one go, so the two reads right after a live state read
+    // are that read's own, and only those two pass the gate.
+    let beside = 0
     const counts = new Map<string, number>()
     harness.snapshot = (async (...args: Parameters<typeof snapshot>) => {
       const [doc] = args
-      if (doc.definition.kind === LiveDoc.definition.kind) {
-        beside = true
-        queueMicrotask(() => (beside = false))
-      }
       const name = new Map([['m3d.turn', 'turn'], ['m3d.waiting', 'waiting']]).get(doc.definition.kind)
-      if (name !== undefined && !beside && existsSync(join(gate, `hold-${name}`))) {
+      if (doc.definition.kind === LiveDoc.definition.kind) beside = 2
+      else if (name !== undefined && beside > 0) beside -= 1
+      else if (name !== undefined && existsSync(join(gate, `hold-${name}`))) {
         const n = (counts.get(name) ?? 0) + 1
         counts.set(name, n)
         writeFileSync(join(gate, `held-${name}-${n}`), '')

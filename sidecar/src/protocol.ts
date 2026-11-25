@@ -324,10 +324,13 @@ export interface Methods {
   'chat.retry': { params: { project: string }; result: null }
   /** The newest version of each model family, for the providers the person signed in to. Both roles offer this list. */
   'models.list': { params: Record<string, never>; result: ModelOption[] }
-  /** Saves the lead model a project's next turn runs on. A model the app cannot run, or a retired one, is refused. */
-  'projects.setLead': { params: { project: string; model: ModelChoice }; result: null }
-  /** Saves the helper model a project's next turn can hand tasks to, or null for the lead alone. Refused as `setLead`. */
-  'projects.setHelper': { params: { project: string; model: ModelChoice | null }; result: null }
+  /**
+   * Saves the lead model a project's next turn runs on, and answers the project as saved, with its roles' revision. A
+   * model the app cannot run, or a retired one, is refused.
+   */
+  'projects.setLead': { params: { project: string; model: ModelChoice }; result: Project }
+  /** Saves the helper model a project's next turn can hand tasks to, or null for the lead alone. Answers and refuses as `setLead`. */
+  'projects.setHelper': { params: { project: string; model: ModelChoice | null }; result: Project }
   /** Each project's status for the sidebar, by project id. */
   'projects.status': { params: Record<string, never>; result: Record<string, ProjectStatus> }
   /** Marks a project printed, which moves it to the sidebar's Printed group. */

@@ -160,15 +160,13 @@ export function handlers(services: Services) {
     'projects.setLead': {
       params: compile(obj({ project: str(), model })),
       run: async ({ project, model }) => {
-        await saveRoles(services, project, { lead: model })
-        return null
+        return saveRoles(services, project, { lead: model })
       },
     },
     'projects.setHelper': {
       params: compile(obj({ project: str(), model: nullable(model) })),
       run: async ({ project, model }) => {
-        await saveRoles(services, project, { helper: model })
-        return null
+        return saveRoles(services, project, { helper: model })
       },
     },
     'projects.status': { params: compile(obj({})), run: () => chats.status() },
