@@ -30,25 +30,9 @@ import { UpdateBanner } from '../update/UpdateBanner'
 import { checkForUpdatesAtLaunch, useUpdateEvents } from '../update/store'
 import './studio.css'
 
-/**
- * A role picked here, shown until the sidecar's word on it overtakes it. `seen` is set once a project event showed this
- * pick saved, so a later event that differs, as from a paired phone, is newer and takes its place.
- */
-type ShownPick = { model: ModelChoice | null; seen: boolean }
+/** A role picked here, with its place in the order of picks, shown until its own save went through. */
+type ShownPick = { model: ModelChoice | null; seq: number }
 type ShownPicks = { lead?: ShownPick & { model: ModelChoice }; helper?: ShownPick }
-
-const sameRole = (a: ModelChoice | null, b: ModelChoice | null) => a === b || (a !== null && b !== null && a.provider === b.provider && a.modelId === b.modelId)
-
-/** A pick as a project event leaves it: marked seen when the event saved it, gone when a newer save replaced it. */
-function afterEvent<P extends ShownPick>(pick: P | undefined, saved: ModelChoice | null): P | undefined {
-  if (pick === undefined) return undefined
-  if (sameRole(pick.model, saved)) {
-    pick.seen = true
-    return pick
-  }
-  // An event that differs before this pick was seen is older than its save, so the pick still stands.
-  return pick.seen ? undefined : pick
-}
 
 export default function StudioApp() {
   const [projects, setProjects] = useState<Project[]>([])
@@ -77,8 +61,6 @@ export default function StudioApp() {
       onSidecarEvent((event) => {
         if (event.type !== 'project') return
         setProjects((all) => all.map((p) => (p.id === event.project.id ? event.project : p)))
-        const project = event.project
-        setPicks((all) => ({ ...all, [project.id]: { lead: afterEvent(all[project.id]?.lead, project.model), helper: afterEvent(all[project.id]?.helper, project.helper) } }))
         checkReady()
       }).stop,
     [],
@@ -111,8 +93,9 @@ export default function StudioApp() {
   }
 
   /**
-   * Picks shown before the sidecar answers, by project id, or `START` for the start screen's lead. A pick shows at once
-   * and its save runs in the background. It gives way to a newer save of the project, and at once when its save fails.
+   * Picks shown before their saves went through, by project id, or `START` for the start screen's lead. A pick shows at
+   * once, while project events only update the saved roles under it, so an older save never decides what shows. Once
+   * the save of the newest pick of a role went through, or failed, the saved role shows again.
    */
   const [picks, setPicks] = useState<Record<string, ShownPicks>>({})
   const picked = picks[current?.id ?? START]
@@ -145,21 +128,17 @@ export default function StudioApp() {
    * shown when Send was pressed (#373).
    */
   const saves = useRef<Promise<unknown>>(Promise.resolve())
+  const pickCount = useRef(0)
   const pickRole = (key: string, role: keyof ShownPicks, model: ModelChoice | null, save: () => Promise<unknown>) => {
-    const shown: ShownPick = { model, seen: false }
-    // Only this pick goes: a newer pick of the role keeps showing while its own save runs.
-    const drop = () => setPicks((all) => (all[key]?.[role] === shown ? { ...all, [key]: { ...all[key], [role]: undefined } } : all))
-    setPicks((all) => ({ ...all, [key]: { ...all[key], [role]: shown } }))
-    saves.current = saves.current.then(save).then(
-      () => {
-        // The start screen's lead has no project event to wait for: its saved setting is already read.
-        if (key === START) drop()
-      },
-      (err: unknown) => {
-        setError(String(err))
-        drop()
-      },
-    )
+    pickCount.current += 1
+    const seq = pickCount.current
+    // Only this pick goes, and only while no newer pick of the role took its place.
+    const drop = () => setPicks((all) => (all[key]?.[role]?.seq === seq ? { ...all, [key]: { ...all[key], [role]: undefined } } : all))
+    setPicks((all) => ({ ...all, [key]: { ...all[key], [role]: { model, seq } } }))
+    saves.current = saves.current.then(save).then(drop, (err: unknown) => {
+      setError(String(err))
+      drop()
+    })
   }
 
   /**
@@ -202,7 +181,8 @@ export default function StudioApp() {
         if (current) void drafts.send({ lead: chosenModel, helper: chosenHelper })
         else
           void drafts.send({ lead: chosenModel, ...(startHelper === null ? {} : { helper: startHelper.pick }) }).then((project) => {
-            if (project !== undefined) setStartHelper(null)
+            // A helper picked while this send was on its way is the next chat's, so only the choice it carried resets.
+            if (project !== undefined) setStartHelper((now) => (now === startHelper ? null : now))
           })
       }}
       onError={setError}

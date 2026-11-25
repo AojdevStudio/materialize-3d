@@ -1122,6 +1122,43 @@ describe('StudioApp', () => {
       expect(screen.getByTestId('helper-picker').textContent).toBe('None')
     })
 
+    it('sends the newest pick when an older save of the same value lands before it (No helper, Sonnet, No helper)', async () => {
+      const answers: (() => void)[] = []
+      mockSidecar({ 'projects.setHelper': (_, real) => new Promise((resolve) => answers.push(() => resolve(real()))) }, [{ ...projectA, helper: sonnet }, projectB])
+      render(<StudioApp />)
+      await openA()
+      pickHelper('No helper')
+      pickHelper('Sonnet 5.5')
+      pickHelper('No helper')
+      await waitFor(() => expect(answers).toHaveLength(1))
+      await act(async () => answers[0]())
+      await waitFor(() => expect(answers).toHaveLength(2))
+      await act(async () => answers[1]())
+      // The last save is still on its way: the newest pick still shows, and Send carries it.
+      expect(screen.getByTestId('helper-picker').textContent).toBe('None')
+      await sendShown('A clip')
+      await waitFor(() => expect(sends()).toHaveLength(1))
+      expect(sends()[0]).toMatchObject({ pair: { helper: null } })
+    })
+
+    it('keeps a start screen helper picked while the first send was on its way for the next chat', async () => {
+      let answerSend: () => void = () => {}
+      mockSidecar({ 'chat.send': (_, real) => new Promise((resolve) => (answerSend = () => resolve(real()))) })
+      render(<StudioApp />)
+      const helper = () => screen.getByTestId('helper-picker')
+      await waitFor(() => expect(helper().textContent).toBe('None'))
+      pickHelper('No helper')
+      type('A clip')
+      await waitFor(() => expect((screen.getByTestId('send') as HTMLButtonElement).disabled).toBe(false))
+      fireEvent.click(screen.getByTestId('send'))
+      await waitFor(() => expect(sends()).toHaveLength(1))
+      pickHelper('Sonnet 5.5')
+      await act(async () => answerSend())
+      await waitFor(() => expect(openTitle()).toBe('A clip'))
+      fireEvent.click(screen.getByTestId('new-project'))
+      expect(helper().textContent).toBe('Sonnet 5.5')
+    })
+
     it('leaves a message already on its way alone when a role is picked after Send', async () => {
       mockSidecar({ 'chat.send': () => new Promise(() => {}) }, [projectA, projectB])
       render(<StudioApp />)
@@ -1557,7 +1594,7 @@ describe('StudioApp', () => {
     await waitFor(() => expect(helper().textContent).toBe('Sonnet 5.5'))
     // The phone clears the helper, and only then does the desktop hear the reply to its own pick.
     emit({ type: 'project', project: { ...projectA, helper: null } })
-    expect(helper().textContent).toBe('None')
+    // The desktop's own pick shows until its save answers. Then the saved helper shows, which the phone changed.
     await act(async () => answerPick())
     expect(helper().textContent).toBe('None')
   })
