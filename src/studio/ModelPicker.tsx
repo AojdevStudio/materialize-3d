@@ -7,11 +7,12 @@ import { useDismiss } from './useDismiss'
 
 /**
  * The lead's picker offers a model only. Its `chosen` is null until the saved state is read. The helper's picker also
- * offers "No helper" on top, and its null `chosen` is that choice.
+ * offers "No helper" on top, and its null `chosen` is that choice. Its `default` is a default not known yet, as on the
+ * start screen before the model list comes, and "No helper" can be picked then too.
  */
 type Role =
   | { role: 'Lead'; chosen: ModelChoice | null; onPick: (model: ModelChoice) => void }
-  | { role: 'Helper'; chosen: ModelChoice | null; onPick: (model: ModelChoice | null) => void }
+  | { role: 'Helper'; chosen: ModelChoice | null | 'default'; onPick: (model: ModelChoice | null) => void }
 
 type Props = Role & { models: ModelOption[] }
 
@@ -27,7 +28,7 @@ export default function ModelPicker(props: Props) {
   const [open, setOpen] = useState(false)
   const box = useRef<HTMLDivElement>(null)
   const helper = props.role === 'Helper'
-  const isChosen = (model: ModelChoice) => chosen !== null && sameModel(model, chosen)
+  const isChosen = (model: ModelChoice) => chosen !== null && chosen !== 'default' && sameModel(model, chosen)
   // The chosen model picks again too: that is how a chat chooses again a model it found retired.
   const pick = (model: ModelChoice | null) => {
     setOpen(false)
@@ -36,7 +37,7 @@ export default function ModelPicker(props: Props) {
   }
 
   useDismiss(open, box, () => setOpen(false))
-  const shownName = chosen === null ? (helper ? 'None' : 'Model') : modelName(chosen)
+  const shownName = chosen === 'default' ? 'Default' : chosen === null ? (helper ? 'None' : 'Model') : modelName(chosen)
 
   return (
     <div className={`model-picker${helper ? ' helper-picker' : ''}`} ref={box}>
@@ -70,13 +71,13 @@ export default function ModelPicker(props: Props) {
         className={`model-button${chosen === null && helper ? ' model-none' : ''}`}
         aria-haspopup="menu"
         aria-expanded={open}
-        disabled={(chosen === null && !helper) || models.length === 0}
+        disabled={!helper && (chosen === null || models.length === 0)}
         onClick={() => setOpen(!open)}
         data-testid={helper ? 'helper-picker' : 'model-picker'}
         // The role comes first in the name, so two pickers on the same model still read apart.
         aria-label={`${role}: ${shownName}`}
       >
-        {chosen !== null && <Mark modelId={chosen.modelId} />}
+        {chosen !== null && chosen !== 'default' && <Mark modelId={chosen.modelId} />}
         <span>{shownName}</span>
         <svg viewBox="0 0 16 16" width={12} height={12} aria-hidden="true">
           <path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />

@@ -152,7 +152,8 @@ export default function StudioApp() {
   const [startHelper, setStartHelper] = useState<{ pick: ModelChoice | null } | null>(null)
   const helperFamily = CATALOG.families[CATALOG.helper]
   const astra = models.find((m) => m.provider === helperFamily?.provider && helperFamily.versions.some((v) => v.modelId === m.modelId))
-  const defaultHelper = savedSettings?.astra === true && astra !== undefined ? { provider: astra.provider, modelId: astra.modelId } : null
+  // With the Astra setting on, the default is Astra while the person is signed in to it, which only the model list says.
+  const defaultHelper = savedSettings?.astra !== true ? null : models.length === 0 ? 'default' : astra === undefined ? null : { provider: astra.provider, modelId: astra.modelId }
   const chosenHelper =
     picked?.helper !== undefined ? picked.helper.model : current ? (projects.find((p) => p.id === current.id)?.helper ?? null) : startHelper === null ? defaultHelper : startHelper.pick
 

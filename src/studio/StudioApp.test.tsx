@@ -1016,6 +1016,25 @@ describe('StudioApp', () => {
     expect(helper().textContent).toBe('Astra')
   })
 
+  it('shows the start helper as the default until the model list says which, and lets No helper be picked before it', async () => {
+    mockSidecar({
+      'state.get': (_, real) => real().then((state) => ({ ...(state as AppState), settings: { ...(state as AppState).settings, astra: true } })),
+      'models.list': () => new Promise(() => {}),
+    })
+    render(<StudioApp />)
+    const helper = () => screen.getByTestId('helper-picker') as HTMLButtonElement
+    await waitFor(() => expect(helper().textContent).toBe('Default'))
+    expect(helper().disabled).toBe(false)
+    fireEvent.click(helper())
+    fireEvent.click(within(screen.getByRole('menu', { name: 'Helper models' })).getByText('No helper'))
+    expect(helper().textContent).toBe('None')
+    type('A clip')
+    await waitFor(() => expect((screen.getByTestId('send') as HTMLButtonElement).disabled).toBe(false))
+    fireEvent.click(screen.getByTestId('send'))
+    await waitFor(() => expect(sends()).toHaveLength(1))
+    expect(sends()).toEqual([{ key: 'new', rev: draftRevs, pair: { helper: null } }])
+  })
+
   // A start screen send carries only a role picked there, and the sidecar takes each other role from what is saved when
   // it accepts the turn: the default lead and the Astra default, whatever the window showed.
   it.each([
