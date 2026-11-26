@@ -139,7 +139,7 @@ export function handlers(services: Services) {
         for (const role of pair === undefined ? [] : [pair.lead, pair.helper]) {
           if (role !== undefined && role !== null && services.models.getModel(role.provider, role.modelId) === undefined) throw new Error(`${role.provider} has no model ${role.modelId}`)
         }
-        return { project: await chats.send(key, rev, key, pair) }
+        return { project: await chats.send(key, rev, pair) }
       },
     },
     'chat.stop': {

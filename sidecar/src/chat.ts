@@ -49,7 +49,7 @@ import {
   type Waiting,
 } from './protocol'
 import { isLoginFailure, isRetired } from './inference'
-import { RoleRetired, sendName, type Store } from './store'
+import { deviceDraft, DraftChanged, RoleRetired, sendName, type Store } from './store'
 import { chatEntry } from './transcript'
 
 const context: Context = BACKGROUND_CONTEXT
@@ -194,7 +194,7 @@ const view = (project: string, entries: ChatEntry[], { running, waiting, turn, h
  * A send refused before it committed: the agent still works on the last message, or the role it would run with is
  * retired, as `message` says. Nothing is sent.
  */
-export class SendRefused extends Error {
+class SendRefused extends Error {
   constructor(
     message: string,
     readonly reason: 'working' | 'retired',
@@ -202,6 +202,13 @@ export class SendRefused extends Error {
     super(message)
   }
 }
+
+/**
+ * What a paired device's send came to: the project its message is in, or why the revision never goes out, with the words
+ * the device shows. `changed` is a draft saved again or settled since `rev`. `working` and `retired` also retire `rev`,
+ * so a later send of it is `changed`.
+ */
+type DeviceSend = { sent: Project } | { refused: 'changed' | 'working' | 'retired'; message: string }
 
 export class Chats {
   readonly #o: ChatsOptions
@@ -409,23 +416,47 @@ export class Chats {
   }
 
   /**
-   * The final word on a device's send of revision `rev` to `project`, after its answer was lost: true when the chat
-   * holds its message. Otherwise the revision is retired in the same commit, so a send of it still on its way is
+   * The final word on paired device `device`'s send of revision `rev` to `project`, after its answer was lost: true when
+   * the chat holds its message. Otherwise the revision is retired in the same commit, so a send of it still on its way is
    * refused and the answer stays false. Nothing deletes the pictures a refused send copied into the project: no request
    * can tell for sure that a copy is not someone's file. A sweep at start that takes them is planned (#366).
    */
-  async settle(project: string, key: string, rev: number): Promise<boolean> {
+  async settle(device: string, project: string, rev: number): Promise<boolean> {
     const { store } = this.#o
     const conversation = await this.#conversation(project)
     return store.harness.commit(async (tx) => {
       if ((await tx.submissionByRequest(conversation.id, sendName(rev))) !== undefined) return true
-      await store.retireDraft(tx, key, rev)
+      await store.retireDraft(tx, deviceDraft(device, project), rev)
       return false
     }, context)
   }
 
   /**
-   * Sends the draft saved as revision `rev` under `key`, a project id, `START`, or a paired device's key for `project`,
+   * Sends paired device `device`'s draft for `project` saved as revision `rev`, as `send` does. A send refused before it
+   * committed never goes out: one refused as `working` or `retired` leaves the draft in place, so it is settled before the
+   * answer. A replay that already went out is the answer then, and otherwise the revision is retired, so a replay once the
+   * agent is idle or the role changed sends nothing. Any other failure throws, and may have come after the commit.
+   */
+  async sendFromDevice(device: string, project: string, rev: number): Promise<DeviceSend> {
+    try {
+      return { sent: await this.#send(deviceDraft(device, project), rev, project) }
+    } catch (error) {
+      if (error instanceof DraftChanged) return { refused: 'changed', message: error.message }
+      if (!(error instanceof SendRefused)) throw error
+      if (await this.settle(device, project, rev)) return { sent: await this.#o.store.project(project) }
+      return { refused: error.reason, message: error.message }
+    }
+  }
+
+  /**
+   * Sends the draft saved as revision `rev` under `key`, a project id or `START`, and answers the project it went to.
+   */
+  send(key: string, rev: number, pair?: SentRoles): Promise<Project> {
+    return this.#send(key, rev, key, pair)
+  }
+
+  /**
+   * Sends the draft saved as revision `rev` under `key`, a project id, `START`, or a paired device's key for `to`,
    * and answers the project it went to.
    * Each step is safe to run again after a crash or a lost answer: the project a start screen revision made is found,
    * not made again, a message already committed as `draft-<rev>` is not sent again, and the files are copied once.
@@ -433,7 +464,7 @@ export class Chats {
    * content goes out. A draft saved after it is the next message and stays, even one that reads the same. A project
    * the start screen makes gets the roles the send carries, and the default lead and helper for a role it leaves out.
    */
-  async send(key: string, rev: number, to = key, pair?: SentRoles): Promise<Project> {
+  async #send(key: string, rev: number, to: string, pair?: SentRoles): Promise<Project> {
     const { store, extension, tools, version, busy } = this.#o
     // A start screen send goes out as the draft its project took, even if the project's draft changed since, as after a
     // crash before the message. Any other send goes out as its draft, only while that is still this revision.
