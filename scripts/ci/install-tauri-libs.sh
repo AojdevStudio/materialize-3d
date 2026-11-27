@@ -23,7 +23,8 @@ wait_s=600
 deadline=$((SECONDS + wait_s))
 until sudo apt-get update &&
   sudo apt-get -o DPkg::Lock::Timeout="$((deadline > SECONDS ? deadline - SECONDS : 0))" install -y --no-install-recommends "${packages[@]}"; do
-  if ((SECONDS >= deadline)); then
+  # No attempt starts after the deadline.
+  if ((SECONDS + 10 >= deadline)); then
     echo "apt still failing after ${wait_s}s" >&2
     exit 1
   fi
