@@ -161,4 +161,4 @@ For installed-release automation, follow the [native verification tools](../../.
 
 ## Feature map
 
-`features/README.md` indexes one recipe per user-facing feature, including the landing site, which Playwright drives instead of `wd.ts`. A proof that drives one convenient entry point is incomplete when the map lists others. Update the map when a feature's handles or behavior change.
+`features/README.md` indexes one recipe per user-facing feature, including the landing site and the mobile window's layouts, which Playwright drives instead of `wd.ts`. A proof that drives one convenient entry point is incomplete when the map lists others. Update the map when a feature's handles or behavior change.

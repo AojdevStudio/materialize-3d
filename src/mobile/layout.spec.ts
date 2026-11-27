@@ -8,10 +8,10 @@ import type { Computer, DeviceDraft, LinkMessage } from './remote'
  * side, and a reply that came on the Model tab was out of sight on the way back to Chat).
  */
 const sizes = [
-  { name: 'small phone', width: 375, height: 667 },
-  { name: 'phone', width: 390, height: 844 },
-  { name: 'phone on its side', width: 667, height: 340 },
-  { name: 'tablet', width: 820, height: 1180 },
+  { name: 'small phone', width: 375, height: 667, tablet: false },
+  { name: 'phone', width: 390, height: 844, tablet: false },
+  { name: 'phone on its side', width: 667, height: 340, tablet: false },
+  { name: 'tablet', width: 820, height: 1180, tablet: true },
 ] as const
 
 const lead: ModelChoice = { provider: 'anthropic', modelId: 'lead-model' }
@@ -138,6 +138,25 @@ async function tapInPlace(page: Page, target: Locator) {
   await page.touchscreen.tap(box.x + box.width / 2, box.y + box.height / 2)
 }
 
+/**
+ * Scrolls `scroller` with the mouse wheel until `target` can be touched, as a finger would. The wheel scrolls only a box
+ * a person can scroll, never one the page clips. The pointer sits on the part of `scroller` inside the viewport.
+ */
+async function scrollToTouch(page: Page, scroller: Locator, target: Locator) {
+  for (let i = 0; i < 30 && !(await onScreen(target)).touchable; i += 1) {
+    const { x, y, delta } = await target.evaluate((el, box) => {
+      const shown = box!.getBoundingClientRect()
+      const top = Math.max(shown.top, 0)
+      const bottom = Math.min(shown.bottom, innerHeight)
+      return { x: shown.left + shown.width / 2, y: (top + bottom) / 2, delta: el.getBoundingClientRect().top - top }
+    }, await scroller.elementHandle())
+    await page.mouse.move(x, y)
+    await page.mouse.wheel(0, delta)
+    // The wheel returns before the scroll lands, so wait two frames.
+    await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))))
+  }
+}
+
 /** Opens the first chat from the list and waits until its composer can pick roles. */
 async function openChat(page: Page) {
   await tapInPlace(page, page.getByRole('button', { name: chats[0].title, exact: true }))
@@ -151,9 +170,7 @@ for (const size of sizes) {
     test('the last chat in a long list scrolls into view and opens', async ({ page }) => {
       await open(page, size)
       const last = page.getByRole('button', { name: chats[chats.length - 1].title, exact: true })
-      // A person scrolls the list with a finger. The wheel scrolls what a finger scrolls, and no box the page clips.
-      await page.mouse.move(size.width / 2, size.height / 2)
-      for (let i = 0; i < 20 && !(await onScreen(last)).touchable; i += 1) await page.mouse.wheel(0, 600)
+      await scrollToTouch(page, page.locator('.mobile-chats'), last)
       expect(await onScreen(last)).toMatchObject(onScreenNow)
       await tapInPlace(page, last)
       await expect(page.getByRole('heading', { name: chats[chats.length - 1].title })).toBeVisible()
@@ -171,11 +188,7 @@ for (const size of sizes) {
         const options = menu.getByRole('menuitemradio')
         await expect(options).toHaveCount(models.length + (role === 'Helper' ? 1 : 0))
         for (const option of await options.all()) {
-          // Scroll only the menu, as a finger in it would, until the option is at its top or the menu ends.
-          await option.evaluate((el) => {
-            const box = el.closest('[role=menu]')!
-            box.scrollTop += el.getBoundingClientRect().top - box.getBoundingClientRect().top
-          })
+          await scrollToTouch(page, menu, option)
           expect(await onScreen(option), `${role}: ${await option.textContent()}`).toMatchObject(onScreenNow)
         }
         await page.keyboard.press('Escape')
@@ -190,12 +203,18 @@ for (const size of sizes) {
       await expect(newest()).toHaveText(`Answer ${entries.length / 2}: the bracket is now 2 mm thicker at the wall.`)
       await expect.poll(() => onScreen(newest())).toMatchObject(onScreenNow)
       const reply = 'The thicker bracket is ready to slice.'
-      // A tablet shows the chat and the model together, with no tabs, so the reply arrives with the chat in sight.
-      const tabs = page.getByRole('tablist')
-      const phone = await tabs.isVisible()
-      if (phone) await page.getByRole('tab', { name: 'Model' }).tap()
+      const chatPane = page.locator('.mobile-chat-pane')
+      // A tablet shows the chat and the model together, with no tabs, so the reply arrives with the chat in sight. A
+      // phone has the tabs, and the reply arrives while the Model tab hides the chat.
+      if (size.tablet) {
+        await expect(page.getByRole('tablist')).toBeHidden()
+      } else {
+        await page.getByRole('tab', { name: 'Model' }).tap()
+        await expect(chatPane).toBeHidden()
+      }
       await page.evaluate(([project, text]) => (window as unknown as { m3dReply: (p: string, t: string) => void }).m3dReply(project, text), [chats[0].id, reply])
-      if (phone) await page.getByRole('tab', { name: 'Chat' }).tap()
+      if (!size.tablet) await page.getByRole('tab', { name: 'Chat' }).tap()
+      await expect(chatPane).toBeVisible()
       await expect(newest()).toHaveText(reply)
       await expect.poll(() => onScreen(newest())).toMatchObject(onScreenNow)
     })

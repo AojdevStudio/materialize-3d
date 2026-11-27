@@ -22,7 +22,6 @@ cd src-tauri && cargo test --lib --locked studio::slice -- --ignored --nocapture
 
 # Mobile app checks. The crate embeds the mobile window build.
 bun run build:mobile
-/opt/google/chrome/chrome --version
 bun run test:mobile-layout
 cd src-mobile && cargo test --lib --locked
 
