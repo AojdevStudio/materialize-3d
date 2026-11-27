@@ -17,16 +17,16 @@ if [[ "$(dpkg -s "${packages[@]}" 2>/dev/null | grep -cx 'Status: install ok ins
   exit 0
 fi
 
-# DPkg::Lock::Timeout covers the dpkg lock only. apt-get update takes the package lists lock and fails at once when
-# another apt holds it, so retry it until the same 10 minute deadline.
+# apt waits for the dpkg lock with DPkg::Lock::Timeout, but fails at once on the package lists lock (update) and the
+# archives lock (download). So the update and install retry together until one 10 minute deadline.
 wait_s=600
 deadline=$((SECONDS + wait_s))
-until sudo apt-get update; do
+until sudo apt-get update &&
+  sudo apt-get -o DPkg::Lock::Timeout="$((deadline > SECONDS ? deadline - SECONDS : 0))" install -y --no-install-recommends "${packages[@]}"; do
   if ((SECONDS >= deadline)); then
-    echo "apt-get update still failing after ${wait_s}s" >&2
+    echo "apt still failing after ${wait_s}s" >&2
     exit 1
   fi
-  echo "apt-get update failed, another apt may hold the package lists lock; retrying in 10s"
+  echo "apt failed, another apt may hold one of its locks; retrying in 10s"
   sleep 10
 done
-sudo apt-get -o DPkg::Lock::Timeout="$wait_s" install -y --no-install-recommends "${packages[@]}"
