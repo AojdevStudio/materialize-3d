@@ -92,6 +92,11 @@ it('shows the newest list read and keeps Send off while the link is down or a tu
       /** Desktop changes made, and the newest one the phone could know of. */
       const desktop = { changes: 0, known: 0 }
       const know = (change: number) => (desktop.known = Math.max(desktop.known, change))
+      /**
+       * Counts the link's drops and returns, and the chat screen's openings and closings. A chat read answers only the
+       * screen and link it was asked on, and a stream event dies with the link it was sent on.
+       */
+      const epochs = { link: 0, screen: 0 }
 
       vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => {
         const path = url.replace('m3dremote://localhost/api/v1', '')
@@ -100,19 +105,22 @@ it('shows the newest list read and keeps Send off while the link is down or a tu
         if (!up) return new Response('The computer did not answer.', { status: 502 })
         const at = { ...turn }
         const changes = desktop.changes
+        const asked = { ...epochs }
         const answered = chatRead ? Response.json(chatView(at)) : await answer(url, init)
         const delivered = await s.schedule(Promise.resolve(answered), `${init?.method ?? 'GET'} ${path}`)
-        if (chatRead) hear(at)
+        if (chatRead && asked.link === epochs.link && asked.screen === epochs.screen) hear(at)
         if (path === '/chats' && answered.ok) know(changes)
         return delivered
       })
       /** A message on the computer's stream, which reaches the phone in its turn, unless the link dropped meanwhile. */
-      const streamed = (event: object, label: string, then: () => void = () => {}) =>
+      const streamed = (event: object, label: string, then: () => void = () => {}) => {
+        const sentOn = epochs.link
         void s.schedule(Promise.resolve(), label).then(() => {
-          if (!up) return
+          if (!up || epochs.link !== sentOn) return
           then()
           stream.heard?.({ kind: 'event', event } as LinkMessage)
         })
+      }
 
       answerWithDrafts({ paired_computer: computer })
       render(<MobileApp />)
@@ -160,17 +168,23 @@ it('shows the newest list read and keeps Send off while the link is down or a tu
           case 'drop':
             if (!up) return
             up = false
+            epochs.link += 1
             await act(async () => stream.heard?.({ kind: 'offline', detail: 'The computer did not answer.' }))
             return
           case 'reconnect':
             if (up) return
             up = true
+            epochs.link += 1
             know(desktop.changes)
             await act(async () => stream.heard?.({ kind: 'connected' }))
             return
           case 'screen': {
-            const button = screen.queryByText(step.to, { selector: 'button' })
-            if (button !== null) fireEvent.click(button)
+            const button = screen.queryByRole('button', { name: step.to })
+            if (button === null) return
+            epochs.screen += 1
+            fireEvent.click(button)
+            const shows = step.to === 'Shelf bracket' ? screen.queryByLabelText('Message') : screen.queryByRole('button', { name: 'Refresh' })
+            if (shows === null) broken.push(`${step.to} did not show its screen`)
             return
           }
         }

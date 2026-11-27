@@ -76,7 +76,8 @@ function pick(role: Role, name: Shown) {
  *    heard of yet,
  * 2. once everything landed, the pickers show the roles saved with the highest revision,
  * 3. a role whose last change was a click here ends saved as that click,
- * 4. `studio_flushed` goes out only once every pick and the open draft are saved.
+ * 4. each quit gets its `studio_flushed`, and only once every pick and the open draft are saved,
+ * 5. each click on an enabled Send reaches the sidecar as one send.
  */
 it('keeps the newest roles and runs each send on the roles shown at its click, whatever order the replies land in', async () => {
   await fc.assert(
@@ -95,6 +96,8 @@ it('keeps the newest roles and runs each send on the roles shown at its click, w
       const clicks: { shown: ReturnType<typeof shown>; phoneSaves: Record<Role, number>; unheard: Record<Role, number> }[] = []
       let sendsTaken = 0
       let draftSaved = ''
+      /** Quits asked for, and quits the window said were done. */
+      const quits = { asked: 0, flushed: 0 }
 
       const projectOf = () => {
         const found = store.projects.find((p) => p.id === projectA.id)
@@ -153,6 +156,7 @@ it('keeps the newest roles and runs each send on the roles shown at its click, w
       const answer = invokeMock.getMockImplementation()
       invokeMock.mockImplementation((command: string, args: unknown) => {
         if (command === 'studio_flushed') {
+          quits.flushed += 1
           if (picks.saved !== picks.clicked) broken.push(`flushed with ${picks.clicked - picks.saved} of ${picks.clicked} picks unsaved`)
           if (prompt().value !== '' && prompt().value !== draftSaved) broken.push(`flushed with draft "${prompt().value}" unsaved, saved "${draftSaved}"`)
         }
@@ -206,6 +210,7 @@ it('keeps the newest roles and runs each send on the roles shown at its click, w
           case 'quit':
             fireEvent.change(prompt(), { target: { value: `note ${index}` } })
             typedUnsaved = false
+            quits.asked += 1
             await act(async () => listeners.flush.forEach((listener) => listener({ payload: null })))
             return
         }
@@ -235,6 +240,7 @@ it('keeps the newest roles and runs each send on the roles shown at its click, w
 
       const saved = projectOf()
       expect(broken).toEqual([])
+      expect({ sends: sendsTaken, flushed: quits.flushed }).toEqual({ sends: clicks.length, flushed: quits.asked })
       expect(shown()).toEqual({ lead: shownOf(saved.model), helper: shownOf(saved.helper) })
       for (const role of ['lead', 'helper'] as const) {
         const change = lastChange[role]
