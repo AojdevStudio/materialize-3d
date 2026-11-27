@@ -47,6 +47,9 @@ describe('readServe', () => {
       reason: `Serve on ${KEY} also sends other paths to other services, so a phone could reach the wrong one. Give this app an HTTPS port of its own.`,
       command: `tailscale serve --bg --https=${PORT + 1} http://127.0.0.1:${PORT}`,
     })
+    // The search starts at the service's own port when nothing holds it.
+    const on443 = { TCP: { 443: { HTTPS: true } }, Web: { [`${HOST}:443`]: { Handlers: { ...root().Handlers, '/api/': { Proxy: 'http://127.0.0.1:9' } } } } }
+    expect(read(on443)).toMatchObject({ kind: 'setup', command: SETUP })
     // A port a terminal's own `tailscale serve` holds is taken too.
     expect(read({ ...shared(), Foreground: { session: { TCP: { [PORT + 1]: { HTTPS: true } } } } })).toMatchObject({
       kind: 'setup',
