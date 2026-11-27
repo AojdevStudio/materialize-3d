@@ -11,9 +11,9 @@ type App = ReturnType<typeof spawnSidecar>
 const HOST = 'computer.tail0000.ts.net'
 /** Another service Tailscale Serve already forwards, which pairing must pass over. */
 const OTHER = { [`${HOST}:443`]: { Handlers: { '/': { Proxy: 'http://127.0.0.1:8788' } } } }
-const forwarding = (port: number, served = `${HOST}:${port}`) => ({
-  TCP: { 443: { HTTPS: true }, [served.slice(served.lastIndexOf(':') + 1)]: { HTTPS: true } },
-  Web: { ...OTHER, [served]: { Handlers: { '/': { Proxy: `http://127.0.0.1:${port}` } } } },
+const forwarding = (port: number) => ({
+  TCP: { 443: { HTTPS: true }, [port]: { HTTPS: true } },
+  Web: { ...OTHER, [`${HOST}:${port}`]: { Handlers: { '/': { Proxy: `http://127.0.0.1:${port}` } } } },
 })
 const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII='
 
@@ -155,48 +155,13 @@ describe('pairing', () => {
   test('answers setup until Serve forwards to the service, then a QR of its address', async () => {
     const { app, port, setServe } = await start(() => ({}))
     expect(await pairing(app)).toEqual({ kind: 'setup', command: `tailscale serve --bg --https=${port} http://127.0.0.1:${port}` })
-    setServe({ Web: OTHER })
-    expect((await pairing(app)).kind).toBe('setup')
-    // A plain HTTP listener cannot answer the https address a QR would name.
-    setServe({ TCP: { [port]: { HTTP: true } }, Web: forwarding(port).Web })
-    expect((await pairing(app)).kind).toBe('setup')
-    // Tailscale prefers a longer mount, so an address that sends any path elsewhere could take the code or a token.
-    const served = forwarding(port)
-    const key = `${HOST}:${port}`
-    setServe({ ...served, Web: { ...served.Web, [key]: { Handlers: { '/': { Proxy: `http://127.0.0.1:${port}` }, '/api/': { Proxy: 'http://127.0.0.1:9' } } } } })
-    // Setting `/` again on that port cannot help, so the command names a port of the app's own, which nothing serves.
-    const shared = await pairing(app)
-    expect(shared).toEqual({ kind: 'setup', reason: expect.stringContaining('other services'), command: `tailscale serve --bg --https=${port + 1} http://127.0.0.1:${port}` })
-    // A port a terminal's own `tailscale serve` holds is taken too.
-    const sharedWeb = { ...served.Web, [key]: { Handlers: { '/': { Proxy: `http://127.0.0.1:${port}` }, '/api/': { Proxy: 'http://127.0.0.1:9' } } } }
-    setServe({ ...served, Web: sharedWeb, Foreground: { session: { TCP: { [port + 1]: { HTTPS: true } } } } })
-    expect(await pairing(app)).toMatchObject({ kind: 'setup', command: `tailscale serve --bg --https=${port + 2} http://127.0.0.1:${port}` })
-    // With no port free near it, Settings says so rather than naming one.
-    const every = Object.fromEntries(Array.from({ length: 100 }, (_, n) => [port + n, { HTTPS: true }]))
-    setServe({ ...served, TCP: { ...served.TCP, ...every }, Web: sharedWeb })
-    expect(await pairing(app)).toMatchObject({ kind: 'off', detail: expect.stringContaining('is taken') })
-    // Funnel makes the address public, so no code is shown for it.
-    setServe({ ...served, AllowFunnel: { [key]: true } })
-    const funnel = await pairing(app)
-    expect([funnel.kind, funnel.kind === 'off' && funnel.detail.includes('Funnel')]).toEqual(['off', true])
-    // A private address wins over a public one listed before it.
-    const open = `${HOST}:443`
-    const root = { Handlers: { '/': { Proxy: `http://127.0.0.1:${port}` } } }
-    setServe({ TCP: { 443: { HTTPS: true }, [port]: { HTTPS: true } }, AllowFunnel: { [open]: true }, Web: { [open]: root, [key]: root } })
-    const both = await pairing(app)
-    expect(both.kind === 'ready' && both.url.startsWith(`https://${key}/pair?code=`)).toBe(true)
-
+    // serve.test.ts covers which Serve status gets which answer.
     setServe(forwarding(port))
     const ready = await pairing(app)
     if (ready.kind !== 'ready') throw new Error(`pairing is ${ready.kind}`)
     expect(ready.url).toMatch(new RegExp(`^https://${HOST}:${port}/pair\\?code=[A-Za-z0-9_-]{22}$`))
     expect(ready.svg).toStartWith('<svg')
     expect(ready.expiresMs).toBeGreaterThan(Date.now())
-
-    // Served on the default HTTPS port, the address names no port.
-    setServe(forwarding(port, `${HOST}:443`))
-    const plain = await pairing(app)
-    expect(plain.kind === 'ready' && plain.url.startsWith(`https://${HOST}/pair?code=`)).toBe(true)
     await app.quit()
   })
 })

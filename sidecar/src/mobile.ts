@@ -8,7 +8,7 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { hostname } from 'node:os'
 import type { Models } from '@earendil-works/pi-ai'
-import { arr, bool, compile, int, map, nullable, obj, opt, str, type Validator } from '@earendil-works/pi-schema'
+import { arr, compile, int, nullable, obj, opt, str, type Validator } from '@earendil-works/pi-schema'
 import type { Server } from 'bun'
 import { renderSVG } from 'uqr'
 import type { Chats } from './chat'
@@ -17,6 +17,7 @@ import type { Logins } from './inference'
 import { model, offeredModels, saveRoles } from './methods'
 import { savePicture } from './pictures'
 import type { Computer, MobileChat, MobilePairing, PairedDevice, SidecarEvent } from './protocol'
+import { readServe } from './serve'
 import { deviceDraft, type Store } from './store'
 
 /** Where Tailscale's command line lives in the Mac app, for a Mac that has no `tailscale` on its PATH. */
@@ -30,23 +31,6 @@ const BAD_CODE = 'This code is wrong, expired, or used. Show a new code on the c
 
 /** The most a pairing request may carry, since it comes before any token. */
 const PAIR_BODY_BYTES = 4096
-
-/**
- * What `tailscale serve status --json` says, as far as this app reads it: which ports take HTTPS, where each path of
- * each served address goes, and which addresses Funnel makes public.
- */
-const serveStatus = compile(
-  obj(
-    {
-      TCP: opt(map(obj({ HTTPS: opt(bool()) }, { open: true }))),
-      Web: opt(map(obj({ Handlers: opt(map(obj({ Proxy: opt(str()) }, { open: true }))) }, { open: true }))),
-      AllowFunnel: opt(map(bool())),
-      /** What each `tailscale serve` still running in a terminal serves, by its session. */
-      Foreground: opt(map(obj({ TCP: opt(map(obj({}, { open: true }))) }, { open: true }))),
-    },
-    { open: true },
-  ),
-)
 
 const sha256 = (text: string) => createHash('sha256').update(text).digest()
 
@@ -402,40 +386,10 @@ export class Mobile {
     const run = Bun.spawn([cli, 'serve', 'status', '--json'], { stdout: 'pipe', stderr: 'pipe', env: { ...process.env, TAILSCALE_BE_CLI: '1' } })
     const [out, err, exit] = await Promise.all([new Response(run.stdout).text(), new Response(run.stderr).text(), run.exited])
     if (exit !== 0) return { kind: 'off', detail: `Tailscale did not answer: ${err.trim() || `it stopped with exit ${exit}`}` }
-    const status: unknown = out.trim() === '' ? {} : JSON.parse(out)
-    if (!serveStatus.check(status)) throw new Error(`tailscale serve status --json printed what this app cannot read: ${out.slice(0, 200)}`)
-    const tailscale = cli === MAC_TAILSCALE ? `'${MAC_TAILSCALE}'` : 'tailscale'
-    const forwards = [`http://127.0.0.1:${port}`, `http://localhost:${port}`]
-    const portOf = (served: string) => served.slice(served.lastIndexOf(':') + 1)
-    // An address the QR can name takes HTTPS, and sends every path to this service, so no other mount Tailscale prefers
-    // takes the pairing code or a device's token. A plain HTTP listener, or one shared with other paths, is passed over.
-    const https = Object.entries(status.Web ?? {}).filter(([at, web]) => status.TCP?.[portOf(at)]?.HTTPS === true && forwards.includes(web.Handlers?.['/']?.Proxy ?? ''))
-    const ours = https.flatMap(([at, web]) => (Object.keys(web.Handlers ?? {}).length === 1 ? [at] : []))
-    // A private address wins over a public one, in whatever order Serve lists them.
-    const served = ours.find((at) => status.AllowFunnel?.[at] !== true)
-    const [open] = ours
-    if (served === undefined && open !== undefined) {
-      return { kind: 'off', detail: `Tailscale Funnel makes ${open} public on the internet. Turn Funnel off for it with ${tailscale} funnel --https=${portOf(open)} off, then check again.` }
-    }
-    // An address that sends other paths elsewhere too cannot be fixed by setting its `/` again, since Serve changes only the
-    // mount it is given. The phone service gets an HTTPS port of its own instead.
-    const [shared] = https
-    if (served === undefined && shared !== undefined) {
-      // A port a terminal's `tailscale serve` holds is taken too, though only the session lists it.
-      const taken = new Set([...Object.keys(status.TCP ?? {}), ...Object.values(status.Foreground ?? {}).flatMap((session) => Object.keys(session.TCP ?? {}))])
-      const free = Array.from({ length: 100 }, (_, n) => port + n).find((candidate) => !taken.has(String(candidate)))
-      if (free === undefined) {
-        return { kind: 'off', detail: `Serve on ${shared[0]} also sends other paths to other services, and every port from ${port} to ${port + 99} is taken. Free an HTTPS port in Tailscale, then check again.` }
-      }
-      return {
-        kind: 'setup',
-        reason: `Serve on ${shared[0]} also sends other paths to other services, so a phone could reach the wrong one. Give this app an HTTPS port of its own.`,
-        command: `${tailscale} serve --bg --https=${free} http://127.0.0.1:${port}`,
-      }
-    }
-    if (served === undefined) return { kind: 'setup', command: `${tailscale} serve --bg --https=${port} http://127.0.0.1:${port}` }
+    const served = readServe(out, port, cli === MAC_TAILSCALE ? `'${MAC_TAILSCALE}'` : 'tailscale')
+    if (served.kind !== 'served') return served
     const { code, expiresMs } = this.#pairing.issue()
-    const url = `https://${served.replace(/:443$/, '')}/pair?code=${code}`
+    const url = `https://${served.origin}/pair?code=${code}`
     return { kind: 'ready', url, svg: renderSVG(url), expiresMs }
   }
 
