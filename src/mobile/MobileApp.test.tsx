@@ -1,26 +1,14 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import type { ModelChoice } from '../../sidecar/src/protocol'
-import type { DeviceDraft, LinkMessage } from './remote'
 
-const { invoke, qrText, scanner, stream, viewer } = vi.hoisted(() => ({
-  invoke: vi.fn(),
+const { qrText, scanner, viewer } = vi.hoisted(() => ({
   /** The URL the model viewer loaded, each time it loaded one. */
   viewer: { loads: [] as string[] },
   qrText: { value: null as string | Error | null },
   scanner: { checkPermissions: vi.fn(), requestPermissions: vi.fn(), scan: vi.fn(), cancel: vi.fn() },
-  stream: { heard: null as ((message: LinkMessage) => void) | null },
 }))
-// Rust's link watcher hands the window a channel's messages. Each test says what the link does.
-vi.mock('@tauri-apps/api/core', () => ({
-  invoke,
-  Channel: class {
-    constructor(heard: (message: LinkMessage) => void) {
-      stream.heard = heard
-    }
-  },
-}))
+vi.mock('@tauri-apps/api/core', async () => (await import('./computerMock')).tauriCore())
 // jsdom has no WebGL. The viewer loads its model each time its URL changes, so this one records those URLs.
 vi.mock('../studio/ModelView', async () => {
   const { useEffect } = await import('react')
@@ -41,11 +29,11 @@ vi.mock('./qr', () => ({
 }))
 Element.prototype.scrollIntoView = () => {}
 
+import { answerWithDrafts, ASTRA, computer, computerWithRoles, device, invoke, kept, linkIs, SOL, stream } from './computerMock'
 import MobileApp from './MobileApp'
 import { PREVIEW_LIMIT } from './remote'
 import remoteRs from '../../src-mobile/src/remote.rs?raw'
 
-const computer = { id: 'a70bf50e531ce1a8', name: 'Studio Mac', origin: 'https://studio.tail1234.ts.net:47380/' }
 const link = 'https://studio.tail1234.ts.net:47380/pair?code=K7Q2'
 
 function answer(commands: Record<string, unknown>) {
@@ -478,48 +466,6 @@ describe('MobileApp', () => {
   })
 
   describe('role picks', () => {
-    const ASTRA = { provider: 'openai-codex', modelId: 'gpt-6-astra' }
-    const SOL = { provider: 'openai-codex', modelId: 'gpt-6.1-sol' }
-    const status = { running: false, printed: false, printFiles: 0, lastMs: 0 }
-
-    /**
-     * A computer with one chat whose pair a PUT changes. Each request on a path in `hold` waits until the test lets the
-     * oldest held one answer. A role save that `refuse` names is refused, and the pair stays. `log` lists every write as
-     * it reaches the computer, and `saves` the role saves it took.
-     */
-    function computerWithRoles(hold: string[] = [], refuse: (change: object) => boolean = () => false, failLists = { next: 0 }) {
-      const roles = { lead: SOL as ModelChoice, helper: ASTRA as ModelChoice | null }
-      const saves: unknown[] = []
-      const log: string[] = []
-      const waiting: (() => void)[] = []
-      vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => {
-        const path = url.replace('m3dremote://localhost/api/v1', '')
-        if (init?.method !== undefined) log.push(`${init.method} ${path}`)
-        if (hold.includes(path)) await new Promise<void>((resolve) => waiting.push(resolve))
-        if (init?.method === 'PUT' && path === '/chats/bracket/roles') {
-          const change = JSON.parse(String(init.body)) as Partial<typeof roles>
-          if (refuse(change)) return Response.json({ error: 'GPT 6 Astra was retired by its provider.' }, { status: 400 })
-          saves.push(change)
-          Object.assign(roles, change)
-          return Response.json(roles)
-        }
-        if (init?.method === 'PUT' && path === '/chats/bracket/draft') return Response.json({ rev: 1 })
-        if (init?.method === 'POST' && path === '/chats/bracket/send') return Response.json({ project: { id: 'bracket' } })
-        if (path === '/chats' && failLists.next > 0) {
-          failLists.next -= 1
-          return new Response('The chat list could not be read.', { status: 500 })
-        }
-        if (path === '/chats') return Response.json([{ id: 'bracket', title: 'Shelf bracket', createdMs: 0, ...roles, status }])
-        if (path === '/chats/bracket') return Response.json({ project: 'bracket', entries: [], running: false, waiting: null, turn: null, handoffs: [], seq: 1 })
-        if (path === '/chats/bracket/files') return Response.json([])
-        if (path === '/models') return Response.json([{ ...ASTRA, name: 'GPT 6 Astra', description: '' }, { ...SOL, name: 'GPT 6.1 Sol', description: '' }])
-        return new Response('Not found', { status: 404 })
-      })
-      /** A pair the desktop saved on the computer. */
-      const desktopSets = (change: Partial<typeof roles>) => Object.assign(roles, change)
-      return { saves, log, answerNext: () => waiting.shift()?.(), desktopSets }
-    }
-
     /** Opens the chat with the link to the computer up, once the pickers have the models. */
     async function openBracket(commands: Record<string, unknown> = {}) {
       answerWithDrafts({ paired_computer: computer, ...commands })
@@ -871,17 +817,6 @@ describe('MobileApp', () => {
   })
 })
 
-/** The drafts this device keeps, by chat, as Rust's draft files hold them across launches. */
-const kept = new Map<string, DeviceDraft>()
-/** Rust's answer to a draft load, when it cannot read the file, and to a draft save, when it cannot write it or the test holds it. */
-const device = {
-  loadFails: null as string | null,
-  saveFails: null as string | null,
-  saveWaits: null as Promise<void> | null,
-  forgetFails: null as string | null,
-  forgetWaits: null as Promise<void> | null,
-}
-
 /** Holds the next draft write until the returned function lets it go. */
 function holdSave(): () => void {
   let release = () => {}
@@ -894,32 +829,6 @@ function holdForget(): () => void {
   let release = () => {}
   device.forgetWaits = new Promise<void>((resolve) => (release = resolve))
   return () => release()
-}
-
-function answerWithDrafts(commands: Record<string, unknown>) {
-  invoke.mockImplementation(async (command: string, args: { project: string; draft: DeviceDraft }) => {
-    if (command === 'draft_load') {
-      if (device.loadFails !== null) throw device.loadFails
-      return kept.get(args.project) ?? null
-    }
-    if (command === 'draft_save') {
-      const waits = device.saveWaits
-      device.saveWaits = null
-      await waits
-      if (device.saveFails !== null) throw device.saveFails
-      const empty = args.draft.text === '' && args.draft.pictures.length === 0 && args.draft.sent === null
-      if (empty) kept.delete(args.project)
-      else kept.set(args.project, args.draft)
-      return
-    }
-    // Rust removes every draft when the device forgets its computer.
-    if (command === 'forget') {
-      await device.forgetWaits
-      if (device.forgetFails !== null) throw device.forgetFails
-      return kept.clear()
-    }
-    return commands[command]
-  })
 }
 
 /** The computer as the window reaches it through `m3dremote://`. `reach` false answers 502, as Rust does when it cannot reach the computer. */
@@ -1000,14 +909,6 @@ const routeComputer = async (url: string, init?: { method?: string; body?: strin
   return new Response('Not found', { status: 404 })
 }
 
-/**
- * Hands the link watcher a message. A screen makes its watcher in an effect, which can run after its first render
- * shows, so this waits for the watcher first.
- */
-async function linkIs(message: LinkMessage) {
-  await waitFor(() => expect(stream.heard).not.toBeNull())
-  await act(() => stream.heard?.(message))
-}
 const sendButton = () => screen.getByRole<HTMLButtonElement>('button', { name: 'Send' })
 const messageBox = () => screen.getByLabelText<HTMLTextAreaElement>('Message')
 const settles = () => computerSide.requests.filter((r) => r === 'POST /chats/desk-clip/sends/41/settle').length
