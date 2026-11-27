@@ -8,6 +8,7 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "build:mobile": "tsc && vite build --config vite.mobile.config.ts",
+    "test:mobile-layout": "playwright test --config playwright.mobile.config.ts",
     "test": "vitest run",
     "tauri": "tauri"
   },
@@ -26,6 +27,7 @@
     "zustand": "^5.0.11"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@tauri-apps/cli": "~2.12.4",
     "@testing-library/react": "^16.3.2",
     "@types/jsdom": "~28.0.3",
