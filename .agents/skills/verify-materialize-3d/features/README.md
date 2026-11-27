@@ -36,7 +36,7 @@ For installed macOS release acceptance, use [Verify the installed Mac app](../..
 
 ## Feature entry contract
 
-Each feature file has an H1 and one paragraph of user-visible behavior, followed by exactly four H2s in this order: `Sub-features`, `How to get to it (user POV)`, `Driving it with wd.ts`, and `Gotchas`. A line marked **(observed <date>)** was driven live on that date. Everything else comes from reading the code and should be confirmed on first use. [Site](./site.md) keeps the same four H2s, and its driving section uses Playwright instead of `wd.ts`.
+Each feature file has an H1 and one paragraph of user-visible behavior, followed by exactly four H2s in this order: `Sub-features`, `How to get to it (user POV)`, `Driving it with wd.ts`, and `Gotchas`. A line marked **(observed <date>)** was driven live on that date. Everything else comes from reading the code and should be confirmed on first use. [Site](./site.md) and [Mobile](./mobile.md) keep the same four H2s, and their driving sections use Playwright instead of `wd.ts`.
 
 ## Features
 
@@ -45,3 +45,4 @@ Each feature file has an H1 and one paragraph of user-visible behavior, followed
 - [Settings](./settings.md) opens from the gear in the sidebar footer: each sign-in, the default model, Bambu Studio, the printer, uv, Python, the projects folder, and pairing a phone or tablet.
 - [Updater](./updater.md) covers the update banner at launch, Later, the wait for the agent's work, and the failed check and failed install states.
 - [Site](./site.md) covers the landing site's Playwright tests on Google Chrome. They do not use `wd.ts`.
+- [Mobile](./mobile.md) covers the iPhone and iPad window's layout tests at real phone and tablet sizes, in Playwright on Google Chrome. They do not use `wd.ts`.
