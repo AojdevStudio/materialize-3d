@@ -69,6 +69,8 @@ const pause = (ms: number) => act(() => new Promise((resolve) => setTimeout(reso
  * 3. once everything landed, the pickers show the pair the computer holds, and Send is on again.
  */
 it('shows the newest list read and keeps Send off while the link is down or a turn runs, whatever order the answers land in', async () => {
+  /** Screen moves across every run, so a button that is never there cannot pass the checks by skipping them. */
+  const moves = { Chats: 0, Refresh: 0, 'Shelf bracket': 0 }
   await fc.assert(
     fc.asyncProperty(fc.scheduler(), steps, async (s, plan) => {
       cleanup()
@@ -182,6 +184,7 @@ it('shows the newest list read and keeps Send off while the link is down or a tu
             const button = screen.queryByRole('button', { name: step.to })
             if (button === null) return
             epochs.screen += 1
+            moves[step.to] += 1
             fireEvent.click(button)
             const shows = step.to === 'Shelf bracket' ? screen.queryByLabelText('Message') : screen.queryByRole('button', { name: 'Refresh' })
             if (shows === null) broken.push(`${step.to} did not show its screen`)
@@ -222,4 +225,5 @@ it('shows the newest list read and keeps Send off while the link is down or a tu
     }),
     { seed: SEED, numRuns: 60 },
   )
+  expect(Object.entries(moves).flatMap(([to, count]) => (count === 0 ? [to] : []))).toEqual([])
 }, 240_000)

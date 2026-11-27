@@ -80,6 +80,8 @@ function pick(role: Role, name: Shown) {
  * 5. each click on an enabled Send reaches the sidecar as one send.
  */
 it('keeps the newest roles and runs each send on the roles shown at its click, whatever order the replies land in', async () => {
+  /** Sends checked across every run, so a Send that never turns on cannot pass the checks by skipping them. */
+  let sendsChecked = 0
   await fc.assert(
     fc.asyncProperty(fc.scheduler(), steps, async (s, plan) => {
       cleanup()
@@ -241,6 +243,7 @@ it('keeps the newest roles and runs each send on the roles shown at its click, w
       const saved = projectOf()
       expect(broken).toEqual([])
       expect({ sends: sendsTaken, flushed: quits.flushed }).toEqual({ sends: clicks.length, flushed: quits.asked })
+      sendsChecked += sendsTaken
       expect(shown()).toEqual({ lead: shownOf(saved.model), helper: shownOf(saved.helper) })
       for (const role of ['lead', 'helper'] as const) {
         const change = lastChange[role]
@@ -250,4 +253,5 @@ it('keeps the newest roles and runs each send on the roles shown at its click, w
     }),
     { seed: SEED, numRuns: 80 },
   )
+  expect(sendsChecked).toBeGreaterThan(0)
 }, 240_000)
