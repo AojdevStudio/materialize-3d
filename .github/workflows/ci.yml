@@ -47,7 +47,7 @@ jobs:
       - uses: ./.github/actions/shared-checks
       - name: Release facts match their sources
         run: bun scripts/release/release-facts.ts && bun test scripts/release
-      - name: CI installs system packages only through scripts/ci/install-tauri-libs.sh
+      - name: Every CI package install goes through scripts/ci/install-tauri-libs.sh
         run: bun test scripts/ci
       # Here and not in formal-verification.yml, whose own paths list decides whether it runs, so a PR that edits
       # that list could skip the check of that list.
