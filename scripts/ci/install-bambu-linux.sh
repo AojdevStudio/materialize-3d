@@ -2,10 +2,11 @@
 # Installs the validated Bambu Studio CLI into the runner's tool cache and
 # exports BAMBU_STUDIO_CLI for later steps. Idempotent: a verified install is
 # reused. The AppImage is extracted, so FUSE is not needed, but the CLI still
-# loads these system libraries. Run apt-get update first on a fresh host.
+# loads these system libraries. Run apt-get update first on a fresh host. apt waits
+# for the dpkg lock, because the mobile job on the same host may be installing too.
 set -euo pipefail
 
-sudo apt-get install -y --no-install-recommends \
+sudo apt-get -o DPkg::Lock::Timeout=600 install -y --no-install-recommends \
   libgstreamer-plugins-base1.0-0 libgstreamer-gl1.0-0 libegl1 libgl1 libgbm1 \
   libsecret-1-0 libmanette-0.2-0 libenchant-2-2 libhyphen0 libunwind8
 
