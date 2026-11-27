@@ -6,27 +6,40 @@ import { join } from "node:path";
 // fails at once on the lock (#372). scripts/ci/install-tauri-libs.sh waits for the locks, so it is the only caller.
 const root = join(import.meta.dir, "../..");
 const installer = "scripts/ci/install-tauri-libs.sh";
-const scanned: [dir: string, file: RegExp][] = [
-  [".github/workflows", /\.ya?ml$/],
-  [".github/actions", /\.ya?ml$/],
-  ["scripts/ci", /\.sh$/],
-];
-// apt or apt-get as a word, quoted or not. A comment starts at a # at the line start or after a space.
+// apt or apt-get as a word, quoted or not.
 const aptCall = /\bapt(-get)?\b(?!-)/;
-const comment = /(^|\s)#.*$/;
+
+const files = (dir: string, name: RegExp) =>
+  readdirSync(join(root, dir), { recursive: true, encoding: "utf8" })
+    .filter((file) => name.test(file))
+    .map((file) => join(dir, file));
+
+/** Every `run:` script in a workflow or composite action. Step names, `if:` lines, and YAML comments are not commands. */
+const runScripts = (node: unknown): string[] =>
+  Array.isArray(node)
+    ? node.flatMap(runScripts)
+    : typeof node === "object" && node !== null
+      ? Object.entries(node).flatMap(([key, value]) =>
+          key === "run" && typeof value === "string" ? [value] : runScripts(value),
+        )
+      : [];
+
+const scripts = [
+  ...[".github/workflows", ".github/actions"]
+    .flatMap((dir) => files(dir, /\.ya?ml$/))
+    .flatMap((path) => runScripts(Bun.YAML.parse(readFileSync(join(root, path), "utf8"))).map((text) => ({ path, text }))),
+  ...files("scripts/ci", /\.sh$/)
+    .filter((path) => path !== installer)
+    .map((path) => ({ path, text: readFileSync(join(root, path), "utf8") })),
+];
 
 test(`CI runs apt only through ${installer}`, () => {
-  const offenders = scanned
-    .flatMap(([dir, file]) =>
-      readdirSync(join(root, dir), { recursive: true, encoding: "utf8" })
-        .filter((name) => file.test(name))
-        .map((name) => join(dir, name)),
-    )
-    .filter((path) => path !== installer)
-    .flatMap((path) =>
-      readFileSync(join(root, path), "utf8")
-        .split("\n")
-        .flatMap((line, i) => (aptCall.test(line.replace(comment, "")) ? [`${path}:${i + 1}: ${line.trim()}`] : [])),
-    );
+  // A whole-line shell comment is skipped. A # later in a line may sit inside quotes, so the line is checked whole.
+  const offenders = scripts.flatMap(({ path, text }) =>
+    text
+      .split("\n")
+      .filter((line) => !line.trimStart().startsWith("#") && aptCall.test(line))
+      .map((line) => `${path}: ${line.trim()}`),
+  );
   expect(offenders).toEqual([]);
 });
