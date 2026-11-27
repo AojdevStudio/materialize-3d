@@ -2,31 +2,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 
-type Listener = (event: { payload: unknown }) => void
-const { invokeMock, listeners } = vi.hoisted(() => ({
-  invokeMock: vi.fn(),
-  listeners: { sidecar: [] as Listener[], drop: [] as Listener[], flush: [] as Listener[] },
-}))
-
-vi.mock('@tauri-apps/api/core', () => ({ invoke: invokeMock }))
-vi.mock('@tauri-apps/api/event', () => ({
-  listen: (name: string, listener: Listener) => {
-    ;(name === 'studio://flush' ? listeners.flush : listeners.sidecar).push(listener)
-    return Promise.resolve(() => {})
-  },
-}))
+vi.mock('@tauri-apps/api/core', async () => (await import('./sidecarMock')).tauriCore())
+vi.mock('@tauri-apps/api/event', async () => (await import('./sidecarMock')).tauriEvent())
 vi.mock('@tauri-apps/plugin-opener', () => ({ openUrl: () => Promise.resolve() }))
-vi.mock('@tauri-apps/api/webview', () => ({
-  getCurrentWebview: () => ({
-    onDragDropEvent: (listener: Listener) => {
-      listeners.drop.push(listener)
-      return Promise.resolve(() => {})
-    },
-  }),
-}))
+vi.mock('@tauri-apps/api/webview', async () => (await import('./sidecarMock')).tauriWebview())
 
-import type { AppState, Project } from '../../sidecar/src/protocol'
+import type { AppState } from '../../sidecar/src/protocol'
 import type { ProjectFile } from './api'
+import { draftRevs, emit, held, invokeMock, listeners, LOST, made, mockSidecar, models, projectA, projectB, resetSidecar, settings, sidecarCalls, view } from './sidecarMock'
 import StudioApp from './StudioApp'
 import { useTheme } from './theme'
 import mark from '../assets/brand/mark-small-32.svg'
@@ -36,29 +19,13 @@ Element.prototype.scrollIntoView = vi.fn()
 URL.createObjectURL = vi.fn(() => 'blob:preview')
 URL.revokeObjectURL = vi.fn()
 
-const projectA = { id: '2026-11-06-a', conversation: 2, title: 'Project A', createdMs: 2, model: { provider: 'anthropic', modelId: 'claude-opus-5-5' }, helper: null, roles: 0 }
-const projectB = { id: '2026-11-06-b', conversation: 3, title: 'Project B', createdMs: 1, model: { provider: 'anthropic', modelId: 'claude-opus-5-5' }, helper: null, roles: 0 }
-const view = (project: string, more: object = {}) => ({ project, entries: [], running: false, waiting: null, turn: null, handoffs: [], seq: 1, ...more })
-const settings = { model: { provider: 'anthropic', modelId: 'claude-opus-5-5' }, thinking: 'high', printer: { machine: 'Bambu Lab P2S 0.4 nozzle', process: '0.20mm Standard @BBL P2S', filament: 'Bambu PETG Basic @BBL P2S' } }
-const models = [
-  { provider: 'anthropic', modelId: 'claude-opus-5-5', name: 'Opus 5.5' },
-  { provider: 'anthropic', modelId: 'claude-sonnet-5-5', name: 'Sonnet 5.5' },
-  { provider: 'openai-codex', modelId: 'gpt-6.1-sol', name: 'GPT 6.1 Sol' },
-]
-
 afterEach(() => {
   cleanup()
   vi.useRealTimers()
-  invokeMock.mockReset()
-  listeners.sidecar.length = 0
-  listeners.drop.length = 0
-  listeners.flush.length = 0
+  resetSidecar()
   window.localStorage.clear()
   useTheme.setState({ theme: 'light' })
 })
-
-/** An event from the sidecar, as Rust forwards it to the window. */
-const emit = (event: object) => act(() => listeners.sidecar.forEach((listener) => listener({ payload: event })))
 
 /** The sidebar's project list. The start screen's recent chips name the same projects. */
 const projectList = () => within(screen.getByRole('navigation', { name: 'Projects' }))
@@ -69,105 +36,6 @@ const type = (text: string) => fireEvent.change(prompt(), { target: { value: tex
 const drop = (paths: string[]) => act(async () => listeners.drop.forEach((listener) => listener({ payload: { type: 'drop', paths } })))
 const pause = (ms: number) => act(() => new Promise((resolve) => setTimeout(resolve, ms)))
 
-type Params = Record<string, unknown>
-/** A call's own answer from the mocked sidecar, which an override may hold, fail, or pass on. */
-type Calls = Record<string, (params: Params, real: () => Promise<unknown>) => Promise<unknown>>
-/** The revisions the mocked sidecar gives saved drafts. */
-let draftRevs = 0
-
-const LOST = 'The engine restarted before it answered. Try again.'
-
-/** Holds each call until `release`, then answers as the mocked sidecar would. */
-function held() {
-  let release = () => {}
-  return {
-    call: (_: Params, real: () => Promise<unknown>) => new Promise((resolve) => (release = () => resolve(real()))),
-    release: () => act(async () => release()),
-  }
-}
-
-/** The project a send from the start screen makes. */
-const made = { id: '2026-11-06-a-clip', conversation: 10, title: 'A clip', createdMs: 10, model: { provider: 'anthropic', modelId: 'claude-opus-5-5' }, helper: null, roles: 0 }
-
-/**
- * The sidecar as the window sees it: one `sidecar` command, by method. A save answers a new revision, and a send
- * answers the project it went to: `made` for the start screen. The draft and send rules are the sidecar's own, tested in
- * `sidecar/test/send.test.ts`, and the window's side of them in `drafts.test.tsx`. It answers the default model the
- * start screen's picker sets, for a test to read.
- */
-function mockSidecar(overrides: Calls = {}, projects: Project[] = [projectB], drafts: Record<string, { text: string; attachments?: string[] }> = {}, files: Record<string, ProjectFile[]> = {}) {
-  const store = {
-    projects: [...projects],
-    drafts: Object.fromEntries(Object.entries(drafts).map(([key, draft]) => [key, { text: draft.text, attachments: draft.attachments ?? [], rev: ++draftRevs }])),
-    model: settings.model,
-  }
-  const defaults = (method: string, params: Params): Promise<unknown> => {
-    switch (method) {
-      case 'app.ping':
-        return Promise.resolve({ version: '1.2.3' })
-      case 'state.get':
-        return Promise.resolve(
-          JSON.parse(JSON.stringify({ setup: { step: 'ready', done: true }, settings: { ...settings, model: store.model }, projects: store.projects, drafts: store.drafts, importBlocked: null })),
-        )
-      case 'settings.set':
-        store.model = params.model as typeof settings.model
-        return defaults('state.get', {})
-      case 'projects.setLead':
-      case 'projects.setHelper': {
-        // As the sidecar does: save the role, then tell every window the project changed.
-        const change = method === 'projects.setLead' ? { model: params.model as typeof settings.model } : { helper: params.model as typeof settings.model | null }
-        store.projects = store.projects.map((p) => (p.id === params.project ? { ...p, ...change, roles: p.roles + 1 } : p))
-        const saved = store.projects.find((p) => p.id === params.project)
-        listeners.sidecar.forEach((listener) => listener({ payload: { type: 'project', project: saved } }))
-        return Promise.resolve(saved)
-      }
-      case 'chat.open':
-        return Promise.resolve(view(String(params.project)))
-      case 'setup.check':
-        return Promise.resolve([])
-      case 'setup.tools':
-        return Promise.resolve({ uv: '0.9.2', python: '3.12.1' })
-      case 'auth.status':
-        return Promise.resolve([
-          { provider: 'anthropic', name: 'Anthropic', login: 'api_key', kinds: ['api_key', 'oauth'] },
-          { provider: 'openai-codex', name: 'ChatGPT', login: null, kinds: ['oauth'] },
-        ])
-      case 'models.list':
-        return Promise.resolve(models)
-      case 'projects.status':
-        return Promise.resolve({})
-      case 'drafts.set':
-        return Promise.resolve({ rev: ++draftRevs })
-      case 'chat.send': {
-        // A start screen send makes its project with the pair it carries, which the store then holds, as the sidecar's
-        // does.
-        const pair = params.pair as { lead?: typeof settings.model; helper?: typeof settings.model | null } | undefined
-        if (params.key === 'new' && !store.projects.some((p) => p.id === made.id)) {
-          store.projects = [pair === undefined ? made : { ...made, model: pair.lead ?? store.model, helper: pair.helper ?? null, roles: 1 }, ...store.projects]
-        }
-        return Promise.resolve({ project: store.projects.find((p) => p.id === (params.key === 'new' ? made.id : params.key)) })
-      }
-      default:
-        return Promise.resolve(null)
-    }
-  }
-  invokeMock.mockImplementation((command: string, args: { method: string; params: Params; project?: string }) => {
-    if (command === 'update_check') return Promise.resolve({ status: 'upToDate' })
-    if (command === 'studio_files') return Promise.resolve(files[String(args.project)] ?? [])
-    if (command === 'studio_slicer') {
-      const found = () => Promise.resolve({ found: 'ready', version: '02.08.02.61' })
-      return overrides.studio_slicer?.({}, found) ?? found()
-    }
-    if (command !== 'sidecar') return Promise.resolve(undefined)
-    const real = () => defaults(args.method, args.params)
-    const override = overrides[args.method]
-    return override ? override(args.params, real) : real()
-  })
-  return store
-}
-
-const sidecarCalls = (method: string) =>
-  invokeMock.mock.calls.filter(([command, args]) => command === 'sidecar' && args.method === method).map(([, args]) => args.params)
 const sends = () => sidecarCalls('chat.send')
 const saves = (key?: string) => sidecarCalls('drafts.set').filter((save) => key === undefined || save.key === key)
 const last = <T,>(items: T[]) => items[items.length - 1]
