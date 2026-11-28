@@ -139,31 +139,56 @@ async function tapInPlace(page: Page, target: Locator) {
 }
 
 /**
- * Swipes `scroller` with one finger until `target` can be touched, as a person on a phone or tablet does. Chrome's
- * touch events scroll only a box a finger can scroll: never one the page clips, and never one with `touch-action: none`.
- * (Its synthesized scroll gesture moves nothing in headless Chrome, so the finger moves step by step.) The finger starts
- * in the middle of the part of `scroller` inside the viewport, stays on that part, and always moves farther than a tap.
+ * Swipes `scroller` with one finger until all of `target` is on screen and can be touched, as a person on a phone or
+ * tablet does. Chrome's touch events scroll only a box a finger can scroll: never one the page clips, and never one with
+ * `touch-action: none`. (Its synthesized scroll gesture moves nothing in headless Chrome, so the finger moves step by
+ * step.) The finger starts in the middle of the part of `scroller` inside the viewport, stays on that part, and always
+ * moves farther than a tap. It rests before it lifts, so no fling carries the list on after it.
  */
 async function swipeToTouch(page: Page, scroller: Locator, target: Locator) {
   const chrome = await page.context().newCDPSession(page)
-  for (let i = 0; i < 30 && !(await onScreen(target)).touchable; i += 1) {
-    const { x, y, delta, reach } = await target.evaluate((el, box) => {
-      const shown = box!.getBoundingClientRect()
-      const top = Math.max(shown.top, 0)
-      const bottom = Math.min(shown.bottom, innerHeight)
-      return { x: shown.left + shown.width / 2, y: (top + bottom) / 2, delta: el.getBoundingClientRect().top - top, reach: (bottom - top) / 2 - 4 }
-    }, await scroller.elementHandle())
-    // The finger moves up to bring later content into view, so it travels the opposite way to the target.
-    const travel = -Math.sign(delta) * Math.min(reach, Math.max(Math.abs(delta), 40))
-    await chrome.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y }] })
-    for (let step = 1; step <= 8; step += 1) {
-      await chrome.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x, y: y + (travel * step) / 8 }] })
-    }
-    await chrome.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
-    // The scroll lands after the touch ends, so wait two frames.
-    await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))))
+  const box = await scroller.elementHandle()
+  const reached = async () => {
+    const now = await onScreen(target)
+    return now.inside && now.touchable
   }
-  await chrome.detach()
+  try {
+    for (let i = 0; i < 30 && !(await reached()); i += 1) {
+      const { x, y, delta, reach } = await target.evaluate((el, shownBox) => {
+        const shown = shownBox!.getBoundingClientRect()
+        const top = Math.max(shown.top, 0)
+        const bottom = Math.min(shown.bottom, innerHeight)
+        return { x: shown.left + shown.width / 2, y: (top + bottom) / 2, delta: el.getBoundingClientRect().top - top, reach: (bottom - top) / 2 - 4 }
+      }, box)
+      // The finger moves up to bring later content into view, so it travels the opposite way to the target.
+      const travel = -Math.sign(delta) * Math.min(reach, Math.max(Math.abs(delta), 40))
+      const end = { x, y: y + travel }
+      await chrome.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y }] })
+      for (let step = 1; step <= 8; step += 1) {
+        await chrome.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x, y: y + (travel * step) / 8 }] })
+      }
+      await page.waitForTimeout(150)
+      await chrome.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [end] })
+      await chrome.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
+      // The scroll lands after the touch ends. Wait until it holds still for three frames.
+      await box!.evaluate(
+        (el) =>
+          new Promise<void>((done) => {
+            let last = el.scrollTop
+            let still = 0
+            const look = () => {
+              still = el.scrollTop === last ? still + 1 : 0
+              last = el.scrollTop
+              if (still >= 3) done()
+              else requestAnimationFrame(look)
+            }
+            requestAnimationFrame(look)
+          }),
+      )
+    }
+  } finally {
+    await chrome.detach()
+  }
 }
 
 /** Opens the first chat from the list and waits until its composer can pick roles. */
