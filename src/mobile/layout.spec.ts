@@ -139,22 +139,31 @@ async function tapInPlace(page: Page, target: Locator) {
 }
 
 /**
- * Scrolls `scroller` with the mouse wheel until `target` can be touched, as a finger would. The wheel scrolls only a box
- * a person can scroll, never one the page clips. The pointer sits on the part of `scroller` inside the viewport.
+ * Swipes `scroller` with one finger until `target` can be touched, as a person on a phone or tablet does. Chrome's
+ * touch events scroll only a box a finger can scroll: never one the page clips, and never one with `touch-action: none`.
+ * (Its synthesized scroll gesture moves nothing in headless Chrome, so the finger moves step by step.) The finger starts
+ * in the middle of the part of `scroller` inside the viewport, stays on that part, and always moves farther than a tap.
  */
-async function scrollToTouch(page: Page, scroller: Locator, target: Locator) {
+async function swipeToTouch(page: Page, scroller: Locator, target: Locator) {
+  const chrome = await page.context().newCDPSession(page)
   for (let i = 0; i < 30 && !(await onScreen(target)).touchable; i += 1) {
-    const { x, y, delta } = await target.evaluate((el, box) => {
+    const { x, y, delta, reach } = await target.evaluate((el, box) => {
       const shown = box!.getBoundingClientRect()
       const top = Math.max(shown.top, 0)
       const bottom = Math.min(shown.bottom, innerHeight)
-      return { x: shown.left + shown.width / 2, y: (top + bottom) / 2, delta: el.getBoundingClientRect().top - top }
+      return { x: shown.left + shown.width / 2, y: (top + bottom) / 2, delta: el.getBoundingClientRect().top - top, reach: (bottom - top) / 2 - 4 }
     }, await scroller.elementHandle())
-    await page.mouse.move(x, y)
-    await page.mouse.wheel(0, delta)
-    // The wheel returns before the scroll lands, so wait two frames.
+    // The finger moves up to bring later content into view, so it travels the opposite way to the target.
+    const travel = -Math.sign(delta) * Math.min(reach, Math.max(Math.abs(delta), 40))
+    await chrome.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y }] })
+    for (let step = 1; step <= 8; step += 1) {
+      await chrome.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x, y: y + (travel * step) / 8 }] })
+    }
+    await chrome.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
+    // The scroll lands after the touch ends, so wait two frames.
     await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))))
   }
+  await chrome.detach()
 }
 
 /** Opens the first chat from the list and waits until its composer can pick roles. */
@@ -170,7 +179,7 @@ for (const size of sizes) {
     test('the last chat in a long list scrolls into view and opens', async ({ page }) => {
       await open(page, size)
       const last = page.getByRole('button', { name: chats[chats.length - 1].title, exact: true })
-      await scrollToTouch(page, page.locator('.mobile-chats'), last)
+      await swipeToTouch(page, page.locator('.mobile-chats'), last)
       expect(await onScreen(last)).toMatchObject(onScreenNow)
       await tapInPlace(page, last)
       await expect(page.getByRole('heading', { name: chats[chats.length - 1].title })).toBeVisible()
@@ -188,7 +197,7 @@ for (const size of sizes) {
         const options = menu.getByRole('menuitemradio')
         await expect(options).toHaveCount(models.length + (role === 'Helper' ? 1 : 0))
         for (const option of await options.all()) {
-          await scrollToTouch(page, menu, option)
+          await swipeToTouch(page, menu, option)
           expect(await onScreen(option), `${role}: ${await option.textContent()}`).toMatchObject(onScreenNow)
         }
         await page.keyboard.press('Escape')
