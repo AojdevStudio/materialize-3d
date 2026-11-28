@@ -2,7 +2,7 @@
 # Installs every system package the Linux and mobile CI jobs need. Both jobs run on the same self-hosted host, often
 # at once, so a plain apt-get fails when the other job holds an apt lock (#372). Keep every CI apt call in this file.
 # The runner keeps its packages between runs, so the usual run finds every package and never touches apt.
-# Otherwise apt waits up to 10 minutes for the locks instead of failing at once.
+# Otherwise apt retries for about 10 minutes when another apt holds a lock, instead of failing at once.
 set -euo pipefail
 
 tauri=(libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev xvfb)
@@ -17,17 +17,17 @@ if [[ "$(dpkg -s "${packages[@]}" 2>/dev/null | grep -cx 'Status: install ok ins
   exit 0
 fi
 
-# apt waits for the dpkg lock with DPkg::Lock::Timeout, but fails at once on the package lists lock (update) and the
-# archives lock (download). So the update and install retry together until one 10 minute deadline.
-wait_s=600
-deadline=$((SECONDS + wait_s))
-until sudo apt-get update &&
-  sudo apt-get -o DPkg::Lock::Timeout="$((deadline > SECONDS ? deadline - SECONDS : 0))" install -y --no-install-recommends "${packages[@]}"; do
-  # No attempt starts after the deadline.
-  if ((SECONDS + 10 >= deadline)); then
-    echo "apt still failing after ${wait_s}s" >&2
+# apt fails at once when another apt holds the package lists lock (update), the archives lock (download), or the dpkg
+# lock (install). Every lock gets the same answer: the update and install retry together, 10 seconds apart.
+attempts=60
+for ((attempt = 1; ; attempt++)); do
+  if sudo apt-get update && sudo apt-get install -y --no-install-recommends "${packages[@]}"; then
+    exit 0
+  fi
+  if ((attempt == attempts)); then
+    echo "apt still failing after $attempts attempts" >&2
     exit 1
   fi
-  echo "apt failed, another apt may hold one of its locks; retrying in 10s"
+  echo "apt failed on attempt $attempt of $attempts, another apt may hold one of its locks; retrying in 10s"
   sleep 10
 done
