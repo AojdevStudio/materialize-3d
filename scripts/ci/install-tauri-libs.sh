@@ -11,8 +11,10 @@ bambu=(libgstreamer-plugins-base1.0-0 libgstreamer-gl1.0-0 libegl1 libgl1 libgbm
   libsecret-1-0 libmanette-0.2-0 libenchant-2-2 libhyphen0 libunwind8)
 packages=("${tauri[@]}" "${bambu[@]}")
 
-# dpkg -s also exits 0 for a removed package that left its config files, so count the fully installed ones.
-if [[ "$(dpkg -s "${packages[@]}" 2>/dev/null | grep -cx 'Status: install ok installed')" == "${#packages[@]}" ]]; then
+# Count native or arch-independent packages with "ok installed" so held packages keep the fast path, while
+# config-only, half-installed, reinstreq, or foreign-arch-only packages still run apt.
+arch=$(dpkg --print-architecture)
+if [[ "$(dpkg-query -W -f='${Package} ${Architecture} ${db:Status-Eflag} ${db:Status-Status}\n' "${packages[@]}" 2>/dev/null | grep -Ecx "[^ ]+ (${arch}|all) ok installed")" == "${#packages[@]}" ]]; then
   echo "CI system packages already installed"
   exit 0
 fi
