@@ -56,7 +56,7 @@ afterEach(() => {
 
 /** The sidebar in a window that feeds the store, as StudioApp does. */
 function Window() {
-  useStudioEvents(projects)
+  useStudioEvents()
   return <Sidebar projects={projects} current={null} engine="Opus 5.5" printer={null} onOpen={() => {}} onNew={() => {}} onSettings={() => {}} />
 }
 

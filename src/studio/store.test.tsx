@@ -13,7 +13,7 @@ vi.mock('@tauri-apps/api/event', () => ({
 }))
 
 import type { AppState, ChatView, ModelOption, Printer, Project } from '../../sidecar/src/protocol'
-import { load, loadModels, savePrinter, saveSettings, show, start, useStudio, useStudioEvents } from './store'
+import { load, loadModels, savePrinter, saveSettings, show, start, takeProject, useStudio, useStudioEvents } from './store'
 
 afterEach(() => {
   cleanup()
@@ -26,7 +26,7 @@ const project: Project = { id: '2026-11-17-clip', conversation: 1, title: 'Clip'
 const projects = [project]
 
 function Window() {
-  useStudioEvents(projects)
+  useStudioEvents()
   return null
 }
 
@@ -175,4 +175,36 @@ it('reads the saved state no more once the window closes, even when a read fails
   await act(async () => failFirst())
   await pass(3500)
   expect(reads.count).toBe(1)
+})
+
+it('keeps the roles with the higher revision and a project made meanwhile, whatever order the saved list, events, and replies come in', async () => {
+  let answerState: (state: AppState) => void = () => {}
+  let statusReads = 0
+  invokeMock.mockImplementation((command: string, { method }: { method?: string } = {}) => {
+    if (command === 'sidecar' && method === 'state.get') return new Promise((resolve) => (answerState = resolve))
+    if (command === 'sidecar' && method === 'projects.status') return Promise.resolve({}).finally(() => statusReads++)
+    return Promise.resolve([])
+  })
+  const emit = (event: object) => act(async () => listeners.forEach((listener) => listener({ payload: event })))
+  const made: Project = { ...project, id: '2026-11-18-knob', title: 'Knob', createdMs: 1 }
+  const sonnet = { provider: 'anthropic' as const, modelId: 'claude-sonnet-5-5' }
+  render(<Window />)
+  void start()
+
+  // A phone changes the clip's helper and a send makes the knob, both before the saved list answers.
+  await emit({ type: 'project', project: { ...project, helper: sonnet, roles: 2 } })
+  await act(async () => takeProject(made))
+  await act(async () => answerState(saved()))
+  expect(useStudio.getState().projects).toEqual([made, { ...project, helper: sonnet, roles: 2 }])
+
+  // An older save's reply never puts back the roles it replaced, and moves nothing.
+  const list = useStudio.getState().projects
+  const reads = statusReads
+  await emit({ type: 'project', project: { ...project, helper: null, roles: 1 } })
+  expect(useStudio.getState().projects).toBe(list)
+  expect(statusReads).toBe(reads)
+
+  await act(async () => takeProject({ ...project, model: sonnet, roles: 3 }))
+  expect(useStudio.getState().projects).toEqual([made, { ...project, model: sonnet, roles: 3 }])
+  expect(statusReads).toBe(reads + 1)
 })

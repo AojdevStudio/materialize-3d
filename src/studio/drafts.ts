@@ -4,7 +4,7 @@ import { createStore } from 'zustand/vanilla'
 import { type AppState, type Draft, type Project, type SentRoles, START } from '../../sidecar/src/protocol'
 import { onFileDrop, onQuitFlush, sidecar } from './api'
 import { releaseAttachment, savedAttachment, type Attachment, type PastedPicture } from './Composer'
-import { checkReady, load, onNextReady, retry, setError, show as showProject, start, useStudio } from './store'
+import { checkReady, load, onNextReady, retry, setError, show as showProject, start, takeProject, useStudio } from './store'
 
 const DRAFT_PAUSE_MS = 400
 const QUIT_SAVE_TRIES = 4
@@ -56,10 +56,10 @@ function toBase64(bytes: Uint8Array): string {
 /**
  * The window's drafts and sends: each screen it changed or filled from the saved state, by project id, or `START` for
  * the start screen. Typing saves its screen once typing pauses, and at once when the person leaves it. A send saves
- * first if the screen changed, then names the revision. A draft keeps its pictures as the paths of their files.
- * `onSent` hears each project a send went to.
+ * first if the screen changed, then names the revision. A draft keeps its pictures as the paths of their files. The
+ * store takes in each project a send went to.
  */
-export function createDrafts(clock: Clock, onSent: (project: Project) => void) {
+export function createDrafts(clock: Clock) {
   const state = createStore<Shown>()(() => ({ shown: EMPTY, attachments: [], sending: false, sendErrors: {} }))
   const screens: Record<string, Screen> = {}
   let pending: { key: string; cancel: () => void } | null = null
@@ -180,7 +180,7 @@ export function createDrafts(clock: Clock, onSent: (project: Project) => void) {
       if (sent === undefined) return undefined
       const { project } = await sidecar('chat.send', { key, rev: sent.rev, ...(pair === undefined ? {} : { pair }) })
       state.setState(({ sendErrors: { [project.id]: _, ...rest } }) => ({ sendErrors: rest }))
-      onSent(project)
+      takeProject(project)
       // What changed since the save that went out is the next message. The pictures that went out leave it, but for one
       // the person took out and chose again during the send.
       const outgoing = screen.sendingPictures ?? new Set<string>()
@@ -311,26 +311,14 @@ export function createDrafts(clock: Clock, onSent: (project: Project) => void) {
 }
 
 /**
- * The window's drafts while it is open, with what the open screen's composer shows. It starts the window's store, and
- * `onStarted` hears the saved state once the drafts took it. `quit` runs a quit, with the save of the drafts to run
- * in it, and calls it off by failing. The callbacks are taken once.
+ * The window's drafts while it is open, with what the open screen's composer shows. It starts the window's store.
+ * `quit` runs a quit, with the save of the drafts to run in it, and calls it off by failing. It is taken once.
  */
-export function useDrafts({
-  onSent,
-  onStarted,
-  quit,
-}: {
-  onSent: (project: Project) => void
-  onStarted: (saved: AppState) => void
-  quit: (saveDrafts: () => Promise<void>) => Promise<void>
-}) {
-  const [drafts] = useState(() => createDrafts(windowClock, onSent))
+export function useDrafts(quit: (saveDrafts: () => Promise<void>) => Promise<void>) {
+  const [drafts] = useState(() => createDrafts(windowClock))
   useEffect(() => {
     void start()
-      .then((saved) => {
-        drafts.take(saved)
-        onStarted(saved)
-      })
+      .then(drafts.take)
       .catch((err: unknown) => setError(String(err)))
   }, [drafts])
   useEffect(() => drafts.close, [drafts])

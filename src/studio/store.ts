@@ -8,6 +8,8 @@ import { firstView, panelFiles, viewOf, type PanelView } from './files'
 const STATE_RETRY_MS = 3000
 
 type StudioState = {
+  /** Every project, newest made first, with the newest roles the sidecar saved for each. */
+  projects: Project[]
   /** The project on screen. Null on the start screen. */
   current: Project | null
   /** The open project's chat. Null until its first load lands. */
@@ -46,6 +48,7 @@ type StudioState = {
 }
 
 const EMPTY: StudioState = {
+  projects: [],
   current: null,
   view: null,
   files: [],
@@ -66,8 +69,8 @@ const EMPTY: StudioState = {
 }
 
 /**
- * The window's one store: chats, project status, the saved setup and settings, the sign-ins, and what the agent needs
- * before a send. Every sidecar event lands here once, chat events ordered by `seq`, and the screens read it.
+ * The window's one store: the projects, chats, project status, the saved setup and settings, the sign-ins, and what the
+ * agent needs before a send. Every sidecar event lands here once, chat events ordered by `seq`, and the screens read it.
  * `useStudioEvents` feeds it while the window is open.
  */
 export const useStudio = create<StudioState>()(() => EMPTY)
@@ -172,6 +175,38 @@ const withRuns = () =>
   Object.fromEntries(Object.entries(kept.read).map(([id, s]) => [id, { ...s, running: kept.runs[id]?.running ?? s.running }]))
 
 export const setError = (error: string | null) => set({ error })
+
+/**
+ * `incoming`, a project as a read, an event, or a reply brings it, in place of `row`, the one the window has. The roles
+ * go with the higher revision, so the newest the sidecar saved win whatever way and order they came in.
+ */
+const newest = (row: Project | undefined, incoming: Project): Project =>
+  row !== undefined && row.roles >= incoming.roles ? { ...incoming, model: row.model, helper: row.helper, roles: row.roles } : incoming
+
+/** Shows a new project list, and reads every status again for it. The same list reads nothing. */
+function setProjects(projects: Project[]) {
+  if (projects === get().projects) return
+  set({ projects })
+  readStatus()
+}
+
+/**
+ * Takes in a project a send, a role save, or an event brought: in place of its row, or first when the window does not
+ * list it yet. A row that comes back as it was leaves the list as it was.
+ */
+export function takeProject(incoming: Project) {
+  const projects = get().projects
+  const row = projects.find((p) => p.id === incoming.id)
+  if (row === undefined) return setProjects([incoming, ...projects])
+  const taken = newest(row, incoming)
+  if (JSON.stringify(taken) !== JSON.stringify(row)) setProjects(projects.map((p) => (p === row ? taken : p)))
+}
+
+/** Takes in the saved project list. A project made while it was on its way is newer than the list, so it stays. */
+function takeSaved(saved: Project[]) {
+  const made = get().projects
+  setProjects([...made.filter((p) => !saved.some((s) => s.id === p.id)), ...saved.map((s) => newest(made.find((p) => p.id === s.id), s))])
+}
 
 /** Reads every project's status again. One read at a time, and a read asked for meanwhile runs once that one ends. */
 export function readStatus() {
@@ -311,6 +346,7 @@ function readState(saved: SavedRead) {
         if (saved !== kept.saved || saved.taken) return
         saved.taken = true
         set({ settings: state.settings, importBlocked: state.importBlocked, ...(saves === kept.setupSaves ? { setup: state.setup } : {}) })
+        takeSaved(state.projects)
         saved.take(state)
       },
       (err: unknown) => {
@@ -328,7 +364,7 @@ function readState(saved: SavedRead) {
 /**
  * Reads what the window starts from: the saved state, which Send waits for, what the agent needs, the models, Bambu
  * Studio, and the engine's version. A state read that fails is tried again after a pause, and at once when the engine
- * is back. Answers the saved state the window took, for the drafts and the project list.
+ * is back. The projects it reads join the list. Answers the saved state the window took, for the drafts.
  */
 export function start(): Promise<AppState> {
   const taken = new Promise<AppState>((take) => {
@@ -350,14 +386,14 @@ export function start(): Promise<AppState> {
 }
 
 /**
- * An import retry brings old chats in as projects. Answers the saved state read after it, for its projects. That read
- * may come before a send the person makes meanwhile, so it brings no drafts.
+ * An import retry brings old chats in as projects, from the saved state read after it. That read may come before a
+ * send the person makes meanwhile, so it brings no drafts.
  */
 export async function importAgain() {
   await sidecar('legacy.import', {})
   const state = await sidecar('state.get', {})
   set({ importBlocked: state.importBlocked })
-  return state
+  takeSaved(state.projects)
 }
 
 /** Shows a project, or the start screen with null, from a clean slate. `load` reads the project's chat. */
@@ -490,26 +526,29 @@ function hear(event: SidecarEvent) {
       return heardLogin(event)
     case 'chat':
       return heardChat(event)
+    case 'project':
+      // A paired phone can change a chat's roles too, so what the next send needs is checked again, as after a pick here.
+      takeProject(event.project)
+      return checkReady()
   }
 }
 
 /**
- * Feeds the store while the window is open: sidecar events, a status read each time `projects` changes, and the open
- * project's files. A window that opens again starts from a clean store.
+ * Feeds the store while the window is open: sidecar events, a first status read, and the open project's files. A
+ * window that opens again starts from a clean store.
  */
-export function useStudioEvents(projects: Project[]) {
+export function useStudioEvents() {
   useEffect(() => {
     reset()
     set(EMPTY)
     const events = onSidecarEvent(hear)
     kept.events = events
+    readStatus()
     return () => {
       events.stop()
       reset()
     }
   }, [])
-
-  useEffect(readStatus, [projects])
 
   const current = useStudio((s) => s.current)
   const running = useStudio((s) => s.view?.running ?? false)

@@ -81,11 +81,11 @@ const step = (action: () => unknown = () => {}, ms = 0) =>
 const pass = (ms: number) => step(() => {}, ms)
 
 function Window() {
-  useStudioEvents([])
+  useStudioEvents()
   return null
 }
 
-/** Opens a window on the mocked sidecar, and its drafts. `sent` lists each project a send went to. */
+/** Opens a window on the mocked sidecar, and its drafts. */
 function open(answers: Record<string, Answer> = {}) {
   invokeMock.mockImplementation((command: string, { method, params = {} }: { method?: string; params?: Params } = {}) => {
     if (command !== 'sidecar' || method === undefined) return Promise.resolve([])
@@ -94,12 +94,10 @@ function open(answers: Record<string, Answer> = {}) {
     return answer === undefined ? Promise.resolve(null) : answer(params)
   })
   const window = render(<Window />)
-  const sent: Project[] = []
-  const drafts = createDrafts(clock, (project) => sent.push(project))
+  const drafts = createDrafts(clock)
   const shown = () => drafts.state.getState().shown
   return {
     drafts,
-    sent,
     shown,
     window,
     go: (project: Project | null) => step(() => (project === null ? drafts.show(null) : drafts.open(project))),
@@ -248,7 +246,7 @@ it("keeps each project's unsent message, so sending it again after another proje
 
 it('leaves the project the person moved to alone when a slow send from the start screen finishes', async () => {
   const sending = held('chat.send')
-  const { sent, go, type, send, shown } = open({ 'chat.send': sending.answer })
+  const { go, type, send, shown } = open({ 'chat.send': sending.answer })
   await type('A clip for my desk')
   await send()
   expect(sends()).toEqual([{ key: START, rev: 1 }])
@@ -256,7 +254,7 @@ it('leaves the project the person moved to alone when a slow send from the start
   await type('draft for B')
 
   await sending.release()
-  expect(sent).toEqual([made])
+  expect(useStudio.getState().projects).toEqual([made])
   expect(useStudio.getState().current).toEqual(projectB)
   expect(shown().text).toBe('draft for B')
 })
@@ -613,11 +611,11 @@ it('keeps text typed while the draft before a send was still being saved, and sa
 })
 
 it('leaves the start screen empty after its message was sent, and takes the person to its project', async () => {
-  const { sent, go, type, send, shown } = open()
+  const { go, type, send, shown } = open()
   await type('A clip for my desk')
   await pass(400)
   await send()
-  expect(sent).toEqual([made])
+  expect(useStudio.getState().projects).toEqual([made])
   expect(useStudio.getState().current).toEqual(made)
   expect(shown().text).toBe('')
   await go(null)
@@ -650,7 +648,7 @@ it('clears a picture-only first message from the start screen the person went ba
 })
 
 it('sends a picture-only first message again after a lost answer to the same project, once', async () => {
-  const { sent, go, attach, send, shown } = open({ 'chat.send': lostOnce() })
+  const { go, attach, send, shown } = open({ 'chat.send': lostOnce() })
   await attach('/Users/me/pic.jpg')
   await send()
   expect(useStudio.getState().error).toBe(LOST)
@@ -661,7 +659,7 @@ it('sends a picture-only first message again after a lost answer to the same pro
   expect(sends()).toHaveLength(2)
   expect(sends()[1]).toEqual(sends()[0])
   expect(saves()).toHaveLength(1)
-  expect(sent).toEqual([made])
+  expect(useStudio.getState().projects).toEqual([made])
   expect(useStudio.getState().current).toEqual(made)
 })
 
