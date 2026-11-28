@@ -43,13 +43,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install Tauri system libraries
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev xvfb
+        run: scripts/ci/install-tauri-libs.sh
       - uses: ./.github/actions/shared-checks
       - name: Release facts match their sources
         run: bun scripts/release/release-facts.ts && bun test scripts/release
+      - name: Every CI package install goes through scripts/ci/install-tauri-libs.sh
+        run: bun test scripts/ci
       # Here and not in formal-verification.yml, whose own paths list decides whether it runs, so a PR that edits
       # that list could skip the check of that list.
       - name: The TLA+ workflow paths are the files the models cover
@@ -83,10 +82,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install Tauri system libraries
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev
+        run: scripts/ci/install-tauri-libs.sh
       - uses: actions/setup-node@v6.2.0
         with:
           node-version: "24"

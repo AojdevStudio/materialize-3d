@@ -9,6 +9,7 @@ cd sidecar && bun install --frozen-lockfile && bunx tsc --noEmit && bun test
 
 # Linux build and checks. These frontend checks also run on a Mac gate host.
 bun scripts/release/release-facts.ts && bun test scripts/release
+bun test scripts/ci
 bun .agents/skills/formal-verify-materialize-3d/scripts/check-paths.ts
 bun run build
 bun scripts/release/check-no-e2e-harness.ts
