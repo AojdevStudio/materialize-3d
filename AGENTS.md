@@ -40,7 +40,8 @@ Follow the shared verification skill for `m3d.sh record start`, `m3d.sh record s
 
 - Never run a host-wide `pkill -f "<pattern>"` or `killall` on a shared machine. A bracket-glob such as `[r]eview` or `[t]auri` only spares your own shell. It still kills matching processes from other worktrees and repos, and `ScopedKillGuard` blocks it (AojdevStudio/agents-config#193).
   - To cancel this worktree's review gate, run `bun ~/.agents/skills/review-gate/scripts/review-receipt.ts stop`.
-  - To stop any other process you started, kill only its exact PID (`kill <pid>`), its process group (`kill -- -<pgid>`), or its children (`pkill -P <ppid>` or `pkill -g <pgid>`). First confirm that `/proc/<pid>/cwd` (Linux) or `lsof -a -p <pid> -d cwd` (macOS) points into your worktree.
+  - To stop any other process you started, kill its exact PID (`kill <pid>`). Kill a whole process group (`kill -- -<pgid>` or `pkill -g <pgid>`) or a parent's children (`pkill -P <ppid>`) only when you started that group or parent yourself.
+  - Before any kill, list every target (`pgrep -g <pgid>` or `pgrep -P <ppid>` for a group or children). Confirm that each target's `/proc/<pid>/cwd` (Linux) or `lsof -a -p <pid> -d cwd` (macOS) points into your worktree. If one target is outside it, kill by exact PID instead.
 
 <!-- pr-kit:start -->
 ## Pull requests
