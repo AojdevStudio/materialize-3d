@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { CATALOG } from '../../sidecar/src/offered'
-import { type AppState, type ModelChoice, type Project, type Setup, START } from '../../sidecar/src/protocol'
-import { fileUrl, onSidecarEvent, sidecar } from './api'
+import { type ModelChoice, type Setup, START } from '../../sidecar/src/protocol'
+import { fileUrl, sidecar } from './api'
 import { ChatView } from './Chat'
 import { Composer } from './Composer'
 import { useDrafts } from './drafts'
@@ -19,6 +19,7 @@ import {
   saveSettings,
   setError,
   setPanelView,
+  takeProject,
   useStudio,
   useStudioEvents,
 } from './store'
@@ -30,31 +31,12 @@ import { UpdateBanner } from '../update/UpdateBanner'
 import { checkForUpdatesAtLaunch, useUpdateEvents } from '../update/store'
 import './studio.css'
 
-/**
- * `incoming`, a chat as a read, an event, or a reply brings it, in place of `row`, the one the window has. The roles go
- * with the higher revision, so the newest the sidecar saved win whatever way and order they came in.
- */
-const take = (row: Project | undefined, incoming: Project): Project =>
-  row !== undefined && row.roles >= incoming.roles ? { ...incoming, model: row.model, helper: row.helper, roles: row.roles } : incoming
-
-/**
- * `projects` with `incoming` taken in, in place of its row, or first when the window does not list it yet. A row that
- * comes back as it was leaves the list as it was, so nothing that follows the list reads again.
- */
-const takeIn = (projects: Project[], incoming: Project): Project[] => {
-  const row = projects.find((p) => p.id === incoming.id)
-  if (row === undefined) return [incoming, ...projects]
-  const taken = take(row, incoming)
-  return JSON.stringify(taken) === JSON.stringify(row) ? projects : projects.map((p) => (p === row ? taken : p))
-}
-
 /** A role picked here, with its place in the order of picks, shown until its own save went through. */
 type ShownPick = { model: ModelChoice | null; seq: number }
 type ShownPicks = { lead?: ShownPick & { model: ModelChoice }; helper?: ShownPick }
 
 export default function StudioApp() {
-  const [projects, setProjects] = useState<Project[]>([])
-  const { current, view, files, selected, panelView, status, error, engine, setup, settings: savedSettings, importBlocked, needs, models, signIn, slicerFound, wentOnInSetup } = useStudio()
+  const { projects, current, view, files, selected, panelView, status, error, engine, setup, settings: savedSettings, importBlocked, needs, models, signIn, slicerFound, wentOnInSetup } = useStudio()
   /** The setup step opened again, and which opening it is, so a step left earlier cannot close a later one. */
   const [fixing, setFixing] = useState<{ step: Setup['step']; opening: number } | null>(null)
   const openings = useRef(0)
@@ -71,30 +53,12 @@ export default function StudioApp() {
   )
   const running = view?.running ?? false
 
-  useStudioEvents(projects)
-  // A paired phone can change a chat's roles too, so the window takes each project the sidecar says changed, and checks
-  // again what the next send needs, as after a pick here.
-  useEffect(
-    () =>
-      onSidecarEvent((event) => {
-        if (event.type !== 'project') return
-        setProjects((all) => takeIn(all, event.project))
-        checkReady()
-      }).stop,
-    [],
-  )
+  useStudioEvents()
   useUpdateEvents()
   useWindowTheme()
   useEffect(() => {
     void checkForUpdatesAtLaunch()
   }, [])
-
-  // A project made while this was on its way is newer than the saved list, so it stays.
-  const takeProjects = (state: AppState) =>
-    setProjects((made) => [
-      ...made.filter((p) => !state.projects.some((saved) => saved.id === p.id)),
-      ...state.projects.map((saved) => take(made.find((p) => p.id === saved.id), saved)),
-    ])
 
   /**
    * The saves of the role picks, one after another in the order they were made, so two picks of one role land in that
@@ -116,16 +80,10 @@ export default function StudioApp() {
     }
   }
 
-  const { drafts, shown, attachments, sending, sendErrors } = useDrafts({
-    onSent: (project) => setProjects((all) => takeIn(all, project)),
-    onStarted: takeProjects,
-    quit,
-  })
+  const { drafts, shown, attachments, sending, sendErrors } = useDrafts(quit)
 
   const retryImport = () => {
-    void importAgain()
-      .then(takeProjects)
-      .catch((err: unknown) => setError(String(err)))
+    void importAgain().catch((err: unknown) => setError(String(err)))
   }
 
   const shownError = error ?? (current ? sendErrors[current.id] : undefined)
@@ -184,9 +142,6 @@ export default function StudioApp() {
     })
   }
 
-  /** A role save's answer, the project as saved, which the window takes before the pick gives way to it. */
-  const takeSaved = (saved: Project) => setProjects((all) => takeIn(all, saved))
-
   /**
    * A pick of the open project's lead, or on the start screen the default the next project takes. The check runs
    * again then, as the new model's provider may differ.
@@ -197,7 +152,7 @@ export default function StudioApp() {
       pickRole(START, 'lead', model, () => saveSettings({ model }).then(() => checkReady()))
       return
     }
-    pickRole(project, 'lead', model, () => sidecar('projects.setLead', { project, model }).then(takeSaved))
+    pickRole(project, 'lead', model, () => sidecar('projects.setLead', { project, model }).then(takeProject))
   }
 
   /** A pick of the open project's helper. On the start screen it is the helper the next project starts with. */
@@ -207,7 +162,7 @@ export default function StudioApp() {
       setStartHelper({ pick: model })
       return
     }
-    pickRole(project, 'helper', model, () => sidecar('projects.setHelper', { project, model }).then(takeSaved))
+    pickRole(project, 'helper', model, () => sidecar('projects.setHelper', { project, model }).then(takeProject))
   }
 
   const composer = (
