@@ -22,6 +22,7 @@ cd src-tauri && cargo test --lib --locked studio::slice -- --ignored --nocapture
 
 # Mobile app checks. The crate embeds the mobile window build.
 bun run build:mobile
+bun run test:mobile-layout
 cd src-mobile && cargo test --lib --locked
 
 # macOS desktop build gate. CI covers these commands for a Linux receipt.

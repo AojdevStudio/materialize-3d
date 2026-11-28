@@ -98,6 +98,11 @@ jobs:
       # The crate embeds the mobile window build, so that build comes first.
       - name: Mobile window build
         run: bun run build:mobile
+      # jsdom has no layout, so these Playwright tests are the ones that see the phone and tablet screens.
+      - name: Google Chrome is installed on the runner
+        run: /opt/google/chrome/chrome --version
+      - name: Phone and tablet layouts at real screen sizes
+        run: bun run test:mobile-layout
       - name: Mobile Rust tests
         working-directory: src-mobile
         run: cargo test --lib --locked
